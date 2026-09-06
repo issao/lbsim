@@ -3,7 +3,7 @@
 What is live on `origin/master`, what each agent is doing now, and the assumptions being acted on.
 For things that need *you*, see `TASKS.md`.
 
-**Last updated:** 2026-09-06 16:28 PDT by Claude.
+**Last updated:** 2026-09-06 16:29 PDT by Claude.
 
 ---
 
@@ -39,7 +39,7 @@ difference between a bad minute and an outage. Numbers in `docs/findings.md`.
 
 | Agent | Owns | Now |
 |---|---|---|
-| Tech lead | `src/`, `tests/`, `scenarios/`, `web/src/lib/` | Landed, all byte-identical against `./check-fingerprints.sh`: the eleven-crate workspace (163995c); golden fingerprints and `WIRE.md` (0efb8bd); the policy trait and registry, plus `admission`, `fair_share_burst`, `tenants`, `tenant_weights`, `tenant_demand` in scenarios (289cb22, cfc8f03); leases and the idle guard (d688f8f); Issao's homepage links and `tools/build.sh`, which bounds concurrent cargo builds to two (16daf22); simplification pass 1 on `sim-report`, 884 to 851 lines (4b29810); the browser transport client against `WIRE.md`, mock still the default (389f41e, 16:14); the `least_kv_probe` routing policy, power-of-d choices on live KV occupancy with the probe paid for (120e62d); `deadline_aware` admission, shedding on expected queue wait before a request costs anything (210b657); `fair_share` admission, weighted fair share over tenants in tokens (072a932). In flight, three agents in their own worktrees: engine (`claude/tl-engine`), physics oracle (`tl-physics`), export (`tl-export`). Queued: preemption and KV eviction, SLO classes, the live ingress server, the dashboard replay source, speculative decoding, prefix caching. From Issao at 15:50: *"continue making more progress on the scope-today.md dynamics we talked about when it is possible to do so in parallel"*, which is that queue. From Issao at 16:22, routed: the `disable_decode` knob, *"basically by setting HBM to infinity"*, first in priority; load and latency forecasting as policies to evaluate, with `docs/policy-catalog.md` fed by the arena generator; sampled request traces *"to see execution traces and what was busy in each resource"*, through `GetTraces` and the export |
+| Tech lead | `src/`, `tests/`, `scenarios/`, `web/src/lib/` | Landed, all byte-identical against `./check-fingerprints.sh`: the eleven-crate workspace (163995c); golden fingerprints and `WIRE.md` (0efb8bd); the policy trait and registry, plus `admission`, `fair_share_burst`, `tenants`, `tenant_weights`, `tenant_demand` in scenarios (289cb22, cfc8f03); leases and the idle guard (d688f8f); Issao's homepage links and `tools/build.sh`, which bounds concurrent cargo builds to two (16daf22); simplification pass 1 on `sim-report`, 884 to 851 lines (4b29810); the browser transport client against `WIRE.md`, mock still the default (389f41e, 16:14); the `least_kv_probe` routing policy, power-of-d choices on live KV occupancy with the probe paid for (120e62d); `deadline_aware` admission, shedding on expected queue wait before a request costs anything (210b657); `fair_share` admission, weighted fair share over tenants in tokens (072a932); the M2 analytic epoch advance with its exact oracle (dbfc553); the wire encoder and `sim-run export --demos` (41f6435). In flight per the last report: engine (`claude/tl-engine`); the tech lead's next message updates this. Queued: preemption and KV eviction, SLO classes, the live ingress server, the dashboard replay source, speculative decoding, prefix caching. From Issao at 15:50: *"continue making more progress on the scope-today.md dynamics we talked about when it is possible to do so in parallel"*, which is that queue. From Issao at 16:22, routed: the `disable_decode` knob, *"basically by setting HBM to infinity"*, first in priority; load and latency forecasting as policies to evaluate, with `docs/policy-catalog.md` fed by the arena generator; sampled request traces *"to see execution traces and what was busy in each resource"*, through `GetTraces` and the export |
 | Cloud | `Dockerfile`, `deploy.sh`, `cloudbuild.yaml`, `docs/deploy.md` | **finished.** Redeploys are now run by the main agent on request: `./deploy.sh`, about 2.5 minutes end to end. First deploy at 15:22 (72dfb16); scale-to-zero verified twice (993c03a); `docs/deploy.md` is its handover. No further grant was needed, the pending `legacyBucketReader` request is withdrawn: the blocker was two bucket permissions, worked around in `cloudbuild.yaml` |
 | Monitor and housekeeping | `TASKS.md`, `STATUS.md`, `README.md`, `docs/*.md` | inbox and PR loop every 90 s; documents tidied; keeping them aligned to each merge. The homepage-link instruction routed at 15:57 was done by the tech lead at 15:59 |
 
@@ -56,13 +56,13 @@ temporary, for Issao to review.
 | M0 workspace and CI | done, one gap | the section 10.8 workspace, eleven crates (163995c), `tests/layering.rs` proves `sim-ingress` cannot reach `sim-model` or `sim-physics`; no `prost`/`tonic` codegen |
 | M0.5 stand-in dashboard | done | `web/`, mock data, marked as such |
 | M1 walking skeleton | done and exceeded | six dynamics, `docs/findings.md` |
-| M2 physics | partial, in flight | cost model calibrated and exact in Python (`bench/validate_epochs.py`); the Rust analytic advance and exact differential oracle are on `claude/tl-physics`; preemption and KV eviction queued |
+| M2 physics | load-bearing half done | the analytic epoch advance in Rust, integer arithmetic, with the naive per-step oracle beside it and equality rather than tolerance: 10,000 random epochs agree exactly, 77x fewer evaluations on the test seed (dbfc553); preemption with swap or recompute and KV eviction queued |
 | M3 three-layer split | partial, in flight | crate boundary exists; the leaf trait shaped by `leaf.proto` and a resumable `Sim` are on `claude/tl-engine`, toward Leaf as a process per Issao; no cross-shard determinism test |
 | M4 workload and telemetry | partial | arrival heterogeneity and telemetry delay built; no trace replay, no session or prefix model |
 | M5 policies | partial, in flight | six routing policies and two admission controllers, `deadline_aware` and `fair_share`, behind a one-file-per-policy registry (289cb22, 120e62d, 210b657, 072a932); no prefix affinity, no per-decision cost measurement |
 | M6 failures | done | retry contrast, finding 6 |
 | M7 control analysis | not started | |
-| M8 dashboard and first deploy | in progress | static deploy live, scale-to-zero measured (993c03a); `sim-ingress` has leases and the idle guard (d688f8f) but no run or subscription endpoint; `sim-run export` to `WIRE.md` JSON on `claude/tl-export`; browser transport merged (389f41e) with mock still the default; dashboard still mock |
+| M8 dashboard and first deploy | in progress | static deploy live, scale-to-zero measured (993c03a); `sim-ingress` has leases and the idle guard (d688f8f) but no run or subscription endpoint; `sim-run export` writes runs as the `WIRE.md` JSON documents the stream will carry (41f6435); browser transport merged (389f41e) with mock still the default; the replay source that joins the two is next; dashboard still mock |
 | M9 scale validation | not measured | |
 
 ## When the dashboard shows real demos
@@ -75,7 +75,8 @@ since cf12e33, live since 16:03 in revision `lbsim-00004-t5q`, built from `maste
 `docs/dashboard-plan.md` (16c28ac) is the breakdown of why the first dashboard with real runs is
 estimated at 19:00 and what can be pulled in; its estimate table moves only on word from the tech lead
 or the main agent. Three things stand between it and real data: an Ingress endpoint that runs a scenario and streams
-metrics over the JSON/SSE wire in `crates/sim-ingress/WIRE.md`; the browser transport client, merged at 16:14 (389f41e) but not yet the default, replacing the
+metrics over the JSON/SSE wire in `crates/sim-ingress/WIRE.md`, or until then the pre-baked runs that
+`sim-run export --demos` now writes (41f6435), loaded by a replay source; the browser transport client, merged at 16:14 (389f41e) but not yet the default, replacing the
 mock engine; and a rebuild and redeploy, measured at
 1m22s. The shortest path, asked of the tech lead by the main agent: pre-baked run output in wire format
 served statically, so every panel shows real data before the live path exists.
