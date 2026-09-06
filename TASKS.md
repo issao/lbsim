@@ -1,6 +1,6 @@
 # TASKS — things that need Issao
 
-Last updated: 2026-09-06 16:20 by Claude.
+Last updated: 2026-09-06 16:40 by Claude.
 
 Stack ranked, most blocking first. Every item says what Claude does if you say nothing, so nothing
 here stalls the work. What is finished and live is in `STATUS.md`.
@@ -15,8 +15,9 @@ consequences that belong to the tech lead; verbatim, from `TASKS.md` before the 
    or length-scaled first-token targets so a 0.99 cap becomes reachable; `docs/arena.md` §5b.
 2. *"Arena policy generator should actually have full power to write code to write new policies, as
    well as tuning parameters on existing policies."* A policy candidate is code against the policy
-   trait, not only a `PolicySpec`; `docs/arena.md` §6. The main agent should check whether
-   `PolicySpec` in `proto/` needs an open slot for a generated policy.
+   trait, not only a `PolicySpec`; `docs/arena.md` §6. The proto side is done: `GeneratedPolicy`
+   variant in every policy slot, 947649b. Left for the tech lead: the policy registry that resolves it
+   by name from one file per policy.
 3. *"Re prefix sharing topology. I don't, assume some reasonable distributions of lengths of session
    and how often they fork off and merge back new agents and create a distribution based on that."*
    The workload model derives the prefix tree from a session process: session length, fork-off rate,
