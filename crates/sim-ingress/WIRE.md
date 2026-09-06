@@ -18,6 +18,14 @@ has `fetch` and `EventSource`. So:
 - **`OpenSubscription`** is `GET /v1/ingress/OpenSubscription?<query>` returning `text/event-stream`.
   The first event is an `OpenSubscriptionResponse`; every later event is a `SubscriptionUpdate`. The
   stream closes when the lease expires, when `CloseSubscription` is called, or after the `final` update.
+  One proto RPC, one HTTP request: a browser cannot open a bidirectional stream, so the *renew* and
+  *close* halves are the unary calls above. That split is a transport detail of this mapping and is
+  not in the proto.
+- **Reconnect.** Every SSE event carries `id: <n>`, the subscription's delivered-update sequence number
+  starting at 1. A client that reconnects sends `Last-Event-ID: <n>` on the same `GET`; the server
+  replays from its per-subscription ring of the last 256 updates, or answers **HTTP 410 Gone** when the
+  gap is larger than the ring or the subscription is unknown, and the client resubscribes from scratch.
+  The lease is what makes this safe: an unrenewed subscription is gone, ring and all.
 - **Health** is `GET /health` and `GET /healthz`, plain `ok`, touching no run state.
 - Anything else is served as a static file from `--dir`, exactly as today.
 
@@ -76,7 +84,7 @@ restoring the most recent snapshot and re-simulating, so `UpdateResponse.require
 First event, `OpenSubscriptionResponse`:
 ```
 event: open
-data: {"subscription_id":"s-7","lease_expires_at_unix_ns":"..."}
+data: {"subscription_id":"s-7","lease_expires_at_wall_ns":"..."}
 ```
 
 Every later event, `SubscriptionUpdate`:
@@ -85,13 +93,13 @@ event: update
 data: {"subscription_id":"s-7","sim_time_unix_ns":"...","realtime_factor":2.0,
        "row":{"target":{"scope":"SCOPE_FLEET"},
               "values":{"40":70.0,"23":12.0},
-              "distributions":{"1":{"count":"41","mean":812.5,"min":"120000000","max":"2400000000",
+              "distributions":{"1":{"count":"41","mean":812.5,"min":120000000.0,"max":2400000000.0,
                                     "percentile":[50,99],"value":[700000000.0,2100000000.0],
                                     "from_merged_histogram":false}}},
        "final":false}
 ```
-Distribution `min`/`max` are `uint64` nanoseconds and therefore strings; `mean` and `value[]` are
-doubles in nanoseconds. A distribution at time `t` describes the requests that **completed in the
+Distribution `count` is `uint64` and therefore a string; `mean`, `min`, `max` and `value[]` are
+doubles in nanoseconds, as the proto declares them. A distribution at time `t` describes the requests that **completed in the
 sample window ending at `t`**, one window per `1 / samples_per_sim_second` simulated seconds, so a chart
 of p99 is a chart of the recent tail, not a cumulative one. `count` says how many that was.
 
@@ -119,8 +127,11 @@ one, because an interpolated batch composition never existed.
 
 ## Leases and idle shutdown
 
-`lease_ns` is wall-clock. The server drops a subscription whose lease expired without renewal and ends
-its stream. A run with no live lease and no queued work for `IDLE_SHUTDOWN_SECONDS` (default 300)
+`lease_ns` is wall-clock, and so is `lease_expires_at_wall_ns`, which deliberately breaks the
+`_unix_ns` convention that everywhere else means a *simulated* instant. A client must not compare it to
+the browser's clock, which disagrees with the server's; it counts `lease_ns` down locally and treats the
+renew response's `expired` flag as the only authority. The server drops a subscription whose lease expired
+without renewal and ends its stream. A run with no live lease and no queued work for `IDLE_SHUTDOWN_SECONDS` (default 300)
 checkpoints and stops advancing, so a Cloud Run instance can be reaped; `GetRun` on such a run reports
 `STATE_PAUSED` with `error` empty. Reopening a subscription resumes it. These are `lease.rs` and
 `idle.rs` in this crate.
