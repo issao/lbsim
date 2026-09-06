@@ -99,6 +99,12 @@ impl OfferedLoad {
     }
 }
 
+/// Mean of the scenario's two-mode length mixture, written once so the referee's share of offered
+/// tokens and the envelope's input:output ratio are the same arithmetic.
+fn mixture_mean(short: f64, long: f64, long_probability: f64) -> f64 {
+    short * (1.0 - long_probability) + long * long_probability
+}
+
 /// Offered load of a scenario, sampled from the same `Workload::rate_at` the simulator drives
 /// arrivals with, so the referee and the engine cannot disagree about what was offered.
 pub fn offered_load(sc: &Scenario, rated_rps: f64) -> OfferedLoad {
@@ -248,8 +254,7 @@ pub fn score_run(r: &RunResult, cfg: &ScoreConfig) -> RunScore {
     // Offered output tokens per second from the mixture's own means. Retries are excluded, so a
     // scenario with retries can show a share above what its first attempts alone would explain.
     let sc = &r.scenario;
-    let o_mean = sc.output_mean * (1.0 - sc.long_probability)
-        + sc.long_output_mean * sc.long_probability;
+    let o_mean = mixture_mean(sc.output_mean, sc.long_output_mean, sc.long_probability);
     let offered_tokens_s = offered.mean_rps * o_mean;
     // NaN attainment means no requests were measured at all, which is a broken load rather than a
     // perfect policy, so it gates.
@@ -320,7 +325,7 @@ pub fn score_policy(policy: &str, runs: Vec<RunScore>, _cfg: &ScoreConfig) -> Po
         n += 1;
         sum += r.score;
         sum_goodput += r.goodput_tokens_s;
-        if worst.as_ref().map(|(s, _)| r.score < *s).unwrap_or(true) {
+        if worst.as_ref().map_or(true, |(s, _)| r.score < *s) {
             worst = Some((r.score, r.load.clone()));
         }
     }
@@ -389,19 +394,9 @@ pub fn measure_honest_capacity(
         let att = arena_attainment(&run, 0.0);
         curve.push((offered_load(&sc, f64::INFINITY).mean_rps, att, run.goodput_tokens_s()));
     }
-    let highest = curve
-        .iter()
-        .filter(|(_, a, _)| *a >= sla_cap)
-        .map(|(r, _, _)| *r)
-        .fold(None::<f64>, |acc, r| Some(acc.map_or(r, |a: f64| a.max(r))));
-    let mut monotone = None;
-    for (r, a, _) in &curve {
-        if *a >= sla_cap {
-            monotone = Some(*r);
-        } else {
-            break;
-        }
-    }
+    let passing = |(_, a, _): &&(f64, f64, f64)| *a >= sla_cap;
+    let highest = curve.iter().filter(passing).map(|(r, _, _)| *r).reduce(f64::max);
+    let monotone = curve.iter().take_while(passing).last().map(|(r, _, _)| *r);
     Ok(HonestCapacity {
         policy: policy.to_string(),
         sla_cap,
@@ -430,6 +425,10 @@ pub struct Bound {
     pub source: &'static str,
 }
 
+/// How to read the value a bound constrains off a scenario. `None` means the parameter is not in play
+/// for that scenario, as a load step's factor is not when there is no step.
+type Reader = fn(&Scenario) -> Option<f64>;
+
 #[derive(Clone, Debug)]
 pub struct Violation {
     pub key: String,
@@ -437,6 +436,12 @@ pub struct Violation {
     pub lo: f64,
     pub hi: f64,
     pub source: String,
+}
+
+impl Violation {
+    fn of(b: &Bound, value: f64) -> Violation {
+        Violation { key: b.key.to_string(), value, lo: b.lo, hi: b.hi, source: b.source.to_string() }
+    }
 }
 
 impl std::fmt::Display for Violation {
@@ -449,305 +454,277 @@ impl std::fmt::Display for Violation {
     }
 }
 
-/// The envelope. Every workload parameter the scenario format exposes, with the measured range it has
-/// to sit inside and where that range came from.
+/// Length of the load step, or `None` when the scenario has none.
+fn load_step_duration(sc: &Scenario) -> Option<f64> {
+    if sc.load_step_at_s < 0.0 {
+        return None;
+    }
+    let until = if sc.load_step_until_s < 0.0 { sc.duration_s } else { sc.load_step_until_s };
+    Some(until - sc.load_step_at_s)
+}
+
+/// Every workload parameter the scenario format exposes, with the measured range it has to sit inside
+/// and where that range came from. The reader sits beside its bound so the two cannot drift apart: a
+/// bound cannot be added without saying what it applies to.
 ///
 /// Section 2.2's standard: *"A load of a million-token prompts at ten thousand requests per second is
 /// not a clever attack, it is an invalid submission, and the referee should reject it without needing
 /// judgement."*
+static RULES: &[(Reader, Bound)] = &[
+    // -- arrivals ------------------------------------------------------------------------
+    (|sc| Some(sc.arrival_rps), Bound {
+        key: "arrival_rps",
+        lo: 0.1,
+        hi: 3_000.0,
+        // calibration.md section 10: measured fleet mean rates are 45.15 rps (Azure 2024 conv),
+        // 27.78 (Azure 2024 code) and 6.67 (Mooncake, 1 h). Section 2.3 measures diurnal
+        // peak/trough at 8.96x (Azure code, hour-of-day averaged), 33.1x worst single hour, and
+        // 34.8x (BurstGPT_3 conversation). 45 x 34.8 = 1,566, doubled for a fleet larger than any
+        // of the three traces, since section 9.2 records that no public source gives a fleet size.
+        source: "calibration.md 10 (mean rates 6.67-45.15) x 2.3 (diurnal 34.8x worst)",
+    }),
+    (|sc| load_step_duration(sc).map(|_| sc.load_step_factor), Bound {
+        key: "load_step_factor",
+        lo: 0.028,
+        hi: 34.8,
+        // Section 2.3, measured peak/trough by hour-of-day: 34.8x for BurstGPT_3 conversation,
+        // 33.1x between the single busiest and quietest hour of Azure 2024 code. The reciprocal
+        // is the same swing downward, which is a real shape: a trough is a load too.
+        source: "calibration.md 2.3 (peak/trough 34.8x measured; 1/34.8 for the trough)",
+    }),
+    (load_step_duration, Bound {
+        key: "load_step_duration_s",
+        lo: 1.0,
+        hi: 86_400.0,
+        // UNMEASURED, and calibration.md says so twice: section 2.4 "No source we found reports a
+        // burst-duration distribution for LLM serving traffic", offering only 10-60 s inferred
+        // from IDC saturation; section 9.1 gives burst duration a [GUESS] default of 30 s with a
+        // sweep range of 5-300 s. A step can also be diurnal rather than a burst, which is hours.
+        // So the bound is a day, wide on purpose.
+        source: "calibration.md 2.4/9.1 UNMEASURED [GUESS] 30 s, sweep 5-300 s; wide bound to a day",
+    }),
+    // -- lengths, calibration.md section 3.1 ---------------------------------------------
+    (|sc| Some(sc.prompt_mean), Bound {
+        key: "prompt_mean",
+        lo: 60.0,
+        hi: 130_000.0,
+        // Section 3.1 spans LMSYS-Chat-1M input mean 69.5 at the low end to TraceLab coding-agent
+        // ~127k (126k prefix + 857 append, medians) at the high end, with Azure conv 1,632,
+        // Azure code 2,511, Mooncake toolagent 8,596 and Mooncake conversation 12,035 between.
+        source: "calibration.md 3.1 (LMSYS 69.5 to TraceLab ~127k)",
+    }),
+    (|sc| Some(sc.long_prompt_mean), Bound {
+        key: "long_prompt_mean",
+        lo: 60.0,
+        hi: 1_000_000.0,
+        // Same table's tail rather than its means: Mooncake conversation input p99 = 85,401 and
+        // TraceLab reports a 918k-token prefix p99. One million is that p99 rounded up, and it is
+        // the point at which section 2.2's "million-token prompts" example becomes invalid.
+        source: "calibration.md 3.1 (Mooncake p99 85,401; TraceLab prefix p99 918k)",
+    }),
+    (|sc| Some(sc.prompt_cv), Bound {
+        key: "prompt_cv",
+        lo: 0.5,
+        hi: 3.0,
+        // Section 3.3 measures input CV at 0.850 (Azure 2024 code), 0.938 (Azure conv), 0.960-0.964
+        // (Azure 2023) and 2.785 (BurstGPT_3 all); section 10 records 1.28 for Mooncake toolagent.
+        // Rounded outward from 0.85-2.79.
+        source: "calibration.md 3.3 (input CV 0.85-2.79 measured)",
+    }),
+    (|sc| Some(sc.output_mean), Bound {
+        key: "output_mean",
+        lo: 8.0,
+        hi: 1_500.0,
+        // Low end: Azure 2024 code output mean 22.7 with p50 = 8 (section 3.1), and 8 is the floor
+        // an inline-completion service can plausibly sit at. High end: the largest measured mean is
+        // Mooncake conversation at 343; section 9.1 records that reasoning models add reasoning
+        // tokens at "on average 4x longer than answer lengths" with a 1x-10x sweep range, and that
+        // multiplier is itself a [GUESS], so 343 x 4 rounded up.
+        source: "calibration.md 3.1 (means 22.7-343) x 9.1 reasoning 4x [GUESS]",
+    }),
+    (|sc| Some(sc.long_output_mean), Bound {
+        key: "long_output_mean",
+        lo: 8.0,
+        hi: 7_000.0,
+        // Section 3.1 output p99s: 694 (Azure conv), 898 (Mooncake toolagent), 1,067 (BurstGPT
+        // conv), 6,571 (TraceLab Claude Code). Rounded up from the largest measured p99.
+        source: "calibration.md 3.1 (output p99 up to 6,571, TraceLab)",
+    }),
+    (|sc| Some(sc.output_cv), Bound {
+        key: "output_cv",
+        lo: 0.7,
+        hi: 3.4,
+        // Section 3.4's table is exactly this range, measured end to end: 0.73 (Mooncake
+        // conversation) to 3.30 (Azure 2024 code). The section's own summary line reads
+        // "Range: 0.7 to 3.3".
+        source: "calibration.md 3.4 (output CV 0.73-3.30 measured, stated as 0.7-3.3)",
+    }),
+    (|sc| Some(sc.long_probability), Bound {
+        key: "long_probability",
+        lo: 0.0,
+        hi: 0.76,
+        // WEAKLY SOURCED. The engine's two-mode mixture is not a quantity calibration.md measures;
+        // section 3.3 establishes that input length is multi-modal ("consistent with a mixture of
+        // distinct application prompt templates") without giving mode weights. The nearest measured
+        // proxy is section 4.2's continuation fraction, whose endpoints are measured (3.3% fleet-wide
+        // to 76.1% inside chat-UI traffic) with a [GUESS] fleet default of 0.25 in section 9.1.
+        source: "calibration.md 4.2 continuation fraction 0.033-0.761 as the nearest measured proxy; mode weight itself UNMEASURED",
+    }),
+    // -- client behaviour, calibration.md section 8 --------------------------------------
+    (|sc| Some(sc.client_timeout_s), Bound {
+        key: "client_timeout_s",
+        lo: 1.0,
+        hi: 600.0,
+        // Section 8.1, read from SDK source: DEFAULT_TIMEOUT is 600 s in both openai-python and
+        // anthropic-sdk-python, connect timeout 5 s. Note the section's other finding, which this
+        // bound cannot express: three of the most widely deployed configurations have *no* timeout
+        // at all, and "a simulator should model 'client waits forever' as a real state". The
+        // scenario format has no way to say infinity, so that regime is outside the envelope
+        // because it is outside the engine.
+        source: "calibration.md 8.1 (SDK DEFAULT_TIMEOUT 600 s, connect 5 s)",
+    }),
+    (|sc| Some(sc.max_attempts as f64), Bound {
+        key: "max_attempts",
+        lo: 1.0,
+        hi: 18.0,
+        // Section 8.1: DEFAULT_MAX_RETRIES = 2, so 3 attempts by default; several clients default
+        // to 0 retries, so 1 attempt is the floor. Section 8.2 documents the layering that sets
+        // the ceiling: a tenacity stop_after_attempt(6) wrapper over the SDK's 2 is "up to 18
+        // requests per logical call", which Azure's own quota documentation warns about.
+        source: "calibration.md 8.1/8.2 (SDK 3 attempts; documented layering up to 18)",
+    }),
+    (|sc| Some(sc.retry_backoff_s), Bound {
+        key: "retry_backoff_s",
+        lo: 0.375,
+        hi: 8.0,
+        // Section 8.2, from openai-python _calculate_retry_timeout:
+        // sleep = min(0.5 * 2^attempt, 8.0) * (1 - 0.25 * random()). So the smallest possible sleep
+        // is 0.5 x 0.75 = 0.375 s and the largest is the 8.0 s cap.
+        source: "calibration.md 8.2 (min(0.5*2^n, 8.0)*(1-0.25*rand) => 0.375-8.0 s)",
+    }),
+    (|sc| Some(sc.retry_budget_fraction), Bound {
+        key: "retry_budget_fraction",
+        lo: 0.0,
+        hi: 1.0,
+        // Section 9.1: retry-driven share of offered load is not published. [GUESS] default 3% at
+        // steady state, "up to 40% during an incident", sweep range 0-100%. The bound is the sweep
+        // range, which is the whole interval.
+        source: "calibration.md 9.1 UNMEASURED [GUESS] 3%, incident 40%, sweep 0-100%",
+    }),
+    // -- telemetry, calibration.md section 9.2 -------------------------------------------
+    (|sc| Some(sc.telemetry_interval_ms), Bound {
+        key: "telemetry_interval_ms",
+        lo: 100.0,
+        hi: 30_000.0,
+        // Section 9.2: router metric staleness in production is not published. [GUESS] 5 s scrape
+        // interval, sweep 1-30 s, with the primer quoted as 1-15 s. The lower bound is below
+        // anything measured and is there because the engine allows it and the herding study needs
+        // the fast end.
+        source: "calibration.md 9.2 UNMEASURED [GUESS] 5 s, sweep 1-30 s",
+    }),
+    (|sc| Some(sc.telemetry_delay_ms), Bound {
+        key: "telemetry_delay_ms",
+        lo: 0.0,
+        hi: 30_000.0,
+        // UNMEASURED anywhere in calibration.md: it records scrape *interval* as a guess and says
+        // nothing about delivery delay. Bounded by the same 30 s sweep ceiling for want of anything
+        // better, and flagged.
+        source: "calibration.md 9.2 UNMEASURED (no delivery-delay figure exists); bounded by the 30 s staleness sweep",
+    }),
+    // -- fleet shape --------------------------------------------------------------------
+    (|sc| Some(sc.replicas as f64), Bound {
+        key: "replicas",
+        lo: 1.0,
+        hi: 2_000.0,
+        // Section 9.2 is explicit: "Not one public source gives a fleet size, a replica count, an
+        // SLO target, a queue-depth distribution, or a KV-utilization distribution." The closest
+        // published figure is DeepSeek's 226.75 average H800 nodes over one 24 h snapshot, so the
+        // bound is an order of magnitude above that and is a guard against nonsense rather than a
+        // calibrated range.
+        source: "calibration.md 9.2 UNMEASURED (DeepSeek 226.75 nodes is the only published figure)",
+    }),
+    (|sc| Some(sc.max_queue as f64), Bound {
+        key: "max_queue",
+        lo: 1.0,
+        hi: 100_000.0,
+        // Section 9.2, admission control at overload: [GUESS] "drop at queue depth > 4x service
+        // capacity", no range given. Wide bound, flagged.
+        source: "calibration.md 9.2 UNMEASURED [GUESS] 4x service capacity",
+    }),
+    // -- SLO definition -----------------------------------------------------------------
+    // These are not workload parameters, but they decide what goodput *means*, so a load
+    // generator that could move them could win by redefining the target.
+    (|sc| Some(sc.ttft_slo_ms), Bound {
+        key: "ttft_slo_ms",
+        lo: 100.0,
+        hi: 600_000.0,
+        source: "calibration.md 9.1 SLO class mix: 'Nothing public at all. Not one trace carries an SLO or priority label.' Ceiling is the 600 s SDK timeout, 8.1",
+    }),
+    (|sc| Some(sc.itl_slo_ms), Bound {
+        key: "itl_slo_ms",
+        lo: 10.0,
+        hi: 1_000.0,
+        // No published ITL SLO either. The floor is below the 10.25 ms measured batch-1 decode for
+        // a 70B on 8xH100 (section 6.5), so an SLO under it would be unmeetable by construction;
+        // the ceiling is a second per token, past which nothing is interactive.
+        source: "calibration.md 9.1 UNMEASURED; floor from 6.5 (batch-1 decode 10.25 ms)",
+    }),
+    (|sc| Some(sc.e2e_slo_s), Bound {
+        key: "e2e_slo_s",
+        lo: 1.0,
+        hi: 600.0,
+        source: "calibration.md 9.1 UNMEASURED; ceiling is the 600 s SDK timeout, 8.1",
+    }),
+];
+
+/// The envelope: the bounds of [`RULES`], in checking order.
 pub fn envelope() -> Vec<Bound> {
-    vec![
-        // -- arrivals ------------------------------------------------------------------------
-        Bound {
-            key: "arrival_rps",
-            lo: 0.1,
-            hi: 3_000.0,
-            // calibration.md section 10: measured fleet mean rates are 45.15 rps (Azure 2024 conv),
-            // 27.78 (Azure 2024 code) and 6.67 (Mooncake, 1 h). Section 2.3 measures diurnal
-            // peak/trough at 8.96x (Azure code, hour-of-day averaged), 33.1x worst single hour, and
-            // 34.8x (BurstGPT_3 conversation). 45 x 34.8 = 1,566, doubled for a fleet larger than any
-            // of the three traces, since section 9.2 records that no public source gives a fleet size.
-            source: "calibration.md 10 (mean rates 6.67-45.15) x 2.3 (diurnal 34.8x worst)",
-        },
-        Bound {
-            key: "load_step_factor",
-            lo: 0.028,
-            hi: 34.8,
-            // Section 2.3, measured peak/trough by hour-of-day: 34.8x for BurstGPT_3 conversation,
-            // 33.1x between the single busiest and quietest hour of Azure 2024 code. The reciprocal
-            // is the same swing downward, which is a real shape: a trough is a load too.
-            source: "calibration.md 2.3 (peak/trough 34.8x measured; 1/34.8 for the trough)",
-        },
-        Bound {
-            key: "load_step_duration_s",
-            lo: 1.0,
-            hi: 86_400.0,
-            // UNMEASURED, and calibration.md says so twice: section 2.4 "No source we found reports a
-            // burst-duration distribution for LLM serving traffic", offering only 10-60 s inferred
-            // from IDC saturation; section 9.1 gives burst duration a [GUESS] default of 30 s with a
-            // sweep range of 5-300 s. A step can also be diurnal rather than a burst, which is hours.
-            // So the bound is a day, wide on purpose.
-            source: "calibration.md 2.4/9.1 UNMEASURED [GUESS] 30 s, sweep 5-300 s; wide bound to a day",
-        },
-        // -- lengths, calibration.md section 3.1 ---------------------------------------------
-        Bound {
-            key: "prompt_mean",
-            lo: 60.0,
-            hi: 130_000.0,
-            // Section 3.1 spans LMSYS-Chat-1M input mean 69.5 at the low end to TraceLab coding-agent
-            // ~127k (126k prefix + 857 append, medians) at the high end, with Azure conv 1,632,
-            // Azure code 2,511, Mooncake toolagent 8,596 and Mooncake conversation 12,035 between.
-            source: "calibration.md 3.1 (LMSYS 69.5 to TraceLab ~127k)",
-        },
-        Bound {
-            key: "long_prompt_mean",
-            lo: 60.0,
-            hi: 1_000_000.0,
-            // Same table's tail rather than its means: Mooncake conversation input p99 = 85,401 and
-            // TraceLab reports a 918k-token prefix p99. One million is that p99 rounded up, and it is
-            // the point at which section 2.2's "million-token prompts" example becomes invalid.
-            source: "calibration.md 3.1 (Mooncake p99 85,401; TraceLab prefix p99 918k)",
-        },
-        Bound {
-            key: "prompt_cv",
-            lo: 0.5,
-            hi: 3.0,
-            // Section 3.3 measures input CV at 0.850 (Azure 2024 code), 0.938 (Azure conv), 0.960-0.964
-            // (Azure 2023) and 2.785 (BurstGPT_3 all); section 10 records 1.28 for Mooncake toolagent.
-            // Rounded outward from 0.85-2.79.
-            source: "calibration.md 3.3 (input CV 0.85-2.79 measured)",
-        },
-        Bound {
-            key: "output_mean",
-            lo: 8.0,
-            hi: 1_500.0,
-            // Low end: Azure 2024 code output mean 22.7 with p50 = 8 (section 3.1), and 8 is the floor
-            // an inline-completion service can plausibly sit at. High end: the largest measured mean is
-            // Mooncake conversation at 343; section 9.1 records that reasoning models add reasoning
-            // tokens at "on average 4x longer than answer lengths" with a 1x-10x sweep range, and that
-            // multiplier is itself a [GUESS], so 343 x 4 rounded up.
-            source: "calibration.md 3.1 (means 22.7-343) x 9.1 reasoning 4x [GUESS]",
-        },
-        Bound {
-            key: "long_output_mean",
-            lo: 8.0,
-            hi: 7_000.0,
-            // Section 3.1 output p99s: 694 (Azure conv), 898 (Mooncake toolagent), 1,067 (BurstGPT
-            // conv), 6,571 (TraceLab Claude Code). Rounded up from the largest measured p99.
-            source: "calibration.md 3.1 (output p99 up to 6,571, TraceLab)",
-        },
-        Bound {
-            key: "output_cv",
-            lo: 0.7,
-            hi: 3.4,
-            // Section 3.4's table is exactly this range, measured end to end: 0.73 (Mooncake
-            // conversation) to 3.30 (Azure 2024 code). The section's own summary line reads
-            // "Range: 0.7 to 3.3".
-            source: "calibration.md 3.4 (output CV 0.73-3.30 measured, stated as 0.7-3.3)",
-        },
-        Bound {
-            key: "long_probability",
-            lo: 0.0,
-            hi: 0.76,
-            // WEAKLY SOURCED. The engine's two-mode mixture is not a quantity calibration.md measures;
-            // section 3.3 establishes that input length is multi-modal ("consistent with a mixture of
-            // distinct application prompt templates") without giving mode weights. The nearest measured
-            // proxy is section 4.2's continuation fraction, whose endpoints are measured (3.3% fleet-wide
-            // to 76.1% inside chat-UI traffic) with a [GUESS] fleet default of 0.25 in section 9.1.
-            source: "calibration.md 4.2 continuation fraction 0.033-0.761 as the nearest measured proxy; mode weight itself UNMEASURED",
-        },
-        // -- client behaviour, calibration.md section 8 --------------------------------------
-        Bound {
-            key: "client_timeout_s",
-            lo: 1.0,
-            hi: 600.0,
-            // Section 8.1, read from SDK source: DEFAULT_TIMEOUT is 600 s in both openai-python and
-            // anthropic-sdk-python, connect timeout 5 s. Note the section's other finding, which this
-            // bound cannot express: three of the most widely deployed configurations have *no* timeout
-            // at all, and "a simulator should model 'client waits forever' as a real state". The
-            // scenario format has no way to say infinity, so that regime is outside the envelope
-            // because it is outside the engine.
-            source: "calibration.md 8.1 (SDK DEFAULT_TIMEOUT 600 s, connect 5 s)",
-        },
-        Bound {
-            key: "max_attempts",
-            lo: 1.0,
-            hi: 18.0,
-            // Section 8.1: DEFAULT_MAX_RETRIES = 2, so 3 attempts by default; several clients default
-            // to 0 retries, so 1 attempt is the floor. Section 8.2 documents the layering that sets
-            // the ceiling: a tenacity stop_after_attempt(6) wrapper over the SDK's 2 is "up to 18
-            // requests per logical call", which Azure's own quota documentation warns about.
-            source: "calibration.md 8.1/8.2 (SDK 3 attempts; documented layering up to 18)",
-        },
-        Bound {
-            key: "retry_backoff_s",
-            lo: 0.375,
-            hi: 8.0,
-            // Section 8.2, from openai-python _calculate_retry_timeout:
-            // sleep = min(0.5 * 2^attempt, 8.0) * (1 - 0.25 * random()). So the smallest possible sleep
-            // is 0.5 x 0.75 = 0.375 s and the largest is the 8.0 s cap.
-            source: "calibration.md 8.2 (min(0.5*2^n, 8.0)*(1-0.25*rand) => 0.375-8.0 s)",
-        },
-        Bound {
-            key: "retry_budget_fraction",
-            lo: 0.0,
-            hi: 1.0,
-            // Section 9.1: retry-driven share of offered load is not published. [GUESS] default 3% at
-            // steady state, "up to 40% during an incident", sweep range 0-100%. The bound is the sweep
-            // range, which is the whole interval.
-            source: "calibration.md 9.1 UNMEASURED [GUESS] 3%, incident 40%, sweep 0-100%",
-        },
-        // -- telemetry, calibration.md section 9.2 -------------------------------------------
-        Bound {
-            key: "telemetry_interval_ms",
-            lo: 100.0,
-            hi: 30_000.0,
-            // Section 9.2: router metric staleness in production is not published. [GUESS] 5 s scrape
-            // interval, sweep 1-30 s, with the primer quoted as 1-15 s. The lower bound is below
-            // anything measured and is there because the engine allows it and the herding study needs
-            // the fast end.
-            source: "calibration.md 9.2 UNMEASURED [GUESS] 5 s, sweep 1-30 s",
-        },
-        Bound {
-            key: "telemetry_delay_ms",
-            lo: 0.0,
-            hi: 30_000.0,
-            // UNMEASURED anywhere in calibration.md: it records scrape *interval* as a guess and says
-            // nothing about delivery delay. Bounded by the same 30 s sweep ceiling for want of anything
-            // better, and flagged.
-            source: "calibration.md 9.2 UNMEASURED (no delivery-delay figure exists); bounded by the 30 s staleness sweep",
-        },
-        // -- fleet shape --------------------------------------------------------------------
-        Bound {
-            key: "replicas",
-            lo: 1.0,
-            hi: 2_000.0,
-            // Section 9.2 is explicit: "Not one public source gives a fleet size, a replica count, an
-            // SLO target, a queue-depth distribution, or a KV-utilization distribution." The closest
-            // published figure is DeepSeek's 226.75 average H800 nodes over one 24 h snapshot, so the
-            // bound is an order of magnitude above that and is a guard against nonsense rather than a
-            // calibrated range.
-            source: "calibration.md 9.2 UNMEASURED (DeepSeek 226.75 nodes is the only published figure)",
-        },
-        Bound {
-            key: "max_queue",
-            lo: 1.0,
-            hi: 100_000.0,
-            // Section 9.2, admission control at overload: [GUESS] "drop at queue depth > 4x service
-            // capacity", no range given. Wide bound, flagged.
-            source: "calibration.md 9.2 UNMEASURED [GUESS] 4x service capacity",
-        },
-        // -- SLO definition -----------------------------------------------------------------
-        // These are not workload parameters, but they decide what goodput *means*, so a load
-        // generator that could move them could win by redefining the target.
-        Bound {
-            key: "ttft_slo_ms",
-            lo: 100.0,
-            hi: 600_000.0,
-            source: "calibration.md 9.1 SLO class mix: 'Nothing public at all. Not one trace carries an SLO or priority label.' Ceiling is the 600 s SDK timeout, 8.1",
-        },
-        Bound {
-            key: "itl_slo_ms",
-            lo: 10.0,
-            hi: 1_000.0,
-            // No published ITL SLO either. The floor is below the 10.25 ms measured batch-1 decode for
-            // a 70B on 8xH100 (section 6.5), so an SLO under it would be unmeetable by construction;
-            // the ceiling is a second per token, past which nothing is interactive.
-            source: "calibration.md 9.1 UNMEASURED; floor from 6.5 (batch-1 decode 10.25 ms)",
-        },
-        Bound {
-            key: "e2e_slo_s",
-            lo: 1.0,
-            hi: 600.0,
-            source: "calibration.md 9.1 UNMEASURED; ceiling is the 600 s SDK timeout, 8.1",
-        },
-    ]
+    RULES.iter().map(|(_, b)| *b).collect()
+}
+
+/// Bounds outside the per-parameter table. Per-parameter bounds cannot catch a relation, and the
+/// second one is the highest-leverage workload parameter in calibration.md.
+const LONG_MODE_IS_LONGER: Bound = Bound {
+    key: "long_prompt_mean/prompt_mean",
+    lo: 1.0,
+    hi: f64::INFINITY,
+    source: "structural: the long mode of the mixture must be the longer one, or the label is a lie",
+};
+// calibration.md 3.2 orders the measured input:output ratios from LMSYS arena chat at 0.32:1 to
+// Azure 2024 code at 111:1, with the Mooncake L-Eval long-context QA benchmark in section 3.1 at
+// 264:1 as the extreme. "It is the highest-leverage workload parameter in the whole simulator and
+// it must be a swept axis, never a constant" — so it is checked, not fixed.
+const INPUT_OUTPUT_RATIO: Bound = Bound {
+    key: "input_output_ratio_of_means",
+    lo: 0.32,
+    hi: 264.0,
+    source: "calibration.md 3.2 (LMSYS 0.32:1 to Azure code 111:1) and 3.1 (L-Eval 264:1)",
+};
+
+fn check(v: &mut Vec<Violation>, b: &Bound, value: f64) {
+    if !(value >= b.lo && value <= b.hi) {
+        v.push(Violation::of(b, value));
+    }
 }
 
 /// Check a proposed scenario against the envelope. Returns every violation with the offending value,
 /// because a load generator that gets told only "invalid" learns nothing and will resubmit.
 pub fn check_realism(sc: &Scenario) -> Vec<Violation> {
     let mut v = Vec::new();
-    let step_duration = if sc.load_step_at_s < 0.0 {
-        f64::NAN
-    } else {
-        let until = if sc.load_step_until_s < 0.0 { sc.duration_s } else { sc.load_step_until_s };
-        until - sc.load_step_at_s
-    };
-    for b in envelope() {
-        let value = match b.key {
-            "arrival_rps" => sc.arrival_rps,
-            "load_step_factor" => {
-                if sc.load_step_at_s < 0.0 {
-                    continue;
-                }
-                sc.load_step_factor
-            }
-            "load_step_duration_s" => {
-                if step_duration.is_nan() {
-                    continue;
-                }
-                step_duration
-            }
-            "prompt_mean" => sc.prompt_mean,
-            "long_prompt_mean" => sc.long_prompt_mean,
-            "prompt_cv" => sc.prompt_cv,
-            "output_mean" => sc.output_mean,
-            "long_output_mean" => sc.long_output_mean,
-            "output_cv" => sc.output_cv,
-            "long_probability" => sc.long_probability,
-            "client_timeout_s" => sc.client_timeout_s,
-            "max_attempts" => sc.max_attempts as f64,
-            "retry_backoff_s" => sc.retry_backoff_s,
-            "retry_budget_fraction" => sc.retry_budget_fraction,
-            "telemetry_interval_ms" => sc.telemetry_interval_ms,
-            "telemetry_delay_ms" => sc.telemetry_delay_ms,
-            "replicas" => sc.replicas as f64,
-            "max_queue" => sc.max_queue as f64,
-            "ttft_slo_ms" => sc.ttft_slo_ms,
-            "itl_slo_ms" => sc.itl_slo_ms,
-            "e2e_slo_s" => sc.e2e_slo_s,
-            _ => continue,
-        };
-        if !(value >= b.lo && value <= b.hi) {
-            v.push(Violation {
-                key: b.key.to_string(),
-                value,
-                lo: b.lo,
-                hi: b.hi,
-                source: b.source.to_string(),
-            });
+    for (read, b) in RULES {
+        if let Some(value) = read(sc) {
+            check(&mut v, b, value);
         }
     }
-
-    // Relational checks. Per-parameter bounds cannot catch these, and the second one is the
-    // highest-leverage workload parameter in calibration.md.
+    // The structural rule is only meaningful once the long mode exists, and it is stated as a
+    // comparison rather than a ratio so a degenerate prompt mean cannot turn it into a NaN check.
     if sc.long_probability > 0.0 && sc.long_prompt_mean < sc.prompt_mean {
-        v.push(Violation {
-            key: "long_prompt_mean/prompt_mean".into(),
-            value: sc.long_prompt_mean / sc.prompt_mean,
-            lo: 1.0,
-            hi: f64::INFINITY,
-            source: "structural: the long mode of the mixture must be the longer one, or the label is a lie".into(),
-        });
+        v.push(Violation::of(&LONG_MODE_IS_LONGER, sc.long_prompt_mean / sc.prompt_mean));
     }
-    let p_mean = sc.prompt_mean * (1.0 - sc.long_probability) + sc.long_prompt_mean * sc.long_probability;
-    let o_mean = sc.output_mean * (1.0 - sc.long_probability) + sc.long_output_mean * sc.long_probability;
+    let p_mean = mixture_mean(sc.prompt_mean, sc.long_prompt_mean, sc.long_probability);
+    let o_mean = mixture_mean(sc.output_mean, sc.long_output_mean, sc.long_probability);
     if o_mean > 0.0 {
-        let ratio = p_mean / o_mean;
-        // calibration.md 3.2 orders the measured input:output ratios from LMSYS arena chat at 0.32:1
-        // to Azure 2024 code at 111:1, with the Mooncake L-Eval long-context QA benchmark in section
-        // 3.1 at 264:1 as the extreme. "It is the highest-leverage workload parameter in the whole
-        // simulator and it must be a swept axis, never a constant" — so it is checked, not fixed.
-        if !(0.32..=264.0).contains(&ratio) {
-            v.push(Violation {
-                key: "input_output_ratio_of_means".into(),
-                value: ratio,
-                lo: 0.32,
-                hi: 264.0,
-                source: "calibration.md 3.2 (LMSYS 0.32:1 to Azure code 111:1) and 3.1 (L-Eval 264:1)".into(),
-            });
-        }
+        check(&mut v, &INPUT_OUTPUT_RATIO, p_mean / o_mean);
     }
     v
 }
@@ -794,10 +771,28 @@ pub fn holdout_suite(dir: &str) -> Vec<String> {
         .collect()
 }
 
+/// The suite as seen from `cargo test`, which runs in the crate directory rather than the root.
+#[cfg(test)]
+fn holdout() -> Vec<String> {
+    holdout_suite(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."))
+}
+
+/// Read and parse one scenario file, naming the file in any error, since a round reads several and
+/// "unexpected key" alone does not say which.
+fn load_scenario(path: &str) -> Result<Scenario, String> {
+    let text = std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?;
+    Scenario::parse(&text).map_err(|e| format!("{path}: {e}"))
+}
+
 /// The routing policies the engine supports today. `Routing::parse` is the authority; this list is
 /// what a round enumerates when the caller does not name policies.
 pub const POLICIES: &[&str] =
     &["round_robin", "random", "least_requests", "least_queue_tokens", "p2c"];
+
+/// [`POLICIES`] in the owned form [`run_round`] takes.
+fn policy_names() -> Vec<String> {
+    POLICIES.iter().map(|s| s.to_string()).collect()
+}
 
 // ---------------------------------------------------------------------------------------------
 // 6. A round, docs/arena.md section 4
@@ -874,12 +869,11 @@ pub fn run_round(
     scenario_paths: &[String],
     cfg: &RoundConfig,
 ) -> Result<RoundResult, String> {
-    let mut loads: Vec<(String, Scenario)> = Vec::new();
+    let mut loads: Vec<Scenario> = Vec::new();
     let mut envelope_violations = Vec::new();
     let mut warmup_violations = Vec::new();
     for path in scenario_paths {
-        let text = std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?;
-        let mut sc = Scenario::parse(&text).map_err(|e| format!("{path}: {e}"))?;
+        let mut sc = load_scenario(path)?;
         if sc.name == "unnamed" {
             sc.name = path.clone();
         }
@@ -896,7 +890,7 @@ pub fn run_round(
         if let Some(w) = check_warmup(&sc, cfg.min_warmup_s) {
             warmup_violations.push(w);
         }
-        loads.push((sc.name.clone(), sc));
+        loads.push(sc);
     }
 
     let mut cells: Vec<Cell> = Vec::new();
@@ -916,29 +910,25 @@ pub fn run_round(
             count_failures_as_out_of_slo: true,
         };
         let mut scored: Vec<RunScore> = Vec::new();
-        for (name, base) in &loads {
+        for base in &loads {
             let mut sc = base.clone();
             sc.routing = policy.clone();
             let result = sim::run(&sc)?;
             runs += 1;
             if cfg.replay_check && determinism_checked.is_none() {
-                let again = sim::run(&sc)?;
+                determinism_checked = Some(same_run(&result, &sim::run(&sc)?));
                 runs += 1;
-                determinism_checked = Some(
-                    again.fingerprint == result.fingerprint
-                        && again.records.len() == result.records.len(),
-                );
             }
             let mut rs = score_run(&result, &scfg);
             // The label the engine reports includes p2c's d, which is what a reader wants, but the
             // matrix is indexed by the name the caller passed.
             rs.policy = policy.clone();
-            rs.load = name.clone();
+            rs.load = base.name.clone();
             scored.push(rs);
         }
-        for rs in &scored {
-            cells.push(Cell { policy: policy.clone(), load: rs.load.clone(), run: rs.clone() });
-        }
+        cells.extend(
+            scored.iter().map(|rs| Cell { policy: policy.clone(), load: rs.load.clone(), run: rs.clone() }),
+        );
         ranking.push(score_policy(policy, scored, &scfg));
     }
 
@@ -952,32 +942,17 @@ pub fn run_round(
                 p.mean_goodput.unwrap_or(f64::NEG_INFINITY),
             )
         };
-        let (a1, a2, a3) = key(a);
-        let (b1, b2, b3) = key(b);
-        b1.partial_cmp(&a1)
-            .unwrap()
-            .then(b2.partial_cmp(&a2).unwrap())
-            .then(b3.partial_cmp(&a3).unwrap())
-            .then(a.policy.cmp(&b.policy))
+        key(b).partial_cmp(&key(a)).unwrap().then_with(|| a.policy.cmp(&b.policy))
     });
 
     // Load difficulty against the best policy only.
     let mut load_difficulty = Vec::new();
     if let Some(best) = ranking.first() {
-        let peak = best
-            .runs
-            .iter()
-            .map(|r| r.goodput_tokens_s)
-            .fold(0.0f64, f64::max);
-        for (name, _) in &loads {
-            let g = best
-                .runs
-                .iter()
-                .find(|r| &r.load == name)
-                .map(|r| r.goodput_tokens_s)
-                .unwrap_or(0.0);
+        let peak = best.runs.iter().map(|r| r.goodput_tokens_s).fold(0.0f64, f64::max);
+        for sc in &loads {
+            let g = best.runs.iter().find(|r| r.load == sc.name).map_or(0.0, |r| r.goodput_tokens_s);
             let d = if peak > 0.0 { 1.0 - g / peak } else { 0.0 };
-            load_difficulty.push((name.clone(), d));
+            load_difficulty.push((sc.name.clone(), d));
         }
         load_difficulty.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap().then(a.0.cmp(&b.0)));
     }
@@ -985,7 +960,7 @@ pub fn run_round(
     Ok(RoundResult {
         sla_cap: cfg.sla_cap,
         policies: policies.to_vec(),
-        loads: loads.iter().map(|(n, _)| n.clone()).collect(),
+        loads: loads.iter().map(|sc| sc.name.clone()).collect(),
         cells,
         ranking,
         load_difficulty,
@@ -998,9 +973,13 @@ pub fn run_round(
 
 /// Replay one scenario twice and compare fingerprints. Section 2.3's determinism row.
 pub fn replay_is_deterministic(sc: &Scenario) -> Result<bool, String> {
-    let a = sim::run(sc)?;
-    let b = sim::run(sc)?;
-    Ok(a.fingerprint == b.fingerprint && a.records.len() == b.records.len())
+    Ok(same_run(&sim::run(sc)?, &sim::run(sc)?))
+}
+
+/// The fingerprint folds every event, so agreeing on it and on the record count is agreeing on the
+/// whole run.
+fn same_run(a: &RunResult, b: &RunResult) -> bool {
+    a.fingerprint == b.fingerprint && a.records.len() == b.records.len()
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1021,11 +1000,9 @@ pub fn round_text(r: &RoundResult) -> String {
     );
     let _ = writeln!(s);
 
-    let w = 22;
-    let short = |name: &str| -> String {
-        let n: String = name.chars().take(w - 2).collect();
-        n
-    };
+    // Names are cut to one column's width so a long scenario name cannot push a row out of the grid.
+    let short = |name: &str| -> String { name.chars().take(20).collect() };
+    let opt = |v: Option<f64>| v.map_or_else(|| "none".to_string(), |v| format!("{v:.0}"));
 
     for (title, get) in [
         (
@@ -1106,9 +1083,9 @@ pub fn round_text(r: &RoundResult) -> String {
             "{:<4}{:<22}{:>12}{:>12}{:>14}{:>10}{:>6}{:>10}  {}",
             i + 1,
             short(&p.policy),
-            p.score.map(|v| format!("{v:.0}")).unwrap_or_else(|| "none".into()),
-            p.mean_score.map(|v| format!("{v:.0}")).unwrap_or_else(|| "none".into()),
-            p.mean_goodput.map(|v| format!("{v:.0}")).unwrap_or_else(|| "none".into()),
+            opt(p.score),
+            opt(p.mean_score),
+            opt(p.mean_goodput),
             p.loads_in_scope,
             p.loads_out_of_scope,
             p.gate_breaches,
@@ -1164,19 +1141,17 @@ pub fn honest_capacity_text(h: &HonestCapacity) -> String {
     for (rate, att, good) in &h.curve {
         let _ = writeln!(s, "{rate:>12.1}{att:>14.4}{good:>16.0}");
     }
+    let rps = |v: Option<f64>| v.map_or_else(|| "none".to_string(), |v| format!("{v:.1} rps"));
     let _ = writeln!(
         s,
         "  highest passing: {}   monotone frontier: {}",
-        h.highest_passing_rps.map(|v| format!("{v:.1} rps")).unwrap_or_else(|| "none".into()),
-        h.monotone_rps.map(|v| format!("{v:.1} rps")).unwrap_or_else(|| "none".into())
+        rps(h.highest_passing_rps),
+        rps(h.monotone_rps)
     );
     s
 }
 
-/// Entry point for a future `sim-run arena` subcommand.
-///
-/// Deliberately not wired into `report::cli`: that file belongs to another change in flight. Wiring is
-/// one match arm — `"arena" => lbsim::arena::arena_main(rest)`.
+/// The `sim-run arena` subcommand.
 ///
 /// ```text
 /// sim-run arena [--cap 0.999] [--policies a,b,c] [--capacity-sweep RATES] [scenario.txt ...]
@@ -1187,7 +1162,7 @@ pub fn honest_capacity_text(h: &HonestCapacity) -> String {
 /// running a round.
 pub fn arena_main(args: Vec<String>) -> Result<(), String> {
     let mut cap = DEFAULT_SLA_CAP;
-    let mut policies: Vec<String> = POLICIES.iter().map(|s| s.to_string()).collect();
+    let mut policies = policy_names();
     let mut paths: Vec<String> = Vec::new();
     let mut sweep: Vec<f64> = Vec::new();
     let mut i = 0;
@@ -1250,18 +1225,10 @@ pub fn arena_main(args: Vec<String>) -> Result<(), String> {
 mod tests {
     use super::*;
 
-    fn holdout() -> Vec<String> {
-        holdout_suite(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."))
-    }
-    fn policies() -> Vec<String> {
-        POLICIES.iter().map(|s| s.to_string()).collect()
-    }
-
     #[test]
     fn holdout_suite_parses_and_is_realistic() {
         for p in holdout() {
-            let text = std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("{p}: {e}"));
-            let sc = Scenario::parse(&text).unwrap_or_else(|e| panic!("{p}: {e}"));
+            let sc = load_scenario(&p).unwrap();
             let v = check_realism(&sc);
             assert!(v.is_empty(), "{p}: {:?}", v.iter().map(|x| x.to_string()).collect::<Vec<_>>());
         }
@@ -1283,8 +1250,7 @@ mod tests {
     #[test]
     fn shedding_does_not_buy_attainment() {
         // The property the arena's own attainment definition exists to enforce.
-        let text = std::fs::read_to_string(&holdout()[2]).unwrap();
-        let mut sc = Scenario::parse(&text).unwrap();
+        let mut sc = load_scenario(&holdout()[2]).unwrap();
         sc.routing = "round_robin".into();
         let r = sim::run(&sc).unwrap();
         assert!(
@@ -1299,7 +1265,7 @@ mod tests {
     fn arena_round_over_the_holdout_suite() {
         for cap in [0.999, 0.99, 0.95] {
             let cfg = RoundConfig { sla_cap: cap, ..Default::default() };
-            let round = run_round(&policies(), &holdout(), &cfg).unwrap();
+            let round = run_round(&policy_names(), &holdout(), &cfg).unwrap();
             println!("{}", round_text(&round));
             assert_eq!(round.determinism_checked, Some(true));
         }
@@ -1315,10 +1281,9 @@ mod tests {
             (6, &[18.0, 35.0, 53.0, 71.0, 106.0, 130.0, 159.0, 190.0, 212.0, 265.0, 318.0]),
         ];
         for (idx, rates) in cases {
-            let text = std::fs::read_to_string(&holdout()[idx]).unwrap();
-            let base = Scenario::parse(&text).unwrap();
+            let base = load_scenario(&holdout()[idx]).unwrap();
             for cap in [0.999, 0.99, 0.95] {
-                for p in policies() {
+                for p in policy_names() {
                     let h = measure_honest_capacity(&base, &p, rates, cap).unwrap();
                     println!("{}", honest_capacity_text(&h));
                 }
@@ -1337,9 +1302,8 @@ mod suite_anchoring {
     #[test]
     #[ignore]
     fn attainment_vs_rate() {
-        for f in holdout_suite(concat!(env!("CARGO_MANIFEST_DIR"), "/../..")) {
-            let text = std::fs::read_to_string(&f).unwrap();
-            let base = Scenario::parse(&text).unwrap();
+        for f in holdout() {
+            let base = load_scenario(&f).unwrap();
             let rated = base.rated_rps();
             println!("== {} analytic {:.1} rps", base.name, rated);
             for mult in [0.05, 0.10, 0.15, 0.20, 0.30, 0.45, 0.60, 0.90, 1.4] {
