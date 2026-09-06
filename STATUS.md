@@ -3,7 +3,7 @@
 What is live on `origin/master`, what each agent is doing now, and the assumptions being acted on.
 For things that need *you*, see `TASKS.md`.
 
-**Last updated:** 2026-09-06 16:19 PDT by Claude.
+**Last updated:** 2026-09-06 16:22 PDT by Claude.
 
 ---
 
@@ -39,7 +39,7 @@ difference between a bad minute and an outage. Numbers in `docs/findings.md`.
 
 | Agent | Owns | Now |
 |---|---|---|
-| Tech lead | `src/`, `tests/`, `scenarios/`, `web/src/lib/` | Landed, all byte-identical against `./check-fingerprints.sh`: the eleven-crate workspace (163995c); golden fingerprints and `WIRE.md` (0efb8bd); the policy trait and registry, plus `admission`, `fair_share_burst`, `tenants`, `tenant_weights`, `tenant_demand` in scenarios (289cb22, cfc8f03); leases and the idle guard (d688f8f); Issao's homepage links and `tools/build.sh`, which bounds concurrent cargo builds to two (16daf22); simplification pass 1 on `sim-report`, 884 to 851 lines (4b29810); the browser transport client against `WIRE.md`, mock still the default (389f41e, 16:14); the `least_kv_probe` routing policy, power-of-d choices on live KV occupancy with the probe paid for (120e62d). In flight, five agents in their own worktrees: engine (`claude/tl-engine`), physics oracle (`tl-physics`), export (`tl-export`), the deadline and fair-share policies. Queued: preemption and KV eviction, SLO classes, the live ingress server, the dashboard replay source, speculative decoding, prefix caching. From Issao at 15:50: *"continue making more progress on the scope-today.md dynamics we talked about when it is possible to do so in parallel"*, which is that queue |
+| Tech lead | `src/`, `tests/`, `scenarios/`, `web/src/lib/` | Landed, all byte-identical against `./check-fingerprints.sh`: the eleven-crate workspace (163995c); golden fingerprints and `WIRE.md` (0efb8bd); the policy trait and registry, plus `admission`, `fair_share_burst`, `tenants`, `tenant_weights`, `tenant_demand` in scenarios (289cb22, cfc8f03); leases and the idle guard (d688f8f); Issao's homepage links and `tools/build.sh`, which bounds concurrent cargo builds to two (16daf22); simplification pass 1 on `sim-report`, 884 to 851 lines (4b29810); the browser transport client against `WIRE.md`, mock still the default (389f41e, 16:14); the `least_kv_probe` routing policy, power-of-d choices on live KV occupancy with the probe paid for (120e62d); `deadline_aware` admission, shedding on expected queue wait before a request costs anything (210b657). In flight, four agents in their own worktrees: engine (`claude/tl-engine`), physics oracle (`tl-physics`), export (`tl-export`), the fair-share policy. Queued: preemption and KV eviction, SLO classes, the live ingress server, the dashboard replay source, speculative decoding, prefix caching. From Issao at 15:50: *"continue making more progress on the scope-today.md dynamics we talked about when it is possible to do so in parallel"*, which is that queue |
 | Cloud | `Dockerfile`, `deploy.sh`, `cloudbuild.yaml`, `docs/deploy.md` | **finished.** Redeploys are now run by the main agent on request: `./deploy.sh`, about 2.5 minutes end to end. First deploy at 15:22 (72dfb16); scale-to-zero verified twice (993c03a); `docs/deploy.md` is its handover. No further grant was needed, the pending `legacyBucketReader` request is withdrawn: the blocker was two bucket permissions, worked around in `cloudbuild.yaml` |
 | Monitor and housekeeping | `TASKS.md`, `STATUS.md`, `README.md`, `docs/*.md` | inbox and PR loop every 90 s; documents tidied; keeping them aligned to each merge. The homepage-link instruction routed at 15:57 was done by the tech lead at 15:59 |
 
@@ -47,7 +47,9 @@ The main agent coordinates and owns `CLAUDE.md` and `proto/`.
 
 ## Progress against the execution plan
 
-One row per milestone in `docs/execution-plan.md` §1, read from `master` at 604bb95.
+One row per milestone in `docs/execution-plan.md` §1, read from `master` at 604bb95 and updated as
+units land. `docs/vision-progress.md` is the same reading by `VISION.md` requirement, taken at 16:19,
+temporary, for Issao to review.
 
 | Milestone | State | What exists, what does not |
 |---|---|---|
@@ -57,7 +59,7 @@ One row per milestone in `docs/execution-plan.md` §1, read from `master` at 604
 | M2 physics | partial, in flight | cost model calibrated and exact in Python (`bench/validate_epochs.py`); the Rust analytic advance and exact differential oracle are on `claude/tl-physics`; preemption and KV eviction queued |
 | M3 three-layer split | partial, in flight | crate boundary exists; the leaf trait shaped by `leaf.proto` and a resumable `Sim` are on `claude/tl-engine`, toward Leaf as a process per Issao; no cross-shard determinism test |
 | M4 workload and telemetry | partial | arrival heterogeneity and telemetry delay built; no trace replay, no session or prefix model |
-| M5 policies | partial, in flight | six routing policies behind a one-file-per-policy registry (289cb22), the fan-out point, `least_kv_probe` the newest (120e62d); deadline and fair-share policies on two branches; no prefix affinity, no per-decision cost measurement |
+| M5 policies | partial, in flight | six routing policies and a `deadline_aware` admission controller behind a one-file-per-policy registry (289cb22, 120e62d, 210b657); fair-share on one branch; no prefix affinity, no per-decision cost measurement |
 | M6 failures | done | retry contrast, finding 6 |
 | M7 control analysis | not started | |
 | M8 dashboard and first deploy | in progress | static deploy live, scale-to-zero measured (993c03a); `sim-ingress` has leases and the idle guard (d688f8f) but no run or subscription endpoint; `sim-run export` to `WIRE.md` JSON on `claude/tl-export`; browser transport merged (389f41e) with mock still the default; dashboard still mock |

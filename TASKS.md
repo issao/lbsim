@@ -1,9 +1,19 @@
 # TASKS — things that need Issao
 
-Last updated: 2026-09-06 16:16 PDT by Claude.
+Last updated: 2026-09-06 16:22 PDT by Claude.
 
 Stack ranked, most blocking first. Every item says what Claude does if you say nothing, so nothing
 here stalls the work. What is finished and live is in `STATUS.md`.
+
+## 0. Review `docs/vision-progress.md`
+
+Snapshot at 2026-09-06 16:19 PDT, on `master` d42546a: every `VISION.md` requirement classified as done,
+building in the next two hours, or far away, each with one line of evidence. It ends with five priority
+far-away items and eight requirements no plan document mentions: the `disable_decode` knob, load and
+latency forecasting, redundancy policies, model-weight locality, per-machine trace spans, the fluid
+limit, and the training-versus-serving question.
+
+**If you say nothing:** it is deleted at the next housekeeping round after 24 hours, 2026-09-07 16:19.
 
 ## Routed to the tech lead
 
