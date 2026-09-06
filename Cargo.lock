@@ -10,6 +10,7 @@ dependencies = [
  "sim-core",
  "sim-ingress",
  "sim-leaf",
+ "sim-leaf-api",
  "sim-metrics",
  "sim-model",
  "sim-physics",
@@ -48,11 +49,23 @@ name = "sim-leaf"
 version = "0.1.0"
 dependencies = [
  "sim-core",
+ "sim-leaf-api",
  "sim-metrics",
  "sim-model",
+ "sim-physics",
  "sim-policy",
  "sim-scenario",
  "sim-workload",
+]
+
+[[package]]
+name = "sim-leaf-api"
+version = "0.1.0"
+dependencies = [
+ "sim-core",
+ "sim-metrics",
+ "sim-policy",
+ "sim-scenario",
 ]
 
 [[package]]

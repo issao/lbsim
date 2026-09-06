@@ -24,14 +24,20 @@ const ALLOWED: &[(&str, &[&str])] = &[
     ("sim-workload", &["sim-core", "sim-scenario"]),
     ("sim-policy", &["sim-core", "sim-scenario"]),
     ("sim-model", &["sim-core", "sim-scenario", "sim-physics", "sim-workload"]),
+    // The Ingress-to-Leaf seam, leaf.proto as a trait. Below both deployables and above physics, so
+    // ingress can speak it without being able to compute what it asks for.
+    ("sim-leaf-api", &["sim-core", "sim-scenario", "sim-metrics", "sim-policy"]),
     (
         "sim-leaf",
-        &["sim-core", "sim-scenario", "sim-physics", "sim-metrics", "sim-workload", "sim-policy", "sim-model"],
+        &[
+            "sim-core", "sim-scenario", "sim-physics", "sim-metrics", "sim-workload", "sim-policy",
+            "sim-model", "sim-leaf-api",
+        ],
     ),
     ("sim-report", &["sim-core", "sim-scenario", "sim-metrics", "sim-leaf"]),
     ("sim-arena", &["sim-core", "sim-scenario", "sim-metrics", "sim-workload", "sim-leaf"]),
     // Ingress drives runs through the leaf and speaks the Frontend API. It never sees replica physics.
-    ("sim-ingress", &["sim-core", "sim-scenario", "sim-metrics", "sim-policy", "sim-leaf"]),
+    ("sim-ingress", &["sim-core", "sim-scenario", "sim-metrics", "sim-policy", "sim-leaf", "sim-leaf-api"]),
     ("sim-run", &["sim-core", "sim-scenario", "sim-leaf", "sim-report", "sim-arena", "sim-ingress"]),
 ];
 
