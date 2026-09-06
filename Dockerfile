@@ -7,17 +7,21 @@
 # --- 1. the dashboard -------------------------------------------------------
 FROM node:22-slim AS web
 WORKDIR /w
-COPY web/package.json web/package-lock.json* ./
-RUN npm install --no-audit --no-fund
+# npm ci, not npm install: it installs exactly the lockfile and fails if the two disagree, so the
+# image cannot silently pick up a different dependency tree than the one that was tested.
+COPY web/package.json web/package-lock.json ./
+RUN npm ci --no-audit --no-fund
 COPY web/ ./
 RUN npm run build
 
 # --- 2. the simulator, and the reports it produces --------------------------
 FROM rust:1-slim-bookworm AS build
 WORKDIR /s
-COPY Cargo.toml ./
+# Cargo.lock has to be here for --locked to mean anything. Without it the flag fails every time and
+# the build quietly falls through to an unlocked one.
+COPY Cargo.toml Cargo.lock ./
 COPY src/ ./src/
-RUN cargo build --release --locked 2>/dev/null || cargo build --release
+RUN cargo build --release --locked
 COPY scenarios/ ./scenarios/
 # Generate the reports at build time. Telemetry is opt-in and stays off here: the image should carry
 # what a reader looks at, not a few megabytes of CSV nobody asked for.

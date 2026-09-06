@@ -147,8 +147,9 @@ Rules that keep the browser and the server both cheap:
 
 React with Vite and TypeScript. gRPC-web to `sim-ingress` through `tonic-web`, so no proxy is
 needed in development or in production. Generated clients from `proto/`, so the frontend cannot
-drift from the interfaces. Charts: a small library rather than a framework, since every panel here
-is a line chart, a histogram, or a table.
+drift from the interfaces. Charts: as built, hand-written SVG in
+`web/src/components/charts/`, which for a line chart, a heatmap, a histogram and a waterfall was less
+code than configuring a library.
 
 No global state framework. The natural unit of state is a subscription, and subscriptions are
 already keyed and leased.
@@ -157,8 +158,9 @@ already keyed and leased.
 
 ## 5. The stand-in, buildable now
 
-Issao asked for something to observe progress with. The engine does not exist, so the stand-in runs
-against **mock data generated in the browser**, with the same shapes the real interfaces define.
+Issao asked for something to observe progress with, and it is built: `web/`, run per `web/README.md`.
+It works against **mock data generated in the browser**, with the same shapes the real interfaces
+define, because no server speaks `ingress.proto` yet.
 
 What it gives, immediately: the layout can be criticised, the tab structure can be found wanting,
 and the pagination story above can be proven or disproven before any of it is wired to a server.

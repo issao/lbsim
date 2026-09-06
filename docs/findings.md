@@ -1,6 +1,6 @@
 # Findings
 
-Five results from the simulator as it stands. Every number here is reproducible with
+Six results from the simulator as it stands. Every number here is reproducible with
 `./run-demos.sh`, which writes a self-contained HTML report per experiment into `out/`.
 
 Reference fleet throughout: 32 replicas of a 70-billion-parameter model on 8x H100, cost model
