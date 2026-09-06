@@ -78,6 +78,8 @@ message StartRunRequest {
   // Cap on simulated seconds per wall-clock second. Unset means as fast as possible.
   double max_realtime_factor = 2;
   bool record_traces = 3;
+}
+message StartRunResponse { string run_id = 1; }
 
 message RunStatus {
   string run_id = 1;
