@@ -1,0 +1,39 @@
+# Shared baseline. Every comparison changes exactly one thing from this, and keeps the seed, so a
+# difference in outcome is a difference in policy rather than in luck.
+name = least_requests
+seed = 20260906
+duration_s = 120
+warmup_s = 15
+
+# Fleet. A 70B-class model on 8xH100 per replica; step_base_ms is calibrated in
+# bench/validate_epochs.py against a published batch-1 measurement.
+replicas = 32
+max_batch = 32
+step_base_ms = 2.75
+step_per_seq_ms = 0.25
+prefill_tokens_per_s = 25000
+step_token_budget = 2048
+max_queue = 200
+
+# Workload. A mixture, not a single distribution: interactive chat plus long-document work in the
+# same queue. The mixture is what creates head-of-line blocking, so a unimodal load would hide the
+# phenomenon being studied.
+arrival_rps = 100
+prompt_mean = 1200
+prompt_cv = 1.2
+output_mean = 300
+output_cv = 1.5
+long_probability = 0.08
+long_prompt_mean = 24000
+long_output_mean = 400
+
+routing = least_requests
+telemetry_interval_ms = 1000
+telemetry_delay_ms = 200
+
+client_timeout_s = 60
+max_attempts = 1
+ttft_slo_ms = 2000
+itl_slo_ms = 80
+e2e_slo_s = 60
+sample_interval_ms = 250

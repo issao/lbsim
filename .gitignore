@@ -27,3 +27,7 @@ results/
 
 # Benchmark build artifacts
 bench/queue/target/
+
+# Rust build and simulator output
+/target/
+/out/
