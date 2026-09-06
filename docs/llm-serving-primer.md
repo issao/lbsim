@@ -264,7 +264,258 @@ under pressure, and per-tenant weighted fair queueing on tokens.
 
 ---
 
-## 10. A tractable cost model for the simulator
+## 10. Hardware reference numbers
+
+> **Provenance warning.** These are from published vendor specs and benchmark literature as
+> of early 2026, reproduced from memory. Use them to get the *shape* right and the
+> *ratios* right. Before you calibrate against them, verify any number you depend on against
+> a primary source. Measured throughput in particular varies 2-3x with engine version,
+> kernel choice, and batch composition.
+
+### 10.1 Accelerator specs
+
+Dense FLOPS below are **without** sparsity, which is what matters for inference.
+
+| Accelerator | HBM | HBM bandwidth | BF16 dense | FP8 dense | FP4 dense |
+|---|---|---|---|---|---|
+| A100 80GB SXM | 80 GB HBM2e | 2.0 TB/s | 312 TF | n/a | n/a |
+| H100 80GB SXM | 80 GB HBM3 | 3.35 TB/s | ~990 TF | ~1980 TF | n/a |
+| H100 80GB PCIe | 80 GB HBM2e | 2.0 TB/s | ~760 TF | ~1500 TF | n/a |
+| H200 141GB SXM | 141 GB HBM3e | 4.8 TB/s | ~990 TF | ~1980 TF | n/a |
+| B200 | 192 GB HBM3e | 8.0 TB/s | ~2.2 PF | ~4.5 PF | ~9 PF |
+| MI300X | 192 GB HBM3 | 5.3 TB/s | ~1300 TF | ~2600 TF | n/a |
+| MI325X | 256 GB HBM3e | 6.0 TB/s | ~1300 TF | ~2600 TF | n/a |
+
+Achievable fractions, which are the numbers you actually put in a config:
+
+| Quantity | Symbol | Realistic range | Notes |
+|---|---|---|---|
+| Model FLOPS utilization, prefill | MFU | 0.35 – 0.60 | high end needs long prompts and large chunks |
+| Memory bandwidth utilization, decode | MBU | 0.60 – 0.85 | falls sharply at batch 1 |
+| Fixed per-step overhead | — | 0.5 – 5 ms | launch, sampling, scheduler; CUDA graphs cut this a lot |
+
+The H200 is worth noting for a simulator: same compute as H100, 43% more bandwidth and 76%
+more memory. Since decode is bandwidth-bound and capacity is KV-bound, it is substantially
+better at serving while being identical at prefill. That asymmetry is a nice thing to
+explore in a heterogeneous-fleet scenario.
+
+### 10.2 The locality hierarchy
+
+Bandwidth is per GPU unless stated. Unidirectional figures, since a KV transfer is one-way.
+
+| Tier | Bandwidth | One-way latency | What lives here |
+|---|---|---|---|
+| HBM (on-package) | 2.0 – 8.0 TB/s | ~0.3 – 1 µs | weights, KV of running sequences, activations |
+| NVLink 4, intra-node (H100) | ~450 GB/s | ~1 – 3 µs | TP collectives, GPU-to-GPU KV move |
+| NVLink 5, intra-node (B200) | ~900 GB/s | ~1 – 3 µs | as above |
+| NVLink domain, GB200 NVL72 | ~900 GB/s across 72 GPUs | ~2 – 4 µs | makes a rack look like one node |
+| PCIe Gen5 x16 (GPU↔host) | ~64 GB/s | ~2 – 5 µs | KV swap to host DRAM, weight load |
+| Host DRAM | ~300 – 500 GB/s per socket | ~0.1 µs | swapped KV, offloaded prefix cache |
+| RDMA, 1 rail (NDR 400 Gb/s) | ~50 GB/s | ~2 – 5 µs | per-GPU NIC |
+| RDMA, node aggregate (8 rails) | ~400 GB/s | ~2 – 5 µs | rail-optimized, 1 NIC per GPU |
+| RDMA, XDR 800 Gb/s per rail | ~100 GB/s | ~2 – 5 µs | newer fabrics |
+| Leaf-to-spine, same cluster | often 1:1 in AI fabrics | ~5 – 10 µs | oversubscription varies; check yours |
+| Same-AZ TCP/IP | NIC-limited | ~100 – 500 µs | control plane, client traffic |
+| Cross-region | link-limited | ~10 – 100 ms | geo routing only |
+| Local NVMe Gen5 | ~7 – 14 GB/s per drive, ~50 GB/s per node | ~50 – 100 µs | weight cache, prefix cache spill |
+| Networked / parallel filesystem | NIC-limited, 10 – 100 GB/s | ~0.5 – 2 ms | shared weight store |
+| Object storage | ~1 – 10 GB/s with heavy parallelism | ~50 – 200 ms first byte | cold weight source |
+
+Two orders of magnitude separate HBM from RDMA, and four separate HBM from object storage.
+Every architectural choice in inference serving is about staying as high in this table as
+possible.
+
+### 10.3 Prefill throughput
+
+For a dense transformer, ignoring attention's quadratic term:
+
+```
+flops_per_token  = 2 * n_params           # 2 FLOPs per parameter per token
+prefill_tokens_s = MFU * peak_dense_flops * n_gpus / flops_per_token
+```
+
+Worked, H100 SXM, and compare against the measured column:
+
+| Model | Precision | GPUs | FLOPs/token | Roofline at MFU 0.45 | Typically measured |
+|---|---|---|---|---|---|
+| Llama-3-8B | BF16 | 1 | 16 GF | ~28k tok/s | ~15 – 30k tok/s |
+| Llama-3-8B | FP8 | 1 | 16 GF | ~56k tok/s | ~25 – 50k tok/s |
+| Llama-3-70B | BF16 | 8 (TP8) | 140 GF | ~25k tok/s | ~8 – 20k tok/s |
+| Llama-3-70B | FP8 | 8 (TP8) | 140 GF | ~51k tok/s | ~15 – 35k tok/s |
+| Llama-3-405B | FP8 | 8 (TP8) | 810 GF | ~8.8k tok/s | ~4 – 8k tok/s |
+
+Rules of thumb that fall out:
+
+- Prefill throughput is roughly **inversely proportional to parameter count**, and roughly
+  **linear in GPU count** until tensor-parallel communication eats the gain, which starts to
+  bite past TP8 within a node and badly across nodes.
+- A single H100 prefills a 70B model at only a few thousand tokens per second, which is why
+  70B is never served on one GPU.
+- Prefilling a 32k-token prompt on a 70B model at 15k tok/s takes ~2.1 s. That is the number
+  behind the prefill-blocks-decode problem in section 4.
+
+The quadratic attention term, if you need it:
+
+```
+attn_flops = 4 * n_layers * n_heads * head_dim * n^2     # roughly, for full causal attention
+```
+
+Compare that against `2 * n_params * n` and you find the crossover for 70B lands somewhere
+around 16 – 32k tokens. Below that, ignore it. Above it, prefill cost grows superlinearly and
+long-context requests get dramatically more expensive than a token count suggests.
+
+### 10.4 Decode step time, and why reality is 2-3x the roofline
+
+Per step the GPU must read all the weights, plus the KV of every sequence in the batch:
+
+```
+bytes_per_gpu = (weight_bytes + kv_bytes_per_token * sum_of_seq_lens) / n_gpus
+t_step        = bytes_per_gpu / (HBM_bw * MBU) + t_fixed + t_collective
+```
+
+With tensor parallelism both weights and KV shard across ranks, so the division by `n_gpus`
+applies to both. Add a collective term: TP does two all-reduces per layer, so
+`t_collective` grows with layer count and shrinks with NVLink bandwidth.
+
+Llama-3-70B, BF16, 8x H100, MBU 0.70, so 2.35 TB/s effective per GPU. Weights are 140 GB
+total, 17.5 GB per GPU. KV is 320 KiB/token total, 40 KiB/token per GPU.
+
+| Batch | Avg seq len | KV per GPU | Weight time | KV time | Roofline step | Realistic step | Per-seq ITL |
+|---|---|---|---|---|---|---|---|
+| 1 | 2k | 0.08 GB | 7.4 ms | 0.03 ms | 7.5 ms | ~15 – 25 ms | 15 – 25 ms |
+| 16 | 4k | 2.6 GB | 7.4 ms | 1.1 ms | 8.5 ms | ~15 – 25 ms | 15 – 25 ms |
+| 64 | 4k | 10.5 GB | 7.4 ms | 4.5 ms | 11.9 ms | ~18 – 30 ms | 18 – 30 ms |
+| 128 | 4k | 21 GB | 7.4 ms | 8.9 ms | 16.3 ms | ~22 – 35 ms | 22 – 35 ms |
+| 256 | 4k | 42 GB | 7.4 ms | 17.9 ms | 25.3 ms | ~32 – 50 ms | 32 – 50 ms |
+| 64 | 32k | 84 GB | 7.4 ms | 35.7 ms | 43.1 ms | ~50 – 70 ms | 50 – 70 ms |
+
+Read that table carefully, because four important things are visible in it:
+
+1. **At batch 1 the roofline is wrong by 2-3x.** Measured single-stream decode for 70B on
+   8x H100 is roughly 15-25 ms per token, not 7.5. The gap is kernel launch overhead, TP
+   all-reduce latency, sampling, and Python scheduling. A simulator that omits `t_fixed`
+   will overstate small-batch performance badly. Calibrate `t_fixed` against a batch-1
+   measurement; it is the easiest number to get and the one that anchors everything.
+2. **Batch 1 to 16 is nearly free.** Step time barely moves while throughput rises 16x.
+   This is why continuous batching works, and why an idle replica is pure waste.
+3. **KV read overtakes weight read.** Somewhere near batch 64-128 at 4k context, the KV term
+   passes the weight term, and past that point step time grows roughly linearly with total
+   tokens in the batch. That is the knee in your latency-versus-load curve.
+4. **Context length and batch size are interchangeable in cost.** Batch 64 at 32k costs about
+   the same per step as batch 512 at 4k. The correct state variable for a scheduler is
+   **total KV tokens resident in the batch**, not batch size. This is the single most
+   important modeling decision in the replica.
+
+Throughput at the bottom of that table: batch 256 at 25 ms per step is ~10,200 output
+tokens/s per replica. Batch 1 is ~50. Four hundred times. That ratio is why every dynamic
+here is about keeping batches full without letting them get so full that SLOs break.
+
+### 10.5 Where KV can live, and what it costs to move
+
+**A sequence cannot decode unless its KV is in HBM.** Every other tier is a place to *park*
+or *ship* KV, and the cost is a one-time transfer, not a per-step cost. Getting this
+distinction right keeps the simulator honest.
+
+One sequence, 4k tokens, Llama-3-70B: **1.31 GB** of KV. Time to move it:
+
+| Path | Bandwidth | Time for 1.31 GB | Used for |
+|---|---|---|---|
+| Already in HBM | — | 0 | the only place decode happens |
+| GPU→GPU, NVLink 4 | 450 GB/s | ~2.9 ms | intra-node P/D handoff, TP reshard |
+| Node→node, 8 RDMA rails | 400 GB/s | ~3.3 ms | **P/D disaggregation** |
+| Node→node, 1 RDMA rail | 50 GB/s | ~26 ms | P/D on a thin fabric: too slow |
+| GPU→host DRAM, PCIe5 | 64 GB/s | ~20 ms | **preemption by swap** |
+| GPU→local NVMe | 10 GB/s | ~131 ms | prefix cache spill |
+| GPU→object storage | 2 GB/s | ~655 ms | not viable for KV |
+
+The conclusions matter for policy design:
+
+- **Prefill/decode disaggregation is only viable on multi-rail RDMA or NVLink.** At ~3 ms the
+  transfer is a fraction of one decode step and disappears into the noise. At ~26 ms on a
+  single rail it costs more than a whole step and the idea stops working. If your VISION
+  includes disaggregation, the fabric assumption is load-bearing and belongs in the config.
+- **Swap-based preemption costs ~20 ms out and ~20 ms back**, so ~40 ms round trip, versus
+  recomputing the prefill, which for 4k tokens at 15k tok/s is ~270 ms. So swap is roughly
+  7x cheaper than recompute *if* host DRAM has room and PCIe is not contended. Under heavy
+  preemption PCIe becomes the bottleneck and that advantage collapses. Both are worth
+  modeling as alternative policies.
+- **Prefix cache offload to host DRAM is attractive**: a 20 ms load beats a 270 ms recompute.
+  To NVMe at 131 ms it is marginal. To object storage it is pointless.
+- With GB200 NVL72, 72 GPUs share one NVLink domain, so "intra-node" now means a whole rack.
+  The 2.9 ms row applies rack-wide, which makes rack-scale disaggregation and KV pooling far
+  more practical than on H100 clusters. Worth a scenario if you care about next-gen topology.
+
+### 10.6 Cold start budget
+
+For a 70B model, 140 GB of weights in BF16:
+
+| Stage | Time | Notes |
+|---|---|---|
+| Node provisioning, if not pooled | 30 s – 5 min | cloud dependent, sometimes unavailable |
+| Container image pull | 30 s – 5 min | tens of GB; usually cached |
+| Weight read, local NVMe at 10 GB/s | ~14 s | best case |
+| Weight read, parallel FS at 5 GB/s | ~28 s | common |
+| Weight read, object storage at 2 GB/s | ~70 s | cold |
+| Host→HBM over PCIe5 | ~2 s | rarely the bottleneck |
+| CUDA graph capture, warmup, autotune | 10 – 60 s | engine dependent |
+| **Total, warm node, cached weights** | **~30 – 60 s** | |
+| **Total, cold node, cold weights** | **~3 – 10 min** | |
+
+Set against a traffic burst that develops in 10-30 s, this is the whole argument of section 7.
+Even the best case is slower than the burst. A warm pool of loaded-but-idle replicas is the
+only thing that changes the picture, and it costs money to hold, which makes pool sizing a
+genuine policy question with a real tradeoff.
+
+### 10.7 Suggested starting config values
+
+A concrete parameter set to seed the simulator, for Llama-3-70B BF16 on 8x H100 SXM:
+
+```yaml
+accelerator:
+  name: h100-sxm-80
+  count_per_replica: 8
+  hbm_bytes_per_gpu: 80e9
+  hbm_bandwidth_bytes_s: 3.35e12
+  peak_dense_flops_bf16: 990e12
+model:
+  n_params: 70e9
+  n_layers: 80
+  n_kv_heads: 8
+  head_dim: 128
+  dtype_bytes: 2
+  kv_bytes_per_token: 327680      # 2 * 80 * 8 * 128 * 2
+  weight_bytes: 140e9
+engine:
+  mbu_decode: 0.70                # memory bandwidth utilization
+  mfu_prefill: 0.45               # model FLOPS utilization
+  fixed_step_overhead_s: 0.008    # dominates at low batch; calibrate first
+  kv_block_tokens: 16
+  kv_capacity_tokens: 1_370_000   # (640e9 - 140e9 - workspace) / 327680
+  max_batched_tokens_per_step: 8192   # chunked prefill budget
+  max_num_seqs: 256
+fabric:
+  nvlink_bytes_s: 450e9
+  rdma_bytes_s_per_node: 400e9
+  pcie_bytes_s: 64e9
+  host_dram_bytes_s: 400e9
+  local_nvme_bytes_s: 10e9
+lifecycle:
+  cold_start_s: 45                # warm node, cached weights
+  cold_start_s_cold_node: 300
+```
+
+Sanity checks this config should reproduce, and good first tests:
+
+- Batch 1 decode: ~15 ms per token, so ~65 tokens/s.
+- Batch 256 at 4k context: ~25-32 ms per step, so ~8-10k output tokens/s per replica.
+- Prefill of a 32k prompt: ~2 s if run as one step, which is why the chunk budget exists.
+- KV exhaustion at roughly 334 concurrent sequences averaging 4k tokens.
+- 8192-token step budget means a 32k prompt takes 4 chunked steps, adding ~4 steps of ITL
+  delay to everyone else in the batch instead of a single 2 s stall.
+
+---
+
+## 11. A tractable cost model for the simulator
 
 You do not need to model kernels. A roofline approximation gets the shape right, which is
 what matters for policy comparison.
@@ -302,7 +553,7 @@ goal is not absolute accuracy; it is that the *ordering* of policies is correct 
 
 ---
 
-## 11. Things you can safely ignore in v1
+## 12. Things you can safely ignore in v1
 
 - GPU kernel scheduling, warp occupancy, anything below the step.
 - Network packets. Model a hop as a latency distribution.
@@ -318,7 +569,7 @@ goal is not absolute accuracy; it is that the *ordering* of policies is correct 
 
 ---
 
-## 12. Glossary
+## 13. Glossary
 
 - **TTFT / ITL / TPOT / E2E** — see section 1.
 - **Goodput** — throughput delivered within SLO.
