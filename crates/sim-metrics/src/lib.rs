@@ -4,6 +4,8 @@
 //! aggregated online into mergeable histograms and full records exist only for a sample. Today's
 //! runs are small enough to keep every record, but the shapes are the ones that scale.
 
+pub mod trace;
+
 use sim_core::Nanos;
 
 /// Log-linear bucketed histogram, HDR style.
