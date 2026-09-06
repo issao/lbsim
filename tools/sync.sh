@@ -33,6 +33,30 @@ if [ -n "$(git status --porcelain)" ]; then
   exit 2
 fi
 
+# A stash nobody created deliberately means something outside this session moved the tree.
+# A VS Code Git extension attached to this working directory did exactly that on 2026-09-06,
+# stashing uncommitted work and switching branches, which silently reverted a large edit.
+if [ -n "$(git stash list 2>/dev/null)" ]; then
+  attention=1
+  say "UNEXPECTED STASH — work may have been moved out of the tree by something else:"
+  git stash list | sed 's/^/    /'
+  say "    inspect with: git stash show --stat 'stash@{0}'"
+  say "    recover with: git checkout 'stash@{0}' -- <paths>"
+  rule
+fi
+
+# HEAD moving without this script doing it is the other half of the same symptom.
+head_now=$(git rev-parse HEAD)
+head_file=".git/lbsim-last-head"
+if [ -f "$head_file" ]; then
+  head_prev=$(cat "$head_file")
+  if [ "$head_prev" != "$head_now" ]; then
+    say "NOTE: HEAD moved since the last sync: ${head_prev:0:8} -> ${head_now:0:8}"
+    say "      Expected after a commit or merge. Unexpected otherwise; check the reflog."
+    rule
+  fi
+fi
+
 if ! git fetch --all --prune --quiet 2>/dev/null; then
   say "WARNING: fetch failed; reporting from local refs only"
 fi
@@ -118,6 +142,8 @@ if [ -f bench/validate_epochs.py ]; then
     attention=1
   fi
 fi
+
+git rev-parse HEAD > "$head_file" 2>/dev/null || true
 
 say "======================================================================"
 exit "$attention"

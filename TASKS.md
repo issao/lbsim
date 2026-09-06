@@ -5,7 +5,7 @@ right now. Claude keeps this file current; anything Claude can do alone is not h
 
 Each item says what happens if you do not answer, so nothing stalls indefinitely.
 
-Last updated: 2026-09-06 12:05 by Claude.
+Last updated: 2026-09-06 12:12 by Claude.
 
 ---
 
@@ -13,7 +13,7 @@ Last updated: 2026-09-06 12:05 by Claude.
 
 Now the only blocking gate. The architecture decisions are answered; see below.
 
-Eleven files, all compiling. Two are new since your feedback, and they are the ones worth your
+Twelve files, all compiling. Two are new since your feedback, and they are the ones worth your
 attention first because they encode your three-layer sketch:
 
 1. `leaf.proto` — Ingress to Leaf. `Leaf.Advance` is the synchronisation barrier and carries
@@ -115,6 +115,17 @@ let it expand without limit. See `docs/ARCHITECTURE.md` open risk 7.
 interface, and does not start it until the engine reproduces at least one dynamic.
 
 ---
+
+## Heads up: something outside this session is moving the working tree
+
+A VS Code Git extension appears to be attached to `/home/agents/repo/lbsim`. At 11:59 it stashed
+uncommitted work and switched branches, which silently reverted a large edit to
+`docs/ARCHITECTURE.md`. The work was recovered from the stash, nothing is lost, and everything
+described above is committed.
+
+Nothing needed from you unless you are pointing an editor at this sandbox, in which case that is
+the cause and it will recur. `tools/sync.sh` now warns on an unexpected stash and on HEAD moving
+between runs, so a repeat is visible immediately rather than discovered later.
 
 ## Done
 

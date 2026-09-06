@@ -3,7 +3,7 @@
 What is finished, what is live, what Claude is doing now. Updated by Claude at every unit of
 work. For things that need *you*, see `TASKS.md`.
 
-**Last updated:** 2026-09-06 12:05 by Claude.
+**Last updated:** 2026-09-06 12:12 by Claude.
 
 ---
 
@@ -124,6 +124,14 @@ The full list is `docs/ARCHITECTURE.md` section 12. The two that could change th
 2. **Workload realism.** Now the top risk. The simulator is only as good as its arrival process
    and its prompt and output length distributions. Needs real traces, or documented
    uncertainty. `TASKS.md` item 4.
+
+## One incident, resolved
+
+Something outside this session, most likely a VS Code Git extension attached to this working
+directory, stashed uncommitted work and switched branches at 11:59. That silently reverted the
+`docs/ARCHITECTURE.md` rewrite. It was recovered from the stash and reassembled with the newer
+interface work. Nothing is lost and every check passes. `tools/sync.sh` now warns on an
+unexpected stash and on HEAD moving between runs.
 
 ## Branch state
 
