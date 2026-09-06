@@ -196,7 +196,12 @@ The fix is to normalise before taking the minimum, and there are two defensible 
 **share of offered work**, which asks how much of what arrived was served well. Or goodput as a share
 of what the **best policy on that load** achieved, which is a relative measure and is how tournaments
 usually handle heterogeneous rounds. The implementation reports the first as a diagnostic alongside the
-raw objective, and deliberately does not change the objective, because that is Issao's call.
+raw objective, and deliberately did not change the objective, because that was Issao's call.
+
+Issao, 16:12: *"You can remove this, I agreed with this."* So the objective is the minimum over loads
+of goodput as a **share of offered work**. Making it the score rather than the diagnostic is routed to
+the tech lead, and every score records the rule-set version it was earned under, so rounds before and
+after the change are never compared.
 
 ### A 99.9% cap and a length-independent first-token target cannot both hold
 
