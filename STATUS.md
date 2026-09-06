@@ -3,7 +3,7 @@
 What is live on `origin/master`, what each agent is doing now, and the assumptions being acted on.
 For things that need *you*, see `TASKS.md`.
 
-**Last updated:** 2026-09-06 16:00 PDT by Claude.
+**Last updated:** 2026-09-06 16:03 PDT by Claude.
 
 ---
 
@@ -23,7 +23,7 @@ Scope is `docs/scope-today.md` package B plus item 7, and both side missions Iss
 | Policy ordering survives ±30% cost-model error | `check-sensitivity.sh` | run it; exits non-zero on a flip |
 | Arena, mechanical half, eight-scenario held-out suite | `src/arena.rs`, `scenarios/holdout/` | `cargo test --release --lib -- --nocapture` |
 | Stand-in dashboard, three surfaces, mock data | `web/` | `cd web && npm run build` |
-| **Deployed, public**: <https://lbsim-irpwc2yaoa-uc.a.run.app>, dashboard at `/`, reports at `/reports/1-routing.html` to `6-retry.html` | `Dockerfile`, `cloudbuild.yaml`, `deploy.sh` | `curl -sI` on the URL returns 200; `./deploy.sh --check-idle` reads the instance count from Cloud Monitoring |
+| **Deployed, public**: <https://lbsim-irpwc2yaoa-uc.a.run.app>, dashboard at `/` with links to the reports at `/reports/1-routing.html` to `6-retry.html`; revision `lbsim-00004-t5q` from 6ebfd4e, 16:03 | `Dockerfile`, `cloudbuild.yaml`, `deploy.sh` | `curl -sI` on the URL returns 200; `./deploy.sh --check-idle` reads the instance count from Cloud Monitoring |
 | Reference cost model, exact against a naive oracle | `bench/validate_epochs.py` | `tools/sync.sh` runs it |
 | Interfaces, twelve files, reviewed; `GeneratedPolicy` slot (947649b), lease expiry renamed `lease_expires_at_wall_ns` because it is wall clock (db390a4) | `proto/lbsim/v1/` | `tools/sync.sh` compiles them |
 | Findings, one section per dynamic | `docs/findings.md` | every table from `./run-demos.sh` |
@@ -40,7 +40,7 @@ difference between a bad minute and an outage. Numbers in `docs/findings.md`.
 | Agent | Owns | Now |
 |---|---|---|
 | Tech lead | `src/`, `tests/`, `scenarios/`, `web/src/lib/` | worktrees `lbsim-wt-tl`, `lbsim-tlweb`. Merged: the section 10.8 crate workspace (163995c), golden fingerprints and the wire contract (0efb8bd), the policy trait with a one-file-per-policy registry, the lease registry and the idle-shutdown guard (d688f8f), the homepage report links Issao asked for and a bounded cargo wrapper (cf12e33). The `docs/scope-today.md` dynamics fan-out has started: physics oracle first, then preemption, speculative decoding, prefix caching, tiering, autoscaling. In hand: the browser-side transport client from `claude/tl-web-transport`, now built against `WIRE.md`. Next, from Issao at 15:50: *"continue making more progress on the scope-today.md dynamics we talked about when it is possible to do so in parallel"*, with the cut table in `docs/scope-today.md` §3 as the list; the policy registry behind `GeneratedPolicy`; a simplification pass every four merges, per `CLAUDE.md` |
-| Cloud | `Dockerfile`, `deploy.sh`, `cloudbuild.yaml`, `docs/deploy.md` | **finished.** First deploy at 15:22 (72dfb16); scale-to-zero verified twice (993c03a); `docs/deploy.md` is its handover. No further grant was needed, the pending `legacyBucketReader` request is withdrawn: the blocker was two bucket permissions, worked around in `cloudbuild.yaml` |
+| Cloud | `Dockerfile`, `deploy.sh`, `cloudbuild.yaml`, `docs/deploy.md` | **finished.** Redeploys are now run by the main agent on request: `./deploy.sh`, about 2.5 minutes end to end. First deploy at 15:22 (72dfb16); scale-to-zero verified twice (993c03a); `docs/deploy.md` is its handover. No further grant was needed, the pending `legacyBucketReader` request is withdrawn: the blocker was two bucket permissions, worked around in `cloudbuild.yaml` |
 | Monitor and housekeeping | `TASKS.md`, `STATUS.md`, `README.md`, `docs/*.md` | inbox and PR loop every 90 s; documents tidied; keeping them aligned to each merge. The homepage-link instruction routed at 15:57 was done by the tech lead at 15:59 |
 
 The main agent coordinates and owns `CLAUDE.md` and `proto/`.
@@ -68,8 +68,7 @@ One row per milestone in `docs/execution-plan.md` §1, read from `master` at 604
 Today the six demos are live as real-data HTML reports at
 <https://lbsim-irpwc2yaoa-uc.a.run.app/reports/1-routing.html> through `6-retry.html`. The React
 dashboard at `/` shows mock data and says so on every panel. The homepage links to the six reports
-since cf12e33, which is on `master` but not yet deployed: the live revision is from 15:44, so the links
-appear after the next `./deploy.sh`.
+since cf12e33, live since 16:03 in revision `lbsim-00004-t5q`, built from `master` 6ebfd4e.
 
 Three things stand between it and real data: an Ingress endpoint that runs a scenario and streams
 metrics over the JSON/SSE wire in `crates/sim-ingress/WIRE.md`; the browser transport client, in the
