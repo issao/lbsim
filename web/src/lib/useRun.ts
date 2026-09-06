@@ -4,20 +4,65 @@
 // UpdatePolicies. Their responses carry information the UI is obliged to show -- where a step
 // stopped, whether a rewind came from the log, whether an update forced re-simulation -- so they
 // are modelled as return values here rather than being swallowed.
+//
+// Two handles share the shape. `useRun` drives the in-browser mock engine, exactly as it always
+// has. `useReplayRun` drives a recorded run loaded from static files (replay.ts): play, pause,
+// speed, step and scrub work locally over frames that already exist, and the two things only a
+// live engine can do -- rewind-and-resimulate and a workload or policy change -- are refused with
+// a visible reason rather than pretended. Panels take a `RunHandle` and cannot tell which they got,
+// apart from reading `source`.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { MockEngine } from './engine';
+import { type FleetEvent, type Frame, MockEngine } from './engine';
 import type { ScenarioConfig } from './config';
-import { cloneConfig } from './config';
+import { cloneConfig, diffConfig, FIELD_LABEL } from './config';
 import type { RewindResponse, UpdateResponse } from './types';
 import { clamp } from './rng';
+import { type DataMode, MOCK_BANNER, REPLAY_BANNER, replayOverride } from './mode';
+import {
+  type LoadedRun,
+  REPLAY_DISABLED_REASON,
+  ReplayEngine,
+  type RunIndexEntry,
+  clampCursor,
+  probeRunIndex,
+  stepCursor,
+} from './replay';
 
 export const SPEEDS = [0.25, 0.5, 1, 2, 5, 10];
 /** StepForward is bounded server-side; this is the stand-in's bound. */
 export const STEP_S = 2;
 
+/**
+ * What the panels read frames through. The mock engine satisfies it as it is; a replay satisfies
+ * it over decoded frames. Nothing a panel needs is outside this interface, and if a panel comes to
+ * need more, that is a design question rather than a cast.
+ */
+export interface FrameSource {
+  config: ScenarioConfig;
+  frames: Frame[];
+  /** Simulated seconds recorded so far. Scrubbing inside this is a log read. */
+  recordedToS: number;
+  frameAt(simS: number): Frame | undefined;
+  /** Frames covering [fromS, toS], decimated to the configured chart sample rate. */
+  window(fromS: number, toS: number): Frame[];
+  eventsUpTo(simS: number): FleetEvent[];
+}
+
+/** Where a handle's numbers come from, so the status bar and the header can say so. */
+export interface RunSourceInfo {
+  kind: DataMode;
+  /** The banner text for this source; the mock's is the unchanged marker. */
+  label: string;
+  /** Why rewind-and-resimulate and updates are refused, or null where they work. */
+  disabledReason: string | null;
+  runId?: string;
+}
+
+export const MOCK_SOURCE: RunSourceInfo = { kind: 'mock', label: MOCK_BANNER, disabledReason: null };
+
 export interface RunHandle {
-  engine: MockEngine;
+  engine: FrameSource;
   config: ScenarioConfig;
   cursorS: number;
   recordedToS: number;
@@ -37,6 +82,8 @@ export interface RunHandle {
   update: (next: ScenarioConfig) => UpdateResponse;
   restart: (next: ScenarioConfig) => void;
   dismissUpdate: () => void;
+  /** Optional only so the server handle, which is shaped by `Omit`, keeps compiling unchanged. */
+  source?: RunSourceInfo;
 }
 
 export function useRun(initial: ScenarioConfig, autoplay = true): RunHandle {
@@ -170,5 +217,189 @@ export function useRun(initial: ScenarioConfig, autoplay = true): RunHandle {
     update,
     restart,
     dismissUpdate: () => setLastUpdate(null),
+    source: MOCK_SOURCE,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Replay
+// ---------------------------------------------------------------------------
+
+export interface ReplayRunHandle extends RunHandle {
+  engine: ReplayEngine;
+  source: RunSourceInfo & { kind: 'replay'; runId: string; disabledReason: string };
+  loaded: LoadedRun;
+  /** The reason every refused control gives. Constant; here so a panel need not import replay.ts. */
+  disabledReason: string;
+  /** The last change that was refused, named, so the banner can say what did not happen. */
+  refused: string | null;
+  dismissRefused: () => void;
+}
+
+/**
+ * The replay branch. Same handle, same units, no engine behind it: the cursor moves over frames
+ * that are all already loaded, which is what makes scrubbing a log read everywhere (M8 met
+ * trivially). `update` still applies a view-only change -- an SLO threshold or the sample rate --
+ * because attainment is derived from the recorded distributions at render time; a physics change
+ * is refused and named. `restart` is refused too: the way to see a different run is to pick one.
+ */
+export function useReplayRun(loaded: LoadedRun, autoplay = true): ReplayRunHandle {
+  const engine = useMemo(() => new ReplayEngine(loaded.frames, cloneConfig(loaded.config)), [loaded]);
+  const durationS = engine.durationS;
+  // Open at the end of warm-up, as the mock does, so the window has something in it.
+  const startS = clampCursor(loaded.config.warmupS, durationS);
+
+  const [config, setConfig] = useState<ScenarioConfig>(() => cloneConfig(loaded.config));
+  const [paused, setPaused] = useState(!autoplay);
+  const [speed, setSpeed] = useState(2);
+  const [cursorS, setCursorS] = useState(startS);
+  const [lastRewind, setLastRewind] = useState<RewindResponse | null>(null);
+  const [lastUpdate, setLastUpdate] = useState<UpdateResponse | null>(null);
+  const [refused, setRefused] = useState<string | null>(null);
+  const [revision, setRevision] = useState(0);
+
+  const cursorRef = useRef(startS);
+  const lastPaint = useRef(0);
+
+  // The chart's decimation reads the engine's config; keep it in step with view-only edits.
+  engine.config = config;
+
+  useEffect(() => {
+    let raf = 0;
+    let prev = performance.now();
+    const tick = (now: number) => {
+      // Wall-clock time paces playback only: it advances the cursor by `speed` simulated seconds
+      // per real second and is never compared with a simulated instant.
+      const dt = Math.min((now - prev) / 1000, 0.25);
+      prev = now;
+      if (!paused) {
+        const next = clampCursor(cursorRef.current + dt * speed, durationS);
+        cursorRef.current = next;
+        if (next >= durationS) setPaused(true);
+      }
+      if (now - lastPaint.current > 80) {
+        lastPaint.current = now;
+        setCursorS(cursorRef.current);
+      }
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [paused, speed, durationS]);
+
+  const commit = useCallback((s: number) => {
+    cursorRef.current = s;
+    setCursorS(s);
+  }, []);
+
+  const step = useCallback(() => {
+    setPaused(true);
+    commit(stepCursor(cursorRef.current, STEP_S, durationS));
+  }, [commit, durationS]);
+
+  // Every scrub is a log read: the whole run is recorded, so `fromLog` is always true and there is
+  // no snapshot to restore. A target past the end stops at the end and says so through simTimeS.
+  const scrubTo = useCallback(
+    (s: number) => {
+      const target = clampCursor(s, durationS);
+      setLastRewind({ simTimeS: target, fromLog: true, restoredFromSnapshotS: target });
+      commit(target);
+    },
+    [commit, durationS]
+  );
+
+  const update = useCallback(
+    (next: ScenarioConfig): UpdateResponse => {
+      const d = diffConfig(config, next);
+      const changed = d.paths.map((p) => FIELD_LABEL[p] ?? p);
+      if (d.paths.length === 0) {
+        return { accepted: true, requiredResimulation: false, rewoundToS: cursorRef.current, rejectedReason: '', changed };
+      }
+      if (d.physicsPaths.length > 0) {
+        const names = d.physicsPaths.map((p) => FIELD_LABEL[p] ?? p).join(', ');
+        setRefused(`${names}: not applied. ${REPLAY_DISABLED_REASON}.`);
+        return { accepted: false, requiredResimulation: false, rewoundToS: cursorRef.current, rejectedReason: REPLAY_DISABLED_REASON, changed };
+      }
+      setConfig(cloneConfig(next));
+      setRevision((r) => r + 1);
+      const resp: UpdateResponse = { accepted: true, requiredResimulation: false, rewoundToS: cursorRef.current, rejectedReason: '', changed };
+      setLastUpdate(resp);
+      return resp;
+    },
+    [config]
+  );
+
+  const restart = useCallback((next: ScenarioConfig) => {
+    const d = diffConfig(config, next);
+    const names = d.paths.map((p) => FIELD_LABEL[p] ?? p).join(', ') || 'restart';
+    setRefused(`${names}: not applied. ${REPLAY_DISABLED_REASON}; pick another recorded run instead.`);
+  }, [config]);
+
+  return {
+    engine,
+    config,
+    cursorS,
+    recordedToS: durationS,
+    durationS,
+    paused,
+    speed,
+    resimulating: false,
+    lastRewind,
+    lastUpdate,
+    revision,
+    setPaused,
+    setSpeed,
+    step,
+    rewindTo: scrubTo,
+    scrubTo,
+    update,
+    restart,
+    dismissUpdate: () => setLastUpdate(null),
+    source: { kind: 'replay', label: `${REPLAY_BANNER}: ${loaded.entry.runId}`, disabledReason: REPLAY_DISABLED_REASON, runId: loaded.entry.runId },
+    loaded,
+    disabledReason: REPLAY_DISABLED_REASON,
+    refused,
+    dismissRefused: () => setRefused(null),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Which source a dashboard should use
+// ---------------------------------------------------------------------------
+
+export type ReplayCatalogue =
+  | { state: 'probing'; runs: [] }
+  | { state: 'mock'; runs: [] }
+  | { state: 'replay'; runs: RunIndexEntry[] };
+
+// One probe per page load: the answer does not change while the page lives, and re-probing on
+// every dashboard mount would add a round trip to each navigation.
+let probe: Promise<RunIndexEntry[] | null> | null = null;
+
+function probeOnce(): Promise<RunIndexEntry[] | null> {
+  if (probe === null) {
+    const override = typeof window === 'undefined' ? null : replayOverride(window.location.search, window.location.hash);
+    probe = override === false ? Promise.resolve(null) : probeRunIndex();
+  }
+  return probe;
+}
+
+/**
+ * Replay when `runs/index.json` is served and non-empty, mock otherwise. `enabled = false` skips
+ * the probe and answers mock at once, for a surface that is mock by design (the walkthroughs).
+ */
+export function useReplayCatalogue(enabled = true): ReplayCatalogue {
+  const [cat, setCat] = useState<ReplayCatalogue>(enabled ? { state: 'probing', runs: [] } : { state: 'mock', runs: [] });
+  useEffect(() => {
+    if (!enabled) return;
+    let alive = true;
+    void probeOnce().then((runs) => {
+      if (!alive) return;
+      setCat(runs === null ? { state: 'mock', runs: [] } : { state: 'replay', runs });
+    });
+    return () => {
+      alive = false;
+    };
+  }, [enabled]);
+  return cat;
 }

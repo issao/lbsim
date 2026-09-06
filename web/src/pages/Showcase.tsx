@@ -153,6 +153,9 @@ function Walkthrough({ script, onExit }: { script: WalkthroughScript; onExit: ()
     <Dashboard
       key={script.id}
       initial={initial}
+      // The walkthroughs script the mock engine's dynamics and change its config mid-run; a
+      // recording can do neither, so this surface stays mock whatever is served.
+      data="mock"
       autoplay
       onRun={onRun}
       highlight={phase === 'paused' ? current.highlight ?? null : null}
