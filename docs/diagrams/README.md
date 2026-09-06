@@ -10,7 +10,7 @@ Every arrow (edge) that represents an API carries custom properties (right-click
 | rpc      | Router.Route                 | service.Method on the arrow              |
 | kind     | rpc | stream | event | metric | how the edge is used                    |
 
-Every box has property `component` = Python module path (e.g. `llmsim.router`).
+Every box has property `component` = the Rust crate, optionally `::module` (e.g. `sim-core::queue`, `sim-ingress`).
 
 Rule: an arrow without `proto`+`rpc` must set `kind=internal` (or `event`) to declare itself
 a data-flow hint rather than an API contract.
