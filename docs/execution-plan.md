@@ -1,6 +1,7 @@
 # Execution plan
 
 Proposal, awaiting Issao. Nothing here is started.
+// Issao: make sure this is a plan we can finish by 4:30pm.
 
 Two things shape it. The fastest possible local loop matters more than anything else, because
 this project is a research instrument and its value is proportional to how many experiments get
