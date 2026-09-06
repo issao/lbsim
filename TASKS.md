@@ -35,7 +35,7 @@ consequences that belong to the tech lead; verbatim, from `TASKS.md` before the 
 
 ## 1. Domain: all three steps done by you; the certificate is Google's to issue now
 
-Checked at 16:07: the mapping for `lbsim.ai` exists in `lbsim-gcp` (created 15:58), Google's resolvers
+Checked at 16:04: the mapping for `lbsim.ai` exists in `lbsim-gcp` (created 15:58), Google's resolvers
 return the four Cloud Run `A` records (`216.239.32.21` and three more), `http://lbsim.ai` already
 redirects to `https://`, and the mapping reports `CertificatePending`: *"Certificate issuance
 pending."* Nothing to do but wait; Google retries every five minutes, and it usually takes fifteen
@@ -94,7 +94,7 @@ until you grant the role, and the results bucket keeps everything it is ever giv
 ## Answered, kept for the record
 
 - 16:03, domain: registrar repointed to Porkbun, Search Console verified, mapping created, apex `A`
-  records added, all by you. Certificate pending at 16:07, item 1.
+  records added, all by you. Certificate pending at 16:04, item 1.
 
 - 15:56, *"for the dashboard, add alink to the reports from the homepage."* Done by the tech lead,
   cf12e33, on `master` at 15:59; live after the next `./deploy.sh`.
