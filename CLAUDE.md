@@ -160,6 +160,15 @@ paths regardless of what else is staged. Before committing in a shared checkout,
 --name-only` shows whether the index holds anyone else's work. The real cure is the worktree rule below,
 which the main agent now follows as well.
 
+**The tech lead breaks dependencies before accepting them**, per Issao: *"look at the overall execution
+plan graph and whenever there is a dependency, consider if we can make a small refactor or propose a
+stand in interface to break up the dependency."* The tech lead keeps an explicit dependency graph of the
+in-flight and queued units, and for every edge asks whether a small refactor or a stand-in interface (a
+trait with a trivial implementation, a fixture in the final file format, a shape fixed in prose like
+`crates/sim-ingress/WIRE.md`) lets the downstream unit start now and reconcile at integration. A unit's
+brief states which upstream it would have waited for and what stand-in removed the wait. Edges that could
+not be broken are reported with the reason, so the wait is a decision rather than a default.
+
 **A simplification pass runs on a cadence**, per the user: after every wave of merges or every four
 merges, the tech lead spawns one simplification agent, never more than one at a time. Its mandate is
 the `/simplify` skill's: reuse, simplification, efficiency and altitude cleanups, no bug hunting, no
