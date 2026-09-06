@@ -111,10 +111,24 @@ shows up as a status code. The first container that crashes on startup will need
 ### One consequence: three copies of the exclude list
 
 `.dockerignore`, `.gcloudignore` and the `tar --exclude` flags in `deploy.sh` all list the same
-things (`.git`, `target`, `out`, `bench`, `tests`, `web/node_modules`, `web/dist`). They cannot be
-one file: `tar` does not understand gitignore syntax, and `.dockerignore` needs a negation
-(`!docs/findings.md`) that the others do not. Change one, change all three. The context is about
-350 KB, so a missed exclude shows up as a suddenly slow upload.
+things (`.cargo`, `.git`, `target`, `out`, `bench`, `tests`, `web/node_modules`, `web/dist`). They
+cannot be one file: `tar` does not understand gitignore syntax, and `.dockerignore` needs a negation
+(`!docs/findings.md`) that the others do not. Change one, change all three.
+
+**`.cargo` is the entry that is not about upload size, and it is the one to be careful with.**
+`.cargo/config.toml` is checked in and pins an *absolute* `target-dir` of
+`/home/agents/repo/lbsim/target`, so every agent's checkout and worktree shares one build directory
+and cargo's own file lock serialises them. Inside a container that path is meaningless: cargo writes
+the binary there instead of `./target`, and the next Dockerfile line dies with
+`./target/release/sim-run: not found` — **exit 127, caused by a Cargo setting, with nothing in the
+error naming Cargo.** The Dockerfile now copies the whole context (`COPY . .`) rather than an
+enumerated list of source paths, because the crate layout is not stable — it became a workspace under
+`crates/` — and an enumerated `COPY` breaks the day a layout change lands. That robustness is exactly
+what made the `.cargo` exclusion necessary: the old enumerated `COPY` was avoiding it by accident.
+
+Verified rather than assumed: building the workspace tree through Cloud Build failed at step 1 with
+exit 127 before the exclusion and succeeded in 1m22s after it. The context is about 350 KB, so a
+missed exclude also shows up as a suddenly slow upload.
 
 ## 4. Every flag that is load-bearing
 
@@ -375,6 +389,8 @@ gcloud beta run domain-mappings delete --domain=lbsim.ai --region=us-central1 \
   --project lbsim-gcp --quiet
 
 # 3. The images. List first; delete by exact digest or exact tag, never by prefix.
+#    THIS ONE NEEDS YOU, not Claude: artifactregistry.writer can push but not delete. Tried, and it
+#    returns IAM_PERMISSION_DENIED. Run it as yourself, or grant artifactregistry.repoAdmin first.
 gcloud artifacts docker images list us-central1-docker.pkg.dev/lbsim-gcp/lbsim \
   --include-tags --project lbsim-gcp --quiet
 gcloud artifacts docker images delete \
@@ -384,6 +400,14 @@ gcloud artifacts docker images delete \
 #    deploy.sh is the only writer of that prefix. Everything else in the bucket is run results.
 gcloud storage rm gs://lbsim-gcp-runs/cloudbuild-source/** --quiet
 ```
+
+One image is left behind that is not a deploy: the tag `wstest`, from verifying the container
+against the workspace layout. It should be deleted, and only you can — see step 3.
+
+Nothing prunes old images, so the registry grows by one image per deploy. The whole repository was
+41 MB after four images, which at Artifact Registry's storage price is a fraction of a cent a month,
+so this is housekeeping rather than cost. If it ever matters, an Artifact Registry cleanup policy is
+the mechanism, and setting one needs `artifactregistry.repoAdmin`.
 
 **Not part of tear-down, and not to be done by Claude:** deleting the Artifact Registry repository,
 the results bucket, the service account, the `lbsim-gcp` project, or anything at all in `lbsim-prod`.
@@ -409,8 +433,14 @@ Deliberately absent, and none of it is wanted: any billing permission, any proje
 quota change, `storage.buckets.*`, the ability to enable or disable an API, `monitoring.editor`, and
 domain ownership. Everything above is designed to work inside that, or to say plainly that it cannot.
 
-The one that will bite first is `logging.viewer`: container logs cannot be read at all, so a
-container that crashes on startup can be seen to fail but not diagnosed. See section 3.
+Two of those gaps have been hit for real, so they are known rather than theoretical:
+
+* **`logging.viewer`.** Container logs and build logs cannot be read at all
+  (`gcloud run services logs read` and `gcloud builds log` both return PERMISSION_DENIED for all log
+  views). A build failure had to be diagnosed by inspecting the source tree instead of reading the
+  error. This is the gap that will hurt first, and section 3 says so.
+* **Deleting images.** `artifactregistry.writer` can push and cannot delete, so tear-down step 3 is
+  yours. `artifactregistry.repoAdmin` would cover it, and it is not needed until then.
 
 The consequence worth remembering: **Claude cannot see your budget.** Budget verification is yours
 alone, and the instance caps in section 4 are the practical control — the budget is only the tripwire
