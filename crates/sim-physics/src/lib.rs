@@ -9,7 +9,8 @@
 //! The model is the calibrated two-point roofline from `bench/validate_epochs.py`: a fixed per-step
 //! cost that covers the weight read plus launch overhead, a bandwidth term proportional to resident
 //! key-value tokens, and prefill as a compute-bound token rate. The closed-form epoch advance from
-//! `docs/ARCHITECTURE.md` section 3 lands here when the KV growth term does.
+//! `docs/ARCHITECTURE.md` section 3 lives in [`epoch`], with its naive oracle in [`oracle`]; the
+//! engine still steps through [`CostModel`] until the preemption unit wires the epoch advance in.
 
 use sim_core::Nanos;
 
@@ -77,3 +78,14 @@ impl CostModel {
         replicas as f64 / (prefill_s + decode_s)
     }
 }
+
+pub mod epoch;
+pub mod oracle;
+pub mod rational;
+
+pub use epoch::{
+    Bound, Epoch, EpochModel, EpochParams, EpochState, Spec, LEGACY_ENGINE, NO_SPEC, REF,
+    SPEC_PROFILES,
+};
+pub use oracle::{run_epochs, run_stepwise, RunResult, Seq};
+pub use rational::Rational;
