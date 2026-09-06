@@ -230,7 +230,9 @@ Check it with `curl` the moment `lbsim.ai` is mapped, before relying on `/health
 
 One warm instance costs roughly **$274/month**. Everything else about this deployment costs pennies:
 Artifact Registry storage, a few hundred kilobytes of tarballs, and Cloud Build minutes that fall
-inside the free daily allowance. So there is exactly one thing to check, and checking it by reading
+inside Cloud Build's free allowance on the default machine type — a build measures about 1m25s, and
+the allowance is thousands of minutes a month. Check the current figure rather than trusting this one.
+So there is exactly one thing to check, and checking it by reading
 the flags is not checking it.
 
 ```bash
