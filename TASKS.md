@@ -113,6 +113,8 @@ gcloud config set project lbsim-gcp
 gcloud auth revoke issaofujiwara@gmail.com
 ```
 
+Issao: I have done all stesp except the last.
+
 **Step 4 is the one that matters.** Without it, steps 1 to 3 are a preference Claude could undo. With
 it, the sandbox holds only an identity that has no billing role, no project IAM, and no
 `storage.admin`, so touching your budgets becomes impossible rather than merely forbidden.
