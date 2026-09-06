@@ -1386,6 +1386,7 @@ arena, and everything after it is additive rather than structural.
 | 9 | Prefix-sharing topology, section 7.3 and `docs/calibration.md` §9 | **decided, 15:26**: no internal data; derive the topology from a session model, *"reasonable distributions of lengths of session and how often they fork off and merge back new agents"*, and sweep it |
 | 10 | Arena scope, `docs/arena.md` §6 | **widened, 15:26**: the policy generator *"should actually have full power to write code to write new policies, as well as tuning parameters on existing policies"* |
 | 11 | Arena SLA cap, `docs/arena.md` §5b | **0.95 for now**, *"but we need to figure out how to do better"* |
+| 12 | Arena objective normalised to goodput as a share of offered work, `docs/arena.md` §5b | **accepted, 16:12**: *"You can remove this, I agreed with this."* |
 
 ### Outstanding
 
