@@ -10,7 +10,11 @@ SERVICE=${SERVICE:-lbsim}
 TAG="$REGION-docker.pkg.dev/$PROJECT/lbsim/$SERVICE:$(git rev-parse --short HEAD)"
 
 echo "building $TAG"
-gcloud builds submit --tag "$TAG" --project "$PROJECT" --quiet
+# Stage source in the results bucket rather than Cloud Build's default. The default is created on
+# first use, and creating a bucket needs storage.buckets.create, which the deploy account
+# deliberately does not have. Reusing a bucket it already owns avoids widening the role.
+gcloud builds submit --tag "$TAG" --project "$PROJECT" \
+  --gcs-source-staging-dir="gs://${PROJECT}-runs/cloudbuild-source" --quiet
 
 echo "deploying $SERVICE"
 gcloud run deploy "$SERVICE" \
@@ -21,7 +25,7 @@ gcloud run deploy "$SERVICE" \
   --min-instances 0 \
   --max-instances 10 \
   --timeout 300 \
-  --no-allow-unauthenticated \
+  --allow-unauthenticated \
   --quiet
 # Notes on what is deliberately absent:
 #   --no-cpu-throttling  : not set. This is a static server, so CPU only during a request is correct
@@ -34,6 +38,6 @@ URL=$(gcloud run services describe "$SERVICE" --project "$PROJECT" --region "$RE
         --format='value(status.url)' --quiet)
 echo
 echo "deployed: $URL"
-echo "it is private. To view it locally, authenticated:"
-echo "  gcloud run services proxy $SERVICE --project $PROJECT --region $REGION --port 8080"
-echo "then open http://localhost:8080"
+echo "public, per Issao: mock data and published findings, nothing sensitive."
+echo "instance count should return to zero when idle; that is the cost control."
+
