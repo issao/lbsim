@@ -28,6 +28,8 @@ Scope is `docs/scope-today.md` package B plus item 7, and both side missions Iss
 | Interfaces, twelve files, reviewed; `GeneratedPolicy` slot (947649b), lease expiry renamed `lease_expires_at_wall_ns` because it is wall clock (db390a4) | `proto/lbsim/v1/` | `tools/sync.sh` compiles them |
 | Findings, one section per dynamic | `docs/findings.md` | every table from `./run-demos.sh` |
 
+Issao: for the dashboard, add alink to the reports from the homepage.
+
 The six dynamics, one line each, all measured at 30% of rated capacity unless the sweep is over load:
 reading the whole fleet routes worse than sampling two of it; herding has a staleness threshold, not a
 gradient; prefill and decode contend and no chunk size wins both; past the knee more offered load
