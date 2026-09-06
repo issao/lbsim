@@ -1,0 +1,53 @@
+# Overload fixture for the admission comparison: route_p2c.txt at 1.4x rated capacity with a 20 s
+# client timeout, so a request that waits too long is a visible failure. The two admit_* scenarios
+# differ only in the admission key, so a difference in outcome is a difference in policy.
+#
+# max_batch is 48 rather than the baseline's 256. At 256 the replica never queues: overload shows up
+# as a prefill backlog *inside* the batch, and a router-side view that reports queued and running has
+# nothing to see, so admission cannot act on it. At 48 the sequence cap binds, the queue is real, and
+# the admission decision has a signal. Rated capacity at this batch is 169 rps.
+name = accept_all
+seed = 20260906
+duration_s = 120
+warmup_s = 15
+
+# Fleet. A 70B-class model on 8xH100 per replica; step_base_ms is calibrated in
+# bench/validate_epochs.py against a published batch-1 measurement.
+replicas = 32
+# Sequence cap and token budget both present, because which one binds is the point. At a ~3.2k mean
+# context the token budget allows about 420 sequences, so the count cap binds for ordinary traffic
+# and the token budget binds once long prompts arrive.
+max_batch = 48
+kv_capacity_tokens = 1370000
+# Weight read for a 70B model on 8xH100 at 70% bandwidth utilization, 7.46 ms, plus 2.75 ms of fixed
+# overhead. With the bandwidth term below this reproduces bench/validate_epochs.py to within 0.05 ms.
+step_base_ms = 10.2
+step_per_seq_ms = 0.0
+step_per_kv_ktoken_ms = 0.0175
+prefill_tokens_per_s = 28286
+step_token_budget = 1024
+max_queue = 400
+
+# Workload. A mixture, not a single distribution: interactive chat plus long-document work in the
+# same queue. The mixture is what creates head-of-line blocking, so a unimodal load would hide the
+# phenomenon being studied.
+arrival_rps = 237
+prompt_mean = 1200
+prompt_cv = 1.2
+output_mean = 300
+output_cv = 1.5
+long_probability = 0.08
+long_prompt_mean = 24000
+long_output_mean = 400
+
+routing = p2c
+admission = accept_all
+telemetry_interval_ms = 1000
+telemetry_delay_ms = 200
+
+client_timeout_s = 20
+max_attempts = 1
+ttft_slo_ms = 2000
+itl_slo_ms = 80
+e2e_slo_s = 20
+sample_interval_ms = 250
