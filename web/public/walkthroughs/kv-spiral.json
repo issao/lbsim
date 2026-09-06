@@ -1,0 +1,82 @@
+{
+  "id": "kv-spiral",
+  "dynamic": 4,
+  "title": "KV preemption spiral at low load",
+  "summary": "A fleet well inside its rated request rate, collapsing because contexts are what fill the cache and contexts are not requests.",
+  "scenario": {
+    "name": "showcase: kv pressure",
+    "seed": 20260906,
+    "durationS": 120,
+    "routing.kind": "power_of_two_choices",
+    "workload.arrivalRps": 90,
+    "workload.longProbability": 0.22,
+    "workload.longPromptMean": 40000,
+    "fleet.kvTokensPerReplica": 180000
+  },
+  "steps": [
+    {
+      "at_sim_s": 12,
+      "speed": 2,
+      "control_tab": "cluster",
+      "observe_tab": "utilization",
+      "highlight": "capacity",
+      "title": "Ninety requests per second, and the cache is already tight",
+      "body": [
+        "The router is power-of-two-choices, so this is not an imbalance problem. The offered rate is well under rated capacity, so it is not a throughput problem either.",
+        "Key-value utilization is the constraint. Twenty-two per cent of requests carry a 40,000-token prompt, and a replica holding a few of those has no room left regardless of how few requests it is serving."
+      ],
+      "look_for": "KV utilization high while the queue depths stay small. Those two facts together are the whole dynamic."
+    },
+    {
+      "at_sim_s": 34,
+      "speed": 2,
+      "set": { "fleet.kvTokensPerReplica": 120000 },
+      "observe_tab": "utilization",
+      "highlight": "preempt",
+      "title": "Take away a third of the cache",
+      "body": [
+        "Preemptions start. Each one either parks the sequence in host DRAM, about 20 ms each way, or discards it and pays to recompute the prefill later, about 270 ms for 4k tokens and proportionally more for 40k.",
+        "Preemption is not free capacity relief. It is capacity spent twice on the same request."
+      ],
+      "look_for": "The preemption rate rising, and the DRAM path in the tier bandwidth panel starting to carry traffic."
+    },
+    {
+      "at_sim_s": 58,
+      "speed": 2,
+      "observe_tab": "quality",
+      "highlight": "goodput",
+      "title": "Throughput holds up. Goodput does not",
+      "body": [
+        "The fleet is still producing tokens at a respectable rate. Fewer and fewer of them arrive inside their service objective, because every preempted sequence pays a stall its client can see.",
+        "Ranking a policy on throughput would pick this configuration. Ranking it on goodput would not, which is why goodput is the headline number."
+      ],
+      "look_for": "The two lines separating, and the wasted-GPU fraction in the Utilization tab climbing."
+    },
+    {
+      "at_sim_s": 84,
+      "speed": 2,
+      "set": { "workload.arrivalRps": 130 },
+      "observe_tab": "quality",
+      "highlight": "headline",
+      "title": "Raise the load and it gets worse faster than it should",
+      "body": [
+        "Forty per cent more offered load produces far less than forty per cent more work done, because the extra arrivals raise cache pressure, which raises preemption, which raises the amount of prefill being recomputed.",
+        "That is the spiral. The system spends an increasing share of its capacity redoing work it had already done."
+      ],
+      "look_for": "Attainment falling out of proportion to the load increase."
+    },
+    {
+      "at_sim_s": 110,
+      "speed": 1,
+      "control_tab": "cluster",
+      "observe_tab": "utilization",
+      "highlight": "kv",
+      "title": "The fix is a sizing decision, not a policy",
+      "body": [
+        "Put the cache back. No routing policy recovers from a cache too small for the context lengths being offered, which is worth knowing before spending a quarter on a better router.",
+        "The Cluster tab is where that experiment lives. Raise KV capacity per replica and watch preemptions go to zero without touching the policy."
+      ],
+      "look_for": "Preemptions returning to zero as the cache grows, with the routing policy unchanged."
+    }
+  ]
+}

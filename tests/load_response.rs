@@ -173,14 +173,37 @@ fn low_load_slo_misses_are_caused_by_inter_token_latency_not_congestion() {
 
     assert!(misses > 0, "no SLO misses at all; this test has nothing to explain");
     assert_eq!(e2e_bad, 0, "{e2e_bad} end-to-end SLO misses at a tenth of rated capacity");
+
+    // The cause moved, deliberately, and the test moved with it.
+    //
+    // It originally asserted that most low-load misses involved inter-token latency, which was true
+    // when the default chunk budget was 2,048 tokens: a full prefill chunk then cost 82.6 ms against
+    // an 80 ms target, so the floor on achievable inter-token latency was above the SLO. That was a
+    // genuine defect in the defaults and it is fixed; the budget is 1,024, giving 46.4 ms.
+    //
+    // What remains is first-token latency, and it is arithmetic rather than a defect. The long mode
+    // averages 24,000 prompt tokens, which is 849 ms of prefill before a first token can exist, so a
+    // 2,000 ms target is unreachable for part of the population at any load. The real fix is a
+    // per-class target, which is why SLO classes are on the roadmap.
     assert!(
-        itl_bad * 4 >= misses * 3,
-        "only {itl_bad} of {misses} low-load SLO misses involve ITL; the cause of the low-load \
-         shortfall has changed"
+        ttft_bad * 4 >= misses * 3,
+        "only {ttft_bad} of {misses} low-load misses involve first-token latency, and {itl_bad} \
+         involve inter-token latency ({itl_only} of those exclusively). If inter-token latency is \
+         back in the majority, the chunk-budget default has regressed above the SLO floor"
     );
     assert!(
-        itl_only * 10 >= misses * 7,
-        "only {itl_only} of {misses} low-load SLO misses are ITL-*only* ({ttft_bad} involved TTFT); \
-         congestion has started to matter at a tenth of rated capacity"
+        itl_bad * 4 < misses,
+        "{itl_bad} of {misses} misses involve inter-token latency, which should now be rare: a full \
+         prefill chunk costs about 46 ms against an 80 ms target. Check step_token_budget against \
+         prefill_tokens_per_s"
+    );
+    // The converse of the assertion above, and the same correction: inter-token latency should now
+    // almost never be the *sole* cause of a low-load miss. When it was, that was the chunk-budget
+    // defect.
+    assert_eq!(
+        itl_only, 0,
+        "{itl_only} of {misses} low-load misses are caused by inter-token latency alone. With a \
+         46 ms full-chunk step against an 80 ms target that should be impossible, so either the \
+         chunk budget or the prefill rate has moved"
     );
 }

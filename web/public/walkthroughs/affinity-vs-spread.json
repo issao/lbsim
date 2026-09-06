@@ -1,0 +1,69 @@
+{
+  "id": "affinity-vs-spread",
+  "dynamic": 8,
+  "title": "Prefix affinity against load spreading",
+  "summary": "Cache hits and balance pull in opposite directions, and one parameter decides where you sit between them.",
+  "scenario": {
+    "name": "showcase: affinity",
+    "seed": 20260906,
+    "durationS": 120,
+    "routing.kind": "prefix_affinity",
+    "routing.maxLoadRatio": 1.05,
+    "routing.fallbackChoices": 2,
+    "workload.arrivalRps": 140,
+    "workload.promptMean": 2400
+  },
+  "steps": [
+    {
+      "at_sim_s": 14,
+      "speed": 2,
+      "control_tab": "policies",
+      "observe_tab": "utilization",
+      "highlight": "capacity",
+      "title": "Affinity that yields to load almost immediately",
+      "body": [
+        "Max load ratio is 1.05: the router prefers the replica already holding a request's prefix, but abandons that preference as soon as the candidate is five per cent above the fleet mean.",
+        "So the fleet is balanced, and the prefix hit rate is modest. Prefill work that could have been skipped is being done."
+      ],
+      "look_for": "The prefix hit rate tile, and a low imbalance coefficient of variation in the Machine level tab."
+    },
+    {
+      "at_sim_s": 40,
+      "speed": 2,
+      "set": { "routing.maxLoadRatio": 2.2 },
+      "control_tab": "policies",
+      "observe_tab": "utilization",
+      "highlight": "capacity",
+      "title": "Now let affinity win",
+      "body": [
+        "At 2.2 the router will tolerate a candidate more than twice as loaded as the fleet mean before it gives up on the cache. The hit rate goes up and so does the imbalance.",
+        "Higher hit rate means less prefill per request, which is real capacity. Whether it is worth the imbalance is the question this panel exists to answer, and the answer depends on the workload rather than on the policy."
+      ],
+      "look_for": "The prefix hit rate rising and the heatmap in the Machine level tab developing persistent hot rows."
+    },
+    {
+      "at_sim_s": 66,
+      "speed": 1,
+      "observe_tab": "machine",
+      "highlight": "heatmap",
+      "title": "Affinity hotspots are static, not rolling",
+      "body": [
+        "Compare this with the round-robin walkthrough. There the hot band moved, because the router dealt long requests around the ring. Here the hot rows stay hot, because a prefix lives on a replica and the traffic for it keeps arriving.",
+        "Two different shapes on the same panel, from two different causes. That is the argument for a per-replica-over-time view rather than a fleet aggregate."
+      ],
+      "look_for": "Vertical persistence in the heatmap: the same rows dark for the whole window."
+    },
+    {
+      "at_sim_s": 96,
+      "speed": 2,
+      "observe_tab": "quality",
+      "highlight": "table",
+      "title": "Which one is better depends on what you are measuring",
+      "body": [
+        "The tail is worse with affinity turned up, because the hot replicas queue. The median may be better, because a cache hit removes most of the prefill from most requests.",
+        "There is no single right answer, which is why max load ratio is a parameter rather than a constant. What the dashboard owes you is both numbers at once, not a verdict."
+      ],
+      "look_for": "p50 against p99.9 in the percentile table, at each end of the max-load-ratio range."
+    }
+  ]
+}
