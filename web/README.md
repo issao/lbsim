@@ -85,6 +85,54 @@ exercised. `public/walkthroughs/schema.md` documents it. Five are written:
 `affinity-vs-spread` (8) and `gray-failure` (10). Cards without a script are listed and disabled, so
 the catalogue shows what does not exist yet rather than quietly omitting it.
 
+## Server mode
+
+Mock stays the default. The transport to the real Ingress server lives in `src/lib/api.ts`
+(messages, the HTTP layer, the SSE reader, the subscription lifecycle), `src/lib/useServerRun.ts`
+(the `useRun` seam backed by the server) and `src/lib/mode.ts` (the flag). In mock mode none of it
+executes, so the stand-in is unaffected.
+
+The wire it speaks is `crates/sim-ingress/WIRE.md`, which is the authority: `POST
+/v1/ingress/<RpcName>` with JSON bodies for the unary RPCs, `GET /v1/ingress/OpenSubscription?<query>`
+for the metric stream as server-sent events (`event: open` then `event: update`, each update with
+an `id:`), proto field names verbatim in snake_case, every `uint64` a decimal string on the wire and a
+`bigint` in TypeScript, enums by name, enum-keyed maps by number. On a dropped stream the client
+resumes with `Last-Event-ID`; a `410 Gone` makes it resubscribe from scratch. The lease is counted
+down locally from `lease_ns` and the renew response's `expired` flag is the only authority; the
+server's `lease_expires_at_wall_ns` is never compared to the browser clock.
+
+Turning it on, in precedence order:
+
+| How | Effect |
+|---|---|
+| `?server=1` on the URL, or `#/dashboard?server=1` | this tab, same origin |
+| `?server=http://localhost:8099` | this tab, that server |
+| `?server=0` | this tab back to mock, whatever else is set |
+| `localStorage.setItem('lbsim.server', '1')` (or a URL, or `'0'`) | this browser, until removed |
+| `VITE_LBSIM_SERVER=1` (or a URL) at build time | the build's default |
+
+The header banner says which: `mock data, no engine attached` or `live data from the Ingress
+server at <base>`.
+
+`src/lib/config.ts`'s `BASE` is `scenarios/base.txt` key for key, so a run started from the default
+control panel is the run `sim-run run scenarios/base.txt` performs; the self-test reads the file and
+checks. A `StartRun` sends the whole config as the flat `key = value` text WIRE.md describes, with an
+empty `overrides` map; `UpdateWorkload` and `UpdatePolicies` send only their own keys as string
+overrides.
+
+The transport has a runnable self-test with no network, no browser and no test framework: it runs
+on the fixtures in `src/lib/apiFixtures.ts` (including WIRE.md's own examples verbatim), a stub
+`fetch`, and two files read from the repo, the protos and `scenarios/base.txt`.
+
+```
+cd web && node --experimental-strip-types src/lib/api.selftest.ts
+```
+
+Node 22's built-in type stripping runs it; nothing is installed for it. It prints one `ok` line per
+case and ends with `33 cases, 33 passed, 0 failed`, or throws so the exit code is the answer. It
+also checks that every wire field name the client reads or writes exists in `proto/lbsim/v1`, which
+is the client-side half of the guard WIRE.md describes for the server.
+
 ## What must change when `sim-ingress` exists
 
 One panel at a time, behind the same interface.

@@ -22,8 +22,12 @@ export interface Fleet {
   maxBatch: number;
   stepBaseMs: number;
   stepPerSeqMs: number;
+  /** Engine `step_per_kv_ktoken_ms`: the bandwidth term of the step cost, per thousand resident KV tokens. */
+  stepPerKvKtokenMs: number;
   prefillTokensPerS: number;
   kvTokensPerReplica: number;
+  /** Engine `step_token_budget`: the prefill token budget per step, the other cap beside `maxBatch`. */
+  stepTokenBudget: number;
   maxQueue: number;
   accelerator: string;
 }
@@ -56,19 +60,27 @@ export interface ScenarioConfig {
   routing: RoutingConfig;
   telemetryIntervalMs: number;
   telemetryDelayMs: number;
+  /** Engine `client_timeout_s` and `max_attempts`: the client's patience and its retry cap. */
+  clientTimeoutS: number;
+  maxAttempts: number;
   slo: Slo;
   /** Points per simulated second. A view parameter: it changes the chart, not the physics. */
   samplesPerSimSecond: number;
 }
 
-/** scenarios/base.txt, verbatim where the field exists there. */
+/**
+ * scenarios/base.txt, verbatim. Every engine key that file sets has a field here, so a run started
+ * from this config is the same run `sim-run run scenarios/base.txt` performs; the transport
+ * self-test reads the file and checks. The mock engine is tuned around these numbers too, so a
+ * drift here would make the stand-in's dynamics and the server's disagree for no reason.
+ */
 export const BASE: ScenarioConfig = {
   name: 'base',
   seed: 20260906,
   durationS: 120,
   warmupS: 15,
   workload: {
-    arrivalRps: 100,
+    arrivalRps: 70,
     promptMean: 1200,
     promptCv: 1.2,
     outputMean: 300,
@@ -82,12 +94,14 @@ export const BASE: ScenarioConfig = {
   },
   fleet: {
     replicas: 32,
-    maxBatch: 32,
-    stepBaseMs: 2.75,
-    stepPerSeqMs: 0.25,
-    prefillTokensPerS: 25000,
-    kvTokensPerReplica: 60000,
-    maxQueue: 200,
+    maxBatch: 256,
+    stepBaseMs: 10.2,
+    stepPerSeqMs: 0.0,
+    stepPerKvKtokenMs: 0.0175,
+    prefillTokensPerS: 28286,
+    kvTokensPerReplica: 1370000,
+    stepTokenBudget: 1024,
+    maxQueue: 400,
     accelerator: '8xH100-80GB',
   },
   routing: {
@@ -99,8 +113,11 @@ export const BASE: ScenarioConfig = {
   },
   telemetryIntervalMs: 1000,
   telemetryDelayMs: 200,
+  clientTimeoutS: 60,
+  maxAttempts: 1,
   slo: { ttftMs: 2000, itlMs: 80, e2eS: 60 },
-  samplesPerSimSecond: 2,
+  // base.txt records at sample_interval_ms = 250.
+  samplesPerSimSecond: 4,
 };
 
 export function cloneConfig(c: ScenarioConfig): ScenarioConfig {
@@ -127,7 +144,7 @@ export const PRESETS: Preset[] = [
     id: 'base',
     title: 'Baseline, round robin',
     file: 'scenarios/base.txt',
-    summary: '32 replicas, 100 rps, 8 % long requests. The shared baseline every comparison changes one thing from.',
+    summary: '32 replicas, 70 rps, 8 % long requests. The shared baseline every comparison changes one thing from.',
     apply: () => cloneConfig(BASE),
   },
   {
@@ -179,7 +196,7 @@ export const PRESETS: Preset[] = [
       const c = cloneConfig(BASE);
       c.name = 'kv-pressure';
       c.workload = { ...c.workload, arrivalRps: 55, longProbability: 0.25, longPromptMean: 16000 };
-      c.fleet = { ...c.fleet, kvTokensPerReplica: 50000 };
+      c.fleet = { ...c.fleet, kvTokensPerReplica: 1140000 };
       return c;
     },
   },
@@ -230,11 +247,11 @@ const PHYSICS_PATHS = new Set([
   'workload.outputMean', 'workload.outputCv', 'workload.longProbability',
   'workload.longPromptMean', 'workload.longOutputMean',
   'workload.perturbation', 'workload.perturbAmplitude', 'workload.perturbFrequencyHz',
-  'fleet.replicas', 'fleet.maxBatch', 'fleet.stepBaseMs', 'fleet.stepPerSeqMs',
-  'fleet.prefillTokensPerS', 'fleet.kvTokensPerReplica', 'fleet.maxQueue', 'fleet.accelerator',
+  'fleet.replicas', 'fleet.maxBatch', 'fleet.stepBaseMs', 'fleet.stepPerSeqMs', 'fleet.stepPerKvKtokenMs',
+  'fleet.prefillTokensPerS', 'fleet.kvTokensPerReplica', 'fleet.stepTokenBudget', 'fleet.maxQueue', 'fleet.accelerator',
   'routing.kind', 'routing.choices', 'routing.probeLive',
   'routing.maxLoadRatio', 'routing.fallbackChoices',
-  'telemetryIntervalMs', 'telemetryDelayMs',
+  'telemetryIntervalMs', 'telemetryDelayMs', 'clientTimeoutS', 'maxAttempts',
 ]);
 
 export const VIEW_ONLY_EXPLANATION: Record<string, string> = {
@@ -263,8 +280,10 @@ export const FIELD_LABEL: Record<string, string> = {
   'fleet.maxBatch': 'max batch',
   'fleet.stepBaseMs': 'step base',
   'fleet.stepPerSeqMs': 'step per sequence',
+  'fleet.stepPerKvKtokenMs': 'step per KV ktoken',
   'fleet.prefillTokensPerS': 'prefill rate',
   'fleet.kvTokensPerReplica': 'KV capacity',
+  'fleet.stepTokenBudget': 'step token budget',
   'fleet.maxQueue': 'max queue',
   'fleet.accelerator': 'accelerator',
   'routing.kind': 'routing policy',
@@ -274,6 +293,8 @@ export const FIELD_LABEL: Record<string, string> = {
   'routing.fallbackChoices': 'fallback choices',
   telemetryIntervalMs: 'telemetry interval',
   telemetryDelayMs: 'telemetry delay',
+  clientTimeoutS: 'client timeout',
+  maxAttempts: 'max attempts',
   'slo.ttftMs': 'TTFT SLO',
   'slo.itlMs': 'ITL SLO',
   'slo.e2eS': 'end-to-end SLO',
@@ -284,6 +305,7 @@ function flat(c: ScenarioConfig): Record<string, unknown> {
   const out: Record<string, unknown> = {
     seed: c.seed, durationS: c.durationS, warmupS: c.warmupS,
     telemetryIntervalMs: c.telemetryIntervalMs, telemetryDelayMs: c.telemetryDelayMs,
+    clientTimeoutS: c.clientTimeoutS, maxAttempts: c.maxAttempts,
     samplesPerSimSecond: c.samplesPerSimSecond,
   };
   for (const [k, v] of Object.entries(c.workload)) out[`workload.${k}`] = v;
