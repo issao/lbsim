@@ -81,6 +81,7 @@ All figures derive from `docs/llm-serving-primer.md` section 10. A 70B-class mod
 
 Per replica at batch 256 and 4k average context: ~25-32 ms per step, so ~9,000 output
 tokens/s. Average output 500 tokens, average end-to-end 15 s.
+Issao: Question, is this just for decode? 9000 output tokens/s is 1s / 25ms * 256 ? Is that only for decode at full batches?
 
 | Quantity | At target | Note |
 |---|---|---|
@@ -125,6 +126,8 @@ boundaries, plus preemptions. Round to 100.
 
 **Reduction: about 56x.** Per cluster, the stretch case needs roughly 0.4 of a core, so a
 single-threaded simulator per cluster clears 20x realtime with headroom.
+Issao: As said above, let's do analycal epoch, specially if we still can do a good model 
+  for hbm data locality.
 
 ### 1.4 The event queue: measured, and the mitigation was wrong
 
@@ -226,6 +229,8 @@ alpha = kv * B / (G * bw * u)                     # step-time growth per step
 beta  = (W + kv * S0) / (G * bw * u) + t_fix      # duration of the first step
 t_step(k) = beta + alpha * k
 ```
+Issao: Is this modeling just the HBM bandiwdth cost and not the GPU cost? I would expect
+it to be the worst of the two.
 
 Summing an arithmetic series gives the duration of `n` steps in closed form:
 
@@ -248,6 +253,9 @@ n = floor( ( -(beta - alpha/2) + sqrt( (beta - alpha/2)^2 + 2*alpha*d ) ) / alph
 
 Advance the epoch state to step `n`, apply the event, and open a new epoch. Also O(1).
 
+Issao: don't forget that returning machine status (if at a regular interval or at request completion should
+be consider the end of an epoch)
+
 ### 3.3 What this buys, and what it costs
 
 - Cost becomes O(composition changes), independent of token counts. This is exactly the
@@ -264,6 +272,7 @@ Advance the epoch state to step `n`, apply the event, and open a new epoch. Also
 `ceil(prompt_tokens / chunk_budget)` epoch boundaries. For a 2k prompt at an 8k budget that
 is one; for a 128k prompt it is sixteen. Small constant, and it is physical rather than an
 artifact. Acceptable.
+Issao: Yeah, that should be ok as long as we don't use tiny chunks, which we shouldnt anyway.
 
 **Speculative decoding.** Tokens per step becomes a random variable, which breaks the
 closed form. Three options: sample per step (back to per-token cost), use the expected
@@ -272,6 +281,11 @@ sub-epoch of N steps** (variance at a configurable timescale, cost multiplied by
 steps/N). Recommend the third with N tunable, and document that burst-level variance below
 the sub-epoch timescale is understated. Note also that acceptance rate falls as batch size
 rises, so the acceptance model must be a function of batch state, not a constant.
+Issao: I am not sure that will work, I imagine with speculative decoding we are getting
+at most a couple of tokens before we get it wrong. let's model in a fluid way using the expected
+value - expect speculative decoding to run batches of size N (say N=5?) to make average progress
+of M (say M=3?) make that tunable and potentially stochastically selected on a per request basis
+at ingress. Does that work?
 
 **Policies that want to act every step.** This is the real cost driver, and it is the honest
 fidelity dial:
@@ -287,6 +301,7 @@ Even `every_step` is only about 1.4x, because 40 steps/s is small next to the ~1
 composition changes/s. **So per-step policy decisions are affordable after all.** The thing
 that is not affordable is per-step *iteration over every sequence*, which is a different
 matter and is what the epoch form eliminates.
+Issao: That is great!
 
 ### 3.5 Validated numerically
 
@@ -310,6 +325,9 @@ reason someone might prefer per-step iteration.
 The same script reproduces the decode step-time table in `docs/llm-serving-primer.md` section
 10.4 to within 0.1 ms at every row, which is a useful check that the algebra here and the
 hand-computed numbers there describe the same model.
+
+Issao: Create an implementation that does the most naive per batch computation to serve as
+a validation of the scalable engine.
 
 ---
 
@@ -486,8 +504,12 @@ From the primer's locality table, for a 1.31 GB sequence of KV:
 | GPU to remote host DRAM, 8 rails | 400 GB/s | ~3.3 ms |
 | GPU to local NVMe | 10 GB/s | ~131 ms |
 
+Issao: The latency for local NMVe seems too high, please verify.
+
 **Local and remote DRAM are within ~20% of each other, and both are ~1000x slower than
 HBM.** Your hypothesis holds. Recommendation:
+
+Issao: Great, model DRAM and NVMe as disaggregated. Still model separately GPU local HBM, HBM in other GPU, same host and HBM elsewhere in the cluster.
 
 | Tier | Model as | Capacity | Bandwidth |
 |---|---|---|---|
@@ -503,6 +525,9 @@ and migrations happen on preemption and resume, which are rare next to tokens.
 Add per-host DRAM detail only if you specifically want to study DRAM capacity imbalance.
 Note the shared NIC bandwidth is also consumed by weight loading and any cross-node
 parallelism, so tier 1 bandwidth must be a genuinely shared resource.
+
+
+Issao: Also, model each data flow link as having a fixed bandwidth capacity per container (todo figure it out if that is ok or if we need to model per link). If multiple reads are concurrent, they devide bandwidth equality. Open question - do we have a scheduler per memory container? For now now, but leave it open.
 
 ### 7.3 Prefix caching: feasible, recommended
 
@@ -542,6 +567,8 @@ just another object with a size and a residency tier, and a cold replica pays a 
 Multi-model serving then becomes a cache-replacement problem over weights, which reuses
 tier 1 and 2. MoE expert imbalance needs expert-parallel modeling to be meaningful and is
 deferred. Design the tier machinery so weights can be added without touching it.
+
+Issao: Ok, leave it as a pending item.
 
 ---
 
@@ -633,11 +660,15 @@ and hides it in a `Truth` record that nothing downstream can see, because a real
 not know how long a generation will run and every hard scheduling problem here follows from
 that ignorance.
 
+Issao: We should have an interface that defines the shape of load that the workload generator
+will generate.
+
 The request enters a **gateway**, which owns rate limiting and the outermost admission
 decision. Rate limits are denominated in tokens, not requests, because a single
 hundred-thousand-token prompt costs what twenty-five chat turns cost. The gateway consults an
 admission policy and may shed immediately, which is the cheap failure, deliberately distinct
 in the outcome enum from shedding after GPU time has been spent.
+
 
 A **router** picks a replica. It sees only a delayed fleet snapshot, so this is where herding
 lives: with many routers reading one stale snapshot, all of them conclude the same replica is
