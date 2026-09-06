@@ -46,7 +46,6 @@ because it cannot even read the policy it would need to modify.
 
 ### Checking the budget in the console, without the CLI
 
-Issao: Done.
 
 Since Claude can no longer see billing, this is the path you will want. It is not under the project.
 
@@ -62,7 +61,6 @@ You should see two rows:
 | `lbsim monthly` | $100 | 3 thresholds |
 | `lbsim monthly cap` | $50 | 3 thresholds |
 
-// Issao: Confirmed.
 
 Click either to see its thresholds, its scope, and who gets email. Two things worth confirming while you
 are there: that each one is **scoped to a project** rather than the whole billing account, and that the
@@ -80,7 +78,7 @@ For watching actual usage rather than the limit, the number to look at is **inst
 Run service page. Anything non-zero while nobody is using the dashboard is a bug in the idle shutdown,
 not a pricing surprise.
 
-- [x] Re-check the two budgets with the command above
+- [x] Re-check the two budgets with the command above. Confirmed in the console at 15:15.
 - [ ] Delete the deploy key when this phase ends:
       `gcloud iam service-accounts keys list --iam-account=lbsim-deployer@lbsim-gcp.iam.gserviceaccount.com`
       then `gcloud iam service-accounts keys delete KEY_ID --iam-account=...`. The list command shows
@@ -142,22 +140,34 @@ Two ways round it, and the second is simpler:
   service account addresses. After that Claude can create and manage the mapping unattended.
 - **Create the mapping yourself**, one command, once. Claude does everything else.
 
-### Step 1 — verify the domain, if not already done
+### Step 1 — verify the domain. The TXT record went to a DNS that is not serving `lbsim.ai`
 
-`search.google.com/search-console`, add a **Domain** property for `lbsim.ai`, and put the TXT record it
-gives you in Porkbun. Domain Management → the **DNS** button on the `lbsim.ai` row → the *Add a DNS
-record* form:
+You tried the Porkbun step and it did not work. It is not propagation. Checked at 15:20:
 
-| Field | Value |
-|---|---|
-| Type | `TXT` |
-| Host | **leave completely empty**, not `@`. Porkbun appends the domain itself |
-| Answer | the whole `google-site-verification=…` string |
-| TTL | leave the default |
+```
+$ dig +short NS lbsim.ai
+ns-cloud-d1.googledomains.com. ns-cloud-d2.googledomains.com. ns-cloud-d3.googledomains.com. ns-cloud-d4.googledomains.com.
+$ dig +short TXT lbsim.ai @ns-cloud-d1.googledomains.com
+"hosting-site=lbsim-prod"
+$ dig +short A lbsim.ai @ns-cloud-d1.googledomains.com
+199.36.158.100
+```
 
-Do not remove existing TXT records; several at the apex is normal and anything for mail must stay.
+The authoritative nameservers for `lbsim.ai` are **Google Cloud DNS**, not Porkbun. A record added in
+Porkbun's DNS panel is never served, however long you wait. The zone that is served holds a Firebase
+Hosting verification for `lbsim-prod` and an A record pointing at Firebase, so `lbsim.ai` currently
+resolves to whatever Firebase Hosting serves for that project.
 
-Issao: I tried this but it didn't work, maybe I need to wait to propagate and then continue.
+So the TXT record goes in the Cloud DNS zone instead. Console: **Network services → Cloud DNS**, most
+likely under project `lbsim-prod`, open the `lbsim.ai` zone, **Add record set**, type `TXT`, name left
+empty, data the whole `google-site-verification=…` string. Claude cannot look at that zone for you: the
+deploy account has no access to `lbsim-prod`, and the DNS API is not enabled in `lbsim-gcp`.
+
+Check it landed, from any machine: `dig +short TXT lbsim.ai @ns-cloud-d1.googledomains.com`. Cloud DNS
+serves a new record within a minute. Then finish verification in Search Console.
+
+Same for step 3 below: the A and AAAA records go in Cloud DNS, and they replace the Firebase A record,
+which takes `lbsim.ai` away from Firebase Hosting. Say so if that is not what you want.
 
 ### Step 2 — create the mapping, after a service exists
 
