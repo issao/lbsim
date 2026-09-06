@@ -1380,7 +1380,8 @@ arena, and everything after it is additive rather than structural.
 ### Outstanding
 
 1. **The phase 1 cut.** Section 12 proposes phase 1 in full plus prefix affinity as the v1 scope.
-   Not yet confirmed.
+   Superseded for the first build by `docs/scope-today.md`: Issao chose package B plus item 7 at
+   13:50, and it is built. The phase 1 cut stays the target after it.
 2. **Leaf shards as threads, not processes.** Section 10.5 recommends threads within one process
    per run, because a process boundary costs 50-100 microseconds per barrier against a 0.5 ms
    lookahead, which breaks the 20x target. The proto boundary is preserved either way. Confirm,
