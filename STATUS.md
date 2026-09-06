@@ -3,7 +3,7 @@
 What is live on `origin/master`, what each agent is doing now, and the assumptions being acted on.
 For things that need *you*, see `TASKS.md`.
 
-**Last updated:** 2026-09-06 16:10 PDT by Claude.
+**Last updated:** 2026-09-06 16:14 PDT by Claude.
 
 ---
 
@@ -23,7 +23,7 @@ Scope is `docs/scope-today.md` package B plus item 7, and both side missions Iss
 | Policy ordering survives ±30% cost-model error | `check-sensitivity.sh` | run it; exits non-zero on a flip |
 | Arena, mechanical half, eight-scenario held-out suite | `src/arena.rs`, `scenarios/holdout/` | `cargo test --release --lib -- --nocapture` |
 | Stand-in dashboard, three surfaces, mock data | `web/` | `cd web && npm run build` |
-| **Deployed, public**: <https://lbsim-irpwc2yaoa-uc.a.run.app>, dashboard at `/` with links to the reports at `/reports/1-routing.html` to `6-retry.html`; revision `lbsim-00004-t5q` from 6ebfd4e, 16:03. `lbsim.ai` is mapped and its DNS is live; the certificate was pending at 16:04 | `Dockerfile`, `cloudbuild.yaml`, `deploy.sh` | `curl -sI` on the URL returns 200; `./deploy.sh --check-idle` reads the instance count from Cloud Monitoring |
+| **Deployed, public**: <https://lbsim-irpwc2yaoa-uc.a.run.app>, dashboard at `/` with links to the reports at `/reports/1-routing.html` to `6-retry.html`; revision `lbsim-00004-t5q` from 6ebfd4e, 16:03. `lbsim.ai` is mapped, `A` and `AAAA` records live; the certificate was pending at 16:04 | `Dockerfile`, `cloudbuild.yaml`, `deploy.sh` | `curl -sI` on the URL returns 200; `./deploy.sh --check-idle` reads the instance count from Cloud Monitoring |
 | Reference cost model, exact against a naive oracle | `bench/validate_epochs.py` | `tools/sync.sh` runs it |
 | Interfaces, twelve files, reviewed; `GeneratedPolicy` slot (947649b), lease expiry renamed `lease_expires_at_wall_ns` because it is wall clock (db390a4) | `proto/lbsim/v1/` | `tools/sync.sh` compiles them |
 | Findings, one section per dynamic | `docs/findings.md` | every table from `./run-demos.sh` |
@@ -92,8 +92,9 @@ lead's ETA, wall clock from 15:55 PDT and conditional on agents landing at today
 
 - Package B of `docs/scope-today.md` plus item 7 is today's scope; the dashboard and the arena were
   reinstated by Issao and are built.
-- Arena: SLA cap 0.95 is Issao's rule for now; the raw objective stays with goodput share beside it
-  until he rules on `TASKS.md` item 2. The policy generator may write code, not only parameters.
+- Arena: SLA cap 0.95 is Issao's rule for now, and the objective is goodput as a share of offered
+  work, agreed at 16:12; the code still scores the raw objective until the tech lead switches it. The
+  policy generator may write code, not only parameters.
 - Prefix-sharing topology comes from a session model with fork-off and merge-back rates, swept.
 - Leaf shards are separate processes; memory tiers are Ingress-owned with a seeded bloom-filter
   residency hint. Both are design of record, `docs/ARCHITECTURE.md` §14, not yet built.

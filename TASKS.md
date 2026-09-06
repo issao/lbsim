@@ -1,11 +1,16 @@
 # TASKS — things that need Issao
 
-Last updated: 2026-09-06 16:05 PDT by Claude.
+Last updated: 2026-09-06 16:14 PDT by Claude.
 
 Stack ranked, most blocking first. Every item says what Claude does if you say nothing, so nothing
 here stalls the work. What is finished and live is in `STATUS.md`.
 
 ## Routed to the tech lead
+
+6. At 16:12, on the arena objective, *"You can remove this, I agreed with this."* The score is now
+   the minimum over loads of goodput **as a share of offered work**, not absolute goodput. The code
+   reports that share as a diagnostic beside the raw objective; it becomes the objective, and the rule
+   set version recorded with every score changes. `docs/arena.md` §5b.
 
 Five design decisions from Issao at 15:26, recorded in the design of record (`docs/ARCHITECTURE.md`
 section 14, `docs/arena.md`, `docs/execution-plan.md`) by the housekeeping agent. Each has code
@@ -33,47 +38,23 @@ consequences that belong to the tech lead; verbatim, from `TASKS.md` before the 
 
 ---
 
-## 1. Domain: all three steps done by you; the certificate is Google's to issue now
+## 1. Domain: nothing left for you; Google is issuing the certificate
 
-Checked at 16:04: the mapping for `lbsim.ai` exists in `lbsim-gcp` (created 15:58), Google's resolvers
-return the four Cloud Run `A` records (`216.239.32.21` and three more), `http://lbsim.ai` already
-redirects to `https://`, and the mapping reports `CertificatePending`: *"Certificate issuance
-pending."* Nothing to do but wait; Google retries every five minutes, and it usually takes fifteen
-minutes to a few hours. Claude will re-check and move this to the answered log when `https://lbsim.ai`
-serves.
+Every step is done, the last of them your four `AAAA` records, live through `8.8.8.8` at 16:13. The
+mapping reported `CertificatePending` at 16:04 and Google retries every five minutes; fifteen minutes
+to a few hours is normal. Claude is watching `https://lbsim.ai` and moves this to the answered log the
+moment it serves.
 
-One optional gap: no `AAAA` records are served. The mapping printed four; without them IPv6-only
-clients cannot reach the domain, and everyone else can. Add them in Porkbun when convenient, Host
-empty, one record per address.
+**If you do nothing:** it lands on its own.
 
-- [x] Add the four `AAAA` records, optional.
-
-**If you do nothing:** `lbsim.ai` serves over IPv4 once the certificate lands; IPv6 clients get the
-`run.app` URL only.
-
-## 2. One arena rule change still open
-
-`docs/arena.md` section 5b has the argument, `docs/arena-implementation.md` the numbers.
-
-| Change | Why | Default until you say |
-|---|---|---|
-| Score the minimum of goodput as a **share of offered work**, not absolute goodput | the minimum is otherwise always set by the lightest load, so a load generator would win by proposing trivial loads | raw objective kept; the share is reported beside it |
-
-The SLA cap is answered twice over, 0.95 for now with the aim of improving the SLO target later; the
-design task for a better target is routed to the tech lead above.
-
-**If you do nothing:** the default stands, and every score records the rule set it was earned under.
-
-Issao: You can remove this, I agreed with this.
-
-## 3. Decisions with a default
+## 2. Decisions with a default
 
 | Decision | Default | Rework if changed later |
 |---|---|---|
 | A routing policy that scans the fleet fails the run rather than warning (`docs/ARCHITECTURE.md` §10.4) | fail | small |
 | Prefix-affinity index at Ingress is a bounded top-K, not exact (§10.4) | bounded | small |
 
-## 4. Later, when this phase ends
+## 3. Later, when this phase ends
 
 - [ ] Delete the deploy key. `gcloud iam service-accounts keys list --iam-account=lbsim-deployer@lbsim-gcp.iam.gserviceaccount.com`
       shows the id, which starts `94afd556`; then `keys delete KEY_ID --iam-account=...`.
@@ -94,6 +75,10 @@ until you grant the role, and the results bucket keeps everything it is ever giv
 ---
 
 ## Answered, kept for the record
+
+- 16:12, arena objective normalised to a share of offered work: *"You can remove this, I agreed with
+  this."* Routed to the tech lead to implement.
+- 16:11, the four `AAAA` records for `lbsim.ai`, added by you.
 
 - 16:03, domain: registrar repointed to Porkbun, Search Console verified, mapping created, apex `A`
   records added, all by you. Certificate pending at 16:04, item 1.
