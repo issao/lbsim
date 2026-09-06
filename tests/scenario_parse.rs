@@ -9,13 +9,13 @@
 use lbsim::scenario::Scenario;
 
 /// Every key `parse` accepts, which is also every key `to_text` must emit.
-const KEYS: [&str; 42] = [
+const KEYS: [&str; 43] = [
     "name", "seed", "duration_s", "warmup_s", "replicas", "max_batch", "step_base_ms",
     "step_per_seq_ms", "step_per_kv_ktoken_ms", "kv_capacity_tokens", "prefill_tokens_per_s",
     "step_token_budget", "max_queue", "arrival_rps", "prompt_mean", "prompt_cv", "output_mean",
     "output_cv", "long_probability", "long_prompt_mean", "long_output_mean", "load_step_at_s",
     "load_step_factor", "load_step_until_s", "routing", "p2c_choices", "probe_live",
-    "admission", "admission_headroom", "fair_share_burst", "tenants", "tenant_weights",
+    "admission", "admission_headroom", "fair_share_burst", "tenants", "tenant_weights", "tenant_demand",
     "telemetry_interval_ms", "telemetry_delay_ms", "client_timeout_s", "max_attempts",
     "retry_budget_fraction", "retry_backoff_s", "ttft_slo_ms", "itl_slo_ms", "e2e_slo_s",
     "sample_interval_ms",
@@ -57,6 +57,7 @@ fn all_fields_distinct() -> Scenario {
         fair_share_burst: 3.5,
         tenants: 3,
         tenant_weights: vec![1.0, 2.5, 4.0],
+        tenant_demand: vec![4.0, 1.0, 1.0],
         telemetry_interval_ms: 333.5,
         telemetry_delay_ms: 111.25,
         client_timeout_s: 45.5,
