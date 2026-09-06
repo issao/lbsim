@@ -3,7 +3,7 @@
 What is finished, what is live, what Claude is doing now. Updated by Claude at every unit of
 work. For things that need *you*, see `TASKS.md`.
 
-**Last updated:** 2026-09-06 13:05 by Claude.
+**Last updated:** 2026-09-06 13:15 by Claude.
 
 ---
 
@@ -21,7 +21,7 @@ is the interface review, `TASKS.md` item 1.
 | Domain primer | `docs/llm-serving-primer.md` | complete, 585 lines, includes hardware reference numbers |
 | Architecture and fidelity analysis | `docs/ARCHITECTURE.md` | **reviewed**; decisions in section 14, your three-layer deployment in section 10 |
 | Interfaces | `proto/lbsim/v1/*.proto` | **twelve files, reviewed and simplified**; all feedback folded in |
-| Execution plan | `docs/execution-plan.md` | proposal, **awaiting your review** |
+| Execution plan | `docs/execution-plan.md` | proposal, **awaiting your review**; deployment reworked for scale-to-zero |
 | Calibration reference | `docs/calibration.md` | complete; four replayable traces identified, seven primer corrections |
 | Agent architecture | `docs/agent-architecture.md` | proposal, **awaiting your review** |
 | Reference cost model | `bench/validate_epochs.py` | four properties pass, including the compute branch and speculation |
