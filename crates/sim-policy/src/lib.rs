@@ -20,6 +20,7 @@
 //! [`RoutingPolicy::inspected`] is how the violation is reported rather than hidden.
 
 mod accept_all;
+mod fair_share;
 mod least_queue_tokens;
 mod least_requests;
 mod p2c;
@@ -56,8 +57,10 @@ pub const ROUTING: &[PolicyEntry<dyn RoutingPolicy>] = &[
 ];
 
 /// The admission registry.
-pub const ADMISSION: &[PolicyEntry<dyn AdmissionPolicy>] =
-    &[PolicyEntry { names: &["accept_all"], file: "accept_all.rs", make: accept_all::make }];
+pub const ADMISSION: &[PolicyEntry<dyn AdmissionPolicy>] = &[
+    PolicyEntry { names: &["accept_all"], file: "accept_all.rs", make: accept_all::make },
+    PolicyEntry { names: &["fair_share"], file: "fair_share.rs", make: fair_share::make },
+];
 
 fn lookup<'a, T: ?Sized>(
     table: &'a [PolicyEntry<T>],
