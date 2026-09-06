@@ -3,7 +3,7 @@
 What is live on `origin/master`, what each agent is doing now, and the assumptions being acted on.
 For things that need *you*, see `TASKS.md`.
 
-**Last updated:** 2026-09-06 16:38 PDT by Claude.
+**Last updated:** 2026-09-06 16:41 PDT by Claude.
 
 ---
 
@@ -37,6 +37,10 @@ delivers less; a load-balancer metric improves while service collapses; a retry 
 difference between a bad minute and an outage. Numbers in `docs/findings.md`.
 
 ## What each agent is doing now
+
+**The file to monitor for execution progress is `docs/execution-graph.md`** (cd9af2a): the tech lead's
+dependency graph of every unit, done, in flight, queued or waiting on you, with a section per unit,
+updated on every spawn, merge and ETA change. This file summarises; that one is the source.
 
 | Agent | Owns | Now |
 |---|---|---|
