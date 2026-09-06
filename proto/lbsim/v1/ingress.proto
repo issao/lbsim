@@ -116,7 +116,7 @@ message ApplyRequest {
   string run_id = 1;
   // Dotted paths into Scenario, e.g. "policies.routing.name". A path/value map rather than a whole
   // Scenario so the server can tell whether physics changed.
-  map<string, string> set = 2;
+  map<string, string> set = 2;  // Issao: Don't make these string, model them explicitly as protos please so that I can see the schema.
 }
 message ApplyResponse {
   bool accepted = 1;
