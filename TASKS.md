@@ -46,7 +46,7 @@ One optional gap: no `AAAA` records are served. The mapping printed four; withou
 clients cannot reach the domain, and everyone else can. Add them in Porkbun when convenient, Host
 empty, one record per address.
 
-- [ ] Add the four `AAAA` records, optional.
+- [x] Add the four `AAAA` records, optional.
 
 **If you do nothing:** `lbsim.ai` serves over IPv4 once the certificate lands; IPv6 clients get the
 `run.app` URL only.
