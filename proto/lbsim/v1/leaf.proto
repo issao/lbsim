@@ -1,0 +1,213 @@
+syntax = "proto3";
+
+package lbsim.v1;
+
+import "lbsim/v1/common.proto";
+import "lbsim/v1/kv.proto";
+import "lbsim/v1/request.proto";
+import "lbsim/v1/scenario.proto";
+import "lbsim/v1/serving.proto";
+import "lbsim/v1/subscription.proto";
+import "lbsim/v1/telemetry.proto";
+
+// The Ingress-to-Leaf boundary.
+//
+// Leaf shards own replicas: continuous batching, epoch advance, KV accounting, preemption and
+// prefix trees. Sharding is in the machine dimension with whole nodes per shard, per Issao's
+// specification, which means no simulated state is shared between shards except the
+// cluster-wide memory tiers. See docs/ARCHITECTURE.md section 10.
+//
+// Deployment note that shapes this interface: section 10.5 measures a process boundary at
+// 50-100 us per barrier against a 0.2-1 ms lookahead, which breaks the 20x realtime target,
+// while threads cost 1-5 us. So shards are threads within one process per run, and this
+// interface is an in-process trait whose shape is nonetheless pinned here, so it can become
+// cross-process later at a lower realtime factor. Everything below is designed to keep the
+// message count per barrier at exactly one per shard, because that is what makes either
+// deployment viable.
+
+// ---------------------------------------------------------------------------
+// Leaf: called by Ingress
+// ---------------------------------------------------------------------------
+
+service Leaf {
+  rpc Configure(ConfigureShardRequest) returns (ConfigureShardResponse);
+
+  // **The synchronisation primitive.** Ingress computes a safe horizon from the minimum
+  // Ingress-to-Leaf latency, which is the modelled router-to-replica RPC, and every shard
+  // advances to it independently. Work, telemetry, metrics and tier traffic all ride this one
+  // round trip, so a barrier costs one message per shard rather than one per event.
+  rpc Advance(AdvanceRequest) returns (AdvanceResponse);
+
+  // Rewind support. Snapshots are per shard so they can be taken and restored in parallel.
+  rpc Snapshot(SnapshotRequest) returns (SnapshotResponse);
+  rpc Restore(RestoreRequest) returns (RestoreResponse);
+
+  // Observability, same mechanics as the Frontend hop. The Leaf computes the statistics; Ingress
+  // only merges. Payload per shard is independent of how many replicas or requests it holds,
+  // which is the O(1) property Issao required.
+  rpc OpenSubscription(OpenSubscriptionRequest) returns (OpenSubscriptionResponse);
+  rpc CloseSubscription(CloseSubscriptionRequest) returns (CloseSubscriptionResponse);
+}
+
+message ConfigureShardRequest {
+  uint32 shard_id = 1;
+  string run_id = 2;
+  // The full scenario, so a shard needs no further configuration round trips and its cost model
+  // is identical to every other shard's.
+  Scenario scenario = 3;
+  // Replicas this shard owns. Whole nodes, never split, so a replica's KV and prefix tree are
+  // always shard-local.
+  repeated ReplicaId replicas = 4;
+  // Derived from the master seed and the shard id, so shard count cannot change the workload a
+  // replica sees. A test asserts identical fingerprints across shard counts.
+  uint64 shard_seed = 5;
+}
+
+message ConfigureShardResponse {
+  bool accepted = 1;
+  string rejected_reason = 2;
+  uint64 next_event_ns = 3;
+}
+
+message AdvanceRequest {
+  uint32 shard_id = 1;
+  // Advance no further than this. Ingress guarantees no message will arrive before it.
+  uint64 advance_until_ns = 2;
+
+  // Work whose modelled delivery time falls inside the window, batched. Each carries its own
+  // delivery timestamp; the shard applies each at its own time, not at the window boundary.
+  repeated DispatchedWork work = 10;
+
+  // Answers to tier requests this shard raised in an earlier window. The modelled network
+  // latency of a tier operation is at least the lookahead, so a shard never has to block waiting
+  // for one: it can keep simulating until the response is physically due. The physics supplies
+  // exactly the slack the synchronisation needs.
+  repeated TierGrant tier_grants = 11;
+
+  // Control-plane actions decided by global policy: eject a replica from routing, scale a pool,
+  // cancel a request.
+  repeated ControlAction control = 12;
+}
+
+message DispatchedWork {
+  // When this arrives at the replica, inside the window.
+  uint64 deliver_at_ns = 1;
+  ReplicaId replica = 2;
+  ExecuteRequest request = 3;
+  // Facts the simulator knows and no policy may see. Carried on this hop because the Leaf is
+  // the physics owner and must know the true output length to advance an epoch; it is never
+  // present in an Observation. See request.proto.
+  Truth truth = 4;
+}
+
+message ControlAction {
+  uint64 apply_at_ns = 1;
+  oneof kind {
+    CancelRequest cancel = 10;
+    EjectReplica eject = 11;
+    ReplicaLifecycle lifecycle = 12;
+  }
+  message EjectReplica { ReplicaId replica = 1; bool eject = 2; }
+  // Provisioning and draining land here because the Leaf owns the replica's existence.
+  message ReplicaLifecycle {
+    ReplicaId replica = 1;
+    enum Op {
+      OP_UNSPECIFIED = 0;
+      OP_BEGIN_WARMUP = 1;
+      OP_MARK_READY = 2;
+      OP_BEGIN_DRAIN = 3;
+      OP_TERMINATE = 4;
+      OP_INJECT_FAILURE = 5;
+    }
+    Op op = 2;
+    Health injected_health = 3;
+  }
+}
+
+message AdvanceResponse {
+  uint32 shard_id = 1;
+  // How far the shard actually got. Never beyond advance_until_ns.
+  uint64 advanced_to_ns = 2;
+  // Earliest future event in this shard. Ingress takes the minimum across shards to size the
+  // next window, so this is what keeps the barrier loop from advancing past a pending event.
+  uint64 next_event_ns = 3;
+
+  // Requests that finished, failed or were shed, with their timing. Ingress needs these to
+  // release per-request routing state and to feed client retry behaviour.
+  repeated RequestRecord completed = 10;
+  // First-token times, which Ingress needs separately because a request can be alive for
+  // minutes after its first token and the client is already measuring.
+  repeated FirstToken first_tokens = 11;
+
+  // **Control telemetry.** Batched: one message per shard per publish interval carrying all its
+  // replicas, so message count is O(shards) while bytes are O(machines). Scaling with machine
+  // count is correct here and must not be optimised away: the cost and staleness of scraping
+  // every replica is one of the things under study.
+  repeated ReplicaState telemetry = 20;
+  // Present only when the publish interval elapsed inside this window.
+  bool telemetry_due = 21;
+
+  // **Observability metrics.** Fixed size per shard per subscription, independent of replica or
+  // request count. Aggregated here, merged at Ingress.
+  repeated SubscriptionUpdate metrics = 30;
+
+  // Tier operations needing cluster-wide arbitration, since the tiers are the only state that
+  // crosses a shard boundary. Answered in a later window; see the note on tier_grants.
+  repeated TierRequest tier_requests = 40;
+
+  // Physics violations the referee caught. Non-zero invalidates the run's conclusions unless
+  // expected, so it travels with the data rather than sitting in a log.
+  repeated RefereeCount referee_violations = 50;
+}
+
+message FirstToken {
+  RequestId request = 1;
+  uint64 at_ns = 2;
+  uint32 cached_prefix_tokens = 3;
+}
+
+message RefereeCount { int32 verdict = 1; uint64 count = 2; }
+
+// ---------------------------------------------------------------------------
+// Cluster tiers: the one cross-shard resource
+// ---------------------------------------------------------------------------
+
+// Ingress owns the cluster DRAM and SSD tiers because they are cluster-wide, like policies. A
+// tier operation is therefore a modelled network round trip, which is physically faithful:
+// moving KV to a pooled tier genuinely is a network operation. See docs/ARCHITECTURE.md 10.6.
+message TierRequest {
+  uint64 requested_at_ns = 1;
+  uint32 shard_id = 2;
+  ClusterId cluster = 3;
+  RequestId request = 4;
+  oneof op {
+    StoreRequest store = 10;
+    FetchRequest fetch = 11;
+    EvictRequest evict = 12;
+  }
+}
+
+message TierGrant {
+  // When the answer is physically due at the Leaf: requested_at_ns plus the modelled round trip.
+  uint64 deliver_at_ns = 1;
+  RequestId request = 2;
+  bool granted = 3;
+  // Reflects contention from every shard, which is why this cannot be decided locally.
+  uint64 transfer_ns = 4;
+  bool tier_full = 5;
+}
+
+// ---------------------------------------------------------------------------
+// Snapshots
+// ---------------------------------------------------------------------------
+
+message SnapshotRequest { uint64 at_ns = 1; }
+message SnapshotResponse {
+  uint64 at_ns = 1;
+  // Opaque, shard-local. Ingress stores it keyed by (run, shard, time) and never interprets it.
+  bytes state = 2;
+  uint64 bytes_written = 3;
+}
+
+message RestoreRequest { uint64 at_ns = 1; bytes state = 2; }
+message RestoreResponse { uint64 restored_to_ns = 1; uint64 next_event_ns = 2; bool ok = 3; }

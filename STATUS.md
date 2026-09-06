@@ -3,14 +3,15 @@
 What is finished, what is live, what Claude is doing now. Updated by Claude at every unit of
 work. For things that need *you*, see `TASKS.md`.
 
-**Last updated:** 2026-09-06 11:50 by Claude.
+**Last updated:** 2026-09-06 12:12 by Claude.
 
 ---
 
 ## Phase
 
-**Design, awaiting blessing.** No simulator code exists, by your instruction. The gate is
-`TASKS.md` items 1 and 2.
+**Design, one gate left.** No simulator code exists, by your instruction. The architecture is
+reviewed and its decisions are recorded in `docs/ARCHITECTURE.md` section 14. The remaining gate
+is the interface review, `TASKS.md` item 1.
 
 ## Live on `origin/master`
 
@@ -18,9 +19,10 @@ work. For things that need *you*, see `TASKS.md`.
 |---|---|---|
 | Vision | `VISION.md` | yours, sections 1-8 complete; section 9 points at the architecture |
 | Domain primer | `docs/llm-serving-primer.md` | complete, 585 lines, includes hardware reference numbers |
-| Architecture and fidelity analysis | `docs/ARCHITECTURE.md` | complete, **awaiting your blessing** |
-| Interfaces | `proto/lbsim/v1/*.proto` | nine files, all compile, **awaiting your review** |
-| Architecture diagram | `docs/diagrams/system.drawio` | two pages, uncompressed, verified against the protos |
+| Architecture and fidelity analysis | `docs/ARCHITECTURE.md` | **reviewed**; decisions in section 14, your three-layer deployment in section 10 |
+| Interfaces | `proto/lbsim/v1/*.proto` | eleven files, all compile, **awaiting your review** |
+| Architecture diagram | `docs/diagrams/system.drawio` | three pages, uncompressed, verified against the protos |
+| Reaction tooling | `tools/sync.sh`, `tools/inbox.py` | end-to-end verified against a real push |
 | Diagram checker | `tools/check_diagram.py` | passing, zero problems |
 | Inbox scanner | `tools/inbox.py` | working |
 | Toolchain notes | `docs/toolchain.md` | Rust and protoc working in this sandbox |
@@ -69,9 +71,37 @@ One input correction while measuring: the scale budget assumed 9,000 output toke
 per replica, and the validated cost model gives 7,676. The analysis therefore overstates fleet
 request rate by about 15%, which makes every cost figure conservative rather than optimistic.
 
+## Your feedback, folded in
+
+You left five marker instructions on `master` at 11:53. The watcher caught them within a minute
+and all five are now reflected in the repo, with the markers removed:
+
+- Analytic epochs are the plan of record.
+- Cohorts move to a parking lot rather than being dropped, with an explicit trigger and a knob
+  design spanning fully-discrete to fully-fluid. `docs/ARCHITECTURE.md` section 4 is rewritten.
+- Prefix caching accepted.
+- DRAM and SSD both fully disaggregated at cluster level.
+- Your three-layer architecture is now `docs/ARCHITECTURE.md` section 10, worked out in full,
+  plus two new interface files and a third diagram page.
+
+Three things came out of working through your sketch that need your eye, all in `TASKS.md`:
+
+1. **One departure from your sketch.** A frontend-requested time sampling factor does not hold
+   the O(1) bound on its own, because raising simulation speed raises the wire rate with it. A
+   subscription now declares a wall-clock budget and the server derives the interval. Your
+   preference survives as a hint.
+2. **Ingress state is fine; Ingress compute is the risk.** Memory is single-digit megabytes for
+   the fleet view and about 165 MB for in-flight requests. But at 20x realtime Ingress makes
+   2.25 million routing decisions per second, so a full fleet scan per request would cost 14
+   cores. O(N) routing has to be banned, not merely discouraged.
+3. **Leaf shards should be threads, not processes.** A process boundary costs 50 to 100
+   microseconds per barrier against a 0.2 to 1 millisecond lookahead, which breaks the target;
+   threads cost 1 to 5 microseconds. The proto boundary is preserved either way.
+
 ## Doing now
 
-Nothing. Waiting on `TASKS.md` items 1 and 2, the two blocking gates.
+Nothing blocking. Calibration research is running in the background and will land in
+`docs/calibration.md`.
 
 ## Assumptions Claude is running on
 
@@ -82,7 +112,8 @@ consequence of silence.
 - Request cohorts are dropped; fluid mode survives only for out-of-focus regions.
 - Prefix caching is in scope for phase 2.
 - The memory tier is pooled per cluster, not per host.
-- One thread per cluster, no intra-cluster parallelism.
+- Leaf shards are threads within one process per run, not separate processes.
+- Routing policies must be O(1) or O(log N); a full fleet scan per request is banned.
 - Reference calibration pair is a 70-billion-parameter model on eight H100s.
 
 ## Known risks
@@ -93,6 +124,14 @@ The full list is `docs/ARCHITECTURE.md` section 12. The two that could change th
 2. **Workload realism.** Now the top risk. The simulator is only as good as its arrival process
    and its prompt and output length distributions. Needs real traces, or documented
    uncertainty. `TASKS.md` item 4.
+
+## One incident, resolved
+
+Something outside this session, most likely a VS Code Git extension attached to this working
+directory, stashed uncommitted work and switched branches at 11:59. That silently reverted the
+`docs/ARCHITECTURE.md` rewrite. It was recovered from the stash and reassembled with the newer
+interface work. Nothing is lost and every check passes. `tools/sync.sh` now warns on an
+unexpected stash and on HEAD moving between runs.
 
 ## Branch state
 
