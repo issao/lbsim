@@ -23,7 +23,7 @@ Scope is `docs/scope-today.md` package B plus item 7, and both side missions Iss
 | Policy ordering survives ±30% cost-model error | `check-sensitivity.sh` | run it; exits non-zero on a flip |
 | Arena, mechanical half, eight-scenario held-out suite | `src/arena.rs`, `scenarios/holdout/` | `cargo test --release --lib -- --nocapture` |
 | Stand-in dashboard, three surfaces, mock data | `web/` | `cd web && npm run build` |
-| **Deployed, public**: <https://lbsim-irpwc2yaoa-uc.a.run.app>, dashboard at `/` with links to the reports at `/reports/1-routing.html` to `6-retry.html`; revision `lbsim-00004-t5q` from 6ebfd4e, 16:03. `lbsim.ai` is mapped and its DNS is live; the certificate was pending at 16:07 | `Dockerfile`, `cloudbuild.yaml`, `deploy.sh` | `curl -sI` on the URL returns 200; `./deploy.sh --check-idle` reads the instance count from Cloud Monitoring |
+| **Deployed, public**: <https://lbsim-irpwc2yaoa-uc.a.run.app>, dashboard at `/` with links to the reports at `/reports/1-routing.html` to `6-retry.html`; revision `lbsim-00004-t5q` from 6ebfd4e, 16:03. `lbsim.ai` is mapped and its DNS is live; the certificate was pending at 16:04 | `Dockerfile`, `cloudbuild.yaml`, `deploy.sh` | `curl -sI` on the URL returns 200; `./deploy.sh --check-idle` reads the instance count from Cloud Monitoring |
 | Reference cost model, exact against a naive oracle | `bench/validate_epochs.py` | `tools/sync.sh` runs it |
 | Interfaces, twelve files, reviewed; `GeneratedPolicy` slot (947649b), lease expiry renamed `lease_expires_at_wall_ns` because it is wall clock (db390a4) | `proto/lbsim/v1/` | `tools/sync.sh` compiles them |
 | Findings, one section per dynamic | `docs/findings.md` | every table from `./run-demos.sh` |
