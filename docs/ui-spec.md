@@ -145,9 +145,14 @@ Rules that keep the browser and the server both cheap:
 
 ## 4. Technology
 
-React with Vite and TypeScript. gRPC-web to `sim-ingress` through `tonic-web`, so no proxy is
-needed in development or in production. Generated clients from `proto/`, so the frontend cannot
-drift from the interfaces. Charts: as built, hand-written SVG in
+React with Vite and TypeScript. The wire as planned is gRPC-web to `sim-ingress` through `tonic-web`,
+with generated clients from `proto/` so the frontend cannot drift from the interfaces.
+
+The wire as served today is not that. The tech lead decided, in `crates/sim-ingress/WIRE.md` (3bc02f4),
+on JSON over HTTP/1.1 with server-sent events for subscriptions and no gRPC yet, because `tonic` would
+bring about a hundred crates and a `protoc` step into a one-second zero-dependency build. Field names
+are the proto names verbatim and a test holds them to the proto, so the later switch is a transport
+change rather than a schema change. That file is the contract the web client is built against. Charts: as built, hand-written SVG in
 `web/src/components/charts/`, which for a line chart, a heatmap, a histogram and a waterfall was less
 code than configuring a library.
 

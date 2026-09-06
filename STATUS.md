@@ -3,7 +3,7 @@
 What is live on `origin/master`, what each agent is doing now, and the assumptions being acted on.
 For things that need *you*, see `TASKS.md`.
 
-**Last updated:** 2026-09-06 17:30 by Claude.
+**Last updated:** 2026-09-06 18:00 by Claude.
 
 ---
 
@@ -17,7 +17,9 @@ Scope is `docs/scope-today.md` package B plus item 7, and both side missions Iss
 | What | Where | Verified by |
 |---|---|---|
 | Simulator, six dynamics reproducing | `src/`, `scenarios/` | `./run-demos.sh`, six HTML reports in `out/` |
-| Test suite: 45 pass, 2 ignored as known defects | `tests/` | `cargo test` |
+| Test suite: 55 pass, 3 ignored as known defects | `tests/`, `crates/*/` | `cargo test --workspace` |
+| Golden fingerprints: every demo, the held-out suite and a live probe, byte-identical to the baseline | `bench/golden-fingerprints.txt` | `./check-fingerprints.sh` |
+| Frontend-to-Ingress wire: JSON over HTTP/1.1, SSE subscriptions, field names held to the proto by a test | `crates/sim-ingress/WIRE.md` | `cargo test -p sim-ingress` |
 | Policy ordering survives ±30% cost-model error | `check-sensitivity.sh` | run it; exits non-zero on a flip |
 | Arena, mechanical half, eight-scenario held-out suite | `src/arena.rs`, `scenarios/holdout/` | `cargo test --release --lib -- --nocapture` |
 | Stand-in dashboard, three surfaces, mock data | `web/` | `cd web && npm run build` |
@@ -36,7 +38,7 @@ difference between a bad minute and an outage. Numbers in `docs/findings.md`.
 
 | Agent | Owns | Now |
 |---|---|---|
-| Tech lead | `src/`, `tests/`, `scenarios/`, `web/src/lib/` | worktrees `lbsim-wt-tl`, `lbsim-tlweb`; nothing merged beyond the above yet. Merged: the section 10.8 crate workspace, behaviour byte-identical (163995c). Handed over from the main agent: the browser-side transport client on `claude/tl-web-transport`, with its contract findings. Next: the policy registry behind `GeneratedPolicy`; a simplification pass every four merges, per `CLAUDE.md` |
+| Tech lead | `src/`, `tests/`, `scenarios/`, `web/src/lib/` | worktrees `lbsim-wt-tl`, `lbsim-tlweb`; nothing merged beyond the above yet. Merged: the section 10.8 crate workspace (163995c), golden fingerprints and the wire contract (0efb8bd). In hand: the browser-side transport client from `claude/tl-web-transport`, now built against `WIRE.md`. Next: the policy registry behind `GeneratedPolicy`; a simplification pass every four merges, per `CLAUDE.md` |
 | Cloud | `Dockerfile`, `deploy.sh`, `cloudbuild.yaml`, `docs/deploy.md` | first deploy done at 15:45, merged as 72dfb16. No further IAM grant was needed: the blocker was two bucket permissions, worked around in `cloudbuild.yaml`. `docs/deploy.md` written, 947649b |
 | Monitor and housekeeping | `TASKS.md`, `STATUS.md`, `README.md`, `docs/*.md` | inbox and PR loop every 90 s; tidying the documents; next `README.md`, then `docs/` contradictions |
 
