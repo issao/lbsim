@@ -214,6 +214,20 @@ message PolicySpec {
   RefereeMode referee_mode = 20;
 }
 
+// A policy the arena wrote as code, rather than one that shipped. Per the user: the policy generator
+// has "full power to write code to write new policies, as well as tuning parameters on existing
+// policies." The mechanism is that the arena writes a Rust source file into the policies crate,
+// builds, and runs; this message is how a scenario names it and how a run stays reproducible.
+//
+// `source_sha256` is load-bearing. A generated policy can be regenerated differently under the same
+// name, and a result that cannot say exactly which code produced it is not a result.
+message GeneratedPolicy {
+  string name = 1;
+  string source_sha256 = 2;
+  // Path relative to the repository root, so the source can be found and the hash checked.
+  string source_path = 3;
+}
+
 // Where to send a request. The measured constraint from docs/ARCHITECTURE.md section 10.4 applies
 // to every option here: a decision must be O(1) or O(log N), never a scan of the fleet.
 message RoutingPolicy {
@@ -248,6 +262,7 @@ message RoutingPolicy {
     LeastKvTokens least_kv_tokens = 13;
     PowerOfTwoChoices power_of_two_choices = 14;
     PrefixAffinity prefix_affinity = 15;
+    GeneratedPolicy generated = 99;
   }
 }
 
@@ -275,6 +290,7 @@ message AdmissionPolicy {
     TokenBucket token_bucket = 11;
     DeadlineAware deadline_aware = 12;
     FairShare fair_share = 13;
+    GeneratedPolicy generated = 99;
   }
 }
 
@@ -298,6 +314,7 @@ message SchedulingPolicy {
     PrefillPriority prefill_priority = 11;
     DecodePriority decode_priority = 12;
     EarliestDeadlineFirst earliest_deadline_first = 13;
+    GeneratedPolicy generated = 99;
   }
 }
 
@@ -321,6 +338,7 @@ message PreemptionPolicy {
     Recompute recompute = 11;
     SwapToDram swap_to_dram = 12;
     SwapToDramElseRecompute swap_else_recompute = 13;
+    GeneratedPolicy generated = 99;
   }
 }
 
@@ -352,6 +370,7 @@ message AutoscalingPolicy {
     ReactiveThreshold reactive_threshold = 11;
     PredictiveDiurnal predictive_diurnal = 12;
     WarmPool warm_pool = 13;
+    GeneratedPolicy generated = 99;
   }
 }
 
@@ -374,6 +393,7 @@ message FailureDetectionPolicy {
     TrustAnnounced trust_announced = 10;
     LatencyOutlier latency_outlier = 11;
     SilenceTimeout silence_timeout = 12;
+    GeneratedPolicy generated = 99;
   }
 }
 
@@ -390,6 +410,7 @@ message KvTieringPolicy {
     DiscardOnly discard_only = 10;
     DramThenDiscard dram_then_discard = 11;
     DramThenSsd dram_then_ssd = 12;
+    GeneratedPolicy generated = 99;
   }
 }
 
