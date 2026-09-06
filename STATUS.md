@@ -3,9 +3,38 @@
 What is live on `origin/master`, what each agent is doing now, and the assumptions being acted on.
 For things that need *you*, see `TASKS.md`.
 
-**Last updated:** 2026-09-06 16:41 PDT by Claude.
+**Last updated:** 2026-09-06 16:43 PDT by Claude.
 
 ---
+
+## Session restart
+
+Checkpoint at 2026-09-06 16:43 PDT. Issao: *"lets commit any state that is critical for any running agent including you
+and then start with fresh context from there."* Every agent was killed and restarted from files at this
+point. Each agent's memory is a file, and a restarted agent resumes from it alone:
+
+| Agent | Memory | Respawn brief |
+|---|---|---|
+| Tech lead | `docs/execution-graph.md` | `docs/agents/` |
+| Housekeeping, monitor and inbox | `TASKS.md`, `STATUS.md`, this section | `docs/agents/` |
+| Main agent | `CLAUDE.md`, `docs/agents/` | `docs/agents/` |
+
+**Housekeeping watcher setup, to re-arm identically.** Work in the worktree `/home/agents/repo/lbsim-docs`
+on branches `claude/docs-<topic>`, never in the shared checkout; commit with `git commit -- <paths>`;
+merge `--no-ff` into `master` in the main checkout only when it is on `master`, clean, and at
+`origin/master` (fast-forward it first), then push `master` and the branch. Poll every 90 seconds:
+`git fetch`, `python3 tools/inbox.py --no-fetch`, `gh pr list --state open`, and diff new upstream
+commits for lines naming Issao without a colon, which the scanner cannot see. A 9-minute background
+waiter exits on the first new `origin/master` commit, pending marker or open PR, and is re-armed after
+each. Markers inside `docs/execution-graph.md` are the tech lead's quotes of acted-on instructions, not
+new ones; act on none of them and ask the tech lead to rephrase (asked at 16:41, open at checkpoint).
+Every stamp comes from `date '+%Y-%m-%d %H:%M %Z'` or the commit that carried the event. A marker in
+`TASKS.md` or `STATUS.md` that asks for code is routed: verbatim under "Routed to the tech lead" in
+`TASKS.md`, marker left for the actor. `docs/vision-progress.md` is deleted at the first housekeeping
+round after 2026-09-07 16:19 unless Issao has said otherwise. The estimate table in
+`docs/dashboard-plan.md` and every line of `docs/execution-graph.md` change only on word from the tech
+lead or the main agent, never by inference. Open at checkpoint: nothing routed is unresolved except the
+tech lead's units in the graph; `TASKS.md` item 0 awaits Issao's review.
 
 ## Phase
 
