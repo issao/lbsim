@@ -1,6 +1,6 @@
 # TASKS — things that need Issao
 
-Last updated: 2026-09-06 13:50 by Claude.
+Last updated: 2026-09-06 14:05 by Claude.
 
 Tick a box when you have reviewed it. Anything Claude can do alone is not in this file; see
 `STATUS.md` for what is done and live.
@@ -29,14 +29,94 @@ the four remaining decisions all have defaults recorded. Claude can start now wi
   M0, and it exists precisely so you can see progress and criticise the layout before anything is
   wired up.
 
-Everything in the review list below can happen in parallel with those two. Only section 2 items
+Everything in the review list below can happen in parallel with those two. Only section 3 items
 would cause rework if they arrive late, and each says how much.
 
 **Say "go" and Claude starts on M0 and M0.5.**
 
 ---
 
-## 1. Reviews — read and tick, no reply needed unless you disagree
+## 1. HARD BLOCKER — four things only you can do, for the cloud deployment
+
+Everything else is unblocked. These four are not, and one of them cannot be delegated at all.
+
+`gcloud` and `gsutil` are already installed here and can reach Google APIs, so the tooling side is
+ready. Docker is absent and does not matter, because Cloud Build builds remotely.
+
+**Simpler architecture than the plan sketched.** One Cloud Run service serving both the static
+frontend and the API, mapped straight to your domain. No Firebase, no load balancer, no second
+component. Two reasons at this budget: a global load balancer costs about $18 a month in forwarding
+rules before any traffic, a fifth of the budget for nothing; and a hosting rewrite in front of Cloud
+Run risks buffering server-streamed responses, which would break the live charts in a way that looks
+like the simulation hanging. A direct domain mapping avoids both and the certificate is free.
+
+- [ ] **Create the project and link billing.** Then tell Claude the project id.
+- [ ] **Verify domain ownership.** Google requires a signed-in human for this; it cannot be
+      delegated. About five minutes in Search Console.
+- [ ] **Add the DNS records** the domain mapping returns, at your registrar. Four A and four AAAA for
+      the apex.
+- [ ] **Create the budget.** Budgets live on the billing account, and granting billing access to save
+      two minutes is a bad trade.
+
+```bash
+gcloud projects create lbsim-prod --name=lbsim
+gcloud billing projects link lbsim-prod --billing-account=YOUR_BILLING_ID
+gcloud services enable run.googleapis.com artifactregistry.googleapis.com \
+    cloudbuild.googleapis.com storage.googleapis.com --project=lbsim-prod
+gcloud domains verify YOUR_DOMAIN
+gcloud billing budgets create --billing-account=YOUR_BILLING_ID \
+    --display-name="lbsim" --budget-amount=100USD \
+    --threshold-rule=percent=0.5 --threshold-rule=percent=0.9
+```
+
+Enabling the APIs yourself means Claude never needs the service-usage role, which is one fewer broad
+permission handed over.
+
+### The credential, and its blast radius
+
+**A choice, and the second option is genuinely fine.** Either a service account key, or you run one
+command per deploy yourself with the `!` prefix while Claude prepares everything else. A long-lived
+key in a sandbox is a real secret; if you would rather not, the one-line-per-deploy path costs almost
+nothing.
+
+If you do issue a key, these roles and no others:
+
+| Role | Why |
+|---|---|
+| `roles/run.admin` | deploy services and jobs, set caps, create the domain mapping |
+| `roles/iam.serviceAccountUser` | act as the runtime service account |
+| `roles/artifactregistry.writer` | push images |
+| `roles/cloudbuild.builds.editor` | build them |
+| `roles/storage.objectAdmin` | **on the results bucket only**, which you pre-create |
+| `roles/monitoring.viewer` | read instance-hours, the number that catches a cost bug |
+
+Deliberately absent: every billing role, project IAM, and `storage.admin`. Worst case if the key
+leaks is compute burned inside the instance caps, not an account restructured. Rotate it when this
+phase ends.
+
+### What $100 a month buys
+
+About **250 hours of active simulation**, at roughly $0.38 an hour for 4 vCPU and 4 GiB while a run
+is actually running. Domain mapping and certificate are free; the registry is about $0.10 per GB per
+month; Cloud Build has 120 free minutes a day.
+
+The one thing that could blow it is already known and is in the plan: **a live subscription keeps an
+instance alive**, so one forgotten browser tab holds an instance at about $274 a month, threefold over
+budget by itself. Three defences, and Claude will not deploy without all three: zero minimum
+instances, a hard instance cap, and application-level idle shutdown that checkpoints a run so the
+instance can be reaped. Set the first alert at 50%, because at these rates $50 of spend means
+something is wrong rather than busy.
+
+### What Claude will write without waiting
+
+A two-stage Dockerfile producing a distroless image, `cloudbuild.yaml`, a `deploy.sh` carrying only
+the flags that are load-bearing, a health check that does not touch a running simulation, and the
+idle-shutdown logic. None of that needs credentials, so it can exist before any of the above.
+
+One note outside the cloud budget entirely: a `.ai` registration and renewal is not cheap. Worth
+checking what the registrar committed you to.
+
+## 2. Reviews — read and tick, no reply needed unless you disagree
 
 | Done | File | Lines | Time | Why it matters |
 |---|---|---|---|---|
@@ -61,11 +141,11 @@ would cause rework if they arrive late, and each says how much.
 
 ---
 
-## 2. Decisions that would cause rework if they arrive late
+## 3. Decisions that would cause rework if they arrive late
 
 Each has a default being taken, so none of them blocks. Ordered by how much rework.
 
-### 2.1 Agent staffing — affects how work is farmed out, not what is built
+### 3.1 Agent staffing — affects how work is farmed out, not what is built
 
 `docs/agent-architecture.md` recommends two agents now, Architect and Verifier, growing to seven.
 You asked for a TL and an Architect; the TL has nothing to lead until M1 exists.
@@ -75,7 +155,7 @@ out until M5, which is the first genuinely safe fan-out point.
 
 **Rework if changed later:** none. Staffing can change at any milestone boundary.
 
-### 2.2 Does the dashboard become a separate workstream? — affects scheduling
+### 3.2 Does the dashboard become a separate workstream? — affects scheduling
 
 `docs/ARCHITECTURE.md` risk 7 warns it will expand without limit if it shares a backlog with the
 engine. M0.5 is a one-day stand-in; M8 is the real thing.
@@ -84,7 +164,7 @@ engine. M0.5 is a one-day stand-in; M8 is the real thing.
 
 **Rework if changed later:** small. Mostly a question of what Claude works on next.
 
-### 2.3 Arena scope: tune parameters, or generate policy structures? — affects the interfaces
+### 3.3 Arena scope: tune parameters, or generate policy structures? — affects the interfaces
 
 `docs/arena.md` section 6 item 1. A first arena that tunes parameters of hand-written policies works
 with the interfaces exactly as they stand. Generating new policy *structures* needs a small
@@ -95,7 +175,7 @@ interpreted decision language, which is a real piece of work.
 **Rework if changed later:** moderate. The policy trait would need a second implementation, though
 no proto change.
 
-### 2.4 Prefix-sharing topology — affects what conclusions are trustworthy, not the build
+### 3.4 Prefix-sharing topology — affects what conclusions are trustworthy, not the build
 
 `docs/calibration.md` section 5 measures a prefix-reuse ceiling of 0.37 to 0.55 on production
 traces, against the 0.9 that benchmark numbers imply. What nobody publishes is the *topology*: how
@@ -112,7 +192,7 @@ ranges rather than points.
 
 ---
 
-## 3. Answered, kept for the record
+## 4. Answered, kept for the record
 
 - **Analytic epoch advancement** is plan of record, and since verified numerically.
 - **Request cohorts** parked with a trigger and a knob design, not rejected.
@@ -128,7 +208,7 @@ ranges rather than points.
 
 ---
 
-## 4. Heads up: something outside this session moves the working tree
+## 5. Heads up: something outside this session moves the working tree
 
 A VS Code Git extension appears to be attached to `/home/agents/repo/lbsim`. Once it stashed
 uncommitted work and switched branches, silently reverting a large document. It was recovered,
