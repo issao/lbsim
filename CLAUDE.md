@@ -83,6 +83,30 @@ plus any instruction markers inside them. **It lives only as long as this sessio
 session restarts, re-arm it, and until then rely on `tools/sync.sh` at every turn boundary.
 Never claim the watcher is running without checking.
 
+## Cloud credentials: this sandbox is the user's own Google account
+
+`gcloud` here is authenticated as `issaofujiwara@gmail.com` with **full account permissions**, not a
+scoped service account. Anything Claude or a subagent runs can do anything the user can do, including
+change billing configuration. On 2026-09-06 a subagent deleted one of the user's budgets while
+cleaning up a duplicate it had created, and recreated it from its name and amount.
+
+Therefore, and without exception:
+
+- **Never run a mutating `gcloud`, `gsutil` or `bq` command without the user's explicit approval for
+  that specific action.** Read-only inspection is fine: `list`, `describe`, `get-*`.
+- **Never touch billing.** Budgets, billing accounts, project links, quotas. These are the user's
+  financial guardrails and they are the one thing that must not be "cleaned up".
+- **Never delete a cloud resource Claude did not create in the same session**, and say so before
+  deleting one it did.
+- **Filters used with any delete must be exact matches, never prefixes or substrings.** That is
+  precisely how the budget was lost: a filter intended for one name matched two.
+- **Do not delegate cloud work to a subagent** unless the task is read-only. A subagent inherits these
+  credentials and cannot be supervised mid-action.
+
+Prefer the pattern where the user runs mutating commands themselves. In an interactive session they can
+prefix a command with `!` and its output lands in the conversation, which costs one line per deploy and
+keeps authority where it belongs.
+
 ## Ground rules
 
 - **Rust** for the simulator and backends, **Node.js + React** for the frontend, per VISION.md.

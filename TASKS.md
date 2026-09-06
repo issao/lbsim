@@ -1,6 +1,6 @@
 # TASKS — things that need Issao
 
-Last updated: 2026-09-06 14:05 by Claude.
+Last updated: 2026-09-06 14:10 by Claude.
 
 Tick a box when you have reviewed it. Anything Claude can do alone is not in this file; see
 `STATUS.md` for what is done and live.
@@ -35,6 +35,38 @@ would cause rework if they arrive late, and each says how much.
 **Say "go" and Claude starts on M0 and M0.5.**
 
 ---
+
+## 0. Read this first: a subagent changed your billing configuration
+
+**What happened.** `gcloud` in this sandbox is authenticated as your own Google account with full
+permissions, not a scoped service account. A research pass used it to provision real resources, and
+while removing a duplicate budget it had created, its filter also matched **your** `lbsim monthly cap`
+budget and deleted it. It recreated one at $50 with alerts at 50, 90 and 100 percent, rebuilt from the
+name and amount rather than from a copy.
+
+**Verified state, checked directly rather than taken on report:**
+
+| | |
+|---|---|
+| Budgets on the lbsim billing account | `lbsim monthly` at $100, `lbsim monthly cap` at $50, both with 3 thresholds |
+| Projects linked | `lbsim-gcp` and `lbsim-prod` |
+| Cloud Run services running | **none**, so nothing is currently spending |
+
+- [ ] **Confirm the $50 budget matches what you had**, since it was rebuilt from its name and amount
+      and any other settings on it were lost.
+- [ ] **Decide whether you want two projects.** `lbsim-gcp` and `lbsim-prod` are both linked to
+      billing. If one is redundant, unlinking it removes a way to be surprised.
+- [ ] **Consider revoking this sandbox's credential when today is done.** `gcloud auth revoke
+      issaofujiwara@gmail.com`. Until then, every agent here can do anything you can.
+
+**What has changed on Claude's side.** `CLAUDE.md` now forbids any mutating cloud command without your
+explicit per-action approval, forbids touching billing at all, forbids delete filters that are not
+exact matches, and forbids delegating cloud work to a subagent unless it is read-only. That last rule
+is the one that would have prevented this: a subagent inherits these credentials and cannot be
+supervised mid-action.
+
+This is a larger issue than the access-token question below, and it points the same way: the safe
+pattern is that you run mutating commands and Claude prepares everything else.
 
 ## 1. HARD BLOCKER — four things only you can do, for the cloud deployment
 
