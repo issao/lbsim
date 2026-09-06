@@ -5,10 +5,13 @@ Owned by the tech lead; updated on every spawn, merge and ETA change, in the sam
 Per Issao: *"keep an instruction graph of everything that we need to in an md file, with sections below
 of what each task entails."* A stale graph is worse than none, so the status line moves every time.
 
-**Last updated:** 2026-09-06 16:39 PDT. **Done 17 · in flight 6 · queued 20 · waiting on Issao 2.**
+**Last updated:** 2026-09-06 16:51 PDT. **Done 18 · in flight 4 · queued 22 · waiting on Issao 1.**
+**CHECKPOINT 2026-09-06 16:51 PDT:** the session restarts from files. This file plus CLAUDE.md is the tech lead's whole
+memory. Every in-flight unit has a Resume paragraph below with its branch and worktree; a fresh tech lead
+re-spawns each from its section, then continues down the queue keeping at least six units in flight.
 **Critical path to the next Issao-visible milestone (real runs in the dashboard, first deploy):**
 U13 export (done) → U17 replay source → integrate + deploy. ETA ~18:00 PDT (fleet panels); the heatmap
-follows when U22 lands (per-replica rows, unblocked now that U15's frames are on master).
+follows when U23 lands (per-replica rows, unblocked now that U15's frames are on master).
 
 Legend: solid box = done; **bold** = in flight, with branch; plain = queued; dashed = waiting on Issao.
 Edge labels name the stand-in that let the downstream unit start early, or why the edge could not be broken.
@@ -39,7 +42,7 @@ flowchart TD
   U18[U18 live ingress server<br/>claude/tl-ingress-server]:::flight
   U19[U19 trace wire + export<br/>claude/tl-trace-wire]:::flight
   U20[U20 arena objective + catalog append<br/>claude/tl-arena-rules]:::flight
-  U21[U21 disable_decode<br/>tech lead]:::flight
+  U21[U21 disable_decode]:::done
   U22[U22 preemption + KV eviction<br/>claude/tl-preemption]:::flight
 
   U23[U23 per-replica export rows + heatmap]:::queued
@@ -61,7 +64,8 @@ flowchart TD
   U39[U39 model weights, MoE 17]:::queued
   U40[U40 forecasting policy families]:::queued
   U41[U41 simplify 3..n, one per four merges]:::queued
-  U42[U42 SLO class targets]:::blocked
+  U42[U42 SLO class targets: answered]:::done
+  U44[U44 batch-class throughput over a longer window]:::queued
   U43[U43 rule-set version bump sign-off]:::blocked
 
   U01 --> U04 --> U10 & U11 & U12
@@ -88,7 +92,8 @@ flowchart TD
   U16 --> U20
   U29 --> U36 --> U37
   U11 & U12 --> U38
-  U25 --> U42
+  U42 --> U25
+  U25 --> U44
   U20 --> U43
   U40 --> U34
 ```
@@ -178,6 +183,20 @@ Agent on `claude/tl-replay`. ETA ~17:45. Done: `npm run build`; the six demo run
 dashboard from static files with the load, throughput, latency, imbalance and KV panels real and every
 other panel still marked mock; deployed by the main agent.
 
+**Resume (checkpoint):** branch at origin/master 8cc21f2, `npm ci` done, an export built at
+`/tmp/lbsim-export` (rebuild with `tools/build.sh run --release --quiet --bin sim-run -- export --demos
+--dir /tmp/lbsim-export`); no source written yet. Design settled: `adapter.ts` builds `hist.ts`
+Histograms from the wire percentiles via a piecewise-linear CDF and keeps the exact wire p-values on the
+frame, empty windows stay count 0 / NaN; a `ReplayEngine` implements the panels' FrameSource subset so
+`RunHandle` stays drop-in; physics updates and restart refused with a reason, view-only SLO and
+sample-rate changes still applied. Next: write `adapter.ts`, `replay.ts`, `replay.selftest.ts` (pure, run
+with `node --experimental-strip-types`), commit, then the `useRun.ts` branch and the Dashboard run picker.
+Brief essentials: files owned are `web/src/lib/{replay,adapter}.ts`, the replay branch of `useRun.ts`,
+`mode.ts` (replay when no server is configured and `runs/index.json` is reachable; mock stays the
+fallback), minimal edits to Dashboard/Showcase/Compare/StatusBar to pick a run and show the mode; never
+commit exported runs; document placing an export under `web/public/runs/` for local dev; `npm run build`
+and the self-test are the gate.
+
 ### U18 live ingress server
 `POST /v1/ingress/*` and the SSE `OpenSubscription` per WIRE.md, on the existing HTTP server, driving
 `Sim` on a run thread paced by realtime_factor, leases from U05, idle guard wired to checkpoint-and-stop,
@@ -196,16 +215,9 @@ U24, the dashboard trace panel. Agent on `claude/tl-trace-wire`. Done: field-nam
 metrics.proto; export writes traces for a fixture run.
 
 ### U20 arena objective and catalog append
-Issao: *"You can remove this, I agreed with this."* The score becomes the minimum over loads of goodput as
-a share of offered work; rule-set version bumped and recorded per score. Plus `sim_arena::catalog::append`
-writing one row per authored policy to `docs/policy-catalog.md` (header: Name, Family, Idea, Status,
-Source, Score, Rule set, Added) with a test that the row matches the file's header. Files:
-`crates/sim-arena/src/**`, `tests/arena_*.rs`. Upstream U16 (done). Downstream U34, U43. Agent on
-`claude/tl-arena-rules`. Done: `sim-run arena` ranks by share; the append test passes against the
-committed catalog.
 
-### U21 disable_decode (tech lead)
-Issao: *"we could get disable decode basically by setting HBM to infinity."* Scenario key
+### U21 disable_decode (done, c7f8c6a)
+Per Issao at 16:22: *"we could get disable decode basically by setting HBM to infinity."* Scenario key
 `disable_decode` zeroes the bandwidth term of the step cost (infinite HBM); KV accounting unchanged.
 Scenarios `route_round_robin_no_decode.txt`, `route_p2c_no_decode.txt`, demo 7, golden rows. Also lands
 the U10–U12 scenarios in the demo scripts and the WIRE.md corrections from U13. Done: fingerprints updated
@@ -275,11 +287,19 @@ when it is specified to the five-field standard.
 
 ## Waiting on Issao
 
-### U42 SLO class targets
-Per-class targets for U25. Default if nothing is said: interactive TTFT 2 s / ITL 80 ms, agent 5 s / 150 ms,
-batch 60 s / no ITL target. Rework if changed later: none to code.
+### U42 SLO class targets (answered)
+Per-class targets for U25: interactive TTFT 2 s / ITL 80 ms, agent 5 s / 150 ms, batch 60 s / no ITL
+target. Issao, in this file at 16:45: *"That looks good. ideally we would have an average throughput for
+batch averaged at a longer time window, but don't worry about it for now, record it for future work."*
+Accepted; the future work is U44.
 Issao: That looks good. ideally we would have an average throughput for batch averaged at a longer time
 window, but don't worry about it for now, record it for future work.
+
+### U44 batch-class throughput over a longer window (future work, per Issao)
+The batch SLO class has no inter-token target; its service quality is throughput averaged over a window
+much longer than a sample interval (minutes, not 250 ms). Add a per-class windowed throughput metric with a
+configurable window to the scorecard and the export once U25 exists. Recorded at Issao's request; not
+scheduled.
 
 ### U43 rule-set version sign-off
 U20 bumps the arena rule set to v2 (share-of-offered-work objective, cap 0.95). Every score records its
