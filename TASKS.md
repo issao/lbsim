@@ -1,7 +1,8 @@
 # TASKS — things that need Issao
 
-Last updated: 2026-09-06 16:41 PDT by Claude.
+Last updated: 2026-09-06 16:43 PDT by Claude.
 
+Checkpoint 2026-09-06 16:43 PDT: every agent restarted from files; see `STATUS.md` "Session restart".
 Stack ranked, most blocking first. Every item says what Claude does if you say nothing, so nothing
 here stalls the work. What is finished and live is in `STATUS.md`.
 
