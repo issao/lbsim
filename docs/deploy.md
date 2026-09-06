@@ -272,11 +272,35 @@ for i in $(seq 30); do curl -sS -o /dev/null "$URL/"; done   # create an instanc
 ./deploy.sh --check-idle    # repeat every few minutes
 ```
 
-Cloud Run keeps an instance for roughly ten to fifteen minutes after the last request before reaping
-it, so expect `idle` to sit at 1 for that long and then the series to end. **`idle` at 1 for ten
-minutes after you stopped is correct behaviour, not a leak.** What would be wrong is a series that
-never ends, or any sample at all on a day you did not touch it. The billing consequence of the idle
-window is on the order of a cent.
+### What was actually measured, 2026-09-06
+
+Scale-to-zero was confirmed **twice, on two different revisions**, rather than inferred from the
+flags. Instance count per revision, `ALIGN_MAX` over 60s, `active` and `idle` summed:
+
+| Revision | While serving | After it stopped receiving traffic |
+|---|---|---|
+| `lbsim-00001-zjv` | 2 instances, 22:23–22:28 | **0 from 22:29**, one minute after the next revision took over. Series stops emitting entirely at 22:35. |
+| `lbsim-00002-v7v` | 2 instances, 22:30–22:44 | 1 at 22:45, **0 from 22:47**, about four minutes after losing traffic. |
+| `lbsim-00003-zc5` | 2 instances from 22:46 | still warm at the time of writing, because the deploy was being verified. |
+
+So a genuine zero, reached in one to four minutes, twice. The service total was non-zero at the end
+only because of the revision that had just been deployed and probed — which is the same thing you
+will see if you check immediately after running `./deploy.sh`.
+
+**Two things that look wrong and are not.** Cloud Run started **two** instances for thirty sequential
+requests at `--concurrency 80`; it is eager, it stays inside `--max-instances`, and both were reaped.
+And a revision that loses its traffic to a newer revision is reaped in minutes, whereas a revision
+that is simply left alone is held longer — on the order of ten to fifteen minutes — so do not read the
+one-to-four-minute figure above as the idle timeout for a quiet service. What would be wrong is a
+series that never ends, or any sample at all on a day nobody touched it. Either way the billing
+consequence of one idle window is on the order of a cent.
+
+**Traffic arrives that you did not send.** During this measurement requests landed at 22:31, 22:33 and
+22:37 from outside the test — another agent verifying the URL, and a public `run.app` address will also
+attract scanners. Each such request restarts the idle clock. It does not defeat the cost control,
+because the instance is still reaped afterwards, but it does mean the instance count is not entirely
+under your control, and a check run right after someone else has opened the page will show an
+instance.
 
 There is no alert on this. Adding one needs `roles/monitoring.editor`, and the tripwire behind it is
 already the budget on the billing account, which this credential deliberately cannot see or change.
