@@ -33,7 +33,7 @@ Every run is deterministic: same scenario and seed, byte-identical output. Scena
 | the dashboard | `docs/ui-spec.md`, `web/README.md` |
 | where the numbers come from | `docs/calibration.md`, `docs/llm-serving-primer.md` |
 | how the agents are staffed | `docs/agent-architecture.md`, ownership table in `CLAUDE.md` |
-| deploying | `docs/deploy.md` when it lands; `deploy.sh` until then |
+| deploying | `docs/deploy.md`, `deploy.sh` |
 
 ## Working rules
 

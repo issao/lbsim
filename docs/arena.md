@@ -237,8 +237,9 @@ before the arena does.
    to write code to write new policies, as well as tuning parameters on existing policies."* So a
    candidate is either a `PolicySpec` with new parameters or a new implementation of the policy
    trait, written by the generator as code. The referee's strict mode and the `Observation`/`Intent`
-   boundary are what make that safe: generated code cannot express a physics violation. Whether
-   `PolicySpec` needs an open slot for a generated policy is a proto question for the main agent.
+   boundary are what make that safe: generated code cannot express a physics violation. `PolicySpec`
+   now carries a `GeneratedPolicy` variant in every policy slot, naming the policy, its source path
+   and the sha256 of that source, so a result always says which code produced it (947649b).
 
    A consequence of typing them, worth naming: adding a policy is now a schema change. For the
    arena that is fine, since it tunes what ships. It would matter if the arena were ever allowed to

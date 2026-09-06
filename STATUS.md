@@ -3,7 +3,7 @@
 What is live on `origin/master`, what each agent is doing now, and the assumptions being acted on.
 For things that need *you*, see `TASKS.md`.
 
-**Last updated:** 2026-09-06 16:20 by Claude.
+**Last updated:** 2026-09-06 16:40 by Claude.
 
 ---
 
@@ -36,8 +36,8 @@ difference between a bad minute and an outage. Numbers in `docs/findings.md`.
 
 | Agent | Owns | Now |
 |---|---|---|
-| Tech lead | `src/`, `tests/`, `scenarios/`, `web/src/lib/` | branch `claude/tl-ingress`; nothing merged beyond the above yet |
-| Cloud | `Dockerfile`, `deploy.sh`, `cloudbuild.yaml`, `docs/deploy.md` | first deploy done at 15:45, merged as 72dfb16. No further IAM grant was needed: the blocker was two bucket permissions, worked around in `cloudbuild.yaml`. `docs/deploy.md` not written yet |
+| Tech lead | `src/`, `tests/`, `scenarios/`, `web/src/lib/` | worktrees `lbsim-wt-tl`, `lbsim-tlweb`; nothing merged beyond the above yet. Next per the main agent: the policy registry behind `GeneratedPolicy`; a simplification pass every four merges, per `CLAUDE.md` |
+| Cloud | `Dockerfile`, `deploy.sh`, `cloudbuild.yaml`, `docs/deploy.md` | first deploy done at 15:45, merged as 72dfb16. No further IAM grant was needed: the blocker was two bucket permissions, worked around in `cloudbuild.yaml`. `docs/deploy.md` written, 947649b |
 | Monitor and housekeeping | `TASKS.md`, `STATUS.md`, `README.md`, `docs/*.md` | inbox and PR loop every 90 s; tidying the documents; next `README.md`, then `docs/` contradictions |
 
 The main agent coordinates and owns `CLAUDE.md` and `proto/`.
