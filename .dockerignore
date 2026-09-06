@@ -1,3 +1,13 @@
+# What never reaches the image build.
+#
+# .cargo/ is the load-bearing one and the least obvious. .cargo/config.toml is checked in and pins an
+# ABSOLUTE target-dir of /home/agents/repo/lbsim/target, so several agents' checkouts share one build
+# directory and cargo's own file lock serialises them. Inside a container that path is meaningless:
+# cargo writes the binary there instead of ./target, and the next line of the Dockerfile fails with
+# "./target/release/sim-run: not found" — exit 127, from a Cargo setting, with nothing in the error
+# naming Cargo. Keep this exclusion whatever else changes.
+.cargo/
+
 target/
 out/
 web/node_modules/
@@ -5,5 +15,8 @@ web/dist/
 .git/
 tests/
 bench/
+
+# docs/ is excluded wholesale and then findings.md is put back, because the image serves that one file
+# at /docs/findings.md. Order matters: the negation has to come after the exclusion.
 docs/
 !docs/findings.md

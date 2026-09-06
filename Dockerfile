@@ -17,12 +17,17 @@ RUN npm run build
 # --- 2. the simulator, and the reports it produces --------------------------
 FROM rust:1-slim-bookworm AS build
 WORKDIR /s
-# Cargo.lock has to be here for --locked to mean anything. Without it the flag fails every time and
-# the build quietly falls through to an unlocked one.
-COPY Cargo.toml Cargo.lock ./
-COPY src/ ./src/
+# The whole context, rather than an enumerated list of source paths. The crate layout is not stable:
+# docs/ARCHITECTURE.md 10.8 splits the single crate into a workspace under crates/, and an enumerated
+# COPY breaks on the day that lands, with a Cargo manifest error that does not point at the Dockerfile.
+# .dockerignore already keeps target/, .git, web/node_modules and the test and bench trees out, so the
+# context is about 350 KB. The cost is layer caching on the Rust stage, which is worth nothing here:
+# the crate has no external dependencies and builds in seconds.
+#
+# --locked is meaningful only because Cargo.lock is now in the context. It was not before, so the flag
+# failed on every build and the build fell through to an unlocked one without saying so.
+COPY . .
 RUN cargo build --release --locked
-COPY scenarios/ ./scenarios/
 # Generate the reports at build time. Telemetry is opt-in and stays off here: the image should carry
 # what a reader looks at, not a few megabytes of CSV nobody asked for.
 RUN mkdir -p site/reports \
