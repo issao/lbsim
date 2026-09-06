@@ -63,7 +63,7 @@
         <object label="Cancel — without it, a client timeout leaves the replica generating tokens nobody reads" proto="proto/lbsim/v1/serving.proto" rpc="ReplicaEngine.Cancel" kind="rpc" id="e_gw_re">
           <mxCell style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=9;dashed=1;strokeColor=#1565C0;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.25;entryY=1;entryDx=0;entryDy=0;" edge="1" parent="1" source="gw" target="re"><mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="352" y="340" /><mxPoint x="739" y="340" /></Array></mxGeometry></mxCell>
         </object>
-        <object label="Store / Fetch — shared tier bandwidth" proto="proto/lbsim/v1/kv.proto" rpc="KvTier.Store" kind="rpc" id="e_re_kvt">
+        <object label="TierRequest / TierGrant — shared tier bandwidth, arbitrated by Ingress" proto="proto/lbsim/v1/leaf.proto" rpc="TierRequest" kind="rpc" id="e_re_kvt">
           <mxCell style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=9;startArrow=block;startFill=1;strokeColor=#1565C0;" edge="1" parent="1" source="re" target="kvt"><mxGeometry relative="1" as="geometry" /></mxCell>
         </object>
 
@@ -198,7 +198,7 @@
         <object label="StartRun / SetSpeed / StepForward / Rewind, and OpenSubscription" proto="proto/lbsim/v1/ingress.proto" rpc="Ingress.OpenSubscription" kind="stream" id="e2_web_srv">
           <mxCell style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=9;strokeWidth=2;startArrow=block;startFill=1;strokeColor=#6A1B9A;" edge="1" parent="1" source="srv" target="web"><mxGeometry relative="1" as="geometry" /></mxCell>
         </object>
-        <object label="ExportReport" proto="proto/lbsim/v1/ingress.proto" rpc="Ingress.ExportReport" kind="rpc" id="e2_srv_rpt">
+        <object label="static HTML report, rendered by the CLI from a RunResult" proto="proto/lbsim/v1/metrics.proto" rpc="RunResult" kind="internal" id="e2_srv_rpt">
           <mxCell style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=9;strokeColor=#6A1B9A;" edge="1" parent="1" source="web" target="rpt"><mxGeometry relative="1" as="geometry" /></mxCell>
         </object>
       </root>

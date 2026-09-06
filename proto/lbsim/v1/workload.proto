@@ -83,17 +83,72 @@ message LoadShape {
   bool composite = 3;
 
   repeated TenantShape tenants = 10;
+  Perturbation perturbation = 11;
+  // Replay a recorded trace instead of generating. Served through NextWindow above, so downstream
+  // cannot tell the difference.
+  string trace_path = 12;
 }
 
 message TenantShape {
-  uint64 id = 1;
+  uint64 tenant_id = 1;
   string name = 2;
   double share_of_requests = 3;
+  uint32 model_id = 4;
+  SloClass slo_class = 5;
+  repeated uint64 origin_cluster_ids = 6;
 
   ArrivalShape arrival = 10;
   LengthShape lengths = 11;
   SessionShape sessions = 12;
   PrefixTopology prefix = 13;
+  RetryShape retry = 14;
+
+  // SLO targets, which is what defines goodput for this tenant. A request completing late costs
+  // capacity and earns no goodput, which is why ranking policies on throughput picks the wrong one.
+  uint64 ttft_slo_ns = 20;
+  uint64 itl_slo_ns = 21;
+  uint64 e2e_slo_ns = 22;
+  // Weight for fair queueing, denominated in tokens rather than requests, because one long-context
+  // request costs what twenty-five chat turns cost.
+  double fair_share_weight = 23;
+}
+
+// Client behaviour on failure. Retries are what turn a slowdown into a collapse, and they cost far
+// more here than in a stateless service: a retry after a 30 s timeout has already burned 30 s of GPU
+// work.
+message RetryShape {
+  uint32 max_attempts = 1;
+  uint64 client_timeout_ns = 2;
+  uint64 base_backoff_ns = 3;
+  double backoff_multiplier = 4;
+  double jitter = 5;
+  // Cap on the fraction of traffic that may be retries. Without it a slowdown becomes a retry storm
+  // and then a metastable collapse the fleet does not recover from when load returns to normal.
+  double retry_budget_fraction = 6;
+  // Cancelling before retrying frees the wasted work. Whether a client does is a policy choice with
+  // a large effect under overload.
+  bool cancel_before_retry = 7;
+}
+
+// An independent perturbation layered on the baseline load, for control analysis: sweep the
+// frequency and you get gain and phase from offered load to observed queue depth, hence loop gain
+// and phase margin, hence a prediction of when the control loop will oscillate rather than an
+// observation after the fact.
+message Perturbation {
+  enum Kind {
+    KIND_UNSPECIFIED = 0;
+    KIND_NONE = 1;
+    KIND_STEP = 2;
+    KIND_SINUSOID = 3;
+    KIND_FREQUENCY_SWEEP = 4;
+  }
+  Kind kind = 1;
+  double amplitude_fraction = 2;
+  uint64 start_offset_ns = 3;
+  double frequency_hz = 4;
+  double sweep_min_hz = 5;
+  double sweep_max_hz = 6;
+  uint64 sweep_duration_ns = 7;
 }
 
 message ArrivalShape {
