@@ -1,11 +1,15 @@
 # TASKS — things that need Issao
 
-Last updated: 2026-09-06 15:53 PDT by Claude.
+Last updated: 2026-09-06 15:55 PDT by Claude.
 
 Stack ranked, most blocking first. Every item says what Claude does if you say nothing, so nothing
 here stalls the work. What is finished and live is in `STATUS.md`.
 
 ## Routed to the tech lead
+
+From Issao at 15:56, in `STATUS.md` line 31, marker left in place for the tech lead's own `sync.sh`:
+*"for the dashboard, add alink to the reports from the homepage."* The homepage is `web/src/pages`;
+the reports are served at `/reports/1-routing.html` through `6-retry.html` on the same origin.
 
 Five design decisions from Issao at 15:26, recorded in the design of record (`docs/ARCHITECTURE.md`
 section 14, `docs/arena.md`, `docs/execution-plan.md`) by the housekeeping agent. Each has code
