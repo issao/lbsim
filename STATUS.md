@@ -3,7 +3,7 @@
 What is live on `origin/master`, what each agent is doing now, and the assumptions being acted on.
 For things that need *you*, see `TASKS.md`.
 
-**Last updated:** 2026-09-06 16:14 PDT by Claude.
+**Last updated:** 2026-09-06 16:16 PDT by Claude.
 
 ---
 
@@ -23,7 +23,7 @@ Scope is `docs/scope-today.md` package B plus item 7, and both side missions Iss
 | Policy ordering survives ±30% cost-model error | `check-sensitivity.sh` | run it; exits non-zero on a flip |
 | Arena, mechanical half, eight-scenario held-out suite | `src/arena.rs`, `scenarios/holdout/` | `cargo test --release --lib -- --nocapture` |
 | Stand-in dashboard, three surfaces, mock data | `web/` | `cd web && npm run build` |
-| **Deployed, public**: <https://lbsim-irpwc2yaoa-uc.a.run.app>, dashboard at `/` with links to the reports at `/reports/1-routing.html` to `6-retry.html`; revision `lbsim-00004-t5q` from 6ebfd4e, 16:03. `lbsim.ai` is mapped, `A` and `AAAA` records live; the certificate was pending at 16:04 | `Dockerfile`, `cloudbuild.yaml`, `deploy.sh` | `curl -sI` on the URL returns 200; `./deploy.sh --check-idle` reads the instance count from Cloud Monitoring |
+| **Deployed, public at <https://lbsim.ai>** since 16:16, also <https://lbsim-irpwc2yaoa-uc.a.run.app>; dashboard at `/` with links to the reports at `/reports/1-routing.html` to `6-retry.html`; revision `lbsim-00004-t5q` from 6ebfd4e | `Dockerfile`, `cloudbuild.yaml`, `deploy.sh` | `curl -sI` on the URL returns 200; `./deploy.sh --check-idle` reads the instance count from Cloud Monitoring |
 | Reference cost model, exact against a naive oracle | `bench/validate_epochs.py` | `tools/sync.sh` runs it |
 | Interfaces, twelve files, reviewed; `GeneratedPolicy` slot (947649b), lease expiry renamed `lease_expires_at_wall_ns` because it is wall clock (db390a4) | `proto/lbsim/v1/` | `tools/sync.sh` compiles them |
 | Findings, one section per dynamic | `docs/findings.md` | every table from `./run-demos.sh` |
@@ -66,7 +66,7 @@ One row per milestone in `docs/execution-plan.md` §1, read from `master` at 604
 ## When the dashboard shows real demos
 
 Today the six demos are live as real-data HTML reports at
-<https://lbsim-irpwc2yaoa-uc.a.run.app/reports/1-routing.html> through `6-retry.html`. The React
+<https://lbsim.ai/reports/1-routing.html> through `6-retry.html`. The React
 dashboard at `/` shows mock data and says so on every panel. The homepage links to the six reports
 since cf12e33, live since 16:03 in revision `lbsim-00004-t5q`, built from `master` 6ebfd4e.
 
@@ -99,8 +99,7 @@ lead's ETA, wall clock from 15:55 PDT and conditional on agents landing at today
 - Leaf shards are separate processes; memory tiers are Ingress-owned with a seeded bloom-filter
   residency hint. Both are design of record, `docs/ARCHITECTURE.md` §14, not yet built.
 - `lbsim.ai` is dark: its DNS zone went with `lbsim-prod`. `TASKS.md` item 1.
-- Deployment scales to zero within a replica budget of ten, public, on the `run.app` URL until
-  Google issues the `lbsim.ai` certificate; every step that was Issao's is done. Scale-to-zero is measured, not assumed: two revisions
+- Deployment scales to zero within a replica budget of ten, public at `lbsim.ai` since 16:16. Scale-to-zero is measured, not assumed: two revisions
   reached zero instances within minutes of losing traffic, per `docs/deploy.md` (993c03a), and
   `deploy.sh --check-idle` re-measures it.
 - Reference hardware is a 70-billion-parameter model on eight H100s.

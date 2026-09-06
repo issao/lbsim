@@ -1,6 +1,6 @@
 # TASKS — things that need Issao
 
-Last updated: 2026-09-06 16:14 PDT by Claude.
+Last updated: 2026-09-06 16:16 PDT by Claude.
 
 Stack ranked, most blocking first. Every item says what Claude does if you say nothing, so nothing
 here stalls the work. What is finished and live is in `STATUS.md`.
@@ -38,23 +38,14 @@ consequences that belong to the tech lead; verbatim, from `TASKS.md` before the 
 
 ---
 
-## 1. Domain: nothing left for you; Google is issuing the certificate
-
-Every step is done, the last of them your four `AAAA` records, live through `8.8.8.8` at 16:13. The
-mapping reported `CertificatePending` at 16:04 and Google retries every five minutes; fifteen minutes
-to a few hours is normal. Claude is watching `https://lbsim.ai` and moves this to the answered log the
-moment it serves.
-
-**If you do nothing:** it lands on its own.
-
-## 2. Decisions with a default
+## 1. Decisions with a default
 
 | Decision | Default | Rework if changed later |
 |---|---|---|
 | A routing policy that scans the fleet fails the run rather than warning (`docs/ARCHITECTURE.md` §10.4) | fail | small |
 | Prefix-affinity index at Ingress is a bounded top-K, not exact (§10.4) | bounded | small |
 
-## 3. Later, when this phase ends
+## 2. Later, when this phase ends
 
 - [ ] Delete the deploy key. `gcloud iam service-accounts keys list --iam-account=lbsim-deployer@lbsim-gcp.iam.gserviceaccount.com`
       shows the id, which starts `94afd556`; then `keys delete KEY_ID --iam-account=...`.
@@ -75,6 +66,9 @@ until you grant the role, and the results bucket keeps everything it is ever giv
 ---
 
 ## Answered, kept for the record
+
+- 16:16, **<https://lbsim.ai> is live**: certificate issued, serving the dashboard over IPv4 and IPv6.
+  Every domain step was yours and every one is done.
 
 - 16:12, arena objective normalised to a share of offered work: *"You can remove this, I agreed with
   this."* Routed to the tech lead to implement.
