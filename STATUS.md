@@ -3,7 +3,7 @@
 What is live on `origin/master`, what each agent is doing now, and the assumptions being acted on.
 For things that need *you*, see `TASKS.md`.
 
-**Last updated:** 2026-09-06 15:54 PDT by Claude.
+**Last updated:** 2026-09-06 15:55 PDT by Claude.
 
 ---
 
@@ -40,9 +40,9 @@ difference between a bad minute and an outage. Numbers in `docs/findings.md`.
 
 | Agent | Owns | Now |
 |---|---|---|
-| Tech lead | `src/`, `tests/`, `scenarios/`, `web/src/lib/` | worktrees `lbsim-wt-tl`, `lbsim-tlweb`. Merged: the section 10.8 crate workspace (163995c), golden fingerprints and the wire contract (0efb8bd), the policy trait with a one-file-per-policy registry, the lease registry and the idle-shutdown guard (per the tech lead; unverified by this agent). The `docs/scope-today.md` dynamics fan-out has started: physics oracle first, then preemption, speculative decoding, prefix caching, tiering, autoscaling. In hand: the browser-side transport client from `claude/tl-web-transport`, now built against `WIRE.md`. Next, from Issao at 15:50: *"continue making more progress on the scope-today.md dynamics we talked about when it is possible to do so in parallel"*, with the cut table in `docs/scope-today.md` §3 as the list; the policy registry behind `GeneratedPolicy`; a simplification pass every four merges, per `CLAUDE.md` |
+| Tech lead | `src/`, `tests/`, `scenarios/`, `web/src/lib/` | worktrees `lbsim-wt-tl`, `lbsim-tlweb`. Merged: the section 10.8 crate workspace (163995c), golden fingerprints and the wire contract (0efb8bd), the policy trait with a one-file-per-policy registry, the lease registry and the idle-shutdown guard (the last two per the tech lead; not yet seen on `master` by this agent). The `docs/scope-today.md` dynamics fan-out has started: physics oracle first, then preemption, speculative decoding, prefix caching, tiering, autoscaling. In hand: the browser-side transport client from `claude/tl-web-transport`, now built against `WIRE.md`. Next, from Issao at 15:50: *"continue making more progress on the scope-today.md dynamics we talked about when it is possible to do so in parallel"*, with the cut table in `docs/scope-today.md` §3 as the list; the policy registry behind `GeneratedPolicy`; a simplification pass every four merges, per `CLAUDE.md` |
 | Cloud | `Dockerfile`, `deploy.sh`, `cloudbuild.yaml`, `docs/deploy.md` | **finished.** First deploy at 15:22 (72dfb16); scale-to-zero verified twice (993c03a); `docs/deploy.md` is its handover. No further grant was needed, the pending `legacyBucketReader` request is withdrawn: the blocker was two bucket permissions, worked around in `cloudbuild.yaml` |
-| Monitor and housekeeping | `TASKS.md`, `STATUS.md`, `README.md`, `docs/*.md` | inbox and PR loop every 90 s; documents tidied; keeping them aligned to each merge |
+| Monitor and housekeeping | `TASKS.md`, `STATUS.md`, `README.md`, `docs/*.md` | inbox and PR loop every 90 s; documents tidied; keeping them aligned to each merge. Routed to the tech lead at 15:57: the homepage link to the reports, Issao's marker in this file |
 
 The main agent coordinates and owns `CLAUDE.md` and `proto/`.
 
