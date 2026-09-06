@@ -3,7 +3,7 @@
 What is live on `origin/master`, what each agent is doing now, and the assumptions being acted on.
 For things that need *you*, see `TASKS.md`.
 
-**Last updated:** 2026-09-06 16:29 PDT by Claude.
+**Last updated:** 2026-09-06 16:31 PDT by Claude.
 
 ---
 
@@ -27,6 +27,7 @@ Scope is `docs/scope-today.md` package B plus item 7, and both side missions Iss
 | Reference cost model, exact against a naive oracle | `bench/validate_epochs.py` | `tools/sync.sh` runs it |
 | Interfaces, twelve files, reviewed; `GeneratedPolicy` slot (947649b), lease expiry renamed `lease_expires_at_wall_ns` because it is wall clock (db390a4) | `proto/lbsim/v1/` | `tools/sync.sh` compiles them |
 | Findings, one section per dynamic | `docs/findings.md` | every table from `./run-demos.sh` |
+| Policy catalog, every policy idea so far, one table per family, including the load and latency forecasting families Issao asked for at 16:22; the arena generator appends a row per policy it authors | `docs/policy-catalog.md` (fc06095) | read it |
 
 
 The six dynamics, one line each, all measured at 30% of rated capacity unless the sweep is over load:

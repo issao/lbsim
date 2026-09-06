@@ -30,7 +30,7 @@ Every run is deterministic: same scenario and seed, byte-identical output. Scena
 | what was cut today and why | `docs/scope-today.md` |
 | the design, and every decision taken | `docs/ARCHITECTURE.md`, section 14 for decisions |
 | the whole-project plan | `docs/execution-plan.md` |
-| the policy arena | `docs/arena.md` spec, `docs/arena-implementation.md` measured |
+| the policy arena | `docs/arena.md` spec, `docs/arena-implementation.md` measured, `docs/policy-catalog.md` every policy idea |
 | the dashboard | `docs/ui-spec.md`, `web/README.md`; when it shows real runs, `docs/dashboard-plan.md` |
 | the wire between browser and server | `crates/sim-ingress/WIRE.md` |
 | where the numbers come from | `docs/calibration.md`, `docs/llm-serving-primer.md` |

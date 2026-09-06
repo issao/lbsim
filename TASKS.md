@@ -1,6 +1,6 @@
 # TASKS — things that need Issao
 
-Last updated: 2026-09-06 16:27 PDT by Claude.
+Last updated: 2026-09-06 16:31 PDT by Claude.
 
 Stack ranked, most blocking first. Every item says what Claude does if you say nothing, so nothing
 here stalls the work. What is finished and live is in `STATUS.md`.
@@ -92,7 +92,8 @@ until you grant the role, and the results bucket keeps everything it is ever giv
 - 16:22, three decisions, all routed to the tech lead: *"we could get disable decode basically by
   setting HBM to infinity, so that should be straight forward."*; *"Load and latency forecasting should
   be added as potential policies to evaluate (populate an md with all policy ideas we have had so far
-  and instruct the arena policy generator to populate that as well with any that it authors)."*; *"We
+  and instruct the arena policy generator to populate that as well with any that it authors)."*, which
+  produced `docs/policy-catalog.md` (fc06095); *"We
   should have a way to sample requests to see execution traces and what was busy in each resource as
   it executed."*
 
