@@ -42,7 +42,9 @@ mode the objective exists to rule out.
 ### 2.1 Policy generator
 
 Reviews the previous round's outcome, including every metric, and proposes changes to policy.
-Maintains an archive of its **top ten candidates**.
+Maintains an archive of its **top ten candidates**. Every policy idea so far is in
+`docs/policy-catalog.md`, one table per family, and the generator appends a row there for each policy
+it authors, per Issao at 16:22.
 
 What it may see: everything in the run result. Scorecards, time series, sampled traces, referee
 counters. It is reasoning about its own past behaviour, which is legitimate and is the point.
