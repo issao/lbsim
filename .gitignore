@@ -24,3 +24,6 @@ results/
 
 # OS
 .DS_Store
+
+# Benchmark build artifacts
+bench/queue/target/

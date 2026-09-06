@@ -5,7 +5,7 @@ right now. Claude keeps this file current; anything Claude can do alone is not h
 
 Each item says what happens if you do not answer, so nothing stalls indefinitely.
 
-Last updated: 2026-09-06 11:40 by Claude.
+Last updated: 2026-09-06 11:50 by Claude.
 
 ---
 
@@ -15,9 +15,10 @@ Everything downstream depends on this. Read `docs/ARCHITECTURE.md`, section 13 l
 decisions. Fastest path: read section 0, the five findings, then section 13, then say yes or
 name what you disagree with. Fifteen minutes.
 
-The one that matters most is decision 1. If analytic epoch advancement is wrong, the scale
-target is unreachable and the design changes shape. Claude is validating the math numerically
-in the meantime, since that is verification rather than implementation.
+Decision 1, analytic epoch advancement, is **now backed by proof rather than argument**:
+`bench/validate_epochs.py` shows the closed form is exactly equivalent to per-step iteration,
+in rational arithmetic, with 82x fewer iterations. Section 3.5 has the detail. That should make
+decision 1 easy to accept.
 
 **If you say nothing:** Claude proceeds on the assumption that all six are accepted, and says
 so loudly in `STATUS.md`. Reversing later costs rework proportional to how much got built.
@@ -45,37 +46,39 @@ delete the line.
 **If you say nothing:** Claude treats the interfaces as accepted and starts generating code
 from them. Interface changes after that are cheap for messages and expensive for services.
 
-## 3. Should Claude do groundwork while gated?
+## 3. Should Claude build the cargo workspace skeleton while gated?
 
-Three items are not implementation and cannot be invalidated by your review:
+Two of the three groundwork items are **done**, and both were worth doing:
 
-- **Benchmark the event queue.** This is open risk 1 and the single number that can
-  invalidate the plan. Recommended: yes, do it first.
-- **Validate the closed-form epoch math** against a brute-force per-step loop. Recommended:
-  yes. If it does not match exactly, the central claim is wrong.
-- **Cargo workspace skeleton** with crate boundaries and proto codegen, no logic, so blessing
-  unblocks immediately rather than after setup. Recommended: yes.
+- **Closed-form epoch math validated.** Exactly equivalent to per-step iteration. See item 1.
+- **Event queue benchmarked.** 54 ns per event at fleet scale, roughly 2x inside budget, so
+  open risk 1 is closed. It also proved one of Claude's own recommendations wrong: the
+  hand-rolled heap proposed as a mitigation is slower than the standard library. Corrected in
+  `docs/ARCHITECTURE.md` section 1.4.
 
-**Default being taken:** Claude is doing the first two now, under `bench/`, because they
-verify the design rather than build on it. The workspace skeleton waits for your word, since
-it presumes the crate structure you have not yet blessed.
+Remaining: a **cargo workspace skeleton** with crate boundaries and proto codegen wired up, no
+logic, so that blessing unblocks work immediately instead of after setup.
 
-## 4. Confirm the reference hardware and model for calibration
+**Waiting on you**, because it presumes the crate structure in `docs/ARCHITECTURE.md`
+section 10.5, which you have not blessed. Say the word and it is thirty minutes.
 
-`docs/llm-serving-primer.md` section 10.7 assumes a 70-billion-parameter model on eight H100s.
-Every number in the analysis follows from that pair.
+## 4. Do you have real traces for calibration, even aggregated?
 
-**If you say nothing:** that pair stays the default.
-
-## 5. Do you have real traces for calibration, even aggregated?
-
-Workload realism is the weakest link in the whole design and the least glamorous thing to get
-right. Arrival burstiness, prompt and output length distributions, and session continuation
-rates are what determine whether any conclusion transfers to reality. Published numbers exist
-but are thin.
+**This is now the top technical risk**, since the queue risk is closed. Workload realism is the
+weakest link in the design and the least glamorous thing to get right. Arrival burstiness,
+prompt and output length distributions, and session continuation rates are what determine
+whether any conclusion transfers to reality. Published numbers exist but are thin.
 
 **If you say nothing:** Claude calibrates against published vLLM and SGLang benchmark figures
 and documents the resulting uncertainty as a named risk.
+
+## 5. Confirm the reference hardware and model for calibration
+
+`docs/llm-serving-primer.md` section 10.7 assumes a 70-billion-parameter model on eight H100s.
+Every number in the analysis follows from that pair, and the validated cost model reproduces
+the published step-time table for it to within 0.1 ms.
+
+**If you say nothing:** that pair stays the default.
 
 ## 6. What should the agent arena optimise?
 

@@ -3,7 +3,7 @@
 What is finished, what is live, what Claude is doing now. Updated by Claude at every unit of
 work. For things that need *you*, see `TASKS.md`.
 
-**Last updated:** 2026-09-06 11:40 by Claude.
+**Last updated:** 2026-09-06 11:50 by Claude.
 
 ---
 
@@ -24,6 +24,8 @@ work. For things that need *you*, see `TASKS.md`.
 | Diagram checker | `tools/check_diagram.py` | passing, zero problems |
 | Inbox scanner | `tools/inbox.py` | working |
 | Toolchain notes | `docs/toolchain.md` | Rust and protoc working in this sandbox |
+| Design validation | `bench/validate_epochs.py` | passing; proves the core claim exactly |
+| Queue benchmark | `bench/queue/` | run; open risk 1 now closed |
 | Simulator code | — | **none, deliberately** |
 
 ## Finished since the session started
@@ -44,11 +46,32 @@ work. For things that need *you*, see `TASKS.md`.
    checker found three real drift problems on its first run, including a policy service the
    diagram referenced that the protos did not declare. All fixed.
 
+## Two design risks measured, both resolved
+
+**The core claim holds.** `bench/validate_epochs.py` proves the closed-form epoch advance is
+*exactly* equivalent to iterating every decode step, not an approximation. Checked in rational
+arithmetic across batch sizes 1 to 256 and up to 30,000 steps, plus 20,000 randomised trials of
+the inverse solve, plus whole replica runs where sequences finish at different times. Those
+runs needed 23,343 per-step iterations versus 285 epoch iterations, a factor of 82. A bonus
+finding: the closed form is also more numerically accurate than the loop, because it does not
+accumulate rounding over n additions.
+
+**Open risk 1 is closed, and my proposed mitigation was wrong.** The event queue measures 54 ns
+per event for a 6,250-entry standard-library binary heap, giving roughly 2x headroom against the
+budget, so one core reaches the 20x stretch target for the whole fleet. Heap *size* is what
+matters: at 1.7 million entries the same structure costs 441 ns, 4.4x over budget. That confirms
+the two-level design, keeping per-request timers out of the global queue. But the hand-rolled
+4-ary heap I proposed as the fix is *slower* than the standard library at every size tested, so
+that recommendation is dropped. `docs/ARCHITECTURE.md` section 1.4 is corrected, including an
+earlier prediction of 1 to 2 microseconds that was pessimistic by about 3x.
+
+One input correction while measuring: the scale budget assumed 9,000 output tokens per second
+per replica, and the validated cost model gives 7,676. The analysis therefore overstates fleet
+request rate by about 15%, which makes every cost figure conservative rather than optimistic.
+
 ## Doing now
 
-Validating the closed-form epoch math against a brute-force per-step loop, and benchmarking
-the event queue. Both verify the design rather than build on it, so neither presumes your
-blessing. See `TASKS.md` item 3.
+Nothing. Waiting on `TASKS.md` items 1 and 2, the two blocking gates.
 
 ## Assumptions Claude is running on
 
@@ -66,10 +89,10 @@ consequence of silence.
 
 The full list is `docs/ARCHITECTURE.md` section 12. The two that could change the plan:
 
-1. **Event queue throughput.** The one number that can invalidate the design. Being measured
-   now.
-2. **Workload realism.** The simulator is only as good as its arrival process and its length
-   distributions. Needs real traces, or documented uncertainty. `TASKS.md` item 5.
+1. ~~Event queue throughput~~ **closed by measurement**, see above.
+2. **Workload realism.** Now the top risk. The simulator is only as good as its arrival process
+   and its prompt and output length distributions. Needs real traces, or documented
+   uncertainty. `TASKS.md` item 4.
 
 ## Branch state
 
