@@ -32,6 +32,7 @@ sim-scenario = { path = "crates/sim-scenario" }
 sim-metrics = { path = "crates/sim-metrics" }
 sim-workload = { path = "crates/sim-workload" }
 sim-policy = { path = "crates/sim-policy" }
+sim-model = { path = "crates/sim-model" }
 sim-leaf = { path = "crates/sim-leaf" }
 sim-report = { path = "crates/sim-report" }
 sim-arena = { path = "crates/sim-arena" }

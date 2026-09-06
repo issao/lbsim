@@ -11,6 +11,7 @@ dependencies = [
  "sim-ingress",
  "sim-leaf",
  "sim-metrics",
+ "sim-model",
  "sim-physics",
  "sim-policy",
  "sim-report",
@@ -48,6 +49,7 @@ version = "0.1.0"
 dependencies = [
  "sim-core",
  "sim-metrics",
+ "sim-model",
  "sim-policy",
  "sim-scenario",
  "sim-workload",
@@ -58,6 +60,16 @@ name = "sim-metrics"
 version = "0.1.0"
 dependencies = [
  "sim-core",
+]
+
+[[package]]
+name = "sim-model"
+version = "0.1.0"
+dependencies = [
+ "sim-core",
+ "sim-physics",
+ "sim-scenario",
+ "sim-workload",
 ]
 
 [[package]]

@@ -1,54 +1,24 @@
 //! The simulation loop.
 //!
-//! One replica step is one engine iteration, as in continuous batching: admit from the queue if
-//! there is room, do a bounded amount of prefill work, emit one token for every decoding sequence,
-//! retire whatever finished. Batch composition therefore changes constantly.
-//!
-//! **Deviation worth naming.** `docs/ARCHITECTURE.md` section 3 advances a replica by solving a
-//! closed form over a whole epoch rather than stepping. That matters when long decode runs dominate,
-//! and it needs the KV growth term, which today's scope excludes. The result itself is not in doubt:
-//! `bench/validate_epochs.py` proves the closed form exactly equivalent to per-step iteration,
-//! including the compute branch and speculation. Stepping here is the simple thing that is correct
-//! at today's scale, and the epoch advance lands with the KV model.
+//! Arrivals, routing, admission at the replica, timeouts and retries, telemetry delay and sampling:
+//! everything that happens *between* replicas. What happens *inside* a replica during one step is
+//! `sim_model::Replica`'s, and this loop only decides when to call it and what to do with what it
+//! retired. The split follows the Leaf seam in `docs/ARCHITECTURE.md` section 10.3, so the loop can
+//! later be cut along it without touching the physics.
 
 use sim_metrics::{Histogram, Outcome, RequestRecord, Series};
 use sim_policy::{Admission, AdmissionContext, AdmissionPolicy, ReplicaView, RequestView, RouteContext, RoutingPolicy};
 use sim_core::queue::{EventQueue, PRIO_OBSERVE};
 use sim_core::rng::{Rng, Streams};
+use sim_model::Replica;
 use sim_scenario::Scenario;
 use sim_workload::{Request, Workload};
 use sim_core::{Nanos, EPOCH_BASE, MILLI};
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 
 /// A modelled router-to-replica round trip, paid when a policy probes for fresh state instead of
 /// reading the delayed snapshot.
 const PROBE_COST: Nanos = MILLI;
-
-struct Seq {
-    req: Request,
-    prefill_left: u32,
-    output_left: u32,
-    admitted_at: Nanos,
-    first_token_at: Nanos,
-    last_token_at: Nanos,
-    max_itl: Nanos,
-    itl_sum: Nanos,
-    itl_count: u32,
-}
-
-#[derive(Default)]
-struct Replica {
-    queue: VecDeque<Request>,
-    running: Vec<Seq>,
-    queued_tokens: u64,
-    /// Resident key-value tokens: for every running sequence, its prompt plus what it has generated.
-    /// This is the real capacity constraint, and it is denominated in tokens rather than requests.
-    kv_tokens: u64,
-    next_step_at: Nanos,
-    scheduled: bool,
-    last_step_ns: Nanos,
-    completed: u64,
-}
 
 enum Ev {
     Arrival,
@@ -327,7 +297,6 @@ pub fn run(sc: &Scenario) -> Result<RunResult, String> {
     let mut done: HashMap<u64, bool> = HashMap::new();
     let mut records: Vec<RequestRecord> = Vec::new();
 
-    let step_budget = sc.step_token_budget;
     let cost = sc.cost_model();
     let sample_iv = (sc.sample_interval_ms * 1e6) as Nanos;
     let tele_iv = (sc.telemetry_interval_ms * 1e6) as Nanos;
@@ -406,7 +375,8 @@ pub fn run(sc: &Scenario) -> Result<RunResult, String> {
 
             Ev::Admit(target, req) => {
                 let r = &mut replicas[target];
-                if r.queue.len() >= sc.max_queue {
+                let (id, deadline) = (req.id, req.deadline);
+                if let Err(req) = r.enqueue(req, sc.max_queue) {
                     // Shed before consuming device time: the cheap failure, and deliberately
                     // distinct in the outcome from one that fails after burning work.
                     finish(
@@ -415,113 +385,17 @@ pub fn run(sc: &Scenario) -> Result<RunResult, String> {
                     );
                     continue;
                 }
-                placed.insert(req.id, target);
-                q.schedule(req.deadline, Ev::Timeout(req.id));
-                r.queued_tokens += req.prompt as u64;
-                r.queue.push_back(req);
-                if !r.scheduled {
-                    r.scheduled = true;
-                    r.next_step_at = now;
+                placed.insert(id, target);
+                q.schedule(deadline, Ev::Timeout(id));
+                if r.wake(now) {
                     q.schedule(now, Ev::Step(target));
                 }
             }
 
             Ev::Step(i) => {
-                let r = &mut replicas[i];
-                // Admit while there is room. The replica is itself a scheduler, so this is the second
-                // scheduling layer and it can disagree with the router.
-                //
-                // Two limits, and which one binds is the point: a sequence-count cap, and the
-                // key-value token budget. A 24,000-token prompt consumes what eight chat turns
-                // consume, so a queue of long requests blocks admission that a request count would
-                // have allowed. Nothing here preempts; a blocked request waits, which is what
-                // produces the queueing this scenario is about.
-                let kv_cap = sc.kv_capacity_tokens as u64;
-                while r.running.len() < sc.max_batch {
-                    let next_cost = match r.queue.front() {
-                        Some(req) => req.prompt as u64,
-                        None => break,
-                    };
-                    if r.kv_tokens + next_cost > kv_cap && !r.running.is_empty() {
-                        break;
-                    }
-                    match r.queue.pop_front() {
-                        Some(req) => {
-                            r.queued_tokens = r.queued_tokens.saturating_sub(req.prompt as u64);
-                            r.kv_tokens += req.prompt as u64;
-                            r.running.push(Seq {
-                                prefill_left: req.prompt,
-                                output_left: req.output,
-                                admitted_at: now,
-                                first_token_at: 0,
-                                last_token_at: 0,
-                                max_itl: 0,
-                                itl_sum: 0,
-                                itl_count: 0,
-                                req,
-                            });
-                        }
-                        None => break,
-                    }
-                }
-                if r.running.is_empty() {
-                    r.scheduled = false;
-                    continue;
-                }
-
-                // Chunked prefill: a bounded token budget per step, taken in admission order. This
-                // is what stops one long prompt from inserting a multi-second stall into everyone
-                // else's token stream.
-                let mut budget = step_budget;
-                let mut prefill_tokens = 0u32;
-                for s in r.running.iter_mut() {
-                    if budget == 0 {
-                        break;
-                    }
-                    if s.prefill_left > 0 {
-                        let take = s.prefill_left.min(budget);
-                        s.prefill_left -= take;
-                        budget -= take;
-                        prefill_tokens += take;
-                    }
-                }
-                let decoding = r.running.iter().filter(|s| s.prefill_left == 0).count();
-
-                // Step time comes from the cost model in sim-physics, the one place that formula
-                // lives. Prefill and decode contend for one device, which is why a big prefill shows
-                // up in everyone's inter-token latency.
-                let step_ns = cost.step_ns(decoding, r.kv_tokens, prefill_tokens);
-                let token_at = now + step_ns;
-                r.last_step_ns = step_ns;
-
-                let mut finished: Vec<usize> = Vec::new();
-                for (idx, s) in r.running.iter_mut().enumerate() {
-                    if s.prefill_left > 0 {
-                        continue;
-                    }
-                    if s.first_token_at == 0 {
-                        s.first_token_at = token_at;
-                    } else {
-                        let gap = token_at - s.last_token_at;
-                        s.max_itl = s.max_itl.max(gap);
-                        s.itl_sum += gap;
-                        s.itl_count += 1;
-                    }
-                    s.last_token_at = token_at;
-                    s.output_left = s.output_left.saturating_sub(1);
-                    if s.output_left == 0 {
-                        finished.push(idx);
-                    }
-                }
-                r.kv_tokens += decoding as u64;
-
-                for idx in finished.iter().rev() {
-                    let s = r.running.swap_remove(*idx);
-                    r.kv_tokens = r
-                        .kv_tokens
-                        .saturating_sub(s.req.prompt as u64 + s.req.output as u64);
-                    r.completed += 1;
-                    let mean_itl = if s.itl_count > 0 { s.itl_sum / s.itl_count as Nanos } else { 0 };
+                let Some(out) = replicas[i].step(sc, &cost, now) else { continue };
+                let token_at = out.token_at;
+                for s in out.finished {
                     let within = s.first_token_at - s.req.arrived_at
                         <= (sc.ttft_slo_ms * 1e6) as Nanos
                         && s.max_itl <= (sc.itl_slo_ms * 1e6) as Nanos
@@ -530,19 +404,16 @@ pub fn run(sc: &Scenario) -> Result<RunResult, String> {
                     admission.on_complete(s.req.tenant, s.req.output, token_at);
                     finish(
                         &mut records, &mut outcomes, &mut done, outcome, &s.req, token_at, i,
-                        s.admitted_at, s.first_token_at, s.max_itl, mean_itl,
+                        s.admitted_at, s.first_token_at, s.max_itl, s.mean_itl,
                     );
                 }
 
-                if r.running.is_empty() && r.queue.is_empty() {
-                    r.scheduled = false;
-                } else {
-                    r.next_step_at = token_at;
+                if !out.idle {
                     q.schedule(token_at, Ev::Step(i));
                 }
                 fingerprint = fingerprint
                     .wrapping_mul(0x100_0000_01b3)
-                    .wrapping_add(step_ns ^ (i as u64));
+                    .wrapping_add(out.step_ns ^ (i as u64));
             }
 
             Ev::TelemetryPublish(i) => {
@@ -562,20 +433,7 @@ pub fn run(sc: &Scenario) -> Result<RunResult, String> {
                     continue;
                 }
                 let Some(&i) = placed.get(&id) else { continue };
-                let r = &mut replicas[i];
-                // Where it died decides how expensive the failure was.
-                let mut victim: Option<(Request, bool)> = None;
-                if let Some(pos) = r.queue.iter().position(|x| x.id == id) {
-                    let req = r.queue.remove(pos).unwrap();
-                    r.queued_tokens = r.queued_tokens.saturating_sub(req.prompt as u64);
-                    victim = Some((req, false));
-                } else if let Some(pos) = r.running.iter().position(|s| s.req.id == id) {
-                    let s = r.running.swap_remove(pos);
-                    let generated = s.req.output.saturating_sub(s.output_left) as u64;
-                    r.kv_tokens = r.kv_tokens.saturating_sub(s.req.prompt as u64 + generated);
-                    victim = Some((s.req, true));
-                }
-                if let Some((req, was_running)) = victim {
+                if let Some((req, was_running)) = replicas[i].remove(id) {
                     let outcome = if was_running {
                         Outcome::TimeoutRunning
                     } else {
@@ -618,11 +476,11 @@ pub fn run(sc: &Scenario) -> Result<RunResult, String> {
                 let mut tr = 0.0;
                 let mut tkv = 0.0;
                 for (i, r) in replicas.iter().enumerate() {
-                    let load = (r.queue.len() + r.running.len()) as f64;
+                    let load = r.load() as f64;
                     replica_load[i].push(now, load);
-                    tq += r.queue.len() as f64;
-                    tr += r.running.len() as f64;
-                    tkv += r.kv_tokens as f64 / sc.kv_capacity_tokens;
+                    tq += r.queued() as f64;
+                    tr += r.running() as f64;
+                    tkv += r.kv_tokens() as f64 / sc.kv_capacity_tokens;
                 }
                 fleet_queue.push(now, tq);
                 fleet_running.push(now, tr);
@@ -691,12 +549,11 @@ pub fn run(sc: &Scenario) -> Result<RunResult, String> {
 fn view_of(r: &Replica, now: Nanos) -> ReplicaView {
     ReplicaView {
         sampled_at: now,
-        queued: r.queue.len() as u32,
-        running: r.running.len() as u32,
-        queued_tokens: r.queued_tokens
-            + r.running.iter().map(|s| s.prefill_left as u64 + s.output_left as u64).sum::<u64>(),
-        kv_tokens: r.kv_tokens,
-        last_step_ns: r.last_step_ns,
+        queued: r.queued() as u32,
+        running: r.running() as u32,
+        queued_tokens: r.outstanding_tokens(),
+        kv_tokens: r.kv_tokens(),
+        last_step_ns: r.last_step_ns(),
         ejected: false,
     }
 }
