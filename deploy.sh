@@ -126,28 +126,48 @@ gcloud run deploy "$SERVICE" \
   --project "$PROJECT" --region "$REGION" \
   --cpu 1 --memory 512Mi \
   --cpu-throttling \
+  --no-cpu-boost \
   --concurrency 80 \
   --min-instances 0 \
   --max-instances 10 \
+  --min 0 \
+  --max 10 \
   --timeout 300 \
   --allow-unauthenticated \
   --quiet
-# Notes on what is deliberately absent:
-#   --no-cpu-throttling  : not set, and --cpu-throttling is set explicitly instead. This is a static
-#                          server, so CPU only during a request is correct and cheaper. It becomes
-#                          necessary when a simulation advances between requests, which is the real
-#                          Ingress service, not this one.
+# Cloud Run has two instance caps and gcloud spells them differently, which is a trap:
+#   --max-instances 10   caps the *revision*  (autoscaling.knative.dev/maxScale)
+#   --max 10             caps the *service*   (run.googleapis.com/maxScale)
+# The service cap defaults to 20 whether you ask for it or not, so setting only --max-instances
+# leaves a service that will scale to 20 the moment anyone deploys a revision without the flag. Both
+# are set here so the cost control does not depend on remembering the flag next time. Same for
+# --min-instances / --min at zero.
+#
+# What is deliberately absent, or deliberately off:
+#   --no-cpu-throttling  : not used; --cpu-throttling is set instead. This is a static server, so CPU
+#                          only during a request is correct and cheaper. It becomes necessary when a
+#                          simulation advances between requests, which is the real Ingress service,
+#                          not this one.
 #   --session-affinity   : not set, for the same reason. Nothing here holds per-user state.
-#   --cpu-boost          : not set. Cold start is a static binary; there is nothing to warm.
-# min-instances 0 and max-instances 10 are the cost controls, per the standing authorization.
+#   --cpu-boost          : explicitly *off*. It is on by default on new services, and it is billed.
+#                          The container is a static binary that binds its port in milliseconds, so
+#                          there is nothing for extra startup CPU to accelerate.
+#   --execution-environment : left at gen1, which has the faster cold start. gen2 buys a full Linux
+#                          syscall surface that a file server does not use.
 
 URL=$(gcloud run services describe "$SERVICE" --project "$PROJECT" --region "$REGION" \
         --format='value(status.url)' --quiet)
 echo
 echo "deployed: $URL"
 echo "public, per Issao: mock data and published findings, nothing sensitive."
-curl -fsS -o /dev/null -w 'healthz: HTTP %{http_code} in %{time_total}s\n' "$URL/healthz" || \
-  echo "healthz did not answer; check 'gcloud run services logs read $SERVICE --region $REGION'"
+# Probed on "/" rather than "/healthz". Google Front End intercepts /healthz on *.run.app and answers
+# its own branded 404, so the request never reaches the container and the check would always fail.
+# Measured, not guessed: the /healthz 404 carries no x-cloud-trace-context and no nosniff header,
+# while /nope and /health both come back as the server's own plain-text "not found", and the same
+# binary answers /healthz with 200 when run locally. The container's health endpoint is therefore
+# correct but unreachable from outside under this hostname. See docs/deploy.md, "The /healthz trap".
+curl -fsS -o /dev/null -w 'GET /: HTTP %{http_code} in %{time_total}s (cold start included)\n' "$URL/" || \
+  echo "the service did not answer; check 'gcloud run services logs read $SERVICE --region $REGION'"
 echo
 echo "idle instance count is the cost control. To check it returns to zero:"
 echo "  ./deploy.sh --check-idle    (or see docs/deploy.md)"
