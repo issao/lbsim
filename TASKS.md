@@ -40,6 +40,42 @@ gcloud billing budgets list --billing-account=015B1A-AA7EAB-107FD2 \
 Worth doing once, because the `$50` one was rebuilt by a subagent from its name and amount after being
 deleted, so any other settings it carried are gone.
 
+You noted mid-way that all steps but the last were done. All four are done now, and the revoke is what
+made the boundary real: verified by a real attempt to grant the deploy account a role, which was refused
+because it cannot even read the policy it would need to modify.
+
+### Checking the budget in the console, without the CLI
+
+Since Claude can no longer see billing, this is the path you will want. It is not under the project.
+
+1. Go to `console.cloud.google.com`.
+2. Open the navigation menu, top left, and choose **Billing**. If you have several billing accounts it
+   will ask which; pick **My Billing Account - lbsim** (`015B1A-AA7EAB-107FD2`).
+3. In the left sidebar of the billing page, click **Budgets & alerts**.
+
+You should see two rows:
+
+| Name | Amount | Alerts |
+|---|---|---|
+| `lbsim monthly` | $100 | 3 thresholds |
+| `lbsim monthly cap` | $50 | 3 thresholds |
+
+Click either to see its thresholds, its scope, and who gets email. Two things worth confirming while you
+are there: that each one is **scoped to a project** rather than the whole billing account, and that the
+alert email addresses are ones you actually read. An alert nobody sees is the same as no alert.
+
+Direct link, which skips the account picker:
+`console.cloud.google.com/billing/015B1A-AA7EAB-107FD2/budgets`
+
+**A budget alerts, it does not stop spending.** Google will email at each threshold and keep serving. If
+you want a hard stop you need a Cloud Function on the Pub/Sub budget notification that disables billing,
+which is drastic and can take a project down. The instance caps in the deploy plan are the practical
+control; the budget is the tripwire behind them.
+
+For watching actual usage rather than the limit, the number to look at is **instance-hours** on the Cloud
+Run service page. Anything non-zero while nobody is using the dashboard is a bug in the idle shutdown,
+not a pricing surprise.
+
 - [ ] Re-check the two budgets with the command above
 - [ ] Delete the deploy key when this phase ends:
       `gcloud iam service-accounts keys list --iam-account=lbsim-deployer@lbsim-gcp.iam.gserviceaccount.com`
