@@ -1123,7 +1123,7 @@ system does. It also keeps every shard free of shared mutable state.
 Volume is not a concern: tier operations happen on preemption and resume, which are rare
 relative to tokens, and each is a small message.
 
-Issao's extension, 16:05: since Ingress owns the tier it can simply tell the Leaf whether a KV block
+Issao's extension, 15:26: since Ingress owns the tier it can simply tell the Leaf whether a KV block
 is resident in DRAM or SSD. Where that residency map would cost too much, it becomes a bloom filter
 seeded from the global seed, tuned to an acceptable false-negative miss rate, so the misses it
 introduces are deterministic under replay and realistic as a model of machine loss.
@@ -1381,10 +1381,10 @@ arena, and everything after it is additive rather than structural.
 | 4 | Memory tier pooled per cluster | **accepted**, and extended to SSD as well as DRAM |
 | 5 | Observability data flow | **superseded**: Issao supplied the three-layer architecture, now section 10 |
 | 6 | One cluster per thread, no intra-cluster parallelism | **superseded**: Leaf shards in the machine dimension; section 9 withdraws the earlier recommendation and section 10.5 gives the synchronisation analysis |
-| 7 | Leaf shards as threads in one process, section 10.5 | **overridden, 16:05**: *"Leaf shards should become separate processes in a sharded server."* The barrier-cost measurement stands; the realtime target is re-measured against processes |
+| 7 | Leaf shards as threads in one process, section 10.5 | **overridden, 15:26**: *"Leaf shards should become separate processes in a sharded server."* The barrier-cost measurement stands; the realtime target is re-measured against processes |
 | 8 | Cluster tiers owned by Ingress, section 10.6 | **accepted, and extended**: Ingress tells the Leaf whether KV is resident in DRAM or SSD, and that hint may be a bloom filter seeded from the global seed, with a deterministic, realistic false-negative miss rate |
-| 9 | Prefix-sharing topology, section 7.3 and `docs/calibration.md` §9 | **decided, 16:05**: no internal data; derive the topology from a session model, *"reasonable distributions of lengths of session and how often they fork off and merge back new agents"*, and sweep it |
-| 10 | Arena scope, `docs/arena.md` §6 | **widened, 16:05**: the policy generator *"should actually have full power to write code to write new policies, as well as tuning parameters on existing policies"* |
+| 9 | Prefix-sharing topology, section 7.3 and `docs/calibration.md` §9 | **decided, 15:26**: no internal data; derive the topology from a session model, *"reasonable distributions of lengths of session and how often they fork off and merge back new agents"*, and sweep it |
+| 10 | Arena scope, `docs/arena.md` §6 | **widened, 15:26**: the policy generator *"should actually have full power to write code to write new policies, as well as tuning parameters on existing policies"* |
 | 11 | Arena SLA cap, `docs/arena.md` §5b | **0.95 for now**, *"but we need to figure out how to do better"* |
 
 ### Outstanding

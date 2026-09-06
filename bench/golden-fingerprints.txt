@@ -38,19 +38,19 @@ h-h5-bursty-step/00-h5_bursty_step.summary.csv               fingerprint=1380300
 h-h6-low-rate-heavy-context/00-h6_low_rate_heavy_context.summary.csv fingerprint=15940118259117105240   events=231936    summary_md5=10be43f0b8a3
 h-h7-code-completion/00-h7_code_completion.summary.csv       fingerprint=18343344250318204309   events=249330    summary_md5=86728b1a62f6
 h-h8-retry-storm/00-h8_retry_storm.summary.csv               fingerprint=4264169605968401035    events=309388    summary_md5=b999943696c1
-1-routing.html                                               html_md5=e0a9c8c33bf7
-2-staleness.html                                             html_md5=8c1f32af6b58
-3-chunking.html                                              html_md5=d302c5c0072c
-4-load-curve.html                                            html_md5=04cea9a43fdb
-5-long-context.html                                          html_md5=314e7c29bb53
-6-retry.html                                                 html_md5=6caf2d0049d8
-7-least-queue-tokens.html                                    html_md5=b8c9a8e2f408
-8-probe-live.html                                            html_md5=12e4a0360329
-h-h1-light-chat.html                                         html_md5=3d2a8c8e3940
-h-h2-near-rated-chat.html                                    html_md5=91f1f814dcbb
-h-h3-over-rated-chat.html                                    html_md5=2817611f1781
-h-h4-long-prompt-mixture.html                                html_md5=1502d4f42235
-h-h5-bursty-step.html                                        html_md5=386ed4a48fe5
-h-h6-low-rate-heavy-context.html                             html_md5=83e5ddafe7e7
-h-h7-code-completion.html                                    html_md5=99913cc4766c
-h-h8-retry-storm.html                                        html_md5=3b0cd2676139
+1-routing.html                                               html_md5=e127edb88629
+2-staleness.html                                             html_md5=a6c07c9b427f
+3-chunking.html                                              html_md5=3cb3c719c6f6
+4-load-curve.html                                            html_md5=8ed92ef64972
+5-long-context.html                                          html_md5=9d8397baee43
+6-retry.html                                                 html_md5=4a4093ca3c18
+7-least-queue-tokens.html                                    html_md5=d740447ff2ce
+8-probe-live.html                                            html_md5=827b31c7b044
+h-h1-light-chat.html                                         html_md5=ece11a84d9e0
+h-h2-near-rated-chat.html                                    html_md5=ba954179f31c
+h-h3-over-rated-chat.html                                    html_md5=1a2f23c691c7
+h-h4-long-prompt-mixture.html                                html_md5=9974e1ed61b3
+h-h5-bursty-step.html                                        html_md5=d80c38f2ef64
+h-h6-low-rate-heavy-context.html                             html_md5=405887e50ecd
+h-h7-code-completion.html                                    html_md5=baecc6ec2a72
+h-h8-retry-storm.html                                        html_md5=e3149546540f

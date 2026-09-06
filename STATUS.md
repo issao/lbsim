@@ -3,7 +3,7 @@
 What is live on `origin/master`, what each agent is doing now, and the assumptions being acted on.
 For things that need *you*, see `TASKS.md`.
 
-**Last updated:** 2026-09-06 18:00 by Claude.
+**Last updated:** 2026-09-06 15:53 PDT by Claude.
 
 ---
 
@@ -40,11 +40,42 @@ difference between a bad minute and an outage. Numbers in `docs/findings.md`.
 
 | Agent | Owns | Now |
 |---|---|---|
-| Tech lead | `src/`, `tests/`, `scenarios/`, `web/src/lib/` | worktrees `lbsim-wt-tl`, `lbsim-tlweb`; nothing merged beyond the above yet. Merged: the section 10.8 crate workspace (163995c), golden fingerprints and the wire contract (0efb8bd). In hand: the browser-side transport client from `claude/tl-web-transport`, now built against `WIRE.md`. Next: the policy registry behind `GeneratedPolicy`; a simplification pass every four merges, per `CLAUDE.md` |
-| Cloud | `Dockerfile`, `deploy.sh`, `cloudbuild.yaml`, `docs/deploy.md` | first deploy done at 15:45, merged as 72dfb16. No further IAM grant was needed: the blocker was two bucket permissions, worked around in `cloudbuild.yaml`. `docs/deploy.md` written, 947649b |
-| Monitor and housekeeping | `TASKS.md`, `STATUS.md`, `README.md`, `docs/*.md` | inbox and PR loop every 90 s; tidying the documents; next `README.md`, then `docs/` contradictions |
+| Tech lead | `src/`, `tests/`, `scenarios/`, `web/src/lib/` | worktrees `lbsim-wt-tl`, `lbsim-tlweb`. Merged: the section 10.8 crate workspace (163995c), golden fingerprints and the wire contract (0efb8bd). In hand: the browser-side transport client from `claude/tl-web-transport`, now built against `WIRE.md`. Next, from Issao at 15:50: *"continue making more progress on the scope-today.md dynamics we talked about when it is possible to do so in parallel"*, with the cut table in `docs/scope-today.md` §3 as the list; the policy registry behind `GeneratedPolicy`; a simplification pass every four merges, per `CLAUDE.md` |
+| Cloud | `Dockerfile`, `deploy.sh`, `cloudbuild.yaml`, `docs/deploy.md` | **finished.** First deploy at 15:22 (72dfb16); scale-to-zero verified twice (993c03a); `docs/deploy.md` is its handover. No further grant was needed, the pending `legacyBucketReader` request is withdrawn: the blocker was two bucket permissions, worked around in `cloudbuild.yaml` |
+| Monitor and housekeeping | `TASKS.md`, `STATUS.md`, `README.md`, `docs/*.md` | inbox and PR loop every 90 s; documents tidied; keeping them aligned to each merge |
 
 The main agent coordinates and owns `CLAUDE.md` and `proto/`.
+
+## Progress against the execution plan
+
+One row per milestone in `docs/execution-plan.md` §1, read from `master` at 604bb95.
+
+| Milestone | State | What exists, what does not |
+|---|---|---|
+| M0 workspace and CI | done, two gaps | the section 10.8 workspace (163995c); no `prost`/`tonic` codegen, no test that `sim-ingress` cannot reach the physics crates |
+| M0.5 stand-in dashboard | done | `web/`, mock data, marked as such |
+| M1 walking skeleton | done and exceeded | six dynamics, `docs/findings.md` |
+| M2 physics | partial | cost model calibrated and exact in Python (`bench/validate_epochs.py`); no Rust differential oracle, no preemption or swap |
+| M3 three-layer split | partial | crate boundary exists; Leaf as a process, Issao's decision, not built; no cross-shard determinism test |
+| M4 workload and telemetry | partial | arrival heterogeneity and telemetry delay built; no trace replay, no session or prefix model |
+| M5 policies | partial | five routing policies; no prefix affinity, no admission controller, no per-decision cost measurement |
+| M6 failures | done | retry contrast, finding 6 |
+| M7 control analysis | not started | |
+| M8 dashboard and first deploy | in progress | static deploy live, scale-to-zero measured (993c03a); `sim-ingress` serves static files only, no run or subscription endpoint; dashboard still mock |
+| M9 scale validation | not measured | |
+
+## When the dashboard shows real demos
+
+Today the six demos are live as real-data HTML reports at
+<https://lbsim-irpwc2yaoa-uc.a.run.app/reports/1-routing.html> through `6-retry.html`. The React
+dashboard at `/` shows mock data and says so on every panel.
+
+Three things stand between it and real data: an Ingress endpoint that runs a scenario and streams
+metrics over the JSON/SSE wire in `crates/sim-ingress/WIRE.md`; the browser transport client, in the
+tech lead's worktree and not merged, replacing the mock engine; and a rebuild and redeploy, measured at
+1m22s. The shortest path, asked of the tech lead by the main agent: pre-baked run output in wire format
+served statically, so every panel shows real data before the live path exists. Not by 16:30 today.
+ETA: pending from the tech lead.
 
 ## Assumptions being acted on
 
@@ -57,8 +88,9 @@ The main agent coordinates and owns `CLAUDE.md` and `proto/`.
   residency hint. Both are design of record, `docs/ARCHITECTURE.md` §14, not yet built.
 - `lbsim.ai` is dark: its DNS zone went with `lbsim-prod`. `TASKS.md` item 1.
 - Deployment scales to zero within a replica budget of ten, public, on the `run.app` URL until the
-  domain steps in `TASKS.md` item 1 are done. Scale-to-zero is measured by `deploy.sh --check-idle`,
-  not assumed.
+  domain steps in `TASKS.md` item 1 are done. Scale-to-zero is measured, not assumed: two revisions
+  reached zero instances within minutes of losing traffic, per `docs/deploy.md` (993c03a), and
+  `deploy.sh --check-idle` re-measures it.
 - Reference hardware is a 70-billion-parameter model on eight H100s.
 - Everything in `docs/ARCHITECTURE.md` section 14 stands as recorded there.
 

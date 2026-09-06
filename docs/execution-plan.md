@@ -5,7 +5,7 @@ eight-hour total budget, of which about three hours went on design, so roughly s
 follows is deferred. That document ranks every dynamic by cost, proposes three packages that fit, and
 recommends one. This file remains the plan for the whole project.
 
-**Where this stands at 15:40.** What was built today diverges from the milestones as written, and
+**Where this stands at 15:25.** What was built today diverges from the milestones as written, and
 the divergences are recorded here rather than rewritten out of the plan:
 
 - One crate, `lbsim`, with no dependencies, rather than the workspace of `docs/ARCHITECTURE.md`
@@ -32,7 +32,7 @@ thing is built.
 
 ## 0. The three decisions that make or break iteration speed
 
-**Overridden by Issao, 16:05:** *"Leaf shards should become separate processes in a sharded
+**Overridden by Issao, 15:26:** *"Leaf shards should become separate processes in a sharded
 server."* The paragraph below is kept as the measured cost of that decision; the realtime target
 must be re-measured against process barriers rather than assumed.
 
