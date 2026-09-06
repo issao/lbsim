@@ -21,6 +21,7 @@
 
 mod accept_all;
 mod least_kv_probe;
+mod deadline_aware;
 mod least_queue_tokens;
 mod least_requests;
 mod p2c;
@@ -58,8 +59,10 @@ pub const ROUTING: &[PolicyEntry<dyn RoutingPolicy>] = &[
 ];
 
 /// The admission registry.
-pub const ADMISSION: &[PolicyEntry<dyn AdmissionPolicy>] =
-    &[PolicyEntry { names: &["accept_all"], file: "accept_all.rs", make: accept_all::make }];
+pub const ADMISSION: &[PolicyEntry<dyn AdmissionPolicy>] = &[
+    PolicyEntry { names: &["accept_all"], file: "accept_all.rs", make: accept_all::make },
+    PolicyEntry { names: &["deadline_aware"], file: "deadline_aware.rs", make: deadline_aware::make },
+];
 
 fn lookup<'a, T: ?Sized>(
     table: &'a [PolicyEntry<T>],
