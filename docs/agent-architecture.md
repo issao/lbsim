@@ -239,6 +239,8 @@ Ordered by how much damage ignoring them causes.
 | Failures, scenarios | + 1-2 implementers | Fan-out by scenario. |
 | Dashboard | + Frontend | Only once the engine reproduces a dynamic worth displaying. |
 
+// Issao: Add the arena here with the agents that will participate on it.
+
 ---
 
 ## 7. Anti-patterns, each one a mistake available today

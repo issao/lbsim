@@ -20,6 +20,10 @@ plain. Its only job is to be the thing you land on and immediately know what you
 
 ### 1.2 Load test dashboard
 
+// Issao: Also a playback feature up top. Play, pause, change speed. rewind.
+
+// Issao: Also a view that enables seeing a trace of sampled requests (sampled by latency bucket). That may have to be a popup that pauses the simulation.
+
 The fully customisable playground. Two panels:
 
 **Control panel, left. Tabbed.**
