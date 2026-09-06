@@ -1,0 +1,84 @@
+syntax = "proto3";
+
+package lbsim.v1;
+
+import "lbsim/v1/common.proto";
+import "lbsim/v1/request.proto";
+
+// The modelled data plane. Each service here is one box in docs/diagrams/system.drawio, and
+// each method one arrow. These are not served over real gRPC inside the simulator; see
+// proto/README.md section A.
+
+// ---------------------------------------------------------------------------
+// Client -> Gateway
+// ---------------------------------------------------------------------------
+
+service Gateway {
+  // The public entry point. Streams tokens back, so the client observes time-to-first-token
+  // and inter-token latency separately, which is the whole reason latency is not one number.
+  rpc Generate(InferenceRequest) returns (stream TokenChunk);
+}
+
+message TokenChunk {
+  RequestId request = 1;
+  uint32 tokens = 2;              // usually 1; more with speculative decoding
+  uint64 emitted_at_ns = 3;
+  bool final = 4;
+  Outcome outcome = 5;            // set only when final
+}
+
+// ---------------------------------------------------------------------------
+// Gateway -> Router
+// ---------------------------------------------------------------------------
+
+service Router {
+  // Choose a replica. Separated from Gateway because the two scale and fail independently,
+  // and because the number of router instances determines how badly stale telemetry herds:
+  // more routers seeing the same stale snapshot means a bigger stampede.
+  rpc Route(RouteRequest) returns (RouteResponse);
+}
+
+message RouteRequest {
+  InferenceRequest request = 1;
+  // Replicas already tried and failed, so a retry does not land on the same broken one.
+  repeated ReplicaId exclude = 2;
+}
+
+message RouteResponse {
+  ReplicaId replica = 1;
+  ClusterId cluster = 2;
+  // Set instead of a replica when the router sheds. Cheap failure, deliberately distinct
+  // from an expensive one.
+  Outcome rejected = 3;
+  // Cached prefix tokens the router *believed* the chosen replica held. Recording the belief
+  // alongside the outcome is how affinity policy error becomes measurable.
+  uint32 predicted_cache_hit_tokens = 4;
+  // Which candidates the policy considered. For power-of-two-choices this is 2. Recorded so
+  // herding is observable rather than inferred.
+  repeated ReplicaId considered = 5;
+}
+
+// ---------------------------------------------------------------------------
+// Router -> Replica
+// ---------------------------------------------------------------------------
+
+service ReplicaEngine {
+  // Hand a request to a replica's continuous-batching loop. The replica is itself a
+  // scheduler and may queue, admit, preempt or reject: two scheduling layers that can fight
+  // each other. See docs/llm-serving-primer.md section 2.
+  rpc Execute(ExecuteRequest) returns (stream TokenChunk);
+
+  // Cooperative cancellation. Without it, a client-side timeout leaves the replica
+  // generating tokens nobody will read, which under overload is most of its capacity.
+  rpc Cancel(CancelRequest) returns (CancelResponse);
+}
+
+message ExecuteRequest {
+  InferenceRequest request = 1;
+  // Set when resuming a preempted sequence whose KV was parked rather than discarded.
+  MemoryTier resume_from_tier = 2;
+  uint32 resume_tokens_already_generated = 3;
+}
+
+message CancelRequest { RequestId request = 1; }
+message CancelResponse { bool was_running = 1; uint32 tokens_wasted = 2; }

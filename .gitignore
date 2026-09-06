@@ -1,23 +1,26 @@
 # Day planning, not part of the project
 PLAN.md
 
-# Python
-__pycache__/
-*.py[cod]
-.venv/
-venv/
-*.egg-info/
-.pytest_cache/
-.ruff_cache/
+# Rust
+/target/
+**/target/
+*.rs.bk
+
+# Node
+node_modules/
+dist/
+.vite/
+*.tsbuildinfo
 
 # Simulation outputs
 out/
 results/
 *.csv
 *.parquet
-*.png
-*.svg
 
 # draw.io backups
 *.drawio.bkp
 *.drawio.dtmp
+
+# OS
+.DS_Store

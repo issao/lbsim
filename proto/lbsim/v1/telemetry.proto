@@ -1,0 +1,110 @@
+syntax = "proto3";
+
+package lbsim.v1;
+
+import "lbsim/v1/common.proto";
+
+// The staleness boundary.
+//
+// This is the most important interface in the system for VISION's control-theory goal.
+// Everything a policy above the replica level knows about the fleet arrives through here,
+// delayed by a sampling period and a propagation delay, and held at its last known value
+// in between. That sampled-delayed feedback path is what produces oscillation, herding and
+// overshoot. See docs/ARCHITECTURE.md section 6.
+
+service TelemetryCollector {
+  // Replica -> collector. Push, on the replica's own sampling period.
+  rpc PublishState(ReplicaState) returns (PublishAck);
+
+  // Collector -> consumers (routers, autoscalers, admission controllers). The stream
+  // carries whole snapshots on an interval, not deltas, because that is what real scrape
+  // pipelines do and the interval is the parameter under study.
+  rpc WatchFleet(WatchFleetRequest) returns (stream FleetSnapshot);
+}
+
+message PublishAck { uint64 received_at_ns = 1; }
+
+message WatchFleetRequest {
+  // A consumer may subscribe to one cluster or to all of them. A router that only sees its
+  // own cluster cannot make a cross-region decision, which is itself a design choice worth
+  // simulating.
+  repeated ClusterId clusters = 1;
+  uint64 desired_interval_ns = 2;
+}
+
+// What one replica reports about itself.
+//
+// Deliberately *not* everything the simulator knows. A replica cannot report the true output
+// length of its running requests because it does not know it. It cannot report its own
+// true_speed_multiplier because a degraded replica does not know it is degraded. Those
+// live in Health and Truth and never reach a policy.
+message ReplicaState {
+  ReplicaId replica = 1;
+  ClusterId cluster = 2;
+  PoolId pool = 3;
+
+  // When the replica sampled itself. The consumer's own clock minus this is the staleness
+  // the policy is working with, and it must be measurable by the policy so a
+  // delay-compensating controller is possible to write.
+  uint64 sampled_at_ns = 4;
+
+  Health.Announced announced = 5;
+
+  // -- load, as a replica can actually measure it ---------------------------
+
+  uint32 running_seqs = 10;
+  uint32 queued_seqs = 11;
+
+  // The real capacity constraint, in tokens, not requests. A policy that routes on request
+  // count is measuring the wrong quantity: one 100k-token context costs as much as 25 chat
+  // turns. See docs/llm-serving-primer.md section 3.
+  uint64 kv_tokens_resident = 12;
+  uint64 kv_tokens_capacity = 13;
+
+  // Prefill work waiting. Distinct from queued_seqs because one queued 128k-token prompt is
+  // not comparable to one queued 200-token prompt.
+  uint64 queued_prefill_tokens = 14;
+
+  // -- observed performance ------------------------------------------------
+
+  uint64 recent_step_time_ns = 20;     // last completed step
+  double recent_output_tokens_per_s = 21;
+  uint64 recent_ttft_p50_ns = 22;
+  uint64 recent_ttft_p99_ns = 23;
+  uint64 recent_itl_p50_ns = 24;
+  uint64 recent_itl_p99_ns = 25;
+
+  // Cumulative since start, so a consumer can difference two snapshots and compute a rate
+  // without trusting the replica's own rate calculation.
+  uint64 total_requests_completed = 30;
+  uint64 total_preemptions = 31;
+  uint64 total_rejected = 32;
+
+  // -- cache state ---------------------------------------------------------
+
+  // Enough for a router to make an affinity decision without shipping the whole prefix
+  // tree. A sketch, not the truth, which is realistic: real routers work from summaries.
+  uint32 cached_prefix_nodes = 40;
+  uint64 cached_prefix_tokens = 41;
+  double recent_prefix_hit_rate = 42;
+
+  // -- lifecycle -----------------------------------------------------------
+
+  uint64 became_ready_at_ns = 50;
+  // Set while loading weights. Cold start is 30-300 s, far slower than a traffic burst
+  // develops, which is why reactive autoscaling cannot catch one.
+  bool warming_up = 51;
+  double warmup_fraction = 52;
+}
+
+message FleetSnapshot {
+  // The collector's own clock when it assembled this. Individual entries carry their own
+  // older sampled_at_ns, so a snapshot is a set of differently-aged observations rather than
+  // a consistent cut. Real fleets have no consistent cut, and pretending otherwise is the
+  // mistake that makes simulated load balancing look better than reality.
+  uint64 assembled_at_ns = 1;
+  repeated ReplicaState replicas = 2;
+  // Replicas the collector has not heard from within its timeout. Absence of data is not
+  // evidence of failure, and how a policy treats these entries matters a great deal.
+  repeated ReplicaId silent = 3;
+}
