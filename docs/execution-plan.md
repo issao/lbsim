@@ -28,6 +28,10 @@ thing is built.
 
 ## 0. The three decisions that make or break iteration speed
 
+**Overridden by Issao, 16:05:** *"Leaf shards should become separate processes in a sharded
+server."* The paragraph below is kept as the measured cost of that decision; the realtime target
+must be re-measured against process barriers rather than assumed.
+
 **One process, threads not processes, for all development.** The Ingress-to-Leaf boundary is
 real and is defined in `leaf.proto`, but in development it is a Rust trait call, not a gRPC hop.
 Measured: a process boundary costs 50-100 microseconds per synchronisation barrier against a

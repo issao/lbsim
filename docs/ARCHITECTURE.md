@@ -1123,6 +1123,11 @@ system does. It also keeps every shard free of shared mutable state.
 Volume is not a concern: tier operations happen on preemption and resume, which are rare
 relative to tokens, and each is a small message.
 
+Issao's extension, 16:05: since Ingress owns the tier it can simply tell the Leaf whether a KV block
+is resident in DRAM or SSD. Where that residency map would cost too much, it becomes a bloom filter
+seeded from the global seed, tuned to an acceptable false-negative miss rate, so the misses it
+introduces are deterministic under replay and realistic as a model of machine loss.
+
 ### 10.7 Rewind, step, and speed
 
 All three live at Ingress, which drives the Leaf shards' window advance.
@@ -1376,23 +1381,25 @@ arena, and everything after it is additive rather than structural.
 | 4 | Memory tier pooled per cluster | **accepted**, and extended to SSD as well as DRAM |
 | 5 | Observability data flow | **superseded**: Issao supplied the three-layer architecture, now section 10 |
 | 6 | One cluster per thread, no intra-cluster parallelism | **superseded**: Leaf shards in the machine dimension; section 9 withdraws the earlier recommendation and section 10.5 gives the synchronisation analysis |
+| 7 | Leaf shards as threads in one process, section 10.5 | **overridden, 16:05**: *"Leaf shards should become separate processes in a sharded server."* The barrier-cost measurement stands; the realtime target is re-measured against processes |
+| 8 | Cluster tiers owned by Ingress, section 10.6 | **accepted, and extended**: Ingress tells the Leaf whether KV is resident in DRAM or SSD, and that hint may be a bloom filter seeded from the global seed, with a deterministic, realistic false-negative miss rate |
+| 9 | Prefix-sharing topology, section 7.3 and `docs/calibration.md` §9 | **decided, 16:05**: no internal data; derive the topology from a session model, *"reasonable distributions of lengths of session and how often they fork off and merge back new agents"*, and sweep it |
+| 10 | Arena scope, `docs/arena.md` §6 | **widened, 16:05**: the policy generator *"should actually have full power to write code to write new policies, as well as tuning parameters on existing policies"* |
+| 11 | Arena SLA cap, `docs/arena.md` §5b | **0.95 for now**, *"but we need to figure out how to do better"* |
 
 ### Outstanding
 
 1. **The phase 1 cut.** Section 12 proposes phase 1 in full plus prefix affinity as the v1 scope.
    Superseded for the first build by `docs/scope-today.md`: Issao chose package B plus item 7 at
    13:50, and it is built. The phase 1 cut stays the target after it.
-2. **Leaf shards as threads, not processes.** Section 10.5 recommends threads within one process
-   per run, because a process boundary costs 50-100 microseconds per barrier against a 0.5 ms
-   lookahead, which breaks the 20x target. The proto boundary is preserved either way. Confirm,
-   or say that cross-process Leaf is a hard requirement and accept a lower realtime factor.
+2. Leaf shards as threads: **answered**, row 7 above. Processes. The analysis in section 10.5 is
+   kept as the cost of that decision, not withdrawn.
 3. **The O(N) routing ban.** Section 10.4 shows a full fleet scan per request costs 14 cores at
    target scale, so routing policies must be O(1) or O(log N) and "least loaded" must be an
    incrementally maintained index rather than a scan. Confirm that the harness should *fail* a run
    whose policy would not hold at target scale, rather than merely warn.
 4. **Prefix-affinity index cap at Ingress.** Section 10.4 caps it to a bounded top-K popular-prefix
    index, which is what real routers use. Confirm the cap rather than an exact index.
-5. **Cluster tiers owned by Ingress.** Section 10.6 makes a tier operation a modelled network round
-   trip to Ingress, which is both faithful and shard-safe. Confirm.
+5. Cluster tiers owned by Ingress: **answered**, row 8 above.
 
-Items 2 through 5 all have a stated default in `TASKS.md`, so none of them blocks progress.
+Items 3 and 4 have a stated default in `TASKS.md`, so neither blocks progress.
