@@ -5,7 +5,7 @@ right now. Claude keeps this file current; anything Claude can do alone is not h
 
 Each item says what happens if you do not answer, so nothing stalls indefinitely.
 
-Last updated: 2026-09-06 13:00 by Claude.
+Last updated: 2026-09-06 13:15 by Claude.
 
 ---
 
@@ -20,11 +20,25 @@ with decode disabled so the workload behaves like stateless serving. That produc
 useful result in two or three days and exercises every layer, at the cost of the first working
 thing not being LLM-specific yet.
 
-**Cloud Run, not GKE, and possibly forever.** A run is a long-lived stateful thing holding about
-1.3 GB, so it wants one instance for its life. Session affinity plus CPU-always-allocated plus a
-max-instances cap of ten maps directly onto your note about ten backend replicas: ten instances,
-ten concurrent runs. No Kubernetes, and no Envoy either, because `tonic-web` speaks gRPC-web
-natively. Section 3.2 has the five `gcloud` commands.
+**Deployment is reworked for your budget constraint, and one part of the ask does not survive
+contact with the measurements.** Section 3 now has two shapes rather than one: a Cloud Run service
+that scales to zero for interactive use, capped at three instances, and Cloud Run **Jobs** for
+sweeps, which cannot idle by construction and are where most compute will actually go. Approximate
+cost: one always-warm instance is about $274 a month, while moderate real use is about $18. So
+scale-to-zero is the entire cost story.
+
+The part that does not survive: **autoscaling on the scale of a single simulation is not worth
+building.** One core carries the whole 6,250-replica fleet at 20x realtime, so a bigger scenario
+needs a bigger instance, not more of them, and spreading one run across processes costs more in
+synchronisation than it gains. The rule is to scale on *queued runs*, and the replica budget of ten
+becomes `--parallelism 10` on Jobs. If a single scenario ever exceeds one instance the first move is
+more vCPU, not a second process.
+
+**The cost trap worth your attention.** A live streaming subscription is a request in flight, and
+Cloud Run keeps an instance alive while one exists. A forgotten browser tab would therefore pin an
+instance and cost more than all deliberate use. The fix is application-level idle shutdown plus
+bounded streams, which the time-leased subscriptions in the protos already set up. Section 3.5
+item 2, and it is the most important line in the deployment plan.
 
 **One reversal of an earlier decision, please sanity-check it.** Scenarios in protobuf text format
 rather than TOML. `Scenario` is already a proto message, so TOML would mean a converter and two

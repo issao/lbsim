@@ -132,13 +132,16 @@ observed queue depth.
 *predicted*, then confirmed by a separate run at that frequency. This is the most distinctive
 thing in the project and it should not be deferred to the end.
 
-### M8. Dashboard
+### M8. Dashboard, and the first deploy
 
 `sim-ingress` over gRPC-web, and the React app: the interactive playground and the scenario
-showcase.
+showcase. This is also the milestone that first deploys, so it carries the seven code requirements
+in section 3.5, of which idle self-shutdown and resumable checkpoints are the two that cost money
+if skipped.
 
-**Done:** a scenario runs, streams, pauses, rewinds and resumes in a browser without
-re-simulating on a scrub.
+**Done:** a scenario runs, streams, pauses, rewinds and resumes in a browser without re-simulating
+on a scrub. And, on Cloud Run: closing the browser tab drives instance count to zero within the
+idle window, verified on the metrics page rather than assumed.
 
 ### M9. Scale validation
 
@@ -184,27 +187,89 @@ Rules that keep it fast:
 
 ## 3. Deployment
 
-### 3.1 The ladder
+Constraint from Issao: **no always-on.** Scale to zero when idle, scale up on demand, within a
+replica budget starting at ten. That constraint drives the design rather than being a flag on the
+end of it.
 
-| Stage | Shape | When |
+### 3.1 Why scale-to-zero is the whole cost story
+
+Approximate Cloud Run pricing in `us-central1`, with CPU always allocated. **Verify against
+current rates before relying on these**; the ratio is the point, not the absolute.
+
+| Shape | Cost |
+|---|---|
+| 4 vCPU, 4 GiB, one hour of active simulation | **~$0.38** |
+| One warm instance held always, per month | **~$274** |
+| Ten-minute interactive session | ~$0.06 |
+| Sweep of 20 variants, 5 minutes each, 2 vCPU, as a Job | ~$0.32 total |
+| Moderate use: 20 interactive hours plus 30 sweeps per month | **~$18** |
+
+A single always-warm instance costs more than a month of real use. So the only cost decision that
+matters is whether anything is running when nobody is looking, and everything below serves that.
+
+### 3.2 Two shapes, because interactive and batch have opposite cost profiles
+
+**Interactive: a Cloud Run service, min-instances 0.**
+
+CPU must be *always allocated* while an instance exists, not request-scoped, because a simulation
+advances between requests and request-scoped CPU would freeze it mid-run. That is not the same as
+always-on: with `--min-instances 0` there is no instance at all when nothing is running, and
+nothing is billed.
+
+The catch, and it is the important one: **Cloud Run keeps an instance alive while a request is in
+flight, and a streaming subscription is a request in flight.** A forgotten browser tab would
+therefore pin an instance indefinitely and quietly cost $274 a month. The mechanism that prevents
+it already exists in the interfaces: subscriptions are time-leased. Combined with bounded stream
+lifetimes and client reconnect, an abandoned tab stops renewing, the last stream ends, the run
+checkpoints to Cloud Storage, and the instance is reaped. Section 3.5 item 2 makes that a
+requirement rather than a hope.
+
+**Batch: Cloud Run Jobs, which cannot idle by construction.**
+
+A parameter sweep is embarrassingly parallel and finite. A Job runs tasks to completion and
+exits, billing only for execution, with no idle window to pay for and no scale-to-zero behaviour
+to get wrong. `--parallelism` is the replica budget, directly:
+
+```bash
+gcloud run jobs execute lbsim-sweep --tasks 20 --parallelism 10
+```
+
+That is strictly cheaper than a service for the same work, and it is where most compute will
+actually go, because comparing policies is the primary use.
+
+### 3.3 What "autoscale on the scale of the simulation" should mean
+
+Worth separating two axes, because only one of them is worth autoscaling.
+
+**More concurrent work: yes, autoscale, and it is nearly free.** Many runs, many users, a sweep of
+twenty variants. Cloud Run scales instances on demand and Jobs scale on `--parallelism`. The
+replica budget is a hard cap in one flag: `--max-instances 10` on the service,
+`--parallelism 10` on Jobs.
+
+**One larger simulation: no, and this is worth saying plainly.** The measurement in
+`docs/ARCHITECTURE.md` section 1.4 is that a single core carries the whole 6,250-replica fleet at
+20x realtime, and one core reaches 2x with roughly fiftyfold headroom. So a bigger simulation does
+not need more instances; it needs a bigger instance, and even then rarely. Spreading one run
+across processes would cost 50-100 microseconds per synchronisation barrier against a lookahead of
+a fraction of a millisecond, which loses more than the parallelism gains.
+
+So the rule is: **scale on queued runs, never on the size of a run.** If a single scenario ever
+does exceed one instance, the first move is `--cpu 8` rather than a second process, and the second
+move is to revisit `docs/ARCHITECTURE.md` section 10.5 with a measurement in hand.
+
+A sizing ladder, so a large run gets a large instance without holding one when idle:
+
+| Fleet in the scenario | CPU / memory | Notes |
 |---|---|---|
-| Local single process | Ingress and Leaf as threads, CLI | M1 onward, and forever for development |
-| Local with frontend | plus `sim-ingress` serving gRPC-web, `vite dev` | M8 |
-| Container, run locally | one image, same binary | before first deploy |
-| **Cloud Run** | one container per concurrent run | first cloud target |
-| GKE Autopilot | only if a single run must span machines | probably never |
+| under 500 replicas | 1 vCPU, 1 GiB | tests and small scenarios |
+| 500 to 10,000 | 2 vCPU, 2 GiB | one cluster |
+| 10,000 to 50,000 | 4 vCPU, 4 GiB | the target fleet |
+| stretch, 500,000 | 8 vCPU, 16 GiB | verify against section 1.5 first |
 
-**Cloud Run is the right first cloud target, and possibly the only one.** A simulation run is a
-long-lived stateful thing holding roughly 1.3 GB, so it wants to stay on one instance for its
-life. Cloud Run gives that with session affinity, CPU always allocated, and a max-instances cap
-that maps directly onto Issao's note about ten backend replicas: ten instances means ten
-concurrent runs. It needs no Kubernetes, no node pools, and no Envoy, because `tonic-web` speaks
-gRPC-web natively.
+Ingress chooses from the scenario at submission time and picks the matching Job or revision. All of
+them still scale to zero.
 
-GKE only becomes necessary if one simulation must span machines. Section 1.4's measurement says
-one core reaches 20x realtime for the whole fleet, so that day should not come.
-
-### 3.2 First deployment, concretely
+### 3.4 The commands
 
 ```bash
 PROJECT=lbsim-dev
@@ -213,67 +278,105 @@ gcloud config set project "$PROJECT"
 gcloud services enable run.googleapis.com artifactregistry.googleapis.com \
     cloudbuild.googleapis.com storage.googleapis.com
 
-# Image registry
 gcloud artifacts repositories create lbsim --repository-format=docker --location="$REGION"
 
-# Results outlive instances, so a finished run is still readable after scale-to-zero
+# Results outlive instances, so a finished run is readable after scale-to-zero.
 gsutil mb -l "$REGION" "gs://$PROJECT-runs"
+# Delete run artefacts after 90 days so storage does not creep.
+printf '{"rule":[{"action":{"type":"Delete"},"condition":{"age":90}}]}' > /tmp/lc.json
+gsutil lifecycle set /tmp/lc.json "gs://$PROJECT-runs"
 
-# Build. A two-stage Dockerfile: cargo build --release, then a distroless runtime image.
-gcloud builds submit --tag "$REGION-docker.pkg.dev/$PROJECT/lbsim/sim:$(git rev-parse --short HEAD)"
+TAG="$REGION-docker.pkg.dev/$PROJECT/lbsim/sim:$(git rev-parse --short HEAD)"
+gcloud builds submit --tag "$TAG"
 
-# Deploy. The flags that matter are explained below; none is incidental.
+# --- interactive service: scales to zero, capped at 3 instances -------------
 gcloud run deploy lbsim \
-  --image "$REGION-docker.pkg.dev/$PROJECT/lbsim/sim:$(git rev-parse --short HEAD)" \
-  --region "$REGION" \
+  --image "$TAG" --region "$REGION" \
   --cpu 4 --memory 4Gi \
   --no-cpu-throttling \
+  --cpu-boost \
   --session-affinity \
-  --min-instances 0 --max-instances 10 \
+  --min-instances 0 \
+  --max-instances 3 \
   --concurrency 4 \
-  --timeout 3600 \
-  --set-env-vars "RESULTS_BUCKET=gs://$PROJECT-runs" \
+  --timeout 900 \
+  --set-env-vars "RESULTS_BUCKET=gs://$PROJECT-runs,IDLE_SHUTDOWN_SECONDS=300" \
   --no-allow-unauthenticated
 
-# Frontend: a static bundle, served from the bucket behind Cloud CDN
+# --- batch sweeps: no idle cost at all, replica budget is --parallelism -----
+gcloud run jobs create lbsim-sweep \
+  --image "$TAG" --region "$REGION" \
+  --cpu 2 --memory 2Gi \
+  --task-timeout 3600 \
+  --max-retries 1 \
+  --parallelism 10 \
+  --set-env-vars "RESULTS_BUCKET=gs://$PROJECT-runs" \
+  --command /usr/local/bin/sim-run --args sweep
+
+# --- frontend: a static bundle, no compute at all --------------------------
 gsutil mb -l "$REGION" "gs://$PROJECT-web" && gsutil web set -m index.html "gs://$PROJECT-web"
 ```
 
-Why each non-obvious flag:
+The flags that are load-bearing rather than incidental:
 
-- **`--no-cpu-throttling`.** Cloud Run throttles CPU between requests by default. A simulation
-  advances between requests, so throttling would pause it whenever the browser is quiet.
-- **`--session-affinity`.** A run lives in one instance's memory. Without affinity a subscription
-  can land on an instance that has never heard of it.
-- **`--concurrency 4`.** Concurrency here is simulation runs per instance, not HTTP requests per
-  second. Four runs on four vCPUs, one core each, matching the measured budget.
-- **`--timeout 3600`.** Streaming subscriptions are long-lived; the default hour is the ceiling
-  and the client should reconnect rather than assume more.
-- **`--no-allow-unauthenticated`.** Nothing here should be public. Add Identity-Aware Proxy when
-  more than one person uses it.
-- **`--min-instances 0`.** Scale to zero when idle. A cold start is a container pull, seconds, not
-  the minutes a real inference replica takes.
+| Flag | Why |
+|---|---|
+| `--min-instances 0` | the entire cost story; nothing runs and nothing bills when idle |
+| `--max-instances 3` | the replica budget for interactive use, deliberately below ten so sweeps have room |
+| `--no-cpu-throttling` | a simulation advances between requests; request-scoped CPU would freeze it. Not always-on |
+| `--cpu-boost` | faster cold start, which matters because every session now starts cold |
+| `--session-affinity` | a run lives in one instance's memory |
+| `--concurrency 4` | runs per instance, not requests per second: four runs on four vCPUs, one core each |
+| `--timeout 900` | **fifteen minutes, not an hour.** A bounded stream forces reconnect, so an abandoned tab cannot pin an instance |
+| `--parallelism 10` | the replica budget for batch, where the compute actually goes |
 
-### 3.3 What must be true in the code for that to work
+### 3.5 What must be true in the code
 
-Worth stating now, because retrofitting any of it is unpleasant:
+Retrofitting any of these is unpleasant, so they belong in the milestone that first deploys.
 
-1. **A completed run's results go to Cloud Storage, not local disk.** An instance can vanish.
-2. **The Ingress must be able to say "I do not hold that run".** Session affinity is best-effort,
-   so the client needs a clean error and a way to find the results in the bucket instead.
-3. **No filesystem state that must survive.** Scenarios come in over the wire or from the image;
-   snapshots live in memory or in the bucket.
-4. **A `/healthz` that reports readiness without touching a run**, or a slow run marks the
-   instance unhealthy.
-5. **Structured logs to stdout**, since that is what Cloud Logging reads.
+1. **Results go to Cloud Storage, not local disk.** An instance can vanish at any time.
+2. **Idle self-shutdown.** With no live subscription lease and no queued work for
+   `IDLE_SHUTDOWN_SECONDS`, checkpoint the run to the bucket and stop advancing so the instance can
+   be reaped. **This is the single most important cost control**, because without it a forgotten
+   browser tab costs more per month than all intentional use.
+3. **A resumable checkpoint.** Reopening a run after scale-to-zero restores from the bucket. The
+   snapshot machinery in `docs/ARCHITECTURE.md` section 8.2 already exists for rewind; this is the
+   same mechanism with a different destination.
+4. **A clean "I do not hold that run".** Session affinity is best-effort, so a client must be told
+   to reconnect or to read finished results from the bucket instead of receiving a confusing error.
+5. **Bounded streams with client reconnect**, matching `--timeout 900`. The lease renewal in
+   `subscription.proto` is the natural place.
+6. **Health check that does not touch a run**, or a busy instance is marked unhealthy and killed
+   mid-simulation.
+7. **Structured logs to stdout**, which is what Cloud Logging reads.
 
-### 3.4 Deliberately not in scope
+### 3.6 Budget guardrails, belt and braces
 
-Multi-region, autoscaling on anything other than instance count, a database, and Terraform. Five
-`gcloud` commands are easier to read than a state file, and if this ever needs more than that, it
-will also need a different plan.
+```bash
+# Hard ceiling on spend visibility: alert at 50%, 90% and 100% of a monthly budget.
+gcloud billing budgets create \
+  --billing-account "$BILLING_ACCOUNT" \
+  --display-name "lbsim monthly" \
+  --budget-amount 50USD \
+  --threshold-rule percent=0.5 --threshold-rule percent=0.9 --threshold-rule percent=1.0
+```
 
----
+Four layers, none of which relies on remembering to turn something off:
+
+1. `--min-instances 0` on every service. Nothing idles.
+2. `--max-instances` and `--parallelism` cap concurrent compute at the replica budget.
+3. Application-level idle shutdown, section 3.5 item 2, so a live stream cannot pin an instance.
+4. A billing budget alert, because the first three are code and code has bugs.
+
+A useful habit alongside them: `gcloud run services describe lbsim --format='value(status.traffic)'`
+and the Cloud Run metrics page show instance-hours, which is the number to watch. Anything non-zero
+while nobody is using it is a bug in item 3.
+
+### 3.7 Deliberately not in scope
+
+Multi-region, a database, Terraform, and GKE. Committed spend and reservations are actively wrong
+here, since they are the opposite of scale-to-zero. If this ever needs more than the commands above
+it will also need a different plan.
 
 ## 4. Testing strategy
 
@@ -328,8 +431,11 @@ open questions in `TASKS.md` all have defaults and none of them blocks.
    ranges, not points.
 3. **M8 can consume unbounded time.** It should be a separate workstream against a frozen
    interface, and it should not start before M6.
-4. **Cloud Run's session affinity is best-effort.** Section 3.3 item 2 is the mitigation, and it
-   has to be designed in rather than discovered in production.
+4. **A live subscription keeps a Cloud Run instance alive.** Left unhandled, one forgotten browser
+   tab costs more per month than all deliberate use. Section 3.5 item 2, application-level idle
+   shutdown, is the mitigation and it is the single most important cost control in the plan.
+   Session affinity being best-effort is the secondary version of the same problem, handled by
+   item 4.
 5. **The plan front-loads a useful result at M1 by disabling decode.** That is deliberate, but it
    means the first thing that works is not yet LLM-specific. Worth saying out loud so nobody
    mistakes the skeleton for the product.
