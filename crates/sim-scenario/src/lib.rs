@@ -45,6 +45,9 @@ pub struct Scenario {
     pub step_token_budget: u32,
     /// Per-replica queue cap. Shedding here is the cheap failure.
     pub max_queue: usize,
+    /// The knob VISION.md section 3a asks for "early on": with decode's bandwidth term zeroed, traffic
+    /// behaves like stateless serving and the rolling hotspot can be shown without any LLM physics.
+    pub disable_decode: bool,
 
     // -- workload ----------------------------------------------------------
     pub arrival_rps: f64,
@@ -130,6 +133,7 @@ impl Default for Scenario {
             // because the floor on achievable inter-token latency was above it. 1024 gives 46.4 ms.
             step_token_budget: 1024,
             max_queue: 64,
+            disable_decode: false,
             arrival_rps: 40.0,
             prompt_mean: 1200.0,
             prompt_cv: 1.2,
@@ -214,6 +218,7 @@ impl Scenario {
                 "prefill_tokens_per_s" => s.prefill_tokens_per_s = f("prefill_tokens_per_s"),
                 "step_token_budget" => s.step_token_budget = f("step_token_budget") as u32,
                 "max_queue" => s.max_queue = f("max_queue") as usize,
+                "disable_decode" => s.disable_decode = v == "true",
                 "arrival_rps" => s.arrival_rps = f("arrival_rps"),
                 "prompt_mean" => s.prompt_mean = f("prompt_mean"),
                 "prompt_cv" => s.prompt_cv = f("prompt_cv"),
@@ -280,6 +285,7 @@ impl Scenario {
             step_per_seq_ms: self.step_per_seq_ms,
             step_per_kv_ktoken_ms: self.step_per_kv_ktoken_ms,
             prefill_tokens_per_s: self.prefill_tokens_per_s,
+            disable_decode: self.disable_decode,
         }
     }
 
@@ -343,7 +349,7 @@ impl Scenario {
             "name = {}\nseed = {}\nduration_s = {}\nwarmup_s = {}\nreplicas = {}\nmax_batch = {}\n\
              step_base_ms = {}\nstep_per_seq_ms = {}\nstep_per_kv_ktoken_ms = {}\n\
              kv_capacity_tokens = {}\nprefill_tokens_per_s = {}\n\
-             step_token_budget = {}\nmax_queue = {}\narrival_rps = {}\nprompt_mean = {}\n\
+             step_token_budget = {}\nmax_queue = {}\ndisable_decode = {}\narrival_rps = {}\nprompt_mean = {}\n\
              prompt_cv = {}\noutput_mean = {}\noutput_cv = {}\nlong_probability = {}\n\
              long_prompt_mean = {}\nlong_output_mean = {}\nload_step_at_s = {}\n\
              load_step_factor = {}\nload_step_until_s = {}\nrouting = {}\np2c_choices = {}\n\
@@ -356,7 +362,7 @@ impl Scenario {
             self.name, self.seed, self.duration_s, self.warmup_s, self.replicas, self.max_batch,
             self.step_base_ms, self.step_per_seq_ms, self.step_per_kv_ktoken_ms,
             self.kv_capacity_tokens, self.prefill_tokens_per_s,
-            self.step_token_budget, self.max_queue, self.arrival_rps, self.prompt_mean,
+            self.step_token_budget, self.max_queue, self.disable_decode, self.arrival_rps, self.prompt_mean,
             self.prompt_cv, self.output_mean, self.output_cv, self.long_probability,
             self.long_prompt_mean, self.long_output_mean, self.load_step_at_s,
             self.load_step_factor, self.load_step_until_s, self.routing, self.p2c_choices,

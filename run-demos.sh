@@ -36,5 +36,21 @@ echo; echo "== 6. retry storm: whether the fleet comes back after the spike =="
 $S compare scenarios/retry_none.txt scenarios/retry_budget.txt scenarios/retry_storm.txt \
            --out out/6-retry.html
 
+echo; echo "== 7. decode disabled (HBM to infinity): does the rolling hotspot need LLM physics? =="
+$S compare scenarios/route_round_robin_no_decode.txt scenarios/route_p2c_no_decode.txt \
+           --out out/7-no-decode.html
+
+echo; echo "== 8. admission under overload: shed early or time out late =="
+$S compare scenarios/admit_accept_all.txt scenarios/admit_deadline_aware.txt \
+           --out out/8-admission.html
+
+echo; echo "== 9. tenants: weighted fair share against an over-share tenant =="
+$S compare scenarios/admit_tenants_accept_all.txt scenarios/admit_fair_share.txt \
+           --out out/9-fair-share.html
+
+echo; echo "== 10. live probes: least-KV on fresh state against p2c on the snapshot =="
+$S compare scenarios/route_p2c.txt scenarios/route_least_kv_probe.txt \
+           --out out/10-probes.html
+
 echo; echo "reports in out/"
 echo "for machine-readable telemetry, add: --telemetry out/NAME.tele [--telemetry-budget-mb N]"

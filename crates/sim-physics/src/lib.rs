@@ -26,6 +26,10 @@ pub struct CostModel {
     pub step_per_kv_ktoken_ms: f64,
     /// Prefill is compute-bound, so it is a token rate rather than a per-sequence cost.
     pub prefill_tokens_per_s: f64,
+    /// Issao: "we could get disable decode basically by setting HBM to infinity." True zeroes the
+    /// bandwidth term, so a decode step costs only the fixed and per-sequence parts and traffic looks
+    /// like stateless serving. KV accounting is untouched: capacity still binds in tokens.
+    pub disable_decode: bool,
 }
 
 impl CostModel {
@@ -42,9 +46,14 @@ impl CostModel {
     /// current instant and spin.
     #[inline]
     pub fn step_ns(&self, decoding: usize, kv_tokens: u64, prefill_tokens: u32) -> Nanos {
+        let bandwidth = if self.disable_decode {
+            0
+        } else {
+            ((self.step_per_kv_ktoken_ms * kv_tokens as f64 / 1000.0) * 1e6) as Nanos
+        };
         let step_ns = (self.step_base_ms * 1e6) as Nanos
             + (self.step_per_seq_ms * 1e6) as Nanos * decoding as Nanos
-            + ((self.step_per_kv_ktoken_ms * kv_tokens as f64 / 1000.0) * 1e6) as Nanos
+            + bandwidth
             + ((prefill_tokens as f64 / self.prefill_tokens_per_s) * 1e9) as Nanos;
         step_ns.max(1)
     }
@@ -69,9 +78,8 @@ impl CostModel {
         // Mean resident context over a request's life: the prompt plus half its output.
         let ctx_mean = p_mean + o_mean / 2.0;
         let batch = self.effective_batch(kv_capacity_tokens, max_batch, ctx_mean);
-        let step_s = (self.step_base_ms
-            + self.step_per_seq_ms * batch
-            + self.step_per_kv_ktoken_ms * batch * ctx_mean / 1000.0)
+        let per_kv = if self.disable_decode { 0.0 } else { self.step_per_kv_ktoken_ms };
+        let step_s = (self.step_base_ms + self.step_per_seq_ms * batch + per_kv * batch * ctx_mean / 1000.0)
             / 1000.0;
         let prefill_s = p_mean / self.prefill_tokens_per_s;
         let decode_s = o_mean * step_s / batch;

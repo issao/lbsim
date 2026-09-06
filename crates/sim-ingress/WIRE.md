@@ -135,3 +135,30 @@ without renewal and ends its stream. A run with no live lease and no queued work
 checkpoints and stops advancing, so a Cloud Run instance can be reaped; `GetRun` on such a run reports
 `STATE_PAUSED` with `error` empty. Reopening a subscription resumes it. These are `lease.rs` and
 `idle.rs` in this crate.
+
+## What `sim-run export` writes, and the decisions it settled
+
+`sim-run export --demos --dir DIR` (and `export <scenario.txt ...>`) writes, under `DIR/runs/`:
+
+```
+runs/index.json                      one object per line, merged and sorted by run_id on re-export
+runs/<group>/<run>/status.json       RunStatus, STATE_COMPLETE
+runs/<group>/<run>/scenario.txt      the resolved flat scenario
+runs/<group>/<run>/result.json       metrics.proto RunResult, verbatim: run_id, seed, event_count,
+                                     state_checksum (the fingerprint), overall Scorecard
+runs/<group>/<run>/fleet.jsonl       one SubscriptionUpdate per sample instant, SCOPE_FLEET, last has final
+```
+
+Settled while building it, and binding on the server too:
+
+- `index.json` is the one document with no proto: `{run_id, name, routing, scenario_file, sim_start_unix_ns,
+  sim_end_unix_ns, sample_interval_ms, replicas}`.
+- A gauge that is undefined in a window (SLO attainment with no completions, imbalance on an idle fleet)
+  and a distribution with `count` 0 are **omitted** from the maps, never written as 0.
+- `METRIC_KV_UTILIZATION` is a **fraction** on the wire; the engine's series is a percentage.
+- `METRIC_ADMITTED_RPS` equals completions per window until the engine has an admission series.
+- Whole-run distributions in `result.json` carry `from_merged_histogram: true` (bucketed, accurate);
+  windowed ones in `fleet.jsonl` are exact and carry `false`.
+- `subscription_id` is `"export"` and `realtime_factor` is `0` in exported rows; the live server fills both.
+- Per-replica rows (`SCOPE_REPLICA`) come from `RunResult.frames[].replicas`, which exists since the
+  engine-core unit; the exporter's `replica_rows` seam is where they are emitted.
