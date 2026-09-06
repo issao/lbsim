@@ -31,7 +31,7 @@ would cause rework if they arrive late, and each says how much.
 
 | Done | File | Lines | Time | Why it matters |
 |---|---|---|---|---|
-| [ ] | `docs/execution-plan.md` | 440 | 15 min | Ten milestones, the local loop, and the Cloud Run deployment. Section 3 was reworked for your budget constraint. |
+| [x] | `docs/execution-plan.md` | 440 | 15 min | Ten milestones, the local loop, and the Cloud Run deployment. Section 3 was reworked for your budget constraint. |
 | [ ] | `docs/arena.md` | 196 | 10 min | Your arena specification designed out. Two additions of mine are argued in sections 2.3 and 5; disagree with those if you do. |
 | [ ] | `docs/ui-spec.md` | 146 | 8 min | Your dashboard specification, moved out of the execution plan. Section 5 is the stand-in scope. |
 | [ ] | `docs/agent-architecture.md` | 268 | 12 min | How to staff this with agents. Recommends two now, not seven. |
