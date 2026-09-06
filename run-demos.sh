@@ -5,7 +5,7 @@ cd "$(dirname "$0")"
 export PATH="$HOME/local/bin:$HOME/.local/bin:$PATH"
 # Through cargo rather than ./target: .cargo/config.toml points every worktree at one shared target
 # directory, so a relative path is wrong in all but the original checkout.
-S="cargo run --release --quiet --bin sim-run --"
+S="tools/build.sh run --release --quiet --bin sim-run --"
 
 echo "== 1. routing policies at identical load and seed =="
 $S compare scenarios/route_round_robin.txt scenarios/route_p2c.txt \
