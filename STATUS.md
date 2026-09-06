@@ -3,7 +3,7 @@
 What is live on `origin/master`, what each agent is doing now, and the assumptions being acted on.
 For things that need *you*, see `TASKS.md`.
 
-**Last updated:** 2026-09-06 16:40 by Claude.
+**Last updated:** 2026-09-06 17:30 by Claude.
 
 ---
 
@@ -23,7 +23,7 @@ Scope is `docs/scope-today.md` package B plus item 7, and both side missions Iss
 | Stand-in dashboard, three surfaces, mock data | `web/` | `cd web && npm run build` |
 | **Deployed, public**: <https://lbsim-irpwc2yaoa-uc.a.run.app>, dashboard at `/`, reports at `/reports/1-routing.html` to `6-retry.html` | `Dockerfile`, `cloudbuild.yaml`, `deploy.sh` | `curl -sI` on the URL returns 200; `./deploy.sh --check-idle` reads the instance count from Cloud Monitoring |
 | Reference cost model, exact against a naive oracle | `bench/validate_epochs.py` | `tools/sync.sh` runs it |
-| Interfaces, twelve files, reviewed | `proto/lbsim/v1/` | `tools/sync.sh` compiles them |
+| Interfaces, twelve files, reviewed; `GeneratedPolicy` slot (947649b), lease expiry renamed `lease_expires_at_wall_ns` because it is wall clock (db390a4) | `proto/lbsim/v1/` | `tools/sync.sh` compiles them |
 | Findings, one section per dynamic | `docs/findings.md` | every table from `./run-demos.sh` |
 
 The six dynamics, one line each, all measured at 30% of rated capacity unless the sweep is over load:
@@ -36,7 +36,7 @@ difference between a bad minute and an outage. Numbers in `docs/findings.md`.
 
 | Agent | Owns | Now |
 |---|---|---|
-| Tech lead | `src/`, `tests/`, `scenarios/`, `web/src/lib/` | worktrees `lbsim-wt-tl`, `lbsim-tlweb`; nothing merged beyond the above yet. Next per the main agent: the policy registry behind `GeneratedPolicy`; a simplification pass every four merges, per `CLAUDE.md` |
+| Tech lead | `src/`, `tests/`, `scenarios/`, `web/src/lib/` | worktrees `lbsim-wt-tl`, `lbsim-tlweb`; nothing merged beyond the above yet. Merged: the section 10.8 crate workspace, behaviour byte-identical (163995c). Handed over from the main agent: the browser-side transport client on `claude/tl-web-transport`, with its contract findings. Next: the policy registry behind `GeneratedPolicy`; a simplification pass every four merges, per `CLAUDE.md` |
 | Cloud | `Dockerfile`, `deploy.sh`, `cloudbuild.yaml`, `docs/deploy.md` | first deploy done at 15:45, merged as 72dfb16. No further IAM grant was needed: the blocker was two bucket permissions, worked around in `cloudbuild.yaml`. `docs/deploy.md` written, 947649b |
 | Monitor and housekeeping | `TASKS.md`, `STATUS.md`, `README.md`, `docs/*.md` | inbox and PR loop every 90 s; tidying the documents; next `README.md`, then `docs/` contradictions |
 
