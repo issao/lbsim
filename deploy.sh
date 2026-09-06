@@ -26,6 +26,10 @@ BUCKET=${BUCKET:-gs://${PROJECT}-runs}
 # on a ~60s cadence and Monitoring ingests it with a delay of a minute or two, so a check run
 # immediately after a request will still show the instance that served it. That is correct, not a
 # failure. What matters is the tail of the series.
+#
+# REDUCE_SUM across series matters: every *revision* emits its own series per state, so a service
+# that has just rolled over has two of each, and reading one of them understates the instance count
+# that is actually being billed.
 if [ "${1:-}" = "--check-idle" ]; then
   END=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   START=$(date -u -d '40 minutes ago' +%Y-%m-%dT%H:%M:%SZ)
@@ -38,6 +42,8 @@ if [ "${1:-}" = "--check-idle" ]; then
     --data-urlencode "interval.end_time=$END" \
     --data-urlencode "aggregation.alignmentPeriod=60s" \
     --data-urlencode "aggregation.perSeriesAligner=ALIGN_MAX" \
+    --data-urlencode "aggregation.crossSeriesReducer=REDUCE_SUM" \
+    --data-urlencode "aggregation.groupByFields=metric.label.state" \
     -o "$TS"
   python3 - "$TS" <<'PY'
 import json, sys
@@ -60,7 +66,8 @@ for s in series:
     state = s["metric"]["labels"].get("state", "unknown")
     for p in s["points"]:
         v = p["value"]
-        rows.setdefault(p["interval"]["endTime"], {})[state] = float(
+        bucket = rows.setdefault(p["interval"]["endTime"], {})
+        bucket[state] = bucket.get(state, 0.0) + float(
             v.get("doubleValue", v.get("int64Value", 0))
         )
 
