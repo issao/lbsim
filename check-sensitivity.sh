@@ -35,7 +35,7 @@ for c in "${CASES[@]}"; do
   ranking=$($S compare $SCN \
       --set step_base_ms="$base" --set step_per_kv_ktoken_ms="$kv" \
       --set prefill_tokens_per_s="$pf" --out /dev/null 2>/dev/null \
-    | sed -n '4,20p' | awk 'NF>2 && $1 != "scenario" {print $1, $2}' | sort -k2 -nr | awk '{printf "%s ", $1}')
+    | sed -n '4,20p' | awk '$2+0 == $2 && $2 != "" {print $1, $2}' | sort -k2 -nr | awk '{printf "%s ", $1}')
   printf "%-16s %s\n" "$label" "$ranking"
   if [ -z "$expected" ]; then
     expected="$ranking"
