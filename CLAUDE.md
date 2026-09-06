@@ -59,12 +59,29 @@ instruction. The protocol is:
 A marker left in the tree means the work is not done. Never edit a marker in place, and never
 leave one behind as answered: acting on it and deleting it are one unit of work.
 
-Run `python3 tools/inbox.py` to fetch from origin and list pending markers and unseen commits.
-Do this at the start of every turn before anything else, after every commit, whenever waiting
-on something rather than idling, and before ending a turn.
+### Reacting to a push
 
-The user commits on their own branch and pushes to GitHub. Fetch and merge regularly: their
-edits are the other half of this conversation.
+**Run `tools/sync.sh`.** One command, so no step gets forgotten. It fetches, integrates
+`origin/master` when the integration is unambiguous, lists pending instructions, and checks
+that the protos compile, the diagram still matches them, and the epoch math is still exact. It
+exits non-zero when anything needs attention, and refuses to touch a dirty tree.
+
+Run it at the start of every turn before anything else, whenever the commit watcher fires,
+after every commit, whenever waiting on something rather than idling, and before ending a turn.
+
+Then, for each instruction it lists:
+
+1. Act on it.
+2. `python3 tools/inbox.py --resolve <file>:<line>` to remove the marker.
+3. Commit, quoting the instruction. Merge to `master` and push.
+4. Re-run `tools/sync.sh` to confirm nothing is left.
+
+### The watcher
+
+A background monitor polls `git ls-remote origin` every 60 seconds and reports new commits
+plus any instruction markers inside them. **It lives only as long as this session.** If the
+session restarts, re-arm it, and until then rely on `tools/sync.sh` at every turn boundary.
+Never claim the watcher is running without checking.
 
 ## Ground rules
 
@@ -87,7 +104,8 @@ and live. Keep both current.
 
 ## Commands
 
-- Check the inbox: `python3 tools/inbox.py`
+- React to a push, and check every invariant: `tools/sync.sh`
+- Check the inbox only: `python3 tools/inbox.py`
 - Validate interfaces: `protoc --proto_path=proto --descriptor_set_out=/dev/null $(find proto -name "*.proto")`
 - Validate the diagram against the protos: `python3 tools/check_diagram.py`
 - Toolchain setup, if `$HOME` was wiped: see `docs/toolchain.md`
