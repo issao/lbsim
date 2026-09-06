@@ -108,24 +108,57 @@ boundaries, plus preemptions. Round to 100.
 **Reduction: about 56x.** Per cluster, the stretch case needs roughly 0.4 of a core, so a
 single-threaded simulator per cluster clears 20x realtime with headroom.
 
-### 1.4 The event queue is the one real performance risk
+### 1.4 The event queue: measured, and the mitigation was wrong
 
-100 ns per event is only achievable if the queue stays cache-resident. A flat binary heap
-holding ~1.7 M future events would cost 20 cache-missing comparisons per operation, more
-like 1-2 microseconds, which would blow the budget by 10-20x.
+This was open risk 1, the one number that could invalidate the plan. It is now measured, in
+Rust, release build with link-time optimisation, on this machine. See `bench/queue/`.
 
-Mitigation, and this shapes the design: **a two-level event queue.**
+The workload mirrors the real one: pop the earliest event, do trivial work, push that actor's
+next event 1 ms to 1 s later. Ordering is by `(time_ns, seq)` in every variant, so the
+determinism requirement is not traded away for speed.
 
-- Each replica keeps its own next-event time and its own small local ordering.
-- A global 4-ary heap orders only the 6,250 replicas plus a handful of fleet-level actors.
-  6,250 entries of 16 bytes is 100 KB, which sits in L2.
+| Structure | Entries | ns/event | Verdict vs 100 ns budget |
+|---|---|---|---|
+| std `BinaryHeap`, pop+push | 6,250 | **54** | inside, ~2x headroom |
+| std `BinaryHeap`, pop+push | 62,500 | **82** | inside |
+| std `BinaryHeap`, pop+push | 200,000 | 124 | marginal |
+| std `BinaryHeap`, pop+push | 1,700,000 | **441** | 4.4x over budget |
+| 2-ary `replace_min`, hand-rolled | 6,250 | 66 | slower than std |
+| 4-ary `replace_min`, hand-rolled | 6,250 | 70 | slower than std |
+| 8-ary `replace_min`, hand-rolled | 6,250 | 75 | slower than std |
+| 4-ary with position tracking | 6,250 | 73 | slower than std |
 
-This keeps the hot structure small regardless of how many requests are in flight. A
-hierarchical timing wheel is the fallback if measurement says otherwise. The queue is
-behind a trait so it can be swapped without touching the model.
+Two conclusions, one of which corrects an earlier claim in this document.
 
-**Action: benchmark the queue before building anything on top of it.** It is the one number
-that can invalidate this plan.
+**Confirmed: the two-level design is necessary.** Heap size dominates everything else. Going
+from 6,250 entries to 1.7 million costs 8x per operation, entirely in cache misses during the
+sift. So per-request timers such as client timeouts, deadlines and retries must *not* enter the
+global queue. Keep one entry per replica in the global structure and hold each replica's own
+future events locally, and the hot structure stays cache-resident no matter how many requests
+are in flight.
+
+**Corrected: do not hand-roll the heap.** An earlier draft of this section predicted 1-2
+microseconds for the large flat heap and proposed a 4-ary implicit heap as the mitigation. The
+prediction was pessimistic by roughly 3x, and the proposed mitigation is *slower* than the
+standard library at every size tested, including the variant that avoids position tracking
+entirely. Rust's `BinaryHeap` uses a hole-based sift that beats a straightforward swap loop,
+and higher arity made things worse rather than better here. Use `std::collections::BinaryHeap`
+and spend the effort on keeping it small.
+
+Recomputing section 1.3 with the measured 54 ns:
+
+| Realtime factor | Events/s | Cores |
+|---|---|---|
+| 2x (requirement) | 1.8 M | 0.10 |
+| 20x (stretch) | 18 M | 0.97 |
+
+So one core reaches the stretch target for the whole fleet, and the per-cluster threading in
+section 9 is headroom rather than necessity. Open risk 1 is closed.
+
+One correction to the inputs while we are here. Section 1.2 assumed 9,000 output tokens/s per
+replica. The cost model, validated in section 3.5, gives 7,676 at batch 256 and 4k context. The
+analysis therefore *overstates* fleet request rate by about 15%, which makes every cost figure
+above conservative rather than optimistic. Left as is deliberately.
 
 ### 1.5 Memory
 
@@ -236,6 +269,29 @@ Even `every_step` is only about 1.4x, because 40 steps/s is small next to the ~1
 composition changes/s. **So per-step policy decisions are affordable after all.** The thing
 that is not affordable is per-step *iteration over every sequence*, which is a different
 matter and is what the epoch form eliminates.
+
+### 3.5 Validated numerically
+
+`bench/validate_epochs.py` checks the claim rather than asserting it. Three properties, all
+passing:
+
+- **The closed form equals the step-by-step sum exactly**, checked in rational arithmetic
+  rather than floating point, across batch sizes from 1 to 256 and up to 30,000 steps. A match
+  in exact arithmetic is a proof for those inputs, not a coincidence of rounding.
+- **The inverse solve is correct** on 20,000 randomised trials plus exact-boundary cases: for a
+  mid-epoch event at offset `d`, the returned step count `n` satisfies `T(n) <= d < T(n+1)`.
+- **A whole replica run agrees.** Sequences with different remaining lengths, completing at
+  different times, produce identical completion times either way. Worst relative difference
+  across cases was 1.7e-15, which is float noise and not algebraic disagreement. The same runs
+  took 23,343 per-step iterations versus 285 epoch iterations, a factor of 82.
+
+A side finding worth keeping: the closed form is *more* accurate than the loop, not merely
+faster, because it does not accumulate rounding error over n additions. That removes the last
+reason someone might prefer per-step iteration.
+
+The same script reproduces the decode step-time table in `docs/llm-serving-primer.md` section
+10.4 to within 0.1 ms at every row, which is a useful check that the algebra here and the
+hand-computed numbers there describe the same model.
 
 ---
 
@@ -717,8 +773,11 @@ arena, and everything after it is additive rather than structural.
 
 ## 12. Open risks
 
-1. **Event queue throughput.** The one number that can invalidate the plan. Benchmark the
-   two-level queue at 6,250 replicas before building on it. Section 1.4.
+1. ~~**Event queue throughput.**~~ **Closed.** Measured at 54 ns/event for a 6,250-entry
+   `std::collections::BinaryHeap`, giving 2x headroom against the budget and reaching the 20x
+   stretch target on one core. The two-level design is confirmed necessary, since heap size
+   dominates; the hand-rolled heap proposed as its mitigation turned out to be slower than the
+   standard library and is dropped. Section 1.4.
 2. **Cost model calibration.** Ordering of policies must be robust to cost-model error. The
    mitigation is a sensitivity test: perturb the utilization and overhead constants by
    +/-30% and confirm that policy rankings do not flip. If a conclusion is not robust to
