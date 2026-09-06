@@ -1,0 +1,77 @@
+# HELD-OUT SUITE 7 of 8 — frozen. docs/arena.md section 5.
+#
+# Dynamic exposed: the extreme prefill-bound corner with the highest service-time variability any
+# public trace shows. 111:1 input:output, output CV 3.30, p50 of 8 output tokens against a mean of
+# 22.7. Requests are short-lived and arrive at 159 per second, so batch composition turns over
+# completely several times a second.
+#
+# It is also the only mixture in the suite that can reach the 99.9% cap docs/arena.md section 1 names:
+# at freeze time round_robin attained 0.9991 at 71 rps and 0.9962 at this file's 159 rps, while every
+# chat and long-context mixture tops out near 0.996 at any rate. The reason is arithmetic rather than
+# policy — 2,511 tokens is 89 ms of prefill against a 1 s budget, so the prompt-length tail does not
+# breach the TTFT SLO the way a 12 k-token chat mixture's does.
+#
+# Why it is in the suite: it inverts the assumption the chat scenarios share. Here decode is almost
+# free and the fleet is a prefill machine, so a policy tuned to decode-side signals — running
+# sequences, resident KV — is reading a quantity that barely moves. calibration.md 3.2 calls the
+# input:output ratio "the highest-leverage workload parameter in the whole simulator" and warns that
+# "any conclusion drawn on ShareGPT (1.1:1) transfers to agentic traffic (100:1) not at all"; this
+# file and h6 are the two ends of that axis inside the frozen suite.
+name = h7-code-completion
+seed = 20260906
+duration_s = 120
+warmup_s = 15
+
+# -- fleet: a 70B-class model on 8xH100 per replica, identical in every held-out file ---------------
+# calibration.md 6.5: batch-1 decode 10.25 ms (NIM, 8xH100 bf16) and 11,082 output tok/s at max
+# throughput; 6.2's convention puts all overhead in the fixed term. step_base_ms is the 7.46 ms weight
+# read at 70% bandwidth utilization plus 2.75 ms fixed overhead, step_per_kv_ktoken_ms is the
+# bandwidth term, and kv_capacity_tokens is the primer's 1.37 M per replica (calibration.md 5.3 uses
+# the same figure). Replica count is not a calibrated number: calibration.md 9.2 records that no public
+# source gives a fleet size.
+replicas = 32
+max_batch = 256
+kv_capacity_tokens = 1370000
+step_base_ms = 10.2
+step_per_seq_ms = 0.0
+step_per_kv_ktoken_ms = 0.0175
+prefill_tokens_per_s = 28286
+step_token_budget = 1024
+max_queue = 400
+
+# -- load: calibration.md scenario C "code-completion" (Azure LLM 2024, code) ---------------------
+# prompt_mean 2,511 / CV 0.85 and output_mean 22.7 / CV 3.296, all [measured-here, 3.1, 3.3, 3.4, 10].
+# calibration.md 3.3 notes gamma fits this input better than lognormal (KS 0.040 vs 0.101); the engine
+# samples lognormal only, so the input shape here is the family the trace fits second best. Recorded as
+# a known approximation rather than hidden.
+# corr(input, output) is exactly 0.000 for this trace [measured-here, 3.5], which is what the engine's
+# independent sampling assumes — so of all the scenarios in the suite, this is the one where that
+# assumption is right rather than merely convenient.
+# long_probability is 0 because inline completion has no long mode: calibration.md 10 gives it
+# fleet_continuation_fraction 0.0 and the trace is 8 k-truncated, max input 7,743.
+# Analytic rated capacity is 353 rps; 159 rps is 0.45x, chosen the same way as h2: it is the measured
+# SLO capacity, where round_robin attains 0.9962 and least_requests 0.1070.
+arrival_rps = 159
+prompt_mean = 2511
+prompt_cv = 0.85
+output_mean = 22.7
+output_cv = 3.296
+long_probability = 0.0
+long_prompt_mean = 7743
+long_output_mean = 271
+
+# -- telemetry: calibration.md 9.2 records production staleness as unmeasured, [GUESS] 5 s with a
+# 1-30 s sweep. 1 s is the fast end of that sweep, so herding is present but not the subject here.
+telemetry_interval_ms = 1000
+telemetry_delay_ms = 200
+
+# -- client and SLOs -----------------------------------------------------------------------------
+# A tighter budget than chat, because an inline completion that arrives after the developer has typed
+# the next character is worthless. 2,511 tokens is 89 ms of prefill, so 1 s of TTFT is nearly all
+# queueing allowance. calibration.md 9.1: assumption, not a measurement.
+client_timeout_s = 30
+max_attempts = 1
+ttft_slo_ms = 1000
+itl_slo_ms = 80
+e2e_slo_s = 30
+sample_interval_ms = 250
