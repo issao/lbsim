@@ -1,12 +1,10 @@
 [package]
-name = "sim-leaf"
+name = "sim-model"
 version.workspace = true
 edition.workspace = true
 
 [dependencies]
 sim-core = { path = "../sim-core" }
 sim-scenario = { path = "../sim-scenario" }
-sim-metrics = { path = "../sim-metrics" }
+sim-physics = { path = "../sim-physics" }
 sim-workload = { path = "../sim-workload" }
-sim-policy = { path = "../sim-policy" }
-sim-model = { path = "../sim-model" }
