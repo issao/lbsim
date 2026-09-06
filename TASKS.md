@@ -64,6 +64,8 @@ design task for a better target is routed to the tech lead above.
 
 **If you do nothing:** the default stands, and every score records the rule set it was earned under.
 
+Issao: You can remove this, I agreed with this.
+
 ## 3. Decisions with a default
 
 | Decision | Default | Rework if changed later |
