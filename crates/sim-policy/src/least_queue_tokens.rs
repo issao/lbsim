@@ -1,3 +1,4 @@
+//! lbsim-policy: routing names=least_queue_tokens
 //! Fewest queued tokens, over a full fleet scan of the stale snapshot. The same idea as
 //! least_requests measured in the right unit, and just as vulnerable to herding.
 

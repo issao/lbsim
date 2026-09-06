@@ -1,3 +1,4 @@
+//! lbsim-policy: admission names=accept_all
 //! No admission control. The baseline every other admission policy is compared against.
 
 use crate::{Admission, AdmissionContext, AdmissionPolicy};

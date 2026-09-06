@@ -1,3 +1,4 @@
+//! lbsim-policy: admission names=fair_share
 //! Weighted fair share over tenants, in tokens.
 //!
 //! `scenario.proto` `AdmissionPolicy.FairShare`. What is being shared is the fleet's *serviceable*

@@ -1,3 +1,4 @@
+//! lbsim-policy: routing names=random
 //! Uniform random. Better than round robin under size heterogeneity because it does not cycle, and
 //! the cheapest O(1) policy there is.
 

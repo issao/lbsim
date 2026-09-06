@@ -1,3 +1,4 @@
+//! lbsim-policy: admission names=deadline_aware
 //! Deadline-aware admission: shed what cannot make its deadline, before it costs anything.
 //!
 //! `scenario.proto` `AdmissionPolicy.DeadlineAware`: systems that check the deadline *after* running

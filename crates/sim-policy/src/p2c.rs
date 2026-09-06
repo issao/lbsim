@@ -1,3 +1,4 @@
+//! lbsim-policy: routing names=p2c,power_of_two_choices
 //! Power of two choices. Sample `d` replicas at random, take the least loaded by queued tokens.
 //!
 //! Nearly as good as global least-loaded, and far more robust to stale telemetry, because only a

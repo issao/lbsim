@@ -1,3 +1,4 @@
+//! lbsim-policy: routing names=round_robin
 //! Round robin. Ignores load entirely, which with heterogeneous request sizes produces the rolling
 //! hotspot: dynamic 1 in `docs/ARCHITECTURE.md` section 12.
 

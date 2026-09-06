@@ -1,3 +1,4 @@
+//! lbsim-policy: routing names=least_requests
 //! Fewest queued-plus-running requests, over a full fleet scan of the stale snapshot.
 //!
 //! Included as a baseline that is *wrong* for this domain twice over: it counts requests where
