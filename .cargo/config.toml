@@ -1,18 +1,19 @@
-# Coordination for concurrent builds by several agents.
+# Build coordination for several agents, each in its own git worktree.
 #
-# Every checkout of this repo, including git worktrees, shares ONE target directory. Cargo takes a file
-# lock on the target directory, so concurrent `cargo build` or `cargo test` invocations queue behind
-# each other instead of each spawning its own rustc fleet. That is the whole coordination mechanism:
-# no daemon, no script, cargo's own lock. A waiting build prints "Blocking waiting for file lock on
-# build directory", which is the expected sight when several agents are active.
+# Every worktree gets its OWN target directory, relative to this file. An earlier version pointed
+# every checkout at one shared absolute directory so cargo's file lock would serialise builds and
+# bound memory. That produced wrong builds, observed 2026-09-06: cargo's metadata hash for a path
+# crate does not include the workspace path, so two worktrees write identically named rlibs and
+# fingerprints into the shared directory, and a worktree whose sources had not changed linked its
+# tests against the *other* worktree's freshly built crate. The symptom was a test file on master
+# failing to compile against a Scenario struct that only existed on a different branch. A shared
+# cache that can hand one branch another branch's artefacts is not a cache; it is a race.
 #
-# The cost is cache churn when agents build different branches back to back. With zero dependencies
-# and a one-second build, that cost is nothing. The benefit is that memory stays bounded on a machine
-# where a runaway once consumed all 24 GB.
+# Memory is bounded instead by `jobs`, which caps rustc parallelism per build. This workspace has no
+# dependencies and compiles in seconds, so a cold per-worktree build costs little; keep an eye on
+# `free -m` when many agents build at once, and run one cargo command at a time per agent.
 [build]
-target-dir = "/home/agents/repo/lbsim/target"
-# Bound rustc parallelism per build. Release already uses one codegen unit; this caps debug builds,
-# which default to many parallel codegen units and are what tests run under.
+target-dir = "target"
 jobs = 4
 
 # Warnings are not errors here on purpose. Several agents commit concurrently, and a warning in one

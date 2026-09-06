@@ -18,12 +18,17 @@ pub struct Request {
     /// True for the long mode of the mixture. Kept so the report can show that the tail is the long
     /// requests rather than asserting it.
     pub is_long: bool,
+    /// Which tenant sent it. Zero when the scenario has no tenancy.
+    pub tenant: u32,
 }
 
 pub struct Workload {
     next_id: u64,
     arrivals: Rng,
     shapes: Rng,
+    /// Its own stream, so enabling tenancy cannot perturb arrivals or shapes: an A/B between a
+    /// fair-share policy and none must see byte-identical load.
+    tenants: Rng,
 }
 
 impl Workload {
@@ -32,6 +37,7 @@ impl Workload {
             next_id: 0,
             arrivals: seed_streams.stream("arrival"),
             shapes: seed_streams.stream("shape"),
+            tenants: seed_streams.stream("tenant"),
         }
     }
 
@@ -64,6 +70,22 @@ impl Workload {
         };
         let prompt = self.shapes.lognormal(p_mean, sc.prompt_cv).max(1.0) as u32;
         let output = self.shapes.lognormal(o_mean, sc.output_cv).max(1.0) as u32;
+        let tenant = if sc.tenants > 1 {
+            let u = self.tenants.f64();
+            let mut acc = 0.0;
+            let shares = sc.tenant_shares();
+            let mut pick = shares.len() - 1;
+            for (i, w) in shares.iter().enumerate() {
+                acc += w;
+                if u < acc {
+                    pick = i;
+                    break;
+                }
+            }
+            pick as u32
+        } else {
+            0
+        };
         Request {
             id: self.next_id,
             arrived_at: now,
@@ -73,6 +95,7 @@ impl Workload {
             attempts: 1,
             deadline: now + (sc.client_timeout_s * 1e9) as Nanos,
             is_long: long,
+            tenant,
         }
     }
 }
