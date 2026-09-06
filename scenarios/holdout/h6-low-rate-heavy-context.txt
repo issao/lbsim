@@ -1,0 +1,69 @@
+# HELD-OUT SUITE 6 of 8 — frozen. docs/arena.md section 5.
+#
+# Dynamic exposed: a low request rate carrying an enormous amount of work. 6.67 requests per second —
+# Mooncake's own measured fleet rate — but a mean context of 23 k tokens, so the KV budget caps the
+# batch at 59 sequences and one request in six is an 85 k-token prompt worth three seconds of pure
+# prefill.
+#
+# Why it is in the suite: at this rate a request-counting policy sees an almost idle fleet, because the
+# unit it counts in has almost no relationship to the work each request represents. It is the cleanest
+# available refutation of "queue length" as a load signal, and it is the scenario where the difference
+# between telemetry in requests and telemetry in tokens is largest. It also exercises the admission
+# path that the token budget, rather than the sequence cap, controls.
+name = h6-low-rate-heavy-context
+seed = 20260906
+duration_s = 120
+warmup_s = 15
+
+# -- fleet: a 70B-class model on 8xH100 per replica, identical in every held-out file ---------------
+# calibration.md 6.5: batch-1 decode 10.25 ms (NIM, 8xH100 bf16) and 11,082 output tok/s at max
+# throughput; 6.2's convention puts all overhead in the fixed term. step_base_ms is the 7.46 ms weight
+# read at 70% bandwidth utilization plus 2.75 ms fixed overhead, step_per_kv_ktoken_ms is the
+# bandwidth term, and kv_capacity_tokens is the primer's 1.37 M per replica (calibration.md 5.3 uses
+# the same figure). Replica count is not a calibrated number: calibration.md 9.2 records that no public
+# source gives a fleet size.
+replicas = 32
+max_batch = 256
+kv_capacity_tokens = 1370000
+step_base_ms = 10.2
+step_per_seq_ms = 0.0
+step_per_kv_ktoken_ms = 0.0175
+prefill_tokens_per_s = 28286
+step_token_budget = 1024
+max_queue = 400
+
+# -- load: calibration.md's Mooncake conversation trace, the long-context corner -------------------
+# arrival_rps 6.67 is Mooncake's measured mean fleet rate [measured-here, 10, scenario B]. Kept as
+# measured rather than scaled up, because the point of this scenario is a rate that looks trivial.
+# prompt_mean 12,035 and output_mean 343 are the Mooncake conversation measurements, with output CV
+# 0.73 — the lowest of any trace in calibration.md 3.4, so almost all the variance here is in the
+# input. prompt_cv 1.28 is the toolagent figure from 3.1, the nearest measured input CV for
+# long-context traffic. The long mode is the same trace's input p99 of 85,401 [measured-here, 3.1] with
+# output at BurstGPT conv's p99 of 1,067, at 15% of traffic — a stress weight, not a measurement.
+# Analytic rated capacity for this mixture is 30 rps, so 6.67 rps is 0.22x. At freeze time p2c attained
+# 0.9886 and least_requests 0.9107 here: a 0.08 spread at a request rate a request-counting policy
+# reads as almost idle.
+arrival_rps = 6.67
+prompt_mean = 12035
+prompt_cv = 1.28
+output_mean = 343
+output_cv = 0.73
+long_probability = 0.15
+long_prompt_mean = 85401
+long_output_mean = 1067
+
+# -- telemetry: calibration.md 9.2 records production staleness as unmeasured, [GUESS] 5 s with a
+# 1-30 s sweep. 1 s is the fast end of that sweep, so herding is present but not the subject here.
+telemetry_interval_ms = 1000
+telemetry_delay_ms = 200
+
+# -- client and SLOs -----------------------------------------------------------------------------
+# ttft_slo_ms is 10 s because an 85 k-token prompt is 3.0 s of prefill at 28,286 tok/s before any
+# queueing: a 2 s budget would make 15% of this load unservable by arithmetic, which measures the SLO
+# rather than the policy. calibration.md 9.1: no public SLO labels exist, so this is an assumption.
+client_timeout_s = 60
+max_attempts = 1
+ttft_slo_ms = 10000
+itl_slo_ms = 120
+e2e_slo_s = 60
+sample_interval_ms = 250

@@ -1,0 +1,73 @@
+# HELD-OUT SUITE 8 of 8 — frozen. docs/arena.md section 5.
+#
+# Dynamic exposed: the retry storm. 33 rps against a 10 s client deadline that the slowest legitimate
+# requests in the mixture cannot always meet, with the SDK default of 3 attempts behind it. Every
+# timeout re-offers the request, so offered load is partly a function of the policy's own latency — a
+# feedback loop no other scenario in the suite contains.
+#
+# The rate is *identical* to h1's, and so is the mixture, so h1 and h8 differ in exactly one block:
+# the client. At freeze time that difference alone moved attainment from 0.9965 to 0.9604 — the cost of
+# a 10 s deadline and three attempts, with nothing else changed.
+#
+# Why it is in the suite: docs/arena.md section 5 names the retry storm as one of the phase-1 dynamics
+# the frozen suite must carry, and it is the sharpest test of the difference between failing early and
+# failing late. A timeout after 10 s has already burned 10 s of device time, and then asks for it
+# again; a policy that queues deeply amplifies its own load until the retry budget cap stops it.
+name = h8-retry-storm
+seed = 20260906
+duration_s = 120
+warmup_s = 15
+
+# -- fleet: a 70B-class model on 8xH100 per replica, identical in every held-out file ---------------
+# calibration.md 6.5: batch-1 decode 10.25 ms (NIM, 8xH100 bf16) and 11,082 output tok/s at max
+# throughput; 6.2's convention puts all overhead in the fixed term. step_base_ms is the 7.46 ms weight
+# read at 70% bandwidth utilization plus 2.75 ms fixed overhead, step_per_kv_ktoken_ms is the
+# bandwidth term, and kv_capacity_tokens is the primer's 1.37 M per replica (calibration.md 5.3 uses
+# the same figure). Replica count is not a calibrated number: calibration.md 9.2 records that no public
+# source gives a fleet size.
+replicas = 32
+max_batch = 256
+kv_capacity_tokens = 1370000
+step_base_ms = 10.2
+step_per_seq_ms = 0.0
+step_per_kv_ktoken_ms = 0.0175
+prefill_tokens_per_s = 28286
+step_token_budget = 1024
+max_queue = 400
+
+# -- load: the h1 chat mixture, at the same 33 rps -----------------------------------------------
+# Mixture and rate identical to h1 so the retry loop is the only new mechanism.
+arrival_rps = 33
+prompt_mean = 1632
+prompt_cv = 0.94
+output_mean = 105.5
+output_cv = 1.5
+long_probability = 0.08
+long_prompt_mean = 12035
+long_output_mean = 343
+
+# -- telemetry: calibration.md 9.2 records production staleness as unmeasured, [GUESS] 5 s with a
+# 1-30 s sweep. 1 s is the fast end of that sweep, so herding is present but not the subject here.
+telemetry_interval_ms = 1000
+telemetry_delay_ms = 200
+
+# -- client: calibration.md section 8, which is read from SDK source ------------------------------
+# max_attempts 3 = DEFAULT_MAX_RETRIES 2 plus the original [primary, 8.1]. retry_backoff_s 0.5 is
+# INITIAL_RETRY_DELAY [primary, 8.1]; the engine's backoff is fixed rather than the SDK's
+# min(0.5*2^n, 8.0)*(1-0.25*rand), so this is the first retry's delay and the later ones are shorter
+# than a real client's — an approximation that makes the storm slightly worse, in the direction of
+# stress rather than of flattery. retry_budget_fraction 0.4 is calibration.md 9.1's incident figure:
+# retry share of offered load is unpublished, [GUESS] 3% at steady state and "up to 40% during an
+# incident".
+# client_timeout_s 10 is deliberately far below the 600 s SDK default. Section 8.2's own conclusion is
+# that with a 600 s timeout "the client will essentially never give up before the server does", which
+# means the SDK default cannot produce this dynamic at all: a 10 s deadline is a UI or gateway budget
+# sitting in front of the SDK, and it is the only way to make the retry path fire inside a 120 s run.
+client_timeout_s = 10
+max_attempts = 3
+retry_budget_fraction = 0.4
+retry_backoff_s = 0.5
+ttft_slo_ms = 2000
+itl_slo_ms = 80
+e2e_slo_s = 10
+sample_interval_ms = 250
