@@ -30,7 +30,7 @@ Legend: **D** done, **B** building in the next ~2 hours, **F** far away.
 | Dynamic | | Evidence |
 |---|---|---|
 | Round-robin rolling hotspot with heterogeneous sizes, below rated capacity, "early on" | D | finding 1, `scenarios/route_round_robin.txt` vs `route_p2c.txt`, report `1-routing.html` live at lbsim.ai |
-| Knob to turn off decode so traffic looks stateless | F | **no `disable_decode` key exists** (`crates/sim-scenario`); `output_mean` can be set small but that is not the knob asked for. Small; not in any brief |
+| Knob to turn off decode so traffic looks stateless | B | **no `disable_decode` key exists** (`crates/sim-scenario`); `output_mean` can be set small but that is not the knob asked for. Small; not in any brief Issao, 16:22: *"we could get disable decode basically by setting HBM to infinity, so that should be straight forward."* Routed to the tech lead, first in priority: scenario key `disable_decode` zeroing the bandwidth term. No ETA yet. |
 | Stale-state LB oscillation, time/frequency-domain, control-theory framing | B (partial D) | finding 2 reproduces herding vs telemetry staleness with the dominant frequency measured (`Series::dominant_frequency`); the perturbation input, Bode plot and robust-control policy (execution plan M7) are **not started** |
 | Value of policies with robust control logic | F | depends on M7 above; no controller policy exists |
 | Global cascading failure | F | depends on failure injection (scope item 11) and multi-cluster (item 12); neither started |
@@ -50,8 +50,8 @@ Legend: **D** done, **B** building in the next ~2 hours, **F** far away.
 | Load balancing | D | round_robin, random, least_requests, least_queue_tokens, p2c, least_kv_probe (`crates/sim-policy/src/`), O(1) each per §10.4 |
 | Batch scheduling, prefill batch sizing | B (partial D) | chunked prefill `step_token_budget` and `max_batch` are knobs (finding 3); a pluggable batch-scheduling policy seam does not exist; the engine decides |
 | Speculative decoding | B | see §3a |
-| Load forecasting | F | not in any document beyond VISION.md |
-| Latency forecasting | B (partial) | `deadline_aware` sheds on *expected* queue wait, which is a one-step latency forecast; a forecasting policy family is not designed |
+| Load forecasting | B | not in any document beyond VISION.md Issao, 16:22: forecasting joins the policy ideas to evaluate; `docs/policy-catalog.md` is being written and the tech lead wires the arena generator to append a row per authored policy. No ETA yet. |
+| Latency forecasting | B | `deadline_aware` sheds on *expected* queue wait, which is a one-step latency forecast; a forecasting policy family is not designed Same decision as load forecasting, 16:22; routed to the tech lead. No ETA yet. |
 | Machine failover | F | depends on failure injection (item 11) |
 | Prefill-decode disaggregation | F | scope item 15, 2 h estimate, depends on tiering/fabric model |
 | Prefill-decode batch co-scheduling | B (partial D) | co-scheduling is what chunked prefill does today; the policy is fixed, not pluggable |
@@ -97,7 +97,7 @@ tension is with "small simulator footprint": unmeasured at target scale, see §8
 | Dependency-light core | D | zero external crates in the workspace |
 | Deterministic, one global seed, named streams | D | `sim-core/rng.rs` xoshiro256++ streams; `tests/determinism.rs`, `tests/stream_independence.rs`; fingerprints in `bench/golden-fingerprints.txt` |
 | Periodic snapshots for scroll-back / replay; fast-forward and rewind in the UI | B | proto `Rewind`/`StepForward` defined; snapshots designed (`ARCHITECTURE.md` §8.2); the resumable `Sim` is the engine-core unit in flight (`claude/tl-engine`); UI scrub on pre-baked runs ~19:00, true rewind with re-simulation ~22:00 |
-| Trace single requests, sampled uniformly and by latency bucket, across machines | B (partial D) | per-request records exist (arrival, admit, first token, finish, outcome) and the budgeted telemetry dump is stratified by outcome/latency with a manifest (`sim-report`); **no per-machine span trace** and `GetTraces` is unimplemented; the UI trace view is mock (`web/src/lib/traces.ts`) |
+| Trace single requests, sampled uniformly and by latency bucket, across machines | B | per-request records exist (arrival, admit, first token, finish, outcome) and the budgeted telemetry dump is stratified by outcome/latency with a manifest (`sim-report`); **no per-machine span trace** and `GetTraces` is unimplemented; the UI trace view is mock (`web/src/lib/traces.ts`) Issao, 16:22: *"We should have a way to sample requests to see execution traces and what was busy in each resource as it executed."* Routed to the tech lead: seeded, stratified by latency bucket, spans with per-resource state, through `GetTraces` and the export. No ETA yet. |
 | Proto-defined interfaces, written or reviewed by you | D | twelve files in `proto/lbsim/v1/`, reviewed; every change since goes through the main agent; `WIRE.md` maps them to JSON until codegen |
 | A TODO file for you | D | `TASKS.md` |
 | Standalone dashboard as the final result | B | see §6 |
