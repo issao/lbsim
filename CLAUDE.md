@@ -138,7 +138,7 @@ never the right mechanism.
 
 ## Current state
 
-Building. The simulator runs, six dynamics reproduce, 45 tests pass, and the stand-in dashboard builds.
+Building. The simulator runs, six dynamics reproduce, the workspace test suite passes, and the stand-in dashboard builds. Counts live in `STATUS.md`, not here, because a number in this file goes stale within the hour.
 See `STATUS.md`. Work is delegated across three long-running agents with strict file ownership:
 
 | Agent | Owns | Must not touch |
