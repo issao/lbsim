@@ -1,6 +1,6 @@
 # TASKS — things that need Issao
 
-Last updated: 2026-09-06 15:53 PDT by Claude.
+Last updated: 2026-09-06 16:00 PDT by Claude.
 
 Stack ranked, most blocking first. Every item says what Claude does if you say nothing, so nothing
 here stalls the work. What is finished and live is in `STATUS.md`.
@@ -115,6 +115,9 @@ until you grant the role, and the results bucket keeps everything it is ever giv
 ---
 
 ## Answered, kept for the record
+
+- 15:56, *"for the dashboard, add alink to the reports from the homepage."* Done by the tech lead,
+  cf12e33, on `master` at 15:59; live after the next `./deploy.sh`.
 
 - 15:26, five design decisions: SLA cap 0.95 for now; the arena policy generator writes code for new
   policies as well as tuning parameters; prefix-sharing topology is derived from a session model with
