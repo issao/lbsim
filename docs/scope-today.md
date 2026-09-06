@@ -43,10 +43,14 @@ its own additional work.
 
 ## 2. Three packages that fit
 
+// Issao: meta note, can we execute in parallel? Whenever we can let's fork off side missions to execute in parallel and report back but make feedback on them for the main agents and myself lower priority
+
 ### A. Queueing and control — 3.5 h
 
 Foundation, 1, 2, 4, 5, 6. Four of his named dynamics, all the load-balancing fallacies, and the
 control-theory story.
+
+// Issao: Lets make 4 lower priority.
 
 Delivers: round-robin producing a rolling hotspot below rated capacity; power-of-two-choices
 visibly fixing it; oscillation from stale telemetry with a measured frequency; a retry storm that
@@ -55,6 +59,9 @@ fails to recover; traffic shaping at three layers; per-class goodput.
 Cuts: everything LLM-specific. Today's artefact would be a general serving simulator.
 
 ### B. Recognisably LLM — 3.25 h  ← **recommended**
+
+
+// Issao: Sounds good, let's start here.  It seems like 7 might be cheap here too.
 
 Foundation, 1, 2, 3, 4. Same as A minus shaping and SLO classes, plus two-phase timing.
 
@@ -106,6 +113,10 @@ capacity behaviour.
 | React dashboard | the static HTML report serves the same purpose today at a tenth of the cost |
 | Ingress/Leaf shard split | measurement says one core carries the whole fleet, so this buys nothing today and its determinism test deserves care |
 
+// Issao Don't cut the react dashboard. I want that. start executing on that in parallel, it should not have a lot of dependencies.
+
+// Issao Also, to what extent it doesn't slow down everything else. Start executing on the Arena story, I think that will be fun.
+
 ---
 
 ## 4. What "done at 16:30" means
@@ -126,3 +137,5 @@ Plus: `cargo test` green, including a determinism test asserting identical finge
 and every number in the report reproducible from a committed scenario file.
 
 **If time runs short, items are dropped from the bottom of that list, not the top.**
+
+// Issao: I am ok if we go a little bit over.
