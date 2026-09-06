@@ -46,7 +46,7 @@ message ReplicaState {
   // When the replica sampled itself. The consumer's own clock minus this is the staleness
   // the policy is working with, and it must be measurable by the policy so a
   // delay-compensating controller is possible to write.
-  uint64 sampled_at_ns = 4;
+  uint64 sampled_at_ns = 4;  // Lets use an absolute unix epoch value (initialized globally based on seed, then kept synchornzied across replicas during simulation)
 
   Health.Announced announced = 5;
 
