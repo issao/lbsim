@@ -239,7 +239,38 @@ Ordered by how much damage ignoring them causes.
 | Failures, scenarios | + 1-2 implementers | Fan-out by scenario. |
 | Dashboard | + Frontend | Only once the engine reproduces a dynamic worth displaying. |
 
-// Issao: Add the arena here with the agents that will participate on it.
+### 2.6 The arena agents
+
+`docs/arena.md` specifies three, and they are agents in this structure rather than a separate
+system. Ordered by when they can exist: none of them until the engine reproduces a dynamic.
+
+| Role | Model | Reads | Writes | Lifetime |
+|---|---|---|---|---|
+| **Policy generator** | strong | the previous round's full results, including traces and referee counters | new policy candidates as typed `PolicySpec` values | one round, then discarded |
+| **Load generator** | strong | the previous round's results, and which policies survived | new `LoadShape` candidates, plus the mandatory vanilla shapes | one round |
+| **Arena referee, judging half** | strongest | the round's scores, both archives, and the rule-change log | proposed rule changes, for a human to accept | long-lived, but see below |
+
+Three structural points, because getting these wrong makes the arena measure its own noise:
+
+**The mechanical referee is not an agent.** Physics invariants, the realism envelope,
+rated-capacity honesty, the SLA gate, and determinism replay are all code, per `docs/arena.md`
+section 2.3. Only the residual judgement goes to an agent, and its output is a *proposal* rather
+than a score adjustment. A judge that can silently change scores is a judge that can be argued
+with.
+
+**Generators are ephemeral, and that is not an optimisation.** A long-lived generator accumulates
+context about what it already tried, which sounds useful and is how a search collapses into a
+niche. The *archive* is the memory, it is on disk, and a fresh generator reading it is the design.
+
+**The judging referee is long-lived but must externalise its rules.** The rule set lives in a file
+with a version, and every score records which version it was earned under. Rules apply forward
+only. Without that, "the referee makes new rules" quietly destroys the ability to tell whether
+anything improved.
+
+Where the arena sits relative to the rest of this structure: the Architect owns the rule set and
+accepts or rejects proposed changes, the TL owns running rounds as batch jobs, and the Verifier owns
+the fixed held-out suite from `docs/arena.md` section 5, because the whole point of that suite is
+that nobody with an interest in the scores can touch it.
 
 ---
 
