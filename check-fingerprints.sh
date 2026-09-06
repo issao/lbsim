@@ -15,7 +15,7 @@ set -uo pipefail
 cd "$(dirname "$0")"
 export PATH="$HOME/local/bin:$HOME/.local/bin:$PATH"
 GOLDEN=bench/golden-fingerprints.txt
-S="cargo run --release --quiet --bin sim-run --"
+S="tools/build.sh run --release --quiet --bin sim-run --"
 OUT=$(mktemp -d)
 trap 'rm -rf "$OUT"' EXIT
 
