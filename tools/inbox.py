@@ -101,6 +101,23 @@ class Message:
         return f"{rel}:{self.line_no}{span}\n    {self.text}"
 
 
+def _trailing_marker_start(line: str) -> int | None:
+    """Index of the comment opener when a marker *trails code* on this line, else None.
+
+    None when the marker begins the line, since there is then no code to preserve.
+    """
+    if strip_comment(line).startswith(MARKER):
+        return None
+    for opener in _OPENERS:
+        idx = line.find(opener)
+        while idx != -1:
+            rest = _COMMENT_SUFFIX.sub("", line[idx + len(opener):].strip())
+            if rest.startswith(MARKER):
+                return idx
+            idx = line.find(opener, idx + 1)
+    return None
+
+
 def marker_at(line: str) -> str | None:
     """Return the message text if `line` carries a marker, else None.
 
@@ -149,6 +166,14 @@ def scan(path: Path) -> list[Message]:
         start = i
         parts = [head]
 
+        # A marker trailing code is a single line by definition: whatever follows is the next
+        # declaration, not a continuation of the comment. Treating it as continuation is what let a
+        # resolve delete a proto message along with the comment.
+        if _trailing_marker_start(lines[i]) is not None:
+            found.append(Message(path, start + 1, head or "(empty)", end_line=i + 1))
+            i += 1
+            continue
+
         # Continuation: following non-empty lines that do not start a new marker. A blank
         # line or a new marker ends the block.
         j = i + 1
@@ -174,7 +199,8 @@ def resolve(spec: str) -> int:
         print(f"--resolve needs FILE:LINE, got {spec!r}")
         return 2
     rel, _, line_s = spec.rpartition(":")
-    path = (REPO / rel).resolve()
+    path = Path(rel) if Path(rel).is_absolute() else (REPO / rel)
+    path = path.resolve()
     try:
         want = int(line_s)
     except ValueError:
@@ -191,10 +217,28 @@ def resolve(spec: str) -> int:
     m = msgs[0]
 
     lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
-    removed = lines[m.line_no - 1 : m.end_line]
-    del lines[m.line_no - 1 : m.end_line]
+    first = lines[m.line_no - 1]
+
+    # Strip only the comment when code shares the line. Deleting the whole line deletes the code,
+    # which is exactly how a resolve broke ingress.proto: the marker sat after a closing brace, so
+    # the brace went with it and the next message went too.
+    trailing_at = _trailing_marker_start(first)
+    if trailing_at is not None:
+        kept = first[:trailing_at].rstrip()
+        removed = [first[trailing_at:]]
+        if kept:
+            lines[m.line_no - 1] = kept + "\n"
+            note = "comment stripped, code kept"
+        else:
+            del lines[m.line_no - 1]
+            note = "line removed"
+    else:
+        removed = lines[m.line_no - 1 : m.end_line]
+        del lines[m.line_no - 1 : m.end_line]
+        note = f"{len(removed)} line(s) removed"
+
     path.write_text("".join(lines), encoding="utf-8")
-    print(f"removed {len(removed)} line(s) from {rel}:{want}")
+    print(f"{rel}:{want}: {note}")
     for r in removed:
         print(f"  - {r.rstrip()}")
     print("Quote this instruction in the commit message so it survives in history.")
@@ -250,15 +294,74 @@ def new_commits(no_fetch: bool) -> list[str]:
     return [ln for ln in listing.splitlines() if ln.strip()]
 
 
+# ---------------------------------------------------------------------------
+# Self-test
+#
+# Every case below is a bug this tool actually had. Three of them let an instruction go unread and
+# one deleted code. Both failure modes are silent, which is why they are pinned here rather than
+# left to review.
+# ---------------------------------------------------------------------------
+
+_CASES = [
+    # (label, text, expected marker texts in order)
+    ("plain line", "Issao: one\n", ["one"]),
+    ("own-line comment", "// Issao: two\n", ["two"]),
+    ("trailing after code", "uint32 x = 1;  // Issao: three\n", ["three"]),
+    ("trailing after a brace", "}  // Issao: four\nmessage B {}\n", ["four"]),
+    ("markdown bold is prose", "**Issao: five** is a quote\n", []),
+    ("mid-sentence is prose", "The convention is `Issao:` here\n", []),
+    ("doc-comment continuation", " * Issao: six\n", ["six"]),
+    ("multi-line continuation",
+     "Issao: seven\nand more of seven\n\nunrelated\n", ["seven and more of seven"]),
+    ("continuation stops at a quote",
+     "Issao: eight\n**Issao: nine** quoted\n", ["eight"]),
+]
+
+
+def selftest() -> int:
+    import tempfile
+
+    failures = 0
+    for label, text, expected in _CASES:
+        with tempfile.NamedTemporaryFile("w", suffix=".proto", delete=False) as fh:
+            fh.write(text)
+            name = fh.name
+        got = [m.text for m in scan(Path(name))]
+        ok = got == expected
+        failures += 0 if ok else 1
+        print(f"  {'ok  ' if ok else 'FAIL'} {label}: {got!r}" + ("" if ok else f" expected {expected!r}"))
+        Path(name).unlink()
+
+    # Resolve must never remove code that shares a line with a marker.
+    with tempfile.NamedTemporaryFile("w", suffix=".proto", delete=False) as fh:
+        fh.write("message A {\n  uint32 x = 1;\n}  // Issao: trailing\nmessage B { uint32 y = 1; }\n")
+        name = fh.name
+    rc = resolve(f"{name}:3")
+    after = Path(name).read_text()
+    ok = rc == 0 and "message B { uint32 y = 1; }" in after and after.splitlines()[2].strip() == "}"
+    failures += 0 if ok else 1
+    print(f"  {'ok  ' if ok else 'FAIL'} resolve keeps code on a trailing marker")
+    if not ok:
+        print(f"       got:\n{after}")
+    Path(name).unlink()
+
+    print("selftest:", "PASS" if failures == 0 else f"{failures} FAILURE(S)")
+    return 1 if failures else 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--no-fetch", action="store_true", help="skip git fetch")
     ap.add_argument("--local", action="store_true",
                     help="scan the working tree only, skipping unmerged remote refs")
     ap.add_argument("--resolve", metavar="FILE:LINE",
-                    help="delete the marker block there, after acting on it")
+                    help="remove the marker there, after acting on it")
+    ap.add_argument("--selftest", action="store_true",
+                    help="run the detection and resolve regression cases")
     args = ap.parse_args()
 
+    if args.selftest:
+        return selftest()
     if args.resolve:
         return resolve(args.resolve)
 
