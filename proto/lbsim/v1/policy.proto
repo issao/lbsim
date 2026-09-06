@@ -33,7 +33,7 @@ service Policy {
 
 message ConfigureRequest {
   // Exactly the configuration for the slot this policy fills, typed. There is no untyped parameter
-  // map: per Issao, the schema has to be visible, and an implementation should not have to discover
+  // map: the schema has to be visible, and an implementation should not have to discover
   // its own parameters by string lookup.
   oneof config {
     RoutingPolicy routing = 1;

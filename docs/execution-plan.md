@@ -1,7 +1,9 @@
 # Execution plan
 
-Proposal, awaiting Issao. Nothing here is started.
-// Issao: make sure this is a plan we can finish by 4:30pm.
+**Scope for today is `docs/scope-today.md`.** Issao asked for a plan finishable by 16:30 against an
+eight-hour total budget, of which about three hours went on design, so roughly seven eighths of what
+follows is deferred. That document ranks every dynamic by cost, proposes three packages that fit, and
+recommends one. This file remains the plan for the whole project.
 
 Two things shape it. The fastest possible local loop matters more than anything else, because
 this project is a research instrument and its value is proportional to how many experiments get
