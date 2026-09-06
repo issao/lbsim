@@ -3,7 +3,7 @@
 What is live on `origin/master`, what each agent is doing now, and the assumptions being acted on.
 For things that need *you*, see `TASKS.md`.
 
-**Last updated:** 2026-09-06 16:43 PDT by Claude.
+**Last updated:** 2026-09-06 16:56 PDT by Claude.
 
 ---
 
@@ -70,6 +70,9 @@ difference between a bad minute and an outage. Numbers in `docs/findings.md`.
 **The file to monitor for execution progress is `docs/execution-graph.md`** (cd9af2a): the tech lead's
 dependency graph of every unit, done, in flight, queued or waiting on you, with a section per unit,
 updated on every spawn, merge and ETA change. This file summarises; that one is the source.
+
+`docs/iteration-profile.md` (2037a11) is the measured profile of how the tech lead and its subagents
+spend a unit of work, with ranked fixes; its numbers live there, not here.
 
 | Agent | Owns | Now |
 |---|---|---|
