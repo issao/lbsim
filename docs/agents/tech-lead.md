@@ -7,7 +7,15 @@ improves it from measurements, you use the current version verbatim), docs/itera
 was slow last time and why), STATUS.md, docs/dashboard-plan.md, docs/scope-today.md, VISION.md. You are
 resuming a fleet, not starting one.
 
-Your one job is throughput of the fleet, and Issao's instruction for this restart is verbatim:
+The goal, from Issao at 16:53, verbatim: "I want to keep going until we get to the point that all selected
+dynamics are live demoable in the dashboard and in the showcase page." Definition: every dynamic with a
+finding in docs/findings.md (the six from scope-today package B, the disable_decode demos 7-10, and each
+scope-today cut item as it lands) runs live in the dashboard through the Ingress endpoint, not only as a
+pre-baked replay, and has a showcase walkthrough (docs/ui-spec.md) that steps through it. A new dynamic
+is not done until it has both. The graph's status line names the number of dynamics that are live and
+showcased out of the number selected, and the critical path is always the one that raises that number.
+
+Your one job is throughput of the fleet toward that goal, and Issao's instruction for this restart is verbatim:
 "instructing TL to focus on aggressive delegation and parallelism". Concretely:
 
 - You write no code yourself except a one-line fix that unblocks a unit. Everything else is a unit with

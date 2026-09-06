@@ -138,7 +138,10 @@ never the right mechanism.
 
 ## Current state
 
-Building. The simulator runs, six dynamics reproduce, the workspace test suite passes, and the stand-in dashboard builds. Counts live in `STATUS.md`, not here, because a number in this file goes stale within the hour.
+Building toward one goal, set by Issao on 2026-09-06: *"keep going until we get to the point that all
+selected dynamics are live demoable in the dashboard and in the showcase page."* A dynamic counts when it
+runs live through the Ingress endpoint in the dashboard and has a showcase walkthrough; `docs/execution-graph.md`'s
+status line carries the count. The simulator runs, ten dynamics reproduce as reports, the workspace test suite passes, and the stand-in dashboard builds. Counts live in `STATUS.md`, not here, because a number in this file goes stale within the hour.
 See `STATUS.md`. Work is delegated across long-running agents with strict file ownership:
 
 | Agent | Owns | Must not touch |
