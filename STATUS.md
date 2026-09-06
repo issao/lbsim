@@ -3,7 +3,7 @@
 What is live on `origin/master`, what each agent is doing now, and the assumptions being acted on.
 For things that need *you*, see `TASKS.md`.
 
-**Last updated:** 2026-09-06 15:53 PDT by Claude.
+**Last updated:** 2026-09-06 15:54 PDT by Claude.
 
 ---
 
@@ -38,7 +38,7 @@ difference between a bad minute and an outage. Numbers in `docs/findings.md`.
 
 | Agent | Owns | Now |
 |---|---|---|
-| Tech lead | `src/`, `tests/`, `scenarios/`, `web/src/lib/` | worktrees `lbsim-wt-tl`, `lbsim-tlweb`. Merged: the section 10.8 crate workspace (163995c), golden fingerprints and the wire contract (0efb8bd). In hand: the browser-side transport client from `claude/tl-web-transport`, now built against `WIRE.md`. Next, from Issao at 15:50: *"continue making more progress on the scope-today.md dynamics we talked about when it is possible to do so in parallel"*, with the cut table in `docs/scope-today.md` §3 as the list; the policy registry behind `GeneratedPolicy`; a simplification pass every four merges, per `CLAUDE.md` |
+| Tech lead | `src/`, `tests/`, `scenarios/`, `web/src/lib/` | worktrees `lbsim-wt-tl`, `lbsim-tlweb`. Merged: the section 10.8 crate workspace (163995c), golden fingerprints and the wire contract (0efb8bd), the policy trait with a one-file-per-policy registry, the lease registry and the idle-shutdown guard (per the tech lead; unverified by this agent). The `docs/scope-today.md` dynamics fan-out has started: physics oracle first, then preemption, speculative decoding, prefix caching, tiering, autoscaling. In hand: the browser-side transport client from `claude/tl-web-transport`, now built against `WIRE.md`. Next, from Issao at 15:50: *"continue making more progress on the scope-today.md dynamics we talked about when it is possible to do so in parallel"*, with the cut table in `docs/scope-today.md` §3 as the list; the policy registry behind `GeneratedPolicy`; a simplification pass every four merges, per `CLAUDE.md` |
 | Cloud | `Dockerfile`, `deploy.sh`, `cloudbuild.yaml`, `docs/deploy.md` | **finished.** First deploy at 15:22 (72dfb16); scale-to-zero verified twice (993c03a); `docs/deploy.md` is its handover. No further grant was needed, the pending `legacyBucketReader` request is withdrawn: the blocker was two bucket permissions, worked around in `cloudbuild.yaml` |
 | Monitor and housekeeping | `TASKS.md`, `STATUS.md`, `README.md`, `docs/*.md` | inbox and PR loop every 90 s; documents tidied; keeping them aligned to each merge |
 
@@ -72,8 +72,17 @@ Three things stand between it and real data: an Ingress endpoint that runs a sce
 metrics over the JSON/SSE wire in `crates/sim-ingress/WIRE.md`; the browser transport client, in the
 tech lead's worktree and not merged, replacing the mock engine; and a rebuild and redeploy, measured at
 1m22s. The shortest path, asked of the tech lead by the main agent: pre-baked run output in wire format
-served statically, so every panel shows real data before the live path exists. Not by 16:30 today.
-ETA: pending from the tech lead.
+served statically, so every panel shows real data before the live path exists.
+
+**None of this lands before your 16:30 stop.** You will find the state here when you are back. The tech
+lead's ETA, wall clock from 15:55 PDT and conditional on agents landing at today's rate:
+
+| Step | ETA |
+|---|---|
+| Pre-baked path: six demo runs exported by `sim-run` as `WIRE.md` JSON documents, served statically, dashboard loads them when no Ingress answers | about 3 h, roughly 19:00 |
+| Live Ingress endpoint streaming a real run over JSON/SSE; needs the engine to become resumable first | about 5 h, roughly 21:00 |
+| Web app on that transport, mock markers removed only on wired panels | roughly 22:00 |
+| Both on `master`, rebuilt and redeployed | roughly 22:30 |
 
 ## Assumptions being acted on
 
