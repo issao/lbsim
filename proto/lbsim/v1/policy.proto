@@ -15,6 +15,36 @@ import "lbsim/v1/telemetry.proto";
 // will pass. See docs/ARCHITECTURE.md section 5.
 
 // ---------------------------------------------------------------------------
+// The seam itself
+// ---------------------------------------------------------------------------
+
+// In-process policies implement this as a Rust trait; the service definition exists so a
+// policy can also live out-of-process or in another language, which is what the agent arena
+// needs. The signature is deliberately total: everything the policy may know arrives in the
+// Observation, and everything it may do leaves in the Decision. There is no side channel.
+service Policy {
+  rpc Decide(Observation) returns (Decision);
+
+  // Called once at scenario start with the policy's parameters, so a policy can precompute
+  // and so the run record captures exactly what it was configured with.
+  rpc Configure(ConfigureRequest) returns (ConfigureResponse);
+}
+
+message ConfigureRequest {
+  string name = 1;
+  map<string, double> params = 2;
+  map<string, string> string_params = 3;
+  // The policy's own RNG seed, derived from the scenario seed. A policy that randomises must
+  // do it from here, or the run stops being reproducible.
+  uint64 seed = 4;
+}
+
+message ConfigureResponse {
+  bool accepted = 1;
+  string rejected_reason = 2;
+}
+
+// ---------------------------------------------------------------------------
 // What a policy may see
 // ---------------------------------------------------------------------------
 

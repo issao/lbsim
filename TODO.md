@@ -35,11 +35,11 @@ belong here.
 
 ## Waiting on you, not blocking
 
-- [ ] Draw `docs/diagrams/system.drawio`, uncompressed, per `docs/diagrams/README.md`.
-      Reference `service.Method` names from `proto/` on each arrow. Turn off compression
-      first: Extras, then Compressed.
-- [ ] Fill `VISION.md` section 9 if you still want the architecture sketch there, or point
-      it at `docs/ARCHITECTURE.md`.
+- [x] ~~Draw the wire diagram~~ Claude drew `docs/diagrams/system.drawio` instead, two
+      pages, uncompressed. Open it in draw.io to read or edit. `tools/check_diagram.py`
+      verifies every arrow against `proto/` and runs clean.
+- [x] ~~Fill VISION section 9~~ Points at `docs/ARCHITECTURE.md` section 10, which describes
+      the system in prose.
 - [ ] Decide whether the dashboard is scoped as a separate workstream. It is a substantial
       product on its own and will expand without limit if it shares a backlog with the
       engine. See `docs/ARCHITECTURE.md` risk 7.

@@ -1,0 +1,207 @@
+<mxfile host="app.diagrams.net" compressed="false" type="device">
+  <diagram id="dataplane" name="1. Data plane and policy boundary">
+    <mxGraphModel dx="1400" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1200" pageHeight="620" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <mxCell id="g_policy" value="POLICY LAYER — pure functions of a stale Observation; return Intents; hold no simulation state" style="rounded=0;whiteSpace=wrap;html=1;fillColor=none;strokeColor=#9E9E9E;dashed=1;verticalAlign=top;align=left;spacingLeft=8;spacingTop=4;fontSize=11;fontStyle=1;fontColor=#616161;" vertex="1" parent="1"><mxGeometry x="40" y="30" width="1120" height="115" as="geometry" /></mxCell>
+        <mxCell id="g_data" value="MODELLED DATA PLANE — every arrow is one rpc in proto/lbsim/v1/, and pays a configured latency, jitter and loss" style="rounded=0;whiteSpace=wrap;html=1;fillColor=none;strokeColor=#9E9E9E;dashed=1;verticalAlign=top;align=left;spacingLeft=8;spacingTop=4;fontSize=11;fontStyle=1;fontColor=#616161;" vertex="1" parent="1"><mxGeometry x="40" y="205" width="1120" height="155" as="geometry" /></mxCell>
+        <mxCell id="g_phys" value="SIMULATION ENGINE — physics; no policy may bypass the referee" style="rounded=0;whiteSpace=wrap;html=1;fillColor=none;strokeColor=#9E9E9E;dashed=1;verticalAlign=top;align=left;spacingLeft=8;spacingTop=4;fontSize=11;fontStyle=1;fontColor=#616161;" vertex="1" parent="1"><mxGeometry x="40" y="430" width="1120" height="130" as="geometry" /></mxCell>
+
+        <object label="Admission and shaping policy" component="sim-policy::admission" id="p_admit">
+          <mxCell style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF8E1;strokeColor=#F9A825;fontSize=11;" vertex="1" parent="1"><mxGeometry x="265" y="65" width="175" height="60" as="geometry" /></mxCell>
+        </object>
+        <object label="Routing policy&#10;round_robin | p2c | least_kv | prefix_affinity" component="sim-policy::routing" id="p_route">
+          <mxCell style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF8E1;strokeColor=#F9A825;fontSize=10;" vertex="1" parent="1"><mxGeometry x="480" y="65" width="175" height="60" as="geometry" /></mxCell>
+        </object>
+        <object label="Batch scheduling policy&#10;step budget, admit order" component="sim-policy::scheduling" id="p_sched">
+          <mxCell style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF8E1;strokeColor=#F9A825;fontSize=10;" vertex="1" parent="1"><mxGeometry x="695" y="65" width="175" height="60" as="geometry" /></mxCell>
+        </object>
+        <object label="Preemption policy&#10;swap or recompute" component="sim-policy::preemption" id="p_preempt">
+          <mxCell style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF8E1;strokeColor=#F9A825;fontSize=10;" vertex="1" parent="1"><mxGeometry x="910" y="65" width="175" height="60" as="geometry" /></mxCell>
+        </object>
+
+        <object label="Workload and clients&#10;arrivals, sessions, retries" component="sim-workload" id="wl">
+          <mxCell style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E3F2FD;strokeColor=#1565C0;fontSize=10;" vertex="1" parent="1"><mxGeometry x="60" y="240" width="160" height="70" as="geometry" /></mxCell>
+        </object>
+        <object label="Gateway" component="sim-model::gateway" id="gw">
+          <mxCell style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E3F2FD;strokeColor=#1565C0;fontSize=11;" vertex="1" parent="1"><mxGeometry x="265" y="240" width="175" height="70" as="geometry" /></mxCell>
+        </object>
+        <object label="Router" component="sim-model::router" id="rt">
+          <mxCell style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E3F2FD;strokeColor=#1565C0;fontSize=11;" vertex="1" parent="1"><mxGeometry x="480" y="240" width="175" height="70" as="geometry" /></mxCell>
+        </object>
+        <object label="Replica engine&#10;continuous batching, KV accounting" component="sim-model::replica" id="re">
+          <mxCell style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E3F2FD;strokeColor=#1565C0;fontSize=10;" vertex="1" parent="1"><mxGeometry x="695" y="240" width="175" height="70" as="geometry" /></mxCell>
+        </object>
+        <object label="KV tier pool&#10;cluster DRAM and SSD" component="sim-physics::tiers" id="kvt">
+          <mxCell style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E3F2FD;strokeColor=#1565C0;fontSize=10;" vertex="1" parent="1"><mxGeometry x="910" y="240" width="175" height="70" as="geometry" /></mxCell>
+        </object>
+
+        <object label="Event queue&#10;two-level, replica-keyed" component="sim-core::queue" id="eq">
+          <mxCell style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F5E9;strokeColor=#2E7D32;fontSize=10;" vertex="1" parent="1"><mxGeometry x="70" y="465" width="170" height="70" as="geometry" /></mxCell>
+        </object>
+        <object label="Referee&#10;KV, budget, causality, conservation" component="sim-physics::referee" id="ref">
+          <mxCell style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F5E9;strokeColor=#2E7D32;fontSize=10;" vertex="1" parent="1"><mxGeometry x="300" y="465" width="200" height="70" as="geometry" /></mxCell>
+        </object>
+        <object label="Cost model&#10;analytic epochs, closed form" component="sim-physics::cost" id="cost">
+          <mxCell style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F5E9;strokeColor=#2E7D32;fontSize=10;" vertex="1" parent="1"><mxGeometry x="560" y="465" width="190" height="70" as="geometry" /></mxCell>
+        </object>
+        <object label="Prefix tree&#10;segments, LRU residency" component="sim-model::prefix" id="pfx">
+          <mxCell style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F5E9;strokeColor=#2E7D32;fontSize=10;" vertex="1" parent="1"><mxGeometry x="810" y="465" width="170" height="70" as="geometry" /></mxCell>
+        </object>
+
+        <object label="Generate (stream)" proto="proto/lbsim/v1/serving.proto" rpc="Gateway.Generate" kind="stream" id="e_wl_gw">
+          <mxCell style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;strokeWidth=2;strokeColor=#1565C0;" edge="1" parent="1" source="wl" target="gw"><mxGeometry relative="1" as="geometry" /></mxCell>
+        </object>
+        <object label="Route" proto="proto/lbsim/v1/serving.proto" rpc="Router.Route" kind="rpc" id="e_gw_rt">
+          <mxCell style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;strokeColor=#1565C0;" edge="1" parent="1" source="gw" target="rt"><mxGeometry relative="1" as="geometry" /></mxCell>
+        </object>
+        <object label="Execute (stream)" proto="proto/lbsim/v1/serving.proto" rpc="ReplicaEngine.Execute" kind="stream" id="e_rt_re">
+          <mxCell style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;strokeWidth=2;strokeColor=#1565C0;" edge="1" parent="1" source="rt" target="re"><mxGeometry relative="1" as="geometry" /></mxCell>
+        </object>
+        <object label="Cancel — without it, a client timeout leaves the replica generating tokens nobody reads" proto="proto/lbsim/v1/serving.proto" rpc="ReplicaEngine.Cancel" kind="rpc" id="e_gw_re">
+          <mxCell style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=9;dashed=1;strokeColor=#1565C0;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.25;entryY=1;entryDx=0;entryDy=0;" edge="1" parent="1" source="gw" target="re"><mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="352" y="340" /><mxPoint x="739" y="340" /></Array></mxGeometry></mxCell>
+        </object>
+        <object label="Store / Fetch — shared tier bandwidth" proto="proto/lbsim/v1/kv.proto" rpc="KvTier.Store" kind="rpc" id="e_re_kvt">
+          <mxCell style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=9;startArrow=block;startFill=1;strokeColor=#1565C0;" edge="1" parent="1" source="re" target="kvt"><mxGeometry relative="1" as="geometry" /></mxCell>
+        </object>
+
+        <object label="Observation / Decision" proto="proto/lbsim/v1/policy.proto" rpc="Policy.Decide" kind="call" id="e_gw_padmit">
+          <mxCell style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=9;dashed=1;strokeColor=#F9A825;startArrow=block;startFill=1;" edge="1" parent="1" source="gw" target="p_admit"><mxGeometry relative="1" as="geometry" /></mxCell>
+        </object>
+        <object label="Observation / Decision" proto="proto/lbsim/v1/policy.proto" rpc="Policy.Decide" kind="call" id="e_rt_proute">
+          <mxCell style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=9;dashed=1;strokeColor=#F9A825;startArrow=block;startFill=1;" edge="1" parent="1" source="rt" target="p_route"><mxGeometry relative="1" as="geometry" /></mxCell>
+        </object>
+        <object label="Observation / Decision" proto="proto/lbsim/v1/policy.proto" rpc="Policy.Decide" kind="call" id="e_re_psched">
+          <mxCell style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=9;dashed=1;strokeColor=#F9A825;startArrow=block;startFill=1;" edge="1" parent="1" source="re" target="p_sched"><mxGeometry relative="1" as="geometry" /></mxCell>
+        </object>
+        <object label="Observation / Decision" proto="proto/lbsim/v1/policy.proto" rpc="Policy.Decide" kind="call" id="e_re_ppreempt">
+          <mxCell style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=9;dashed=1;strokeColor=#F9A825;startArrow=block;startFill=1;exitX=0.9;exitY=0;exitDx=0;exitDy=0;" edge="1" parent="1" source="re" target="p_preempt"><mxGeometry relative="1" as="geometry" /></mxCell>
+        </object>
+
+        <object label="Intent.Reject" proto="proto/lbsim/v1/policy.proto" rpc="Intent" kind="intent" id="e_gw_ref">
+          <mxCell style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=9;strokeColor=#2E7D32;" edge="1" parent="1" source="gw" target="ref"><mxGeometry relative="1" as="geometry" /></mxCell>
+        </object>
+        <object label="Intent.Route" proto="proto/lbsim/v1/policy.proto" rpc="Intent" kind="intent" id="e_rt_ref">
+          <mxCell style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=9;strokeColor=#2E7D32;" edge="1" parent="1" source="rt" target="ref"><mxGeometry relative="1" as="geometry" /></mxCell>
+        </object>
+        <object label="Intent.Admit / SetStepBudget / Preempt" proto="proto/lbsim/v1/policy.proto" rpc="Intent" kind="intent" id="e_re_ref">
+          <mxCell style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=9;strokeColor=#2E7D32;" edge="1" parent="1" source="re" target="ref"><mxGeometry relative="1" as="geometry" /></mxCell>
+        </object>
+        <object label="accepted or clamped intents applied to state" proto="proto/lbsim/v1/policy.proto" rpc="RefereeReport" kind="event" id="e_ref_re">
+          <mxCell style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=9;strokeColor=#2E7D32;dashed=1;" edge="1" parent="1" source="ref" target="re"><mxGeometry relative="1" as="geometry" /></mxCell>
+        </object>
+
+        <object label="advance to next composition change" kind="internal" id="e_eq_re">
+          <mxCell style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=9;strokeColor=#757575;dashed=1;" edge="1" parent="1" source="eq" target="re"><mxGeometry relative="1" as="geometry" /></mxCell>
+        </object>
+        <object label="step time T(n) = n*beta + alpha*n*(n-1)/2" kind="internal" id="e_cost_re">
+          <mxCell style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=9;strokeColor=#757575;dashed=1;" edge="1" parent="1" source="cost" target="re"><mxGeometry relative="1" as="geometry" /></mxCell>
+        </object>
+        <object label="resident prefix tokens" proto="proto/lbsim/v1/kv.proto" rpc="PrefixResidency" kind="internal" id="e_pfx_re">
+          <mxCell style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=9;strokeColor=#757575;dashed=1;" edge="1" parent="1" source="pfx" target="re"><mxGeometry relative="1" as="geometry" /></mxCell>
+        </object>
+      </root>
+    </mxGraphModel>
+  </diagram>
+
+  <diagram id="controlplane" name="2. Control plane, engine, product">
+    <mxGraphModel dx="1400" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1200" pageHeight="740" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <mxCell id="g2_ctrl" value="MODELLED CONTROL PLANE — the staleness and actuation boundary; sensor period plus propagation delay plus cold start is what makes this loop oscillate" style="rounded=0;whiteSpace=wrap;html=1;fillColor=none;strokeColor=#9E9E9E;dashed=1;verticalAlign=top;align=left;spacingLeft=8;spacingTop=4;fontSize=11;fontStyle=1;fontColor=#616161;" vertex="1" parent="1"><mxGeometry x="40" y="30" width="1120" height="290" as="geometry" /></mxCell>
+        <mxCell id="g2_eng" value="SIMULATION ENGINE" style="rounded=0;whiteSpace=wrap;html=1;fillColor=none;strokeColor=#9E9E9E;dashed=1;verticalAlign=top;align=left;spacingLeft=8;spacingTop=4;fontSize=11;fontStyle=1;fontColor=#616161;" vertex="1" parent="1"><mxGeometry x="40" y="370" width="1120" height="130" as="geometry" /></mxCell>
+        <mxCell id="g2_prod" value="PRODUCT SURFACE — served for real over gRPC and grpc-web" style="rounded=0;whiteSpace=wrap;html=1;fillColor=none;strokeColor=#9E9E9E;dashed=1;verticalAlign=top;align=left;spacingLeft=8;spacingTop=4;fontSize=11;fontStyle=1;fontColor=#616161;" vertex="1" parent="1"><mxGeometry x="40" y="550" width="1120" height="140" as="geometry" /></mxCell>
+
+        <object label="Router" component="sim-model::router" id="rt2">
+          <mxCell style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E3F2FD;strokeColor=#1565C0;fontSize=11;" vertex="1" parent="1"><mxGeometry x="90" y="75" width="170" height="65" as="geometry" /></mxCell>
+        </object>
+        <object label="Telemetry collector&#10;whole snapshots on an interval" component="sim-model::telemetry" id="tc">
+          <mxCell style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E3F2FD;strokeColor=#1565C0;fontSize=10;" vertex="1" parent="1"><mxGeometry x="490" y="75" width="200" height="65" as="geometry" /></mxCell>
+        </object>
+        <object label="Replica engine" component="sim-model::replica" id="re2">
+          <mxCell style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E3F2FD;strokeColor=#1565C0;fontSize=11;" vertex="1" parent="1"><mxGeometry x="900" y="75" width="175" height="65" as="geometry" /></mxCell>
+        </object>
+        <object label="Failure detection policy&#10;straggler ejection" component="sim-policy::detection" id="p_detect">
+          <mxCell style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF8E1;strokeColor=#F9A825;fontSize=10;" vertex="1" parent="1"><mxGeometry x="90" y="230" width="170" height="60" as="geometry" /></mxCell>
+        </object>
+        <object label="Autoscaling policy&#10;reactive or predictive" component="sim-policy::autoscaling" id="p_scale">
+          <mxCell style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF8E1;strokeColor=#F9A825;fontSize=10;" vertex="1" parent="1"><mxGeometry x="490" y="230" width="200" height="60" as="geometry" /></mxCell>
+        </object>
+        <object label="Capacity manager&#10;warm pool, quota" component="sim-model::capacity" id="cm">
+          <mxCell style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E3F2FD;strokeColor=#1565C0;fontSize=10;" vertex="1" parent="1"><mxGeometry x="900" y="230" width="175" height="60" as="geometry" /></mxCell>
+        </object>
+
+        <object label="Event queue" component="sim-core::queue" id="eq2">
+          <mxCell style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F5E9;strokeColor=#2E7D32;fontSize=10;" vertex="1" parent="1"><mxGeometry x="80" y="405" width="160" height="65" as="geometry" /></mxCell>
+        </object>
+        <object label="Cost model&#10;analytic epochs" component="sim-physics::cost" id="cost2">
+          <mxCell style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F5E9;strokeColor=#2E7D32;fontSize=10;" vertex="1" parent="1"><mxGeometry x="280" y="405" width="170" height="65" as="geometry" /></mxCell>
+        </object>
+        <object label="Referee" component="sim-physics::referee" id="ref2">
+          <mxCell style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F5E9;strokeColor=#2E7D32;fontSize=10;" vertex="1" parent="1"><mxGeometry x="490" y="405" width="150" height="65" as="geometry" /></mxCell>
+        </object>
+        <object label="Seeded RNG streams&#10;named, independent" component="sim-core::rng" id="rng">
+          <mxCell style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F5E9;strokeColor=#2E7D32;fontSize=10;" vertex="1" parent="1"><mxGeometry x="680" y="405" width="170" height="65" as="geometry" /></mxCell>
+        </object>
+        <object label="Metrics&#10;histograms, series, sampled traces" component="sim-metrics" id="met">
+          <mxCell style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F5E9;strokeColor=#2E7D32;fontSize=10;" vertex="1" parent="1"><mxGeometry x="890" y="405" width="185" height="65" as="geometry" /></mxCell>
+        </object>
+
+        <object label="sim-run CLI&#10;batch scenario sweeps" component="sim-run" id="run">
+          <mxCell style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F3E5F5;strokeColor=#6A1B9A;fontSize=10;" vertex="1" parent="1"><mxGeometry x="80" y="590" width="170" height="65" as="geometry" /></mxCell>
+        </object>
+        <object label="sim-server&#10;SimControl service" component="sim-server" id="srv">
+          <mxCell style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F3E5F5;strokeColor=#6A1B9A;fontSize=10;" vertex="1" parent="1"><mxGeometry x="330" y="590" width="180" height="65" as="geometry" /></mxCell>
+        </object>
+        <object label="React dashboard&#10;playground and showcase" component="web" id="web">
+          <mxCell style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F3E5F5;strokeColor=#6A1B9A;fontSize=10;" vertex="1" parent="1"><mxGeometry x="580" y="590" width="180" height="65" as="geometry" /></mxCell>
+        </object>
+        <object label="Static HTML report&#10;links back for replay" component="sim-run::report" id="rpt">
+          <mxCell style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F3E5F5;strokeColor=#6A1B9A;fontSize=10;" vertex="1" parent="1"><mxGeometry x="830" y="590" width="180" height="65" as="geometry" /></mxCell>
+        </object>
+
+        <object label="PublishState — sensor, period T_s plus jitter" proto="proto/lbsim/v1/telemetry.proto" rpc="TelemetryCollector.PublishState" kind="rpc" id="e2_re_tc">
+          <mxCell style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=9;strokeColor=#1565C0;" edge="1" parent="1" source="re2" target="tc"><mxGeometry relative="1" as="geometry" /></mxCell>
+        </object>
+        <object label="WatchFleet — entries carry their own sampled_at_ns, so a snapshot is not a consistent cut" proto="proto/lbsim/v1/telemetry.proto" rpc="TelemetryCollector.WatchFleet" kind="stream" id="e2_tc_rt">
+          <mxCell style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=9;strokeWidth=2;strokeColor=#C62828;" edge="1" parent="1" source="tc" target="rt2"><mxGeometry relative="1" as="geometry" /></mxCell>
+        </object>
+        <object label="WatchFleet" proto="proto/lbsim/v1/telemetry.proto" rpc="TelemetryCollector.WatchFleet" kind="stream" id="e2_tc_pscale">
+          <mxCell style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=9;strokeColor=#C62828;" edge="1" parent="1" source="tc" target="p_scale"><mxGeometry relative="1" as="geometry" /></mxCell>
+        </object>
+        <object label="WatchFleet plus silent list — absence of data is not evidence of failure" proto="proto/lbsim/v1/telemetry.proto" rpc="TelemetryCollector.WatchFleet" kind="stream" id="e2_tc_pdetect">
+          <mxCell style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=9;strokeColor=#C62828;" edge="1" parent="1" source="tc" target="p_detect"><mxGeometry relative="1" as="geometry" /></mxCell>
+        </object>
+        <object label="Intent.EjectReplica" proto="proto/lbsim/v1/policy.proto" rpc="Intent.EjectReplica" kind="intent" id="e2_pdetect_rt">
+          <mxCell style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=9;strokeColor=#F9A825;dashed=1;" edge="1" parent="1" source="p_detect" target="rt2"><mxGeometry relative="1" as="geometry" /></mxCell>
+        </object>
+        <object label="Provision / Drain" proto="proto/lbsim/v1/capacity.proto" rpc="CapacityManager.Provision" kind="rpc" id="e2_pscale_cm">
+          <mxCell style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=9;strokeColor=#F9A825;dashed=1;" edge="1" parent="1" source="p_scale" target="cm"><mxGeometry relative="1" as="geometry" /></mxCell>
+        </object>
+        <object label="actuator: cold start 30 to 300 s, far slower than a burst develops" proto="proto/lbsim/v1/capacity.proto" rpc="CapacityManager.Provision" kind="rpc" id="e2_cm_re">
+          <mxCell style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=9;strokeWidth=2;strokeColor=#C62828;" edge="1" parent="1" source="cm" target="re2"><mxGeometry relative="1" as="geometry" /></mxCell>
+        </object>
+
+        <object label="RequestRecord, aggregated online" proto="proto/lbsim/v1/request.proto" rpc="RequestRecord" kind="event" id="e2_re_met">
+          <mxCell style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=9;strokeColor=#2E7D32;dashed=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;" edge="1" parent="1" source="re2" target="met"><mxGeometry relative="1" as="geometry" /></mxCell>
+        </object>
+        <object label="RunResult" proto="proto/lbsim/v1/metrics.proto" rpc="RunResult" kind="internal" id="e2_met_srv">
+          <mxCell style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=9;strokeColor=#6A1B9A;" edge="1" parent="1" source="met" target="srv"><mxGeometry relative="1" as="geometry" /></mxCell>
+        </object>
+        <object label="RunResult" proto="proto/lbsim/v1/metrics.proto" rpc="RunResult" kind="internal" id="e2_met_run">
+          <mxCell style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=9;strokeColor=#6A1B9A;" edge="1" parent="1" source="met" target="run"><mxGeometry relative="1" as="geometry" /></mxCell>
+        </object>
+        <object label="StartRun / Apply / Seek and StreamRun" proto="proto/lbsim/v1/control.proto" rpc="SimControl.StreamRun" kind="stream" id="e2_web_srv">
+          <mxCell style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=9;strokeWidth=2;startArrow=block;startFill=1;strokeColor=#6A1B9A;" edge="1" parent="1" source="srv" target="web"><mxGeometry relative="1" as="geometry" /></mxCell>
+        </object>
+        <object label="ExportReport" proto="proto/lbsim/v1/control.proto" rpc="SimControl.ExportReport" kind="rpc" id="e2_srv_rpt">
+          <mxCell style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=9;strokeColor=#6A1B9A;" edge="1" parent="1" source="web" target="rpt"><mxGeometry relative="1" as="geometry" /></mxCell>
+        </object>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
