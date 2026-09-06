@@ -60,6 +60,8 @@ You should see two rows:
 | `lbsim monthly` | $100 | 3 thresholds |
 | `lbsim monthly cap` | $50 | 3 thresholds |
 
+// Issao: Confirmed.
+
 Click either to see its thresholds, its scope, and who gets email. Two things worth confirming while you
 are there: that each one is **scoped to a project** rather than the whole billing account, and that the
 alert email addresses are ones you actually read. An alert nobody sees is the same as no alert.
@@ -76,7 +78,7 @@ For watching actual usage rather than the limit, the number to look at is **inst
 Run service page. Anything non-zero while nobody is using the dashboard is a bug in the idle shutdown,
 not a pricing surprise.
 
-- [ ] Re-check the two budgets with the command above
+- [x] Re-check the two budgets with the command above
 - [ ] Delete the deploy key when this phase ends:
       `gcloud iam service-accounts keys list --iam-account=lbsim-deployer@lbsim-gcp.iam.gserviceaccount.com`
       then `gcloud iam service-accounts keys delete KEY_ID --iam-account=...`. The list command shows
@@ -152,6 +154,8 @@ record* form:
 | TTL | leave the default |
 
 Do not remove existing TXT records; several at the apex is normal and anything for mail must stay.
+
+Issao: I tried this but it didn't work, maybe I need to wait to propagate and then continue.
 
 ### Step 2 — create the mapping, after a service exists
 
