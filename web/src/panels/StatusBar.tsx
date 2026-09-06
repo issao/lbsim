@@ -25,9 +25,20 @@ export function StatusBar({ run }: { run: RunHandle }) {
           .join(' · ') || 'none'}
       </span>
       <span style={{ marginLeft: 'auto' }}>
-        frames recorded <b>{run.engine.frames.length}</b> &middot; sample rate{' '}
-        <b>{run.config.samplesPerSimSecond}/sim s</b> &middot; no network: every number above is generated in this
-        browser
+        {run.source?.kind === 'replay' ? (
+          <>
+            mode <b>replay</b> &middot; frames loaded <b>{run.engine.frames.length}</b> from{' '}
+            <code>runs/{run.source.runId}/fleet.jsonl</code> &middot; sample rate{' '}
+            <b>{run.config.samplesPerSimSecond}/sim s</b> &middot; the whole run is recorded, nothing is generated in
+            this browser
+          </>
+        ) : (
+          <>
+            frames recorded <b>{run.engine.frames.length}</b> &middot; sample rate{' '}
+            <b>{run.config.samplesPerSimSecond}/sim s</b> &middot; no network: every number above is generated in this
+            browser
+          </>
+        )}
       </span>
     </div>
   );

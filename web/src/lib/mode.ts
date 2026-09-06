@@ -83,3 +83,77 @@ export function modeBanner(m: ServerMode = serverMode()): string {
   if (!m.enabled) return MOCK_BANNER;
   return m.baseUrl === '' ? SERVER_BANNER : `${SERVER_BANNER} at ${m.baseUrl}`;
 }
+
+// ---------------------------------------------------------------------------
+// Replay: recorded runs served as static files
+// ---------------------------------------------------------------------------
+//
+// A third source between the two above. When no server is configured and `runs/index.json` is
+// served beside the app (what `sim-run export` writes and the static server serves), the dashboard
+// plays those recorded runs. Nothing is configured for it: an export placed under `web/public/runs/`
+// for local dev, or under the container's `--dir` in production, is the switch. `?replay=0` forces
+// mock for one tab so the two can still be compared side by side. Mock remains the fallback, and
+// with no index present nothing about the mock path changes.
+
+export type DataMode = 'mock' | 'server' | 'replay';
+
+export const REPLAY_BANNER = 'replay of a recorded run';
+
+/**
+ * The `?replay=` parameter, from the query string or a hash route's own query: `false` forces
+ * mock, `true` asks for replay (still subject to the index being there), `null` when absent.
+ */
+export function replayOverride(search: string, hash: string): boolean | null {
+  const raw = queryParam('replay', search, hash);
+  if (raw === null) return null;
+  const v = raw.trim().toLowerCase();
+  if (FALSY.has(v)) return false;
+  return true;
+}
+
+function queryParam(name: string, search: string, hash: string): string | null {
+  const fromSearch = new URLSearchParams(search).get(name);
+  if (fromSearch !== null) return fromSearch;
+  const q = hash.indexOf('?');
+  if (q === -1) return null;
+  return new URLSearchParams(hash.slice(q + 1)).get(name);
+}
+
+/**
+ * Pure precedence: a configured server wins; then replay when the index is reachable and not
+ * overridden off; then mock. Reachability is the caller's to establish, because it is a fetch.
+ */
+export function dataModeFrom(server: ServerMode, indexReachable: boolean, override: boolean | null): DataMode {
+  if (server.enabled) return 'server';
+  if (indexReachable && override !== false) return 'replay';
+  return 'mock';
+}
+
+export function dataModeBanner(mode: DataMode, server: ServerMode = serverMode(), runId?: string): string {
+  if (mode === 'server') return modeBanner(server);
+  if (mode === 'replay') return runId ? `${REPLAY_BANNER}: ${runId}` : REPLAY_BANNER;
+  return MOCK_BANNER;
+}
+
+// The mode a surface has actually resolved to, published so the header badge can follow it. The
+// probe is asynchronous and lives in the dashboard; a store is smaller than threading it through
+// the router. Mock until something says otherwise, so the badge never over-claims.
+let active: { mode: DataMode; runId?: string } = { mode: 'mock' };
+const listeners = new Set<() => void>();
+
+export function activeMode(): { mode: DataMode; runId?: string } {
+  return active;
+}
+
+export function setActiveMode(mode: DataMode, runId?: string): void {
+  if (active.mode === mode && active.runId === runId) return;
+  active = { mode, runId };
+  for (const l of listeners) l();
+}
+
+export function subscribeActiveMode(l: () => void): () => void {
+  listeners.add(l);
+  return () => {
+    listeners.delete(l);
+  };
+}
