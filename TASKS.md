@@ -58,13 +58,13 @@ also why the Porkbun TXT record did not work: Porkbun's DNS was not authoritativ
 - [x] **Step 0, fix the delegation.** Done by you, and live at 15:37:
       `dig +short NS lbsim.ai @8.8.8.8` → `fortaleza.ns.porkbun.com.` and three more;
       `dig +short TXT lbsim.ai @8.8.8.8` → `"google-site-verification=8sYf…"`.
-- [ ] **Step 1, verification.** Go to Search Console now and press Verify on the `lbsim.ai` Domain
+- [x] **Step 1, verification.** Go to Search Console now and press Verify on the `lbsim.ai` Domain
       property. The TXT it wants is already served.
-- [ ] **Step 2, the mapping.** Domain ownership is per account, and the deploy account is not an owner.
+- [x] **Step 2, the mapping.** Domain ownership is per account, and the deploy account is not an owner.
       Either add `lbsim-deployer@lbsim-gcp.iam.gserviceaccount.com` as an Owner of the `lbsim.ai`
       property in Search Console, after which Claude does the rest, or run it yourself once:
       `gcloud beta run domain-mappings create --service=lbsim --domain=lbsim.ai --region=us-central1`
-- [ ] **Step 3, the apex records.** The command prints four `A` and four `AAAA` records. Add them in
+- [x] **Step 3, the apex records.** The command prints four `A` and four `AAAA` records. Add them in
       Porkbun with the Host field empty, and delete Porkbun's two parking `A` records on the bare host
       first (`207.207.210.107` and `.229`, present at 15:37).
       The certificate follows on its own, in fifteen minutes to a few hours.
