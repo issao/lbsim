@@ -19,18 +19,18 @@ pub fn cli(args: Vec<String>) -> Result<(), String> {
             if rest.is_empty() {
                 return Err("usage: sim-run run <scenario.txt> [--out FILE] [--set k=v ...]".into());
             }
-            let (paths, out, overrides) = split_args(&rest)?;
-            let runs = run_all(&paths, &overrides)?;
-            emit(&runs, out.as_deref().unwrap_or("out/report.html"))
+            let (paths, o) = split_args(&rest)?;
+            let runs = run_all(&paths, &o.overrides)?;
+            emit(&runs, o.out.as_deref().unwrap_or("out/report.html"), &o)
         }
         "compare" => {
-            let (paths, out, overrides) = split_args(&rest)?;
+            let (paths, o) = split_args(&rest)?;
             if paths.len() < 2 {
                 return Err("compare needs at least two scenarios".into());
             }
-            let runs = run_all(&paths, &overrides)?;
+            let runs = run_all(&paths, &o.overrides)?;
             check_comparable(&runs)?;
-            emit(&runs, out.as_deref().unwrap_or("out/compare.html"))
+            emit(&runs, o.out.as_deref().unwrap_or("out/compare.html"), &o)
         }
         "sweep" => {
             // One scenario, one key, several values. The cheapest way to see a trend.
@@ -41,9 +41,22 @@ pub fn cli(args: Vec<String>) -> Result<(), String> {
             let mut key = String::new();
             let mut values: Vec<String> = Vec::new();
             let mut out = None;
+            let mut telemetry = None;
+            let mut budget_mb = DEFAULT_TELEMETRY_BUDGET_BYTES / (1024 * 1024);
             let mut i = 1;
             while i < rest.len() {
                 match rest[i].as_str() {
+                    "--telemetry" => {
+                        telemetry = rest.get(i + 1).cloned();
+                        i += 2;
+                    }
+                    "--telemetry-budget-mb" => {
+                        budget_mb = rest
+                            .get(i + 1)
+                            .and_then(|v| v.parse().ok())
+                            .ok_or("--telemetry-budget-mb needs a number")?;
+                        i += 2;
+                    }
                     "--over" => {
                         let spec = rest.get(i + 1).ok_or("--over needs key=v1,v2")?;
                         let (k, vs) = spec.split_once('=').ok_or("--over needs key=v1,v2")?;
@@ -66,7 +79,8 @@ pub fn cli(args: Vec<String>) -> Result<(), String> {
                 sc.name = format!("{} = {}", key, v);
                 runs.push(sim::run(&sc)?);
             }
-            emit(&runs, out.as_deref().unwrap_or("out/sweep.html"))
+            let o = Opts { out: out.clone(), telemetry, budget_mb, overrides: Vec::new() };
+            emit(&runs, o.out.as_deref().unwrap_or("out/sweep.html"), &o)
         }
         _ => {
             println!("sim-run <command>");
@@ -74,18 +88,42 @@ pub fn cli(args: Vec<String>) -> Result<(), String> {
             println!("  compare <a.txt> <b.txt> [...]     same load, different policies, checked");
             println!("  sweep   <s.txt> --over key=v1,v2  one parameter across several values");
             println!("  options: --out FILE, --set key=value");
+            println!("           --telemetry DIR            write analysable CSV telemetry there");
+            println!("           --telemetry-budget-mb N    cap it, default 100; over budget it is");
+            println!("                                      stratified, and manifest.csv says how");
             Ok(())
         }
     }
 }
 
-fn split_args(rest: &[String]) -> Result<(Vec<String>, Option<String>, Vec<(String, String)>), String> {
+/// Parsed command-line options shared by every subcommand.
+pub struct Opts {
+    pub out: Option<String>,
+    pub telemetry: Option<String>,
+    pub budget_mb: u64,
+    pub overrides: Vec<(String, String)>,
+}
+
+fn split_args(rest: &[String]) -> Result<(Vec<String>, Opts), String> {
     let mut paths = Vec::new();
     let mut out = None;
+    let mut telemetry = None;
+    let mut budget_mb = DEFAULT_TELEMETRY_BUDGET_BYTES / (1024 * 1024);
     let mut overrides = Vec::new();
     let mut i = 0;
     while i < rest.len() {
         match rest[i].as_str() {
+            "--telemetry" => {
+                telemetry = rest.get(i + 1).cloned();
+                i += 2;
+            }
+            "--telemetry-budget-mb" => {
+                budget_mb = rest
+                    .get(i + 1)
+                    .and_then(|v| v.parse().ok())
+                    .ok_or("--telemetry-budget-mb needs a number")?;
+                i += 2;
+            }
             "--out" => {
                 out = rest.get(i + 1).cloned();
                 i += 2;
@@ -102,7 +140,7 @@ fn split_args(rest: &[String]) -> Result<(Vec<String>, Option<String>, Vec<(Stri
             }
         }
     }
-    Ok((paths, out, overrides))
+    Ok((paths, Opts { out, telemetry, budget_mb, overrides }))
 }
 
 fn apply_override(sc: &mut Scenario, key: &str, value: &str) -> Result<(), String> {
@@ -172,12 +210,228 @@ fn check_comparable(runs: &[RunResult]) -> Result<(), String> {
     Ok(())
 }
 
-fn emit(runs: &[RunResult], out: &str) -> Result<(), String> {
+/// How much telemetry a run may leave behind, in bytes.
+///
+/// Issao's constraint: a run must leave enough to analyse afterwards, but must not violate the
+/// observability throughput rule the whole design rests on. So this is a subscription with a budget
+/// rather than a firehose: whoever wants telemetry says so, says how much they can take, and gets a
+/// stratified sample that fits with a manifest saying what was dropped. An unlabelled sample is worse
+/// than no sample.
+const DEFAULT_TELEMETRY_BUDGET_BYTES: u64 = 100 * 1024 * 1024;
+const BYTES_PER_REQUEST_ROW: u64 = 160;
+const BYTES_PER_SERIES_ROW: u64 = 48;
+
+/// Write telemetry for later analysis by a human or an agent, inside a byte budget.
+///
+/// Per Issao: a run must leave enough detail to be analysed afterwards by a human or by an agent
+/// generating policies or loads, and that rules out the HTML report as the only artefact, because an
+/// agent should not have to scrape a chart. It must also not violate the throughput rule the rest of
+/// the design rests on, so this is budgeted rather than complete.
+///
+/// When the full set does not fit, requests are **stratified** rather than truncated: every failure is
+/// kept, since failures are rare and are what an analysis is usually looking for, and successes are
+/// sampled evenly across the latency distribution so the tail survives. Uniform sampling would keep
+/// almost nothing above the 99th percentile, which is the part worth reading. Series are decimated by
+/// a stride. `manifest.csv` records the sampling rate, so nothing downstream can mistake a sample for
+/// a census.
+fn dump(runs: &[RunResult], dir: &str, budget_bytes: u64) -> Result<(), String> {
+    use std::io::Write as _;
+    std::fs::create_dir_all(dir).map_err(|e| format!("{dir}: {e}"))?;
+
+    let n = runs.len().max(1) as u64;
+    // Split the budget: most to requests, which is the file an agent reasons over, the rest to series.
+    let per_run = budget_bytes / n;
+    let req_budget = per_run * 65 / 100;
+    let ser_budget = per_run * 30 / 100;
+    let max_req_rows = (req_budget / BYTES_PER_REQUEST_ROW).max(1_000) as usize;
+    let max_ser_rows = (ser_budget / BYTES_PER_SERIES_ROW).max(1_000) as usize;
+
+    let mut manifest = std::fs::File::create(format!("{dir}/manifest.csv"))
+        .map_err(|e| format!("{dir}/manifest.csv: {e}"))?;
+    writeln!(
+        manifest,
+        "run,file,rows_written,rows_available,sampling,note"
+    )
+    .ok();
+
+    for (i, r) in runs.iter().enumerate() {
+        let slug: String = r
+            .scenario
+            .name
+            .chars()
+            .map(|c| if c.is_alphanumeric() { c } else { '_' })
+            .collect();
+        let base = format!("{dir}/{:02}-{slug}", i);
+
+        // 1. The resolved scenario. Reproducibility starts here, and it is tiny.
+        std::fs::write(format!("{base}.scenario.txt"), r.scenario.to_text())
+            .map_err(|e| format!("{base}.scenario.txt: {e}"))?;
+
+        // 2. Run-level summary, including the determinism fingerprint. Always complete: bounded.
+        let mut f = std::fs::File::create(format!("{base}.summary.csv"))
+            .map_err(|e| format!("{base}.summary.csv: {e}"))?;
+        writeln!(f, "metric,value").ok();
+        let mut row = |k: &str, v: String| {
+            writeln!(f, "{k},{v}").ok();
+        };
+        row("name", r.scenario.name.clone());
+        row("routing", r.routing_label.clone());
+        row("seed", r.scenario.seed.to_string());
+        row("fingerprint", r.fingerprint.to_string());
+        row("events", r.events.to_string());
+        row("offered_rps", format!("{:.3}", r.scenario.arrival_rps));
+        row("rated_rps", format!("{:.3}", r.rated_rps));
+        row("effective_batch_limit", format!("{:.1}", r.scenario.effective_batch()));
+        row("completed_rps", format!("{:.3}", r.completed_rps()));
+        row("goodput_tokens_s", format!("{:.1}", r.goodput_tokens_s()));
+        row("throughput_tokens_s", format!("{:.1}", r.throughput_tokens_s()));
+        row("slo_attainment", format!("{:.6}", r.slo_attainment()));
+        row("load_imbalance_cv", format!("{:.4}", r.load_imbalance_cv()));
+        row("replicas_inspected_per_decision", r.replicas_inspected_per_decision.to_string());
+        row("retries", r.retries.to_string());
+        row("first_attempts", r.first_attempts.to_string());
+        for q in [50.0, 90.0, 99.0, 99.9] {
+            row(&format!("ttft_p{q}_ns"), r.ttft.percentile(q).to_string());
+            row(&format!("itl_max_p{q}_ns"), r.itl_max.percentile(q).to_string());
+            row(&format!("e2e_p{q}_ns"), r.e2e.percentile(q).to_string());
+            row(&format!("queue_wait_p{q}_ns"), r.queue_wait.percentile(q).to_string());
+        }
+        for label in ["ok", "ok_slo_violated", "rejected", "timeout_queued", "timeout_running"] {
+            row(&format!("outcome_{label}"), r.outcome(label).to_string());
+        }
+        if let Some((pre, post, ok)) = r.recovery() {
+            row("recovery_queue_before", format!("{pre:.2}"));
+            row("recovery_queue_after", format!("{post:.2}"));
+            row("recovered", ok.to_string());
+        }
+
+        // 3. Requests, stratified to fit. One row per request: where it went and what it experienced,
+        //    so a policy generator can find *which* requests suffered rather than only that a
+        //    percentile moved.
+        let total = r.records.len();
+        let mut chosen: Vec<&crate::metrics::RequestRecord> = Vec::new();
+        let (failures, successes): (Vec<_>, Vec<_>) =
+            r.records.iter().partition(|x| !x.outcome.is_success());
+        // Every failure. They are rare and they are what an analysis looks for first.
+        chosen.extend(failures.iter().copied().take(max_req_rows));
+        let room = max_req_rows.saturating_sub(chosen.len());
+        let sampling = if successes.len() <= room {
+            chosen.extend(successes.iter().copied());
+            "complete".to_string()
+        } else if room == 0 {
+            "failures only".to_string()
+        } else {
+            // Sort by end-to-end latency and take an even stride, which keeps the shape of the
+            // distribution including its tail. Uniform random sampling would keep almost nothing
+            // above the 99th percentile.
+            let mut by_latency: Vec<&crate::metrics::RequestRecord> = successes.clone();
+            by_latency.sort_by_key(|x| x.e2e().unwrap_or(0));
+            let stride = (by_latency.len() + room - 1) / room;
+            chosen.extend(by_latency.iter().step_by(stride).copied());
+            format!("1 in {stride} by latency stride, all failures kept")
+        };
+
+        let mut f = std::fs::File::create(format!("{base}.requests.csv"))
+            .map_err(|e| format!("{base}.requests.csv: {e}"))?;
+        writeln!(
+            f,
+            "id,outcome,replica,attempts,arrived_at_unix_ns,admitted_at_unix_ns,\
+             first_token_at_unix_ns,finished_at_unix_ns,prompt_tokens,output_tokens,\
+             queue_wait_ns,ttft_ns,e2e_ns,mean_itl_ns,max_itl_ns"
+        )
+        .ok();
+        for rec in &chosen {
+            writeln!(
+                f,
+                "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+                rec.id, rec.outcome.label(), rec.replica, rec.attempts,
+                rec.arrived_at, rec.admitted_at, rec.first_token_at, rec.finished_at,
+                rec.prompt_tokens, rec.output_tokens,
+                rec.queue_wait(),
+                rec.ttft().map(|v| v.to_string()).unwrap_or_default(),
+                rec.e2e().map(|v| v.to_string()).unwrap_or_default(),
+                rec.mean_itl, rec.max_itl
+            )
+            .ok();
+        }
+        writeln!(
+            manifest,
+            "{},{}.requests.csv,{},{},{},per-request detail",
+            r.scenario.name, format!("{:02}-{slug}", i), chosen.len(), total, sampling
+        )
+        .ok();
+
+        // 4. Series, long format, decimated to fit. Per-replica load included, so the hotspot is
+        //    analysable rather than only visible.
+        let all: Vec<&crate::metrics::Series> = std::iter::once(&r.fleet_queue)
+            .chain(std::iter::once(&r.fleet_running))
+            .chain(std::iter::once(&r.fleet_kv_utilization))
+            .chain(std::iter::once(&r.offered_rps))
+            .chain(r.replica_load.iter())
+            .collect();
+        let available: usize = all.iter().map(|s| s.t.len()).sum();
+        let stride = if available <= max_ser_rows {
+            1
+        } else {
+            (available + max_ser_rows - 1) / max_ser_rows
+        };
+        let mut f = std::fs::File::create(format!("{base}.series.csv"))
+            .map_err(|e| format!("{base}.series.csv: {e}"))?;
+        writeln!(f, "series,t_unix_ns,value").ok();
+        let mut written = 0usize;
+        for s in &all {
+            for (k, (t, v)) in s.t.iter().zip(s.v.iter()).enumerate() {
+                if k % stride == 0 {
+                    writeln!(f, "{},{},{:.4}", s.name, t, v).ok();
+                    written += 1;
+                }
+            }
+        }
+        writeln!(
+            manifest,
+            "{},{}.series.csv,{},{},{},time series including per-replica load",
+            r.scenario.name,
+            format!("{:02}-{slug}", i),
+            written,
+            available,
+            if stride == 1 { "complete".into() } else { format!("1 in {stride}") }
+        )
+        .ok();
+    }
+
+    let used: u64 = std::fs::read_dir(dir)
+        .map_err(|e| format!("{dir}: {e}"))?
+        .filter_map(|e| e.ok())
+        .filter_map(|e| e.metadata().ok())
+        .map(|m| m.len())
+        .sum();
+    println!(
+        "telemetry: {dir}/  {:.1} MB of a {:.0} MB budget, see manifest.csv for sampling",
+        used as f64 / 1e6,
+        budget_bytes as f64 / 1e6
+    );
+    if used > budget_bytes {
+        return Err(format!(
+            "telemetry wrote {:.1} MB against a {:.0} MB budget; the row-size estimates in \
+             report.rs are wrong",
+            used as f64 / 1e6,
+            budget_bytes as f64 / 1e6
+        ));
+    }
+    Ok(())
+}
+
+fn emit(runs: &[RunResult], out: &str, opts: &Opts) -> Result<(), String> {
     if let Some(dir) = std::path::Path::new(out).parent() {
         std::fs::create_dir_all(dir).ok();
     }
     let html = render(runs);
     std::fs::write(out, html).map_err(|e| format!("{out}: {e}"))?;
+    // Telemetry is opt-in and budgeted; see `dump`. Opt-in rather than automatic because it is a
+    // subscription: whoever wants it says so and says how much they can take.
+    if let Some(dir) = &opts.telemetry {
+        dump(runs, dir, opts.budget_mb * 1024 * 1024)?;
+    }
     println!();
     print_summary(runs);
     println!("\nreport: {out}");

@@ -104,7 +104,12 @@ impl Default for Scenario {
             step_per_kv_ktoken_ms: 0.0175,
             kv_capacity_tokens: 1_370_000.0,
             prefill_tokens_per_s: 28_286.0,
-            step_token_budget: 2048,
+            // A full prefill chunk costs step_base_ms + budget / prefill_tokens_per_s, and every
+            // sequence decoding on that replica sees the whole step as a gap between its tokens. At
+            // 2048 that is 82.6 ms against an 80 ms target, so the defaults were mutually
+            // inconsistent: no amount of spare capacity or better routing could have met the SLO,
+            // because the floor on achievable inter-token latency was above it. 1024 gives 46.4 ms.
+            step_token_budget: 1024,
             max_queue: 64,
             arrival_rps: 40.0,
             prompt_mean: 1200.0,
@@ -152,11 +157,27 @@ impl Scenario {
         // rather than a silent no-op, because a typo in a scenario is otherwise invisible and the
         // run quietly measures something else.
         let mut unknown = Vec::new();
+        let mut malformed = Vec::new();
         for (k, v) in &kv {
-            let f = |d: &str| -> f64 { v.parse::<f64>().unwrap_or_else(|_| panic!("{} is not a number in {}", v, d)) };
+            // Returns 0.0 and records the key on a bad value rather than panicking. `parse` hands back
+            // a Result and carefully errors on an unknown key, so panicking on a malformed *value* was
+            // the same class of typo with a wildly different failure mode, and a caller embedding this
+            // in a sweep runner or a request handler cannot contain a panic.
+            let mut f = |d: &str| -> f64 {
+                match v.parse::<f64>() {
+                    Ok(x) => x,
+                    Err(_) => {
+                        malformed.push(format!("{d} = {v:?}"));
+                        0.0
+                    }
+                }
+            };
             match k.as_str() {
                 "name" => s.name = v.clone(),
-                "seed" => s.seed = v.parse().map_err(|_| "seed")?,
+                "seed" => match v.parse() {
+                    Ok(x) => s.seed = x,
+                    Err(_) => malformed.push(format!("seed = {v:?}")),
+                },
                 "duration_s" => s.duration_s = f("duration_s"),
                 "warmup_s" => s.warmup_s = f("warmup_s"),
                 "replicas" => s.replicas = f("replicas") as usize,
@@ -195,8 +216,15 @@ impl Scenario {
                 other => unknown.push(other.to_string()),
             }
         }
-        if !unknown.is_empty() {
-            return Err(format!("unknown keys: {}", unknown.join(", ")));
+        if !unknown.is_empty() || !malformed.is_empty() {
+            let mut parts = Vec::new();
+            if !unknown.is_empty() {
+                parts.push(format!("unknown keys: {}", unknown.join(", ")));
+            }
+            if !malformed.is_empty() {
+                parts.push(format!("values that are not numbers: {}", malformed.join(", ")));
+            }
+            return Err(parts.join("; "));
         }
         Ok(s)
     }

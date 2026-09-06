@@ -1,0 +1,83 @@
+{
+  "id": "stale-telemetry",
+  "dynamic": 2,
+  "title": "Stale-telemetry oscillation",
+  "summary": "The right load metric, measured late. A control loop with delay in it does not settle, it rings.",
+  "scenario": {
+    "name": "showcase: stale telemetry",
+    "seed": 20260906,
+    "durationS": 120,
+    "routing.kind": "least_kv_tokens",
+    "workload.arrivalRps": 130,
+    "telemetryIntervalMs": 1000,
+    "telemetryDelayMs": 200
+  },
+  "steps": [
+    {
+      "at_sim_s": 14,
+      "speed": 2,
+      "control_tab": "policies",
+      "observe_tab": "machine",
+      "highlight": "heatmap",
+      "title": "Least resident KV tokens, with fresh telemetry",
+      "body": [
+        "This is the correct load signal: resident key-value tokens, which is the unit capacity is actually denominated in. With a 1 s scrape and a 200 ms delay the fleet is close to flat.",
+        "Nothing here is wrong yet. That is the point: the policy is not the bug."
+      ],
+      "look_for": "A near-uniform heatmap and a low imbalance coefficient of variation."
+    },
+    {
+      "at_sim_s": 34,
+      "speed": 2,
+      "set": { "telemetryDelayMs": 900, "telemetryIntervalMs": 1500 },
+      "control_tab": "policies",
+      "observe_tab": "machine",
+      "highlight": "heatmap",
+      "title": "Now make the observation late",
+      "body": [
+        "The scrape interval went to 1.5 s and the delay to 900 ms. Every router is now deciding on a picture of the fleet that is roughly a second and a half old, and every router sees the same picture.",
+        "So they all agree about which replica is idle, and they all send work to it. By the time the snapshot updates, that replica is the most loaded one in the fleet and the next-idlest becomes the new target."
+      ],
+      "look_for": "A travelling wave rather than a stripe: the pattern moves because the herd moves, not because the work does."
+    },
+    {
+      "at_sim_s": 56,
+      "speed": 1,
+      "observe_tab": "quality",
+      "highlight": "itl",
+      "title": "The oscillation is visible in the latency, not just in the balance",
+      "body": [
+        "Inter-token latency rings at the loop frequency, because step time grows with batch size and the batch on any given replica is now swinging.",
+        "The period is set by the loop delay, which means this is measurable rather than anecdotal: sweep the delay and you get gain and phase from offered load to observed queue depth, hence loop gain, hence a prediction of when it will oscillate instead of an observation after the fact."
+      ],
+      "look_for": "Regular ripples in p50 and p90 inter-token latency, in phase with each other."
+    },
+    {
+      "at_sim_s": 80,
+      "speed": 2,
+      "set": { "routing.kind": "power_of_two_choices", "routing.choices": 2 },
+      "control_tab": "policies",
+      "observe_tab": "machine",
+      "highlight": "heatmap",
+      "title": "The same stale telemetry, a policy that tolerates it",
+      "body": [
+        "Telemetry is still 900 ms late and still scraped every 1.5 s. Nothing about the observation improved. The oscillation is gone.",
+        "Power-of-two-choices is robust to staleness because only a fraction of routers consider any one apparently-idle replica at a time. Herding is bounded by the sampling, not by the freshness of the data."
+      ],
+      "look_for": "A flat heatmap under exactly the telemetry conditions that made least-KV-tokens ring."
+    },
+    {
+      "at_sim_s": 104,
+      "speed": 1,
+      "control_tab": "policies",
+      "observe_tab": "quality",
+      "highlight": "headline",
+      "title": "The lesson, and the caveat",
+      "body": [
+        "The best policy on a whiteboard was the worst policy in this fleet, and the reason was the delay in the loop rather than anything about the routing rule.",
+        "Try the probe-live checkbox on power-of-two-choices: it buys freshness for a modelled RPC per decision. The cost is visible rather than free, which is the only way to compare it honestly against a scrape-based policy."
+      ],
+      "look_for": "Attainment and goodput, then switch back to least-KV-tokens and watch them fall without any change to the workload."
+    }
+  ]
+}

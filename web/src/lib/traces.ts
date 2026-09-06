@@ -6,7 +6,6 @@
 // pause the run.
 
 import type { Frame } from './engine';
-import { tokenMeans } from './engine';
 import type { ScenarioConfig } from './config';
 import type { MemoryTier, Outcome, RequestTrace, TraceBucket, TraceSpan } from './types';
 import { TRACE_BUCKETS } from './types';
@@ -33,7 +32,6 @@ export function getTraces(
   if (frames.length === 0) return [];
   const buckets = opts.bucket ? [opts.bucket] : TRACE_BUCKETS;
   const out: RequestTrace[] = [];
-  const tk = tokenMeans(c);
 
   for (const bucket of buckets) {
     const p = BUCKET_P[bucket];
@@ -41,7 +39,7 @@ export function getTraces(
     for (let n = 0; made < opts.limit && n < opts.limit * 8; n++) {
       const f = frames[Math.floor(uniform(c.seed, n, 7, p) * frames.length)];
       if (!f) continue;
-      const trace = buildTrace(c, f, bucket, n, tk);
+      const trace = buildTrace(c, f, bucket, n);
       if (opts.outcome && opts.outcome !== 'any' && trace.outcome !== opts.outcome) continue;
       out.push(trace);
       made++;
@@ -54,8 +52,7 @@ function buildTrace(
   c: ScenarioConfig,
   f: Frame,
   bucket: TraceBucket,
-  n: number,
-  tk: { prompt: number; output: number }
+  n: number
 ): RequestTrace {
   const p = BUCKET_P[bucket];
   const seed = c.seed;

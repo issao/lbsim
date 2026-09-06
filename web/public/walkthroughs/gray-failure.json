@@ -1,0 +1,76 @@
+{
+  "id": "gray-failure",
+  "dynamic": 10,
+  "title": "Gray failure and detection latency",
+  "summary": "The failure mode that breaks real fleets is a replica that reports healthy while serving at a fraction of its speed, because load balancers keep sending it work.",
+  "scenario": {
+    "name": "showcase: gray failure",
+    "seed": 20260906,
+    "durationS": 120,
+    "routing.kind": "power_of_two_choices",
+    "workload.arrivalRps": 150
+  },
+  "steps": [
+    {
+      "at_sim_s": 44,
+      "speed": 4,
+      "control_tab": "run",
+      "observe_tab": "cluster",
+      "highlight": "fleet-state",
+      "title": "A healthy fleet, before anything happens",
+      "body": [
+        "Thirty-two replicas ready, none warming, none draining, none ejected. Every replica is announcing healthy and every replica is in fact healthy.",
+        "The scripted failure schedule starts in a few seconds. Watch the ready count: it will not change."
+      ],
+      "look_for": "All four counters, and the empty failure-events panel."
+    },
+    {
+      "at_sim_s": 60,
+      "speed": 2,
+      "observe_tab": "cluster",
+      "highlight": "gray",
+      "title": "One replica is now serving at 0.28x, and says it is fine",
+      "body": [
+        "Health is a vector, not a boolean. The announced state is still healthy, because nothing crashed; the true speed multiplier is 0.28, which the simulator knows and no policy does.",
+        "A policy can only infer this, from queue depth that will not drain, from step times that are three times the fleet median, from requests that time out on one replica and nowhere else."
+      ],
+      "look_for": "The 'announcing healthy, degraded' tile at one, while the ready count is still full."
+    },
+    {
+      "at_sim_s": 68,
+      "speed": 1,
+      "observe_tab": "machine",
+      "highlight": "replicas",
+      "title": "What the inference would look like",
+      "body": [
+        "Sort the table by step time, descending. One replica sits at roughly three times the others, and its queue is not draining. That is the signal a detection policy has to act on, and everything else in the fleet looks normal.",
+        "The row shows the true speed multiplier because this is a simulator and it is allowed to. A real console cannot show you this column, which is exactly why detection latency is a policy property worth measuring."
+      ],
+      "look_for": "The outlier row, and how little else distinguishes it from a replica that is merely busy."
+    },
+    {
+      "at_sim_s": 76,
+      "speed": 1,
+      "observe_tab": "cluster",
+      "highlight": "events",
+      "title": "Detected, and ejected, nineteen seconds late",
+      "body": [
+        "The detection policy ejected the replica from routing. Nineteen simulated seconds passed between the onset of the degradation and the ejection, and during all of them the router kept sending it a full share of traffic.",
+        "Detection latency is the number to optimise here, and it trades directly against false positives: eject a merely-busy replica and you have removed capacity from a fleet that needed it."
+      ],
+      "look_for": "The two events in the timeline, and the ejected counter going to one while ready falls to 31."
+    },
+    {
+      "at_sim_s": 96,
+      "speed": 2,
+      "observe_tab": "cluster",
+      "highlight": "arrivals",
+      "title": "Then the autoscaler notices, far too slowly to help",
+      "body": [
+        "Two replicas were requested and are warming. Cold start here is 28 seconds, against a degradation that developed in one and was detected in nineteen.",
+        "This is the actuator delay that makes reactive scaling unable to catch a burst. It is not a tuning problem; it is a comparison of time constants."
+      ],
+      "look_for": "The warming count, and how much of the run is over before those replicas are ready."
+    }
+  ]
+}
