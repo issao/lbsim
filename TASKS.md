@@ -76,6 +76,8 @@ From `docs/ARCHITECTURE.md` section 14. Each has a stated default being taken.
    Faithful, since reaching a pooled tier genuinely is a network operation, and it keeps shards
    free of shared mutable state. Default: yes.
 
+   Issao: all of these sound good to me.
+
 ## 4. Superseded: the workspace skeleton is now M0 of the execution plan
 
 Two of the three groundwork items are **done**, and both were worth doing:
@@ -115,6 +117,8 @@ the published step-time table for it to within 0.1 ms.
 
 **If you say nothing:** that pair stays the default.
 
+Issao: sounds good to me. We can tune later.
+
 ## 7. What should the agent arena optimise?
 
 Goodput alone is gameable: an agent can starve batch traffic to raise interactive goodput.
@@ -122,6 +126,21 @@ It likely needs a fairness or SLO-attainment constraint alongside it.
 
 **If you say nothing:** Claude proposes a specific objective when the arena is built, rather
 than guessing now.
+
+Issao: Here is what it should optimize. It should achieve maximum goodput while keeping out
+of SLO sessions under an SLA cap (say 99.9%). That should remain the case as long as the
+load is under a rated load capacity, even for an adversarial load generator. We should structure
+the arena this way. There is a referee that defines the rule of the game tallies the results and
+checks if the load generator or policy generator are doing anything that violates the spirit of
+the game (identify difficult but realistic work loads and building policies that served a good
+service quality at maximum goodput). The referee reviews the work and makes new rules if it
+looks like they are gaming the system. The policy generator reviews the outcome of the prior run
+(including all the metrics) and proposes changes to policy. The load generator reviews the prior
+run and tries to stress test policies, but also always include some more vanilla/average load
+shapes to give the policy good calibration. Each generator keep a set of top 10 candidates.
+The policy is allowed to spill traffic above its rated capacity without SLO cost. The policy
+can dynamically update its rated capacity at warm up for the initial phase of simulation, the
+referee is measuring the metrics after that initial phase.
 
 ## 8. Is the dashboard a separate workstream?
 

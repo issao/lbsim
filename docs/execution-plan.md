@@ -23,6 +23,13 @@ one-second feedback loop. A dashboard is a thirty-second one, and it cannot be b
 until the engine produces data worth displaying. The first five milestones have no frontend at
 all.
 
+// Issao: STart building a stand in dashboard for now just so that I can observe progress. I will inline here the spec of the dashbaord, move it to a separate file with UI spec;
+//  - Homepage (list of interaction surfaces)
+//  - load test dashboard.
+//    - panels: Observation suite on right, control panel on left. Observation suite should have a tab to select various views (cluster health, service quality, machine level view [paginated], utilization). Control panel is also tabbed and should have surfaces to control: Loading pre-set scenarios, selecting load generation with live tunable parameters, policies and live tunable parameters.
+//.   - also have an alternative, side-by-size view that has the same load, two different policies to observe A/B comparisons.
+//  - showcase. Several cards highlighting each of the most interesting dynamics and when we click on each of them, we can a scripted walk through of the dashboard with execution pausing in critical moments with a small popup describing what is interesting and a button to resume.
+
 **Scenarios in protobuf text format, not TOML.** `Scenario` is already a proto message, and
 prototxt is human-readable, comment-friendly, and needs no converter or second schema. An
 earlier note proposed TOML; that would mean maintaining a mapping and two places for a default
