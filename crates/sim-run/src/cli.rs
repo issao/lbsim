@@ -100,9 +100,79 @@ pub fn cli(args: Vec<String>) -> Result<(), String> {
             }
             sim_ingress::serve(&dir, port)
         }
+        "export" => {
+            // Pre-baked runs for the dashboard: the stream's own documents as static files under
+            // the served directory, so demos can be shown before a live Ingress answers.
+            let mut paths: Vec<String> = Vec::new();
+            let mut overrides: Vec<(String, String)> = Vec::new();
+            let mut dir = "web/dist".to_string();
+            let mut scenarios_dir = "scenarios".to_string();
+            let mut id: Option<String> = None;
+            let mut demos = false;
+            let mut i = 0;
+            while i < rest.len() {
+                match rest[i].as_str() {
+                    "--dir" => {
+                        dir = rest.get(i + 1).cloned().ok_or("--dir needs a path")?;
+                        i += 2;
+                    }
+                    "--scenarios" => {
+                        scenarios_dir = rest.get(i + 1).cloned().ok_or("--scenarios needs a path")?;
+                        i += 2;
+                    }
+                    "--id" => {
+                        id = Some(rest.get(i + 1).cloned().ok_or("--id needs a name")?);
+                        i += 2;
+                    }
+                    "--set" => {
+                        let spec = rest.get(i + 1).ok_or("--set needs key=value")?;
+                        let (k, v) = spec.split_once('=').ok_or("--set needs key=value")?;
+                        overrides.push((k.to_string(), v.to_string()));
+                        i += 2;
+                    }
+                    "--demos" => {
+                        demos = true;
+                        i += 1;
+                    }
+                    flag if flag.starts_with("--") => return Err(format!("unexpected argument {flag:?}")),
+                    p => {
+                        paths.push(p.to_string());
+                        i += 1;
+                    }
+                }
+            }
+            let dir = std::path::Path::new(&dir);
+            if demos {
+                if !paths.is_empty() || id.is_some() {
+                    return Err("--demos takes no scenario files and no --id".into());
+                }
+                let ids = sim_ingress::export::export_demos(std::path::Path::new(&scenarios_dir), dir, &overrides)?;
+                for id in &ids {
+                    println!("{}", dir.join("runs").join(id).display());
+                }
+                println!("{}", dir.join("runs/index.json").display());
+                return Ok(());
+            }
+            if paths.is_empty() {
+                return Err("usage: sim-run export <scenario.txt ...> --dir DIR [--set k=v] [--id NAME] | export --demos --dir DIR".into());
+            }
+            if id.is_some() && paths.len() > 1 {
+                return Err("--id names one run; export one scenario at a time to use it".into());
+            }
+            let runs = run_all(&paths, &overrides)?;
+            for (r, path) in runs.iter().zip(&paths) {
+                let run_id = id.clone().unwrap_or_else(|| sim_ingress::export::slug(&r.scenario.name));
+                let out = sim_ingress::export::export_run_from(r, &run_id, Some(path), dir)?;
+                println!("{}", out.display());
+            }
+            println!("{}", dir.join("runs/index.json").display());
+            Ok(())
+        }
         _ => {
             println!("sim-run <command>");
             println!("  serve   [--dir DIR]               static server; PORT from the environment");
+            println!("  export  <scenario.txt ...> --dir DIR [--id NAME] | --demos --dir DIR");
+            println!("                                    pre-baked runs as the dashboard's wire documents");
             println!("  run     <scenario.txt> [...]      one or more scenarios into one report");
             println!("  compare <a.txt> <b.txt> [...]     same load, different policies, checked");
             println!("  sweep   <s.txt> --over key=v1,v2  one parameter across several values");
