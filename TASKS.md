@@ -1,13 +1,13 @@
 # TASKS — things that need Issao
 
-Last updated: 2026-09-06 18:10 by Claude.
+Last updated: 2026-09-06 15:53 PDT by Claude.
 
 Stack ranked, most blocking first. Every item says what Claude does if you say nothing, so nothing
 here stalls the work. What is finished and live is in `STATUS.md`.
 
 ## Routed to the tech lead
 
-Five design decisions from Issao at 16:05, recorded in the design of record (`docs/ARCHITECTURE.md`
+Five design decisions from Issao at 15:26, recorded in the design of record (`docs/ARCHITECTURE.md`
 section 14, `docs/arena.md`, `docs/execution-plan.md`) by the housekeeping agent. Each has code
 consequences that belong to the tech lead; verbatim, from `TASKS.md` before the markers were removed:
 
@@ -38,7 +38,7 @@ consequences that belong to the tech lead; verbatim, from `TASKS.md` before the 
 The service is live and public at <https://lbsim-irpwc2yaoa-uc.a.run.app>. The domain is only a nicer
 address for it, so do this when convenient.
 
-You repointed the registrar and it has already taken: at 17:08 both Google (`8.8.8.8`) and Cloudflare
+You repointed the registrar and it has already taken: at 15:37 both Google (`8.8.8.8`) and Cloudflare
 (`1.1.1.1`) resolve `lbsim.ai` through `*.ns.porkbun.com` and return your TXT record. If your own
 machine still shows the Google nameservers, that is its cache; Search Console asks Google, and Google
 sees it now. The history, kept because it explains the earlier failure:
@@ -55,7 +55,7 @@ The registrar still delegates `lbsim.ai` to Google Cloud DNS, and the zone that 
 nothing at all. Earlier today it pointed at Firebase Hosting for `lbsim-prod`; that is gone too. This is
 also why the Porkbun TXT record did not work: Porkbun's DNS was not authoritative for the domain.
 
-- [x] **Step 0, fix the delegation.** Done by you, and live at 17:08:
+- [x] **Step 0, fix the delegation.** Done by you, and live at 15:37:
       `dig +short NS lbsim.ai @8.8.8.8` → `fortaleza.ns.porkbun.com.` and three more;
       `dig +short TXT lbsim.ai @8.8.8.8` → `"google-site-verification=8sYf…"`.
 - [ ] **Step 1, verification.** Go to Search Console now and press Verify on the `lbsim.ai` Domain
@@ -66,7 +66,7 @@ also why the Porkbun TXT record did not work: Porkbun's DNS was not authoritativ
       `gcloud beta run domain-mappings create --service=lbsim --domain=lbsim.ai --region=us-central1`
 - [ ] **Step 3, the apex records.** The command prints four `A` and four `AAAA` records. Add them in
       Porkbun with the Host field empty, and delete Porkbun's two parking `A` records on the bare host
-      first (`207.207.210.107` and `.229`, present at 17:08).
+      first (`207.207.210.107` and `.229`, present at 15:37).
       The certificate follows on its own, in fifteen minutes to a few hours.
 
 Why a domain mapping and not a load balancer: the mapping and its certificate are free, and a load
@@ -102,6 +102,9 @@ design task for a better target is routed to the tech lead above.
       Today it cannot read container or request logs; nothing has needed them yet, and `docs/deploy.md`
       records the gap. Not worth granting pre-emptively.
 
+- [ ] Delete the leftover test image, which the deploy account cannot delete itself:
+      `gcloud artifacts docker images delete us-central1-docker.pkg.dev/lbsim-gcp/lbsim/lbsim:wstest --project lbsim-gcp --quiet`.
+      If you do nothing it sits in the registry costing cents.
 - [ ] Two more grants to hold back until needed, both from `docs/deploy.md`: `storage.buckets.update`
       for the 90-day delete rule on `gs://lbsim-gcp-runs`, which matters once runs write results there;
       and `artifactregistry.repoAdmin`, or running the tear-down as yourself, when this phase ends.
@@ -113,17 +116,17 @@ until you grant the role, and the results bucket keeps everything it is ever giv
 
 ## Answered, kept for the record
 
-- 16:05, five design decisions: SLA cap 0.95 for now; the arena policy generator writes code for new
+- 15:26, five design decisions: SLA cap 0.95 for now; the arena policy generator writes code for new
   policies as well as tuning parameters; prefix-sharing topology is derived from a session model with
   fork-off and merge-back rates; Leaf shards are separate processes in a sharded server; memory tiers
   are Ingress-owned with a seeded bloom-filter residency hint. Recorded in `docs/ARCHITECTURE.md` §14.
-- `lbsim-prod` removed by you at 16:05. It hosted the `lbsim.ai` DNS zone, see item 1.
+- `lbsim-prod` removed by you at 15:26. It hosted the `lbsim.ai` DNS zone, see item 1.
 
 - Budgets: `lbsim monthly` $100 and `lbsim monthly cap` $50 on billing account `015B1A-AA7EAB-107FD2`,
   confirmed by you in the console at 15:15. Claude can no longer see billing; re-check as yourself with
   `gcloud billing budgets list --billing-account=015B1A-AA7EAB-107FD2`.
 - Deploy credential: `lbsim-deployer@lbsim-gcp` only, no billing, cannot read or grant IAM, verified by
-  a real attempt. Service Usage Consumer granted by you at 15:15. The deploy went through at 15:45 and
+  a real attempt. Service Usage Consumer granted by you at 15:15. The deploy went through at 15:22 and
   needed no other grant: the real blocker was two bucket permissions, worked around in `cloudbuild.yaml`.
 - The service is **public**: mock data and published findings, nothing sensitive.
 - Scope today: package B of `docs/scope-today.md` plus item 7, retry storm last, side missions in
