@@ -12,21 +12,35 @@ traffic-shaping policies for performance, service quality, and failure robustnes
 See VISION.md for the authoritative scope. See docs/diagrams/README.md for the
 diagram-to-proto convention.
 
+## Workflow rules
+
+- **Never leave the working tree dirty.** Work on a branch named `claude/<topic>`,
+  commit there, and keep `master` clean. The user keeps their own edits on their
+  own branch.
+- Commit at every completed unit of work, not at the end of a session.
+- Push branches to `origin` (GitHub) when a milestone lands.
+
 ## Ground rules
 
-- Do not add a dependency without asking. Environment has no pip; stdlib only until told otherwise.
+- **Rust** for the simulator and backends, **Node.js + React** for the frontend, per VISION.md.
+  Interfaces are defined in `proto/`; the user reviews every interface.
+- Keep the core simulation dependency-light.
 - Determinism is non-negotiable: every random draw comes from an explicitly seeded stream.
   Same config + same seed must produce byte-identical output.
 - Policies are pluggable. Adding a policy must not require touching the engine.
 - No `time.time()`, no wall-clock, no threads in simulation code. Simulated clock only.
 
+## Current state
+
+Design phase. **Nothing is built.** The user must bless `docs/ARCHITECTURE.md` and the
+interfaces in `proto/` before any implementation starts. Do not write simulator code
+until then.
+
 ## Commands
 
-<!-- fill in as they exist -->
-- Tests: `python3 -m unittest discover -s tests`
-- Run a scenario: `python3 -m llmsim.cli run scenarios/<name>.yaml`
+- (none yet)
 
 ## Style
 
-- Type hints on public functions. Dataclasses for state. No inheritance deeper than one level.
+- Rust: no `unsafe` in simulation code. Prefer data-oriented layout (struct-of-arrays) in hot paths.
 - Comments explain *why*, never *what*.
