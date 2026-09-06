@@ -30,9 +30,11 @@ import {
   fleetTarget,
   relSeconds,
   scenarioConfigToWire,
+  scenarioEnvelope,
   secondsToNs,
   subscribeToTarget,
   policiesToWire,
+  toOverrides,
   workloadToWire,
   uiTargetToWire,
 } from './api';
@@ -145,8 +147,10 @@ export function useServerRun(initial: ScenarioConfig, opts: ServerRunOptions = {
       try {
         // Unset means as fast as possible; a pause is a SetSpeed rather than a cap of zero, so the
         // run's speed survives being unpaused.
+        // The whole config goes as scenario text, per WIRE.md; overrides are for edits on top of a
+        // served file, and this client has no served file to edit.
         const id = await client.startRun({
-          scenario: wire.fields,
+          scenario: scenarioEnvelope(wire.fields),
           maxRealtimeFactor: 0,
           recordTraces: opts.recordTraces ?? true,
         });
@@ -300,8 +304,8 @@ export function useServerRun(initial: ScenarioConfig, opts: ServerRunOptions = {
       const workloadChanged = d.paths.some((p) => p.startsWith('workload.'));
       const policyChanged = d.paths.some((p) => p.startsWith('routing.'));
       const calls: Promise<{ accepted: boolean; requiredResimulation: boolean; rewoundToUnixNs: bigint; rejectedReason: string }>[] = [];
-      if (workloadChanged) calls.push(client.updateWorkload(runId, workloadToWire(next).fields));
-      if (policyChanged) calls.push(client.updatePolicies(runId, policiesToWire(next).fields));
+      if (workloadChanged) calls.push(client.updateWorkload(runId, toOverrides(workloadToWire(next).fields)));
+      if (policyChanged) calls.push(client.updatePolicies(runId, toOverrides(policiesToWire(next).fields)));
       if (calls.length === 0) {
         // Anything else -- fleet shape, seed, duration -- is a new run by design: UpdateWorkload and
         // UpdatePolicies are the only two live-tunable calls in ingress.proto.
@@ -359,7 +363,7 @@ export function useServerRun(initial: ScenarioConfig, opts: ServerRunOptions = {
     cursorS,
     recordedToS,
     durationS: config.durationS,
-    paused: status?.state === 'STATE_PAUSED' || status?.state === 'STATE_COMPLETE',
+    paused: status?.state === 'STATE_PAUSED' || status?.state === 'STATE_COMPLETE' || connection === 'complete',
     speed: status?.realtimeFactor ?? 0,
     resimulating,
     lastRewind,

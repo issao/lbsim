@@ -1,43 +1,38 @@
 // Transport client for the lbsim Ingress server.
 //
 // The server does not speak gRPC. It serves the message shapes of `proto/lbsim/v1/ingress.proto`
-// and `subscription.proto` as **proto3-JSON over HTTP/1.1**, with the one server-streaming RPC
-// mapped onto server-sent events. The protos remain the schema of record, so this file is written
-// to the proto3-JSON rules rather than to whatever a particular server build happens to emit:
-// lowerCamelCase field names, 64-bit integers as JSON strings, enums as their proto names, and
-// absent fields meaning the proto3 default.
+// and `subscription.proto` as JSON over HTTP/1.1, with the one server-streaming RPC mapped onto
+// server-sent events. The protos remain the schema of record; `crates/sim-ingress/WIRE.md` is the
+// exact mapping and this file follows it line by line:
+//
+//   - unary RPCs are `POST /v1/ingress/<RpcName>`, JSON in, JSON out;
+//   - `OpenSubscription` is `GET /v1/ingress/OpenSubscription?<query>` returning an SSE stream whose
+//     first event is `event: open` (an `OpenSubscriptionResponse`) and every later event is
+//     `event: update` (a `SubscriptionUpdate`), each carrying `id: <n>`;
+//   - field names are the proto names verbatim, snake_case;
+//   - every `uint64` is a decimal string on the wire and a `bigint` here;
+//   - enums are their proto names; enum-keyed maps use the enum number as the key;
+//   - errors are `{"error": "<message>"}` with the HTTP status carrying the class.
 //
 // Why `bigint` and not `number` for every uint64: simulated time is absolute Unix epoch
 // nanoseconds (common.proto), around 1.79e18 for 2026, where a float64 resolves about 256 ns.
 // A timestamp that passes through `number` is therefore silently wrong, and wrong in a way no
 // chart reveals. Absolute instants stay `bigint` up to the point a chart needs a *relative*
-// quantity, which is what `relSeconds` exists for. Durations that the wire declares as uint64
-// (`leaseNs`, `simDurationNs`, latency fields on a trace) are bigint for the same reason: they
-// arrive as strings and re-serialising them from a float would change the value.
+// quantity, which is what `relSeconds` exists for.
 //
-// ---------------------------------------------------------------------------
-// The one deviation from the protos
-// ---------------------------------------------------------------------------
+// Why the field names are hand-written: there is no codegen yet. `WIRE_FIELDS` records every wire
+// name this file reads or writes, and the self-test checks each one against the proto files, which
+// is the client-side half of the guard WIRE.md describes for the server.
 //
-// `StartRunRequest.scenario` is NOT yet the nested `Scenario` message from `scenario.proto`. The
-// Rust engine's scenario is a flat `key = value` set (`src/scenario.rs`, `Scenario::parse`), and
-// nothing generates the nested message yet. The server therefore accepts, inside `"scenario"`,
-// exactly one of:
-//
-//   - `{"text": "<contents of a scenarios/*.txt file>"}`, handed straight to `Scenario::parse`, or
-//   - a flat object of the snake_case keys `Scenario::parse` accepts, values as JSON numbers,
-//     strings or booleans (see `SCENARIO_KEYS`).
-//
-// `UpdateWorkloadRequest.workload` and `UpdatePoliciesRequest.policies` use the same flat
-// convention, restricted to `WORKLOAD_KEYS` and `POLICY_KEYS`. When the nested messages exist this
-// is the only part of the file that changes, which is why the encoding lives in one place at the
-// bottom rather than being spread through the call sites.
+// The one deviation from the protos, per WIRE.md: `StartRunRequest.scenario` carries the engine's
+// flat `key = value` text plus `--set`-style overrides, not the nested `Scenario` message. The
+// encoding lives at the bottom of this file so it is the only part that changes when codegen lands.
 
 import type { RoutingKind, Target as UiTarget, Scope as UiScope } from './types';
 import type { ScenarioConfig } from './config';
 
 // ---------------------------------------------------------------------------
-// proto3-JSON scalar decoding
+// Scalar decoding
 // ---------------------------------------------------------------------------
 
 /** A decoded JSON value, before it is known to be a message. */
@@ -59,10 +54,25 @@ function describe(v: Json): string {
   return typeof v;
 }
 
+/** Every wire field name read or written by this file. The self-test checks them against the protos. */
+export const WIRE_FIELDS = new Set<string>();
+
+/** Read one wire field, recording its name. */
+function rd(o: Record<string, Json>, name: string): Json {
+  WIRE_FIELDS.add(name);
+  return o[name];
+}
+
+/** Build one wire message, recording its field names. */
+function wr(o: Record<string, Json>): Record<string, Json> {
+  for (const k of Object.keys(o)) WIRE_FIELDS.add(k);
+  return o;
+}
+
 /**
- * uint64 / int64. The wire form is a string; a number is accepted only while it is still exactly
- * representable, because a large float has already lost the value and quietly carrying it on would
- * hide the loss instead of reporting it.
+ * uint64 / int64. The wire form is a decimal string; a number is accepted only while it is still
+ * exactly representable, because a large float has already lost the value and quietly carrying it
+ * on would hide the loss instead of reporting it.
  */
 export function u64(v: Json, where = 'uint64'): bigint {
   if (v === undefined || v === null || v === '') return 0n;
@@ -80,7 +90,7 @@ export function u64(v: Json, where = 'uint64'): bigint {
   throw new TypeError(`${where}: expected a string holding an integer, got ${describe(v)}`);
 }
 
-/** int32 / uint32. Genuinely a JSON number in proto3 JSON, and safely a `number`. */
+/** int32 / uint32. A JSON number, and safely a `number`. */
 export function i32(v: Json, where = 'int32'): number {
   if (v === undefined || v === null || v === '') return 0;
   if (typeof v === 'string' && /^-?\d+$/.test(v)) return Number(v);
@@ -142,7 +152,7 @@ export function secondsToNs(s: number): bigint {
 // Enums: names on the wire, numbers as map keys
 // ---------------------------------------------------------------------------
 
-/** subscription.proto Metric. Names are what `OpenSubscriptionRequest.metrics` carries. */
+/** subscription.proto Metric. Names are what the `metrics` query parameter carries. */
 export const METRIC_NUMBER = {
   METRIC_UNSPECIFIED: 0,
   METRIC_TTFT: 1,
@@ -201,6 +211,7 @@ export const SCOPE_NUMBER = {
   SCOPE_REPLICA: 6,
 } as const;
 export type ScopeName = keyof typeof SCOPE_NUMBER;
+const SCOPE_NAME: Record<number, ScopeName> = invert(SCOPE_NUMBER);
 
 export const OUTCOME_NUMBER = {
   OUTCOME_UNSPECIFIED: 0,
@@ -222,6 +233,7 @@ export const SLO_CLASS_NUMBER = {
   SLO_CLASS_BATCH: 3,
 } as const;
 export type SloClassName = keyof typeof SLO_CLASS_NUMBER;
+const SLO_CLASS_NAME: Record<number, SloClassName> = invert(SLO_CLASS_NUMBER);
 
 export const MEMORY_TIER_NUMBER = {
   MEMORY_TIER_UNSPECIFIED: 0,
@@ -231,6 +243,7 @@ export const MEMORY_TIER_NUMBER = {
   MEMORY_TIER_NONE: 4,
 } as const;
 export type MemoryTierName = keyof typeof MEMORY_TIER_NUMBER;
+const MEMORY_TIER_NAME: Record<number, MemoryTierName> = invert(MEMORY_TIER_NUMBER);
 
 /** policy.proto RefereeVerdict, the key of `RunResult.referee_violations`. */
 export const REFEREE_VERDICT_NUMBER = {
@@ -253,6 +266,8 @@ export const RUN_STATES = [
   'STATE_UNSPECIFIED', 'STATE_QUEUED', 'STATE_RUNNING', 'STATE_PAUSED', 'STATE_COMPLETE', 'STATE_FAILED',
 ] as const;
 export type RunState = (typeof RUN_STATES)[number];
+const RUN_STATE_NUMBER = Object.fromEntries(RUN_STATES.map((s, i) => [s, i])) as Record<RunState, number>;
+const RUN_STATE_NAME: Record<number, RunState> = invert(RUN_STATE_NUMBER);
 
 function invert<K extends string>(table: Record<K, number>): Record<number, K> {
   const out: Record<number, K> = {};
@@ -261,7 +276,7 @@ function invert<K extends string>(table: Record<K, number>): Record<number, K> {
 }
 
 /**
- * An enum field. Proto3 JSON sends the name; the number is accepted too, because that is what a
+ * An enum field. The wire sends the name; the number is accepted too, because that is what a
  * hand-rolled server most easily emits and rejecting it would be pedantry rather than safety.
  */
 function enumName<K extends string>(v: Json, table: Record<K, number>, names: Record<number, K>, dflt: K, where: string): K {
@@ -288,7 +303,7 @@ function enumKeyedMap<K extends string, V>(
   const known: Partial<Record<K, V>> = {};
   const unknown: Record<string, V> = {};
   for (const [k, raw] of Object.entries(obj(v, where))) {
-    if (!/^-?\d+$/.test(k)) throw new TypeError(`${where}: map key ${JSON.stringify(k)} is not an integer; a map<int32, ...> is JSON-encoded with stringified integer keys`);
+    if (!/^-?\d+$/.test(k)) throw new TypeError(`${where}: map key ${JSON.stringify(k)} is not an integer; an enum-keyed map is encoded with the enum number as the key`);
     const value = decodeValue(raw, `${where}[${k}]`);
     const name = names[Number(k)];
     if (name === undefined) unknown[k] = value;
@@ -313,23 +328,24 @@ export interface WireTarget {
 
 export function decodeTarget(v: Json, where = 'Target'): WireTarget {
   const o = obj(v, where);
-  const t: WireTarget = { scope: enumName(o.scope, SCOPE_NUMBER, invert(SCOPE_NUMBER), 'SCOPE_UNSPECIFIED', `${where}.scope`) };
-  if (o.clusterId !== undefined) t.clusterId = u64(o.clusterId, `${where}.clusterId`);
-  if (o.poolId !== undefined) t.poolId = u64(o.poolId, `${where}.poolId`);
-  if (o.tenantId !== undefined) t.tenantId = u64(o.tenantId, `${where}.tenantId`);
-  if (o.replicaId !== undefined) t.replicaId = u64(o.replicaId, `${where}.replicaId`);
-  if (o.sloClass !== undefined) t.sloClass = enumName(o.sloClass, SLO_CLASS_NUMBER, invert(SLO_CLASS_NUMBER), 'SLO_CLASS_UNSPECIFIED', `${where}.sloClass`);
+  const t: WireTarget = { scope: enumName(rd(o, 'scope'), SCOPE_NUMBER, SCOPE_NAME, 'SCOPE_UNSPECIFIED', `${where}.scope`) };
+  if (o.cluster_id !== undefined) t.clusterId = u64(rd(o, 'cluster_id'), `${where}.cluster_id`);
+  if (o.pool_id !== undefined) t.poolId = u64(rd(o, 'pool_id'), `${where}.pool_id`);
+  if (o.tenant_id !== undefined) t.tenantId = u64(rd(o, 'tenant_id'), `${where}.tenant_id`);
+  if (o.replica_id !== undefined) t.replicaId = u64(rd(o, 'replica_id'), `${where}.replica_id`);
+  if (o.slo_class !== undefined) t.sloClass = enumName(rd(o, 'slo_class'), SLO_CLASS_NUMBER, SLO_CLASS_NAME, 'SLO_CLASS_UNSPECIFIED', `${where}.slo_class`);
   return t;
 }
 
-export function encodeTarget(t: WireTarget): Record<string, Json> {
-  const o: Record<string, Json> = { scope: t.scope };
-  if (t.clusterId !== undefined) o.clusterId = t.clusterId.toString();
-  if (t.poolId !== undefined) o.poolId = t.poolId.toString();
-  if (t.tenantId !== undefined) o.tenantId = t.tenantId.toString();
-  if (t.replicaId !== undefined) o.replicaId = t.replicaId.toString();
-  if (t.sloClass !== undefined) o.sloClass = t.sloClass;
-  return o;
+/** The target's fields as they go on the wire: in a JSON body, or as query parameters. */
+export function encodeTarget(t: WireTarget): Record<string, string> {
+  const o: Record<string, string> = { scope: t.scope };
+  if (t.clusterId !== undefined) o.cluster_id = t.clusterId.toString();
+  if (t.poolId !== undefined) o.pool_id = t.poolId.toString();
+  if (t.tenantId !== undefined) o.tenant_id = t.tenantId.toString();
+  if (t.replicaId !== undefined) o.replica_id = t.replicaId.toString();
+  if (t.sloClass !== undefined) o.slo_class = t.sloClass;
+  return wr(o) as Record<string, string>;
 }
 
 export const fleetTarget = (): WireTarget => ({ scope: 'SCOPE_FLEET' });
@@ -358,7 +374,7 @@ export function uiTargetToWire(t: UiTarget): WireTarget {
     case 'SCOPE_TENANT': return { scope, tenantId: id };
     case 'SCOPE_REPLICA': return { scope, replicaId: id };
     // An SLO class is an enum on the wire, not an id; the UI's numeric id is its enum number.
-    case 'SCOPE_SLO_CLASS': return { scope, sloClass: invert(SLO_CLASS_NUMBER)[Number(t.id)] ?? 'SLO_CLASS_UNSPECIFIED' };
+    case 'SCOPE_SLO_CLASS': return { scope, sloClass: SLO_CLASS_NAME[Number(t.id)] ?? 'SLO_CLASS_UNSPECIFIED' };
     default: return { scope };
   }
 }
@@ -372,11 +388,9 @@ export function wireTargetToUi(t: WireTarget): UiTarget {
 }
 
 /**
- * subscription.proto Distribution, minus the Leaf-hop histogram.
- *
- * `min` and `max` are `double` in the proto, so proto3 JSON puts them on the wire as numbers. A
- * string is accepted anyway: the transport contract this client was written against describes them
- * as strings, and tolerating both costs one branch while a mismatch would cost a run.
+ * subscription.proto Distribution, minus the Leaf-hop histogram. `count` is a uint64 and so a
+ * bigint; `mean`, `min`, `max` and `value[]` are doubles in nanoseconds, exactly as the proto
+ * declares them.
  */
 export interface WireDistribution {
   count: bigint;
@@ -391,13 +405,13 @@ export interface WireDistribution {
 export function decodeDistribution(v: Json, where = 'Distribution'): WireDistribution {
   const o = obj(v, where);
   return {
-    count: u64(o.count, `${where}.count`),
-    mean: dbl(o.mean, `${where}.mean`),
-    min: dbl(o.min, `${where}.min`),
-    max: dbl(o.max, `${where}.max`),
-    percentile: arr(o.percentile, `${where}.percentile`).map((x, i) => dbl(x, `${where}.percentile[${i}]`)),
-    value: arr(o.value, `${where}.value`).map((x, i) => dbl(x, `${where}.value[${i}]`)),
-    fromMergedHistogram: bool(o.fromMergedHistogram, `${where}.fromMergedHistogram`),
+    count: u64(rd(o, 'count'), `${where}.count`),
+    mean: dbl(rd(o, 'mean'), `${where}.mean`),
+    min: dbl(rd(o, 'min'), `${where}.min`),
+    max: dbl(rd(o, 'max'), `${where}.max`),
+    percentile: arr(rd(o, 'percentile'), `${where}.percentile`).map((x, i) => dbl(x, `${where}.percentile[${i}]`)),
+    value: arr(rd(o, 'value'), `${where}.value`).map((x, i) => dbl(x, `${where}.value[${i}]`)),
+    fromMergedHistogram: bool(rd(o, 'from_merged_histogram'), `${where}.from_merged_histogram`),
   };
 }
 
@@ -412,10 +426,10 @@ export interface MetricRow {
 
 export function decodeMetricRow(v: Json, where = 'MetricRow'): MetricRow {
   const o = obj(v, where);
-  const values = enumKeyedMap(o.values, METRIC_NAME, dbl, `${where}.values`);
-  const dists = enumKeyedMap(o.distributions, METRIC_NAME, decodeDistribution, `${where}.distributions`);
+  const values = enumKeyedMap(rd(o, 'values'), METRIC_NAME, dbl, `${where}.values`);
+  const dists = enumKeyedMap(rd(o, 'distributions'), METRIC_NAME, decodeDistribution, `${where}.distributions`);
   return {
-    target: decodeTarget(o.target, `${where}.target`),
+    target: decodeTarget(rd(o, 'target'), `${where}.target`),
     values: values.known,
     distributions: dists.known,
     unknownValues: values.unknown,
@@ -434,11 +448,11 @@ export interface SubscriptionUpdate {
 export function decodeSubscriptionUpdate(v: Json, where = 'SubscriptionUpdate'): SubscriptionUpdate {
   const o = obj(v, where);
   return {
-    subscriptionId: str(o.subscriptionId, `${where}.subscriptionId`),
-    simTimeUnixNs: u64(o.simTimeUnixNs, `${where}.simTimeUnixNs`),
-    realtimeFactor: dbl(o.realtimeFactor, `${where}.realtimeFactor`),
-    row: decodeMetricRow(o.row, `${where}.row`),
-    final: bool(o.final, `${where}.final`),
+    subscriptionId: str(rd(o, 'subscription_id'), `${where}.subscription_id`),
+    simTimeUnixNs: u64(rd(o, 'sim_time_unix_ns'), `${where}.sim_time_unix_ns`),
+    realtimeFactor: dbl(rd(o, 'realtime_factor'), `${where}.realtime_factor`),
+    row: decodeMetricRow(rd(o, 'row'), `${where}.row`),
+    final: bool(rd(o, 'final'), `${where}.final`),
   };
 }
 
@@ -451,18 +465,20 @@ export interface RunStatus {
   error: string;
 }
 
-const RUN_STATE_NUMBER = Object.fromEntries(RUN_STATES.map((s, i) => [s, i])) as Record<RunState, number>;
-
 export function decodeRunStatus(v: Json, where = 'RunStatus'): RunStatus {
   const o = obj(v, where);
   return {
-    runId: str(o.runId, `${where}.runId`),
-    state: enumName(o.state, RUN_STATE_NUMBER, invert(RUN_STATE_NUMBER), 'STATE_UNSPECIFIED', `${where}.state`),
-    simTimeUnixNs: u64(o.simTimeUnixNs, `${where}.simTimeUnixNs`),
-    simEndUnixNs: u64(o.simEndUnixNs, `${where}.simEndUnixNs`),
-    realtimeFactor: dbl(o.realtimeFactor, `${where}.realtimeFactor`),
-    error: str(o.error, `${where}.error`),
+    runId: str(rd(o, 'run_id'), `${where}.run_id`),
+    state: enumName(rd(o, 'state'), RUN_STATE_NUMBER, RUN_STATE_NAME, 'STATE_UNSPECIFIED', `${where}.state`),
+    simTimeUnixNs: u64(rd(o, 'sim_time_unix_ns'), `${where}.sim_time_unix_ns`),
+    simEndUnixNs: u64(rd(o, 'sim_end_unix_ns'), `${where}.sim_end_unix_ns`),
+    realtimeFactor: dbl(rd(o, 'realtime_factor'), `${where}.realtime_factor`),
+    error: str(rd(o, 'error'), `${where}.error`),
   };
+}
+
+export function decodeStartRun(v: Json, where = 'StartRunResponse'): string {
+  return str(rd(obj(v, where), 'run_id'), `${where}.run_id`);
 }
 
 export interface ListRunsResult {
@@ -473,8 +489,8 @@ export interface ListRunsResult {
 export function decodeListRuns(v: Json, where = 'ListRunsResponse'): ListRunsResult {
   const o = obj(v, where);
   return {
-    runs: arr(o.runs, `${where}.runs`).map((r, i) => decodeRunStatus(r, `${where}.runs[${i}]`)),
-    nextCursor: str(o.nextCursor, `${where}.nextCursor`),
+    runs: arr(rd(o, 'runs'), `${where}.runs`).map((r, i) => decodeRunStatus(r, `${where}.runs[${i}]`)),
+    nextCursor: str(rd(o, 'next_cursor'), `${where}.next_cursor`),
   };
 }
 
@@ -487,9 +503,9 @@ export interface RewindResult {
 export function decodeRewind(v: Json, where = 'RewindResponse'): RewindResult {
   const o = obj(v, where);
   return {
-    simTimeUnixNs: u64(o.simTimeUnixNs, `${where}.simTimeUnixNs`),
-    fromLog: bool(o.fromLog, `${where}.fromLog`),
-    restoredFromSnapshotUnixNs: u64(o.restoredFromSnapshotUnixNs, `${where}.restoredFromSnapshotUnixNs`),
+    simTimeUnixNs: u64(rd(o, 'sim_time_unix_ns'), `${where}.sim_time_unix_ns`),
+    fromLog: bool(rd(o, 'from_log'), `${where}.from_log`),
+    restoredFromSnapshotUnixNs: u64(rd(o, 'restored_from_snapshot_unix_ns'), `${where}.restored_from_snapshot_unix_ns`),
   };
 }
 
@@ -503,38 +519,43 @@ export interface UpdateResult {
 export function decodeUpdate(v: Json, where = 'UpdateResponse'): UpdateResult {
   const o = obj(v, where);
   return {
-    accepted: bool(o.accepted, `${where}.accepted`),
-    requiredResimulation: bool(o.requiredResimulation, `${where}.requiredResimulation`),
-    rewoundToUnixNs: u64(o.rewoundToUnixNs, `${where}.rewoundToUnixNs`),
-    rejectedReason: str(o.rejectedReason, `${where}.rejectedReason`),
+    accepted: bool(rd(o, 'accepted'), `${where}.accepted`),
+    requiredResimulation: bool(rd(o, 'required_resimulation'), `${where}.required_resimulation`),
+    rewoundToUnixNs: u64(rd(o, 'rewound_to_unix_ns'), `${where}.rewound_to_unix_ns`),
+    rejectedReason: str(rd(o, 'rejected_reason'), `${where}.rejected_reason`),
   };
 }
 
+/**
+ * OpenSubscriptionResponse. `leaseExpiresAtWallNs` is the server's wall clock, which is not the
+ * browser's: it is surfaced for display and never compared to `Date.now()`. The lease is counted
+ * down locally from `lease_ns`, and the renew response's `expired` flag is the only authority.
+ */
 export interface OpenSubscriptionResult {
   subscriptionId: string;
-  leaseExpiresAtUnixNs: bigint;
+  leaseExpiresAtWallNs: bigint;
   rejectedReason: string;
 }
 
 export function decodeOpenSubscription(v: Json, where = 'OpenSubscriptionResponse'): OpenSubscriptionResult {
   const o = obj(v, where);
   return {
-    subscriptionId: str(o.subscriptionId, `${where}.subscriptionId`),
-    leaseExpiresAtUnixNs: u64(o.leaseExpiresAtUnixNs, `${where}.leaseExpiresAtUnixNs`),
-    rejectedReason: str(o.rejectedReason, `${where}.rejectedReason`),
+    subscriptionId: str(rd(o, 'subscription_id'), `${where}.subscription_id`),
+    leaseExpiresAtWallNs: u64(rd(o, 'lease_expires_at_wall_ns'), `${where}.lease_expires_at_wall_ns`),
+    rejectedReason: str(rd(o, 'rejected_reason'), `${where}.rejected_reason`),
   };
 }
 
 export interface RenewSubscriptionResult {
-  leaseExpiresAtUnixNs: bigint;
+  leaseExpiresAtWallNs: bigint;
   expired: boolean;
 }
 
 export function decodeRenew(v: Json, where = 'RenewSubscriptionResponse'): RenewSubscriptionResult {
   const o = obj(v, where);
   return {
-    leaseExpiresAtUnixNs: u64(o.leaseExpiresAtUnixNs, `${where}.leaseExpiresAtUnixNs`),
-    expired: bool(o.expired, `${where}.expired`),
+    leaseExpiresAtWallNs: u64(rd(o, 'lease_expires_at_wall_ns'), `${where}.lease_expires_at_wall_ns`),
+    expired: bool(rd(o, 'expired'), `${where}.expired`),
   };
 }
 
@@ -551,13 +572,13 @@ export interface Scorecard {
 export function decodeScorecard(v: Json, where = 'Scorecard'): Scorecard {
   const o = obj(v, where);
   return {
-    values: enumKeyedMap(o.values, METRIC_NAME, dbl, `${where}.values`).known,
-    distributions: enumKeyedMap(o.distributions, METRIC_NAME, decodeDistribution, `${where}.distributions`).known,
-    outcomeCounts: enumKeyedMap(o.outcomeCounts, OUTCOME_NAME, u64, `${where}.outcomeCounts`).known,
-    declaredRatedCapacityRps: dbl(o.declaredRatedCapacityRps, `${where}.declaredRatedCapacityRps`),
-    declaredRatedCapacityTokensPerS: dbl(o.declaredRatedCapacityTokensPerS, `${where}.declaredRatedCapacityTokensPerS`),
-    metastableCollapse: bool(o.metastableCollapse, `${where}.metastableCollapse`),
-    recoveryTimeNs: u64(o.recoveryTimeNs, `${where}.recoveryTimeNs`),
+    values: enumKeyedMap(rd(o, 'values'), METRIC_NAME, dbl, `${where}.values`).known,
+    distributions: enumKeyedMap(rd(o, 'distributions'), METRIC_NAME, decodeDistribution, `${where}.distributions`).known,
+    outcomeCounts: enumKeyedMap(rd(o, 'outcome_counts'), OUTCOME_NAME, u64, `${where}.outcome_counts`).known,
+    declaredRatedCapacityRps: dbl(rd(o, 'declared_rated_capacity_rps'), `${where}.declared_rated_capacity_rps`),
+    declaredRatedCapacityTokensPerS: dbl(rd(o, 'declared_rated_capacity_tokens_per_s'), `${where}.declared_rated_capacity_tokens_per_s`),
+    metastableCollapse: bool(rd(o, 'metastable_collapse'), `${where}.metastable_collapse`),
+    recoveryTimeNs: u64(rd(o, 'recovery_time_ns'), `${where}.recovery_time_ns`),
   };
 }
 
@@ -581,15 +602,15 @@ export interface WireTraceSpan {
 export function decodeTraceSpan(v: Json, where = 'TraceSpan'): WireTraceSpan {
   const o = obj(v, where);
   return {
-    startUnixNs: u64(o.startUnixNs, `${where}.startUnixNs`),
-    endUnixNs: u64(o.endUnixNs, `${where}.endUnixNs`),
-    component: str(o.component, `${where}.component`),
-    operation: str(o.operation, `${where}.operation`),
-    replicaId: u64(o.replicaId, `${where}.replicaId`),
-    concurrentSeqs: i32(o.concurrentSeqs, `${where}.concurrentSeqs`),
-    kvUtilization: dbl(o.kvUtilization, `${where}.kvUtilization`),
-    tokensProcessed: i32(o.tokensProcessed, `${where}.tokensProcessed`),
-    kvTier: enumName(o.kvTier, MEMORY_TIER_NUMBER, invert(MEMORY_TIER_NUMBER), 'MEMORY_TIER_UNSPECIFIED', `${where}.kvTier`),
+    startUnixNs: u64(rd(o, 'start_unix_ns'), `${where}.start_unix_ns`),
+    endUnixNs: u64(rd(o, 'end_unix_ns'), `${where}.end_unix_ns`),
+    component: str(rd(o, 'component'), `${where}.component`),
+    operation: str(rd(o, 'operation'), `${where}.operation`),
+    replicaId: u64(rd(o, 'replica_id'), `${where}.replica_id`),
+    concurrentSeqs: i32(rd(o, 'concurrent_seqs'), `${where}.concurrent_seqs`),
+    kvUtilization: dbl(rd(o, 'kv_utilization'), `${where}.kv_utilization`),
+    tokensProcessed: i32(rd(o, 'tokens_processed'), `${where}.tokens_processed`),
+    kvTier: enumName(rd(o, 'kv_tier'), MEMORY_TIER_NUMBER, MEMORY_TIER_NAME, 'MEMORY_TIER_UNSPECIFIED', `${where}.kv_tier`),
   };
 }
 
@@ -621,28 +642,28 @@ export interface WireRequestRecord {
 export function decodeRequestRecord(v: Json, where = 'RequestRecord'): WireRequestRecord {
   const o = obj(v, where);
   return {
-    id: u64(o.id, `${where}.id`),
-    tenantId: u64(o.tenantId, `${where}.tenantId`),
-    sloClass: enumName(o.sloClass, SLO_CLASS_NUMBER, invert(SLO_CLASS_NUMBER), 'SLO_CLASS_UNSPECIFIED', `${where}.sloClass`),
-    outcome: enumName(o.outcome, OUTCOME_NUMBER, OUTCOME_NAME, 'OUTCOME_UNSPECIFIED', `${where}.outcome`),
-    arrivedAtUnixNs: u64(o.arrivedAtUnixNs, `${where}.arrivedAtUnixNs`),
-    admittedAtUnixNs: u64(o.admittedAtUnixNs, `${where}.admittedAtUnixNs`),
-    firstTokenAtUnixNs: u64(o.firstTokenAtUnixNs, `${where}.firstTokenAtUnixNs`),
-    finishedAtUnixNs: u64(o.finishedAtUnixNs, `${where}.finishedAtUnixNs`),
-    promptTokens: i32(o.promptTokens, `${where}.promptTokens`),
-    outputTokens: i32(o.outputTokens, `${where}.outputTokens`),
-    cachedPrefixTokens: i32(o.cachedPrefixTokens, `${where}.cachedPrefixTokens`),
-    clusterId: u64(o.clusterId, `${where}.clusterId`),
-    replicaId: u64(o.replicaId, `${where}.replicaId`),
-    replicaPathId: arr(o.replicaPathId, `${where}.replicaPathId`).map((x, i) => u64(x, `${where}.replicaPathId[${i}]`)),
-    attempts: i32(o.attempts, `${where}.attempts`),
-    preemptions: i32(o.preemptions, `${where}.preemptions`),
-    queueWaitNs: u64(o.queueWaitNs, `${where}.queueWaitNs`),
-    preemptedNs: u64(o.preemptedNs, `${where}.preemptedNs`),
-    ttftNs: u64(o.ttftNs, `${where}.ttftNs`),
-    e2eNs: u64(o.e2eNs, `${where}.e2eNs`),
-    meanItlNs: u64(o.meanItlNs, `${where}.meanItlNs`),
-    p99ItlNs: u64(o.p99ItlNs, `${where}.p99ItlNs`),
+    id: u64(rd(o, 'id'), `${where}.id`),
+    tenantId: u64(rd(o, 'tenant_id'), `${where}.tenant_id`),
+    sloClass: enumName(rd(o, 'slo_class'), SLO_CLASS_NUMBER, SLO_CLASS_NAME, 'SLO_CLASS_UNSPECIFIED', `${where}.slo_class`),
+    outcome: enumName(rd(o, 'outcome'), OUTCOME_NUMBER, OUTCOME_NAME, 'OUTCOME_UNSPECIFIED', `${where}.outcome`),
+    arrivedAtUnixNs: u64(rd(o, 'arrived_at_unix_ns'), `${where}.arrived_at_unix_ns`),
+    admittedAtUnixNs: u64(rd(o, 'admitted_at_unix_ns'), `${where}.admitted_at_unix_ns`),
+    firstTokenAtUnixNs: u64(rd(o, 'first_token_at_unix_ns'), `${where}.first_token_at_unix_ns`),
+    finishedAtUnixNs: u64(rd(o, 'finished_at_unix_ns'), `${where}.finished_at_unix_ns`),
+    promptTokens: i32(rd(o, 'prompt_tokens'), `${where}.prompt_tokens`),
+    outputTokens: i32(rd(o, 'output_tokens'), `${where}.output_tokens`),
+    cachedPrefixTokens: i32(rd(o, 'cached_prefix_tokens'), `${where}.cached_prefix_tokens`),
+    clusterId: u64(rd(o, 'cluster_id'), `${where}.cluster_id`),
+    replicaId: u64(rd(o, 'replica_id'), `${where}.replica_id`),
+    replicaPathId: arr(rd(o, 'replica_path_id'), `${where}.replica_path_id`).map((x, i) => u64(x, `${where}.replica_path_id[${i}]`)),
+    attempts: i32(rd(o, 'attempts'), `${where}.attempts`),
+    preemptions: i32(rd(o, 'preemptions'), `${where}.preemptions`),
+    queueWaitNs: u64(rd(o, 'queue_wait_ns'), `${where}.queue_wait_ns`),
+    preemptedNs: u64(rd(o, 'preempted_ns'), `${where}.preempted_ns`),
+    ttftNs: u64(rd(o, 'ttft_ns'), `${where}.ttft_ns`),
+    e2eNs: u64(rd(o, 'e2e_ns'), `${where}.e2e_ns`),
+    meanItlNs: u64(rd(o, 'mean_itl_ns'), `${where}.mean_itl_ns`),
+    p99ItlNs: u64(rd(o, 'p99_itl_ns'), `${where}.p99_itl_ns`),
   };
 }
 
@@ -654,14 +675,14 @@ export interface WireRequestTrace {
 export function decodeRequestTrace(v: Json, where = 'RequestTrace'): WireRequestTrace {
   const o = obj(v, where);
   return {
-    record: decodeRequestRecord(o.record, `${where}.record`),
-    spans: arr(o.spans, `${where}.spans`).map((s, i) => decodeTraceSpan(s, `${where}.spans[${i}]`)),
+    record: decodeRequestRecord(rd(o, 'record'), `${where}.record`),
+    spans: arr(rd(o, 'spans'), `${where}.spans`).map((s, i) => decodeTraceSpan(s, `${where}.spans[${i}]`)),
   };
 }
 
 /** GetTracesResponse. Exported so a caller (and the self-test) can decode a captured body. */
 export function decodeGetTraces(v: Json, where = 'GetTracesResponse'): WireRequestTrace[] {
-  return arr(obj(v, where).traces, `${where}.traces`).map((t, i) => decodeRequestTrace(t, `${where}.traces[${i}]`));
+  return arr(rd(obj(v, where), 'traces'), `${where}.traces`).map((t, i) => decodeRequestTrace(t, `${where}.traces[${i}]`));
 }
 
 export interface RunResult {
@@ -681,23 +702,23 @@ export interface RunResult {
 export function decodeRunResult(v: Json, where = 'RunResult'): RunResult {
   const o = obj(v, where);
   return {
-    runId: str(o.runId, `${where}.runId`),
-    seed: u64(o.seed, `${where}.seed`),
-    eventCount: u64(o.eventCount, `${where}.eventCount`),
-    stateChecksum: u64(o.stateChecksum, `${where}.stateChecksum`),
-    overall: decodeScorecard(o.overall, `${where}.overall`),
-    byScope: arr(o.byScope, `${where}.byScope`).map((s, i) => {
-      const so = obj(s, `${where}.byScope[${i}]`);
+    runId: str(rd(o, 'run_id'), `${where}.run_id`),
+    seed: u64(rd(o, 'seed'), `${where}.seed`),
+    eventCount: u64(rd(o, 'event_count'), `${where}.event_count`),
+    stateChecksum: u64(rd(o, 'state_checksum'), `${where}.state_checksum`),
+    overall: decodeScorecard(rd(o, 'overall'), `${where}.overall`),
+    byScope: arr(rd(o, 'by_scope'), `${where}.by_scope`).map((s, i) => {
+      const so = obj(s, `${where}.by_scope[${i}]`);
       return {
-        target: decodeTarget(so.target, `${where}.byScope[${i}].target`),
-        scorecard: decodeScorecard(so.scorecard, `${where}.byScope[${i}].scorecard`),
+        target: decodeTarget(rd(so, 'target'), `${where}.by_scope[${i}].target`),
+        scorecard: decodeScorecard(rd(so, 'scorecard'), `${where}.by_scope[${i}].scorecard`),
       };
     }),
-    recorded: arr(o.recorded, `${where}.recorded`).map((u, i) => decodeSubscriptionUpdate(u, `${where}.recorded[${i}]`)),
-    traces: arr(o.traces, `${where}.traces`).map((t, i) => decodeRequestTrace(t, `${where}.traces[${i}]`)),
-    refereeViolations: enumKeyedMap(o.refereeViolations, REFEREE_VERDICT_NAME, u64, `${where}.refereeViolations`).known,
-    wallClockSeconds: dbl(o.wallClockSeconds, `${where}.wallClockSeconds`),
-    realtimeFactor: dbl(o.realtimeFactor, `${where}.realtimeFactor`),
+    recorded: arr(rd(o, 'recorded'), `${where}.recorded`).map((u, i) => decodeSubscriptionUpdate(u, `${where}.recorded[${i}]`)),
+    traces: arr(rd(o, 'traces'), `${where}.traces`).map((t, i) => decodeRequestTrace(t, `${where}.traces[${i}]`)),
+    refereeViolations: enumKeyedMap(rd(o, 'referee_violations'), REFEREE_VERDICT_NAME, u64, `${where}.referee_violations`).known,
+    wallClockSeconds: dbl(rd(o, 'wall_clock_seconds'), `${where}.wall_clock_seconds`),
+    realtimeFactor: dbl(rd(o, 'realtime_factor'), `${where}.realtime_factor`),
   };
 }
 
@@ -705,16 +726,28 @@ export function decodeRunResult(v: Json, where = 'RunResult'): RunResult {
 // Errors and the HTTP layer
 // ---------------------------------------------------------------------------
 
-/** A non-2xx response, whose body is `{"error":{"code":<int>,"message":"..."}}`. */
+/**
+ * A non-2xx response. WIRE.md: 400 bad request, 404 unknown run or subscription, 409 wrong state,
+ * 410 a subscription stream that cannot be resumed, 500; body `{"error": "<message>"}`.
+ */
 export class IngressError extends Error {
-  readonly code: number;
   readonly httpStatus: number;
-  constructor(code: number, message: string, httpStatus: number) {
+  constructor(message: string, httpStatus: number) {
     super(message);
     this.name = 'IngressError';
-    this.code = code;
     this.httpStatus = httpStatus;
   }
+  get gone(): boolean {
+    return this.httpStatus === 410;
+  }
+}
+
+export function toIngressError(body: Json, httpStatus: number, where: string): IngressError {
+  if (isObject(body)) {
+    const e = rd(body, 'error');
+    if (typeof e === 'string' && e !== '') return new IngressError(e, httpStatus);
+  }
+  return new IngressError(`${where}: HTTP ${httpStatus}`, httpStatus);
 }
 
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
@@ -725,141 +758,35 @@ export interface ClientOptions {
   fetchImpl?: FetchLike;
 }
 
-function joinUrl(baseUrl: string, path: string): string {
-  const base = baseUrl.replace(/\/+$/, '');
-  return `${base}${path}`;
+/** The proto method names, verbatim: the path is `/v1/ingress/<RpcName>`. */
+export type RpcName =
+  | 'StartRun' | 'StopRun' | 'GetRun' | 'ListRuns'
+  | 'SetSpeed' | 'StepForward' | 'Rewind' | 'UpdateWorkload' | 'UpdatePolicies'
+  | 'OpenSubscription' | 'RenewSubscription' | 'CloseSubscription'
+  | 'GetResult' | 'GetTraces';
+
+export function rpcPath(name: RpcName): string {
+  return `/v1/ingress/${name}`;
 }
 
-function query(params: Record<string, string | number | bigint | undefined>): string {
+/** Query-string form of a message: same field names, uint64 as decimal strings, lists comma-joined. */
+export function query(params: Record<string, string | number | bigint | readonly (string | number)[] | undefined>): string {
   const q = new URLSearchParams();
   for (const [k, v] of Object.entries(params)) {
     if (v === undefined || v === '') continue;
-    q.set(k, typeof v === 'bigint' ? v.toString() : String(v));
+    if (Array.isArray(v)) {
+      if (v.length === 0) continue;
+      q.set(k, v.map(String).join(','));
+    } else {
+      q.set(k, typeof v === 'bigint' ? v.toString() : String(v));
+    }
   }
   const s = q.toString();
   return s ? `?${s}` : '';
 }
 
-export class IngressClient {
-  readonly baseUrl: string;
-  private readonly fetchImpl: FetchLike;
-
-  constructor(opts: ClientOptions) {
-    this.baseUrl = opts.baseUrl.replace(/\/+$/, '');
-    // Bound late so a page that installs a fetch wrapper after construction still gets it.
-    this.fetchImpl = opts.fetchImpl ?? ((input, init) => fetch(input, init));
-  }
-
-  url(path: string): string {
-    return joinUrl(this.baseUrl, path);
-  }
-
-  private async call<T>(method: 'GET' | 'POST', path: string, body: Json, decode: (v: Json) => T, signal?: AbortSignal): Promise<T> {
-    const init: RequestInit = { method, signal };
-    if (method === 'POST') {
-      init.headers = { 'content-type': 'application/json' };
-      init.body = JSON.stringify(body ?? {});
-    }
-    const res = await this.fetchImpl(this.url(path), init);
-    const text = await res.text();
-    let parsed: Json = undefined;
-    if (text.length > 0) {
-      try {
-        parsed = JSON.parse(text);
-      } catch {
-        if (res.ok) throw new IngressError(0, `${method} ${path}: response body is not JSON: ${text.slice(0, 200)}`, res.status);
-        throw new IngressError(0, `${method} ${path}: HTTP ${res.status}: ${text.slice(0, 200)}`, res.status);
-      }
-    }
-    if (!res.ok) throw toIngressError(parsed, res.status, `${method} ${path}`);
-    return decode(parsed);
-  }
-
-  // -- lifecycle ----------------------------------------------------------
-
-  /** StartRun. `scenario` is the flat key set documented at the top of this file. */
-  async startRun(req: StartRunRequest, signal?: AbortSignal): Promise<string> {
-    const body: Record<string, Json> = { scenario: req.scenario };
-    if (req.maxRealtimeFactor !== undefined) body.maxRealtimeFactor = req.maxRealtimeFactor;
-    if (req.recordTraces !== undefined) body.recordTraces = req.recordTraces;
-    return this.call('POST', '/v1/runs', body, (v) => str(obj(v, 'StartRunResponse').runId, 'StartRunResponse.runId'), signal);
-  }
-
-  stopRun(runId: string, signal?: AbortSignal): Promise<RunStatus> {
-    return this.call('POST', `/v1/runs/${encodeURIComponent(runId)}:stop`, {}, decodeRunStatus, signal);
-  }
-
-  getRun(runId: string, signal?: AbortSignal): Promise<RunStatus> {
-    return this.call('GET', `/v1/runs/${encodeURIComponent(runId)}`, null, decodeRunStatus, signal);
-  }
-
-  listRuns(opts: { limit?: number; cursor?: string } = {}, signal?: AbortSignal): Promise<ListRunsResult> {
-    return this.call('GET', `/v1/runs${query({ limit: opts.limit, cursor: opts.cursor })}`, null, decodeListRuns, signal);
-  }
-
-  // -- interactive control ------------------------------------------------
-
-  setSpeed(runId: string, realtimeFactor: number, paused: boolean, signal?: AbortSignal): Promise<RunStatus> {
-    return this.call('POST', `/v1/runs/${encodeURIComponent(runId)}:setSpeed`, { realtimeFactor, paused }, decodeRunStatus, signal);
-  }
-
-  /** StepForward. Bounded server-side: the returned status says where it actually stopped. */
-  stepForward(runId: string, simDurationNs: bigint, signal?: AbortSignal): Promise<RunStatus> {
-    return this.call('POST', `/v1/runs/${encodeURIComponent(runId)}:stepForward`, { simDurationNs: simDurationNs.toString() }, decodeRunStatus, signal);
-  }
-
-  rewind(runId: string, toSimTimeUnixNs: bigint, signal?: AbortSignal): Promise<RewindResult> {
-    return this.call('POST', `/v1/runs/${encodeURIComponent(runId)}:rewind`, { toSimTimeUnixNs: toSimTimeUnixNs.toString() }, decodeRewind, signal);
-  }
-
-  updateWorkload(runId: string, workload: Record<string, ScenarioValue>, signal?: AbortSignal): Promise<UpdateResult> {
-    return this.call('POST', `/v1/runs/${encodeURIComponent(runId)}:updateWorkload`, { workload }, decodeUpdate, signal);
-  }
-
-  updatePolicies(runId: string, policies: Record<string, ScenarioValue>, signal?: AbortSignal): Promise<UpdateResult> {
-    return this.call('POST', `/v1/runs/${encodeURIComponent(runId)}:updatePolicies`, { policies }, decodeUpdate, signal);
-  }
-
-  // -- observation --------------------------------------------------------
-
-  openSubscription(req: OpenSubscriptionRequest, signal?: AbortSignal): Promise<OpenSubscriptionResult> {
-    return this.call('POST', '/v1/subscriptions', encodeOpenSubscription(req), decodeOpenSubscription, signal);
-  }
-
-  renewSubscription(subscriptionId: string, leaseNs: bigint, signal?: AbortSignal): Promise<RenewSubscriptionResult> {
-    return this.call('POST', `/v1/subscriptions/${encodeURIComponent(subscriptionId)}:renew`, { leaseNs: leaseNs.toString() }, decodeRenew, signal);
-  }
-
-  closeSubscription(subscriptionId: string, signal?: AbortSignal): Promise<void> {
-    return this.call('POST', `/v1/subscriptions/${encodeURIComponent(subscriptionId)}:close`, {}, () => undefined, signal);
-  }
-
-  streamUrl(subscriptionId: string): string {
-    return this.url(`/v1/subscriptions/${encodeURIComponent(subscriptionId)}/stream`);
-  }
-
-  // -- results ------------------------------------------------------------
-
-  getResult(runId: string, signal?: AbortSignal): Promise<RunResult> {
-    return this.call('GET', `/v1/runs/${encodeURIComponent(runId)}/result`, null, decodeRunResult, signal);
-  }
-
-  getTraces(runId: string, opts: { outcome?: OutcomeName; minE2eNs?: bigint; limit?: number } = {}, signal?: AbortSignal): Promise<WireRequestTrace[]> {
-    const path = `/v1/runs/${encodeURIComponent(runId)}/traces${query({ outcome: opts.outcome, minE2eNs: opts.minE2eNs, limit: opts.limit })}`;
-    return this.call('GET', path, null, decodeGetTraces, signal);
-  }
-}
-
-export function toIngressError(body: Json, httpStatus: number, where: string): IngressError {
-  if (isObject(body) && isObject(body.error)) {
-    const e = body.error;
-    return new IngressError(i32(e.code, 'error.code'), str(e.message, 'error.message') || `${where}: HTTP ${httpStatus}`, httpStatus);
-  }
-  return new IngressError(0, `${where}: HTTP ${httpStatus}`, httpStatus);
-}
-
 export interface StartRunRequest {
-  scenario: Record<string, Json>;
+  scenario: ScenarioEnvelope;
   maxRealtimeFactor?: number;
   recordTraces?: boolean;
 }
@@ -873,72 +800,218 @@ export interface OpenSubscriptionRequest {
   leaseNs?: bigint;
 }
 
-export function encodeOpenSubscription(req: OpenSubscriptionRequest): Record<string, Json> {
-  const o: Record<string, Json> = {
-    runId: req.runId,
-    target: encodeTarget(req.target),
+/**
+ * The `OpenSubscription` query parameters, mirroring `OpenSubscriptionRequest` field for field with
+ * the target flattened. `subscriptionId` is the one addition, set only on a reconnect so the server
+ * can find the ring to replay from; it is not in the proto, and WIRE.md leaves the point open.
+ */
+export function encodeOpenSubscriptionQuery(req: OpenSubscriptionRequest, subscriptionId?: string): string {
+  const target = encodeTarget(req.target);
+  return query(wr({
+    run_id: req.runId,
+    ...target,
     metrics: req.metrics,
-    samplesPerSimSecond: req.samplesPerSimSecond,
-  };
-  if (req.percentiles && req.percentiles.length) o.percentiles = req.percentiles;
-  if (req.leaseNs !== undefined) o.leaseNs = req.leaseNs.toString();
-  return o;
+    samples_per_sim_second: req.samplesPerSimSecond,
+    percentiles: req.percentiles ?? [],
+    lease_ns: req.leaseNs,
+    subscription_id: subscriptionId,
+  }) as Record<string, string | number | bigint | readonly (string | number)[] | undefined>);
+}
+
+export class IngressClient {
+  readonly baseUrl: string;
+  /** Public so the SSE reader uses the same seam as the unary calls; a stub fetch sees both. */
+  readonly fetchImpl: FetchLike;
+
+  constructor(opts: ClientOptions) {
+    this.baseUrl = opts.baseUrl.replace(/\/+$/, '');
+    // Bound late so a page that installs a fetch wrapper after construction still gets it.
+    this.fetchImpl = opts.fetchImpl ?? ((input, init) => fetch(input, init));
+  }
+
+  url(path: string): string {
+    return `${this.baseUrl}${path}`;
+  }
+
+  /** One unary call: `POST /v1/ingress/<RpcName>` with a JSON body. */
+  private async rpc<T>(name: RpcName, body: Record<string, Json>, decode: (v: Json) => T, signal?: AbortSignal): Promise<T> {
+    const path = rpcPath(name);
+    const res = await this.fetchImpl(this.url(path), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+      signal,
+    });
+    const text = await res.text();
+    let parsed: Json = undefined;
+    if (text.length > 0) {
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        if (res.ok) throw new IngressError(`POST ${path}: response body is not JSON: ${text.slice(0, 200)}`, res.status);
+        throw new IngressError(`POST ${path}: HTTP ${res.status}: ${text.slice(0, 200)}`, res.status);
+      }
+    }
+    if (!res.ok) throw toIngressError(parsed, res.status, `POST ${path}`);
+    return decode(parsed);
+  }
+
+  // -- lifecycle ----------------------------------------------------------
+
+  startRun(req: StartRunRequest, signal?: AbortSignal): Promise<string> {
+    const body: Record<string, Json> = { scenario: req.scenario };
+    if (req.maxRealtimeFactor !== undefined) body.max_realtime_factor = req.maxRealtimeFactor;
+    if (req.recordTraces !== undefined) body.record_traces = req.recordTraces;
+    return this.rpc('StartRun', wr(body), decodeStartRun, signal);
+  }
+
+  stopRun(runId: string, signal?: AbortSignal): Promise<RunStatus> {
+    return this.rpc('StopRun', wr({ run_id: runId }), decodeRunStatus, signal);
+  }
+
+  getRun(runId: string, signal?: AbortSignal): Promise<RunStatus> {
+    return this.rpc('GetRun', wr({ run_id: runId }), decodeRunStatus, signal);
+  }
+
+  listRuns(opts: { limit?: number; cursor?: string } = {}, signal?: AbortSignal): Promise<ListRunsResult> {
+    const body: Record<string, Json> = {};
+    if (opts.limit !== undefined) body.limit = opts.limit;
+    if (opts.cursor !== undefined && opts.cursor !== '') body.cursor = opts.cursor;
+    return this.rpc('ListRuns', wr(body), decodeListRuns, signal);
+  }
+
+  // -- interactive control ------------------------------------------------
+
+  setSpeed(runId: string, realtimeFactor: number, paused: boolean, signal?: AbortSignal): Promise<RunStatus> {
+    return this.rpc('SetSpeed', wr({ run_id: runId, realtime_factor: realtimeFactor, paused }), decodeRunStatus, signal);
+  }
+
+  /** StepForward by duration. Bounded server-side: the returned status says where it actually stopped. */
+  stepForward(runId: string, simDurationNs: bigint, signal?: AbortSignal): Promise<RunStatus> {
+    return this.rpc('StepForward', wr({ run_id: runId, sim_duration_ns: simDurationNs.toString() }), decodeRunStatus, signal);
+  }
+
+  /** StepForward by barrier windows: the other arm of the proto's exactly-one. */
+  stepBarriers(runId: string, barrierWindows: number, signal?: AbortSignal): Promise<RunStatus> {
+    return this.rpc('StepForward', wr({ run_id: runId, barrier_windows: barrierWindows }), decodeRunStatus, signal);
+  }
+
+  rewind(runId: string, toSimTimeUnixNs: bigint, signal?: AbortSignal): Promise<RewindResult> {
+    return this.rpc('Rewind', wr({ run_id: runId, to_sim_time_unix_ns: toSimTimeUnixNs.toString() }), decodeRewind, signal);
+  }
+
+  /** `overrides` are `--set k=v` pairs restricted to workload keys; the server rejects any other with 400. */
+  updateWorkload(runId: string, overrides: Overrides, signal?: AbortSignal): Promise<UpdateResult> {
+    return this.rpc('UpdateWorkload', wr({ run_id: runId, overrides }), decodeUpdate, signal);
+  }
+
+  updatePolicies(runId: string, overrides: Overrides, signal?: AbortSignal): Promise<UpdateResult> {
+    return this.rpc('UpdatePolicies', wr({ run_id: runId, overrides }), decodeUpdate, signal);
+  }
+
+  // -- observation --------------------------------------------------------
+
+  /** The SSE endpoint for one subscription. Opening it is `openStream`; this is only the address. */
+  openSubscriptionUrl(req: OpenSubscriptionRequest, subscriptionId?: string): string {
+    return this.url(`${rpcPath('OpenSubscription')}${encodeOpenSubscriptionQuery(req, subscriptionId)}`);
+  }
+
+  renewSubscription(subscriptionId: string, leaseNs: bigint, signal?: AbortSignal): Promise<RenewSubscriptionResult> {
+    return this.rpc('RenewSubscription', wr({ subscription_id: subscriptionId, lease_ns: leaseNs.toString() }), decodeRenew, signal);
+  }
+
+  closeSubscription(subscriptionId: string, signal?: AbortSignal): Promise<void> {
+    return this.rpc('CloseSubscription', wr({ subscription_id: subscriptionId }), () => undefined, signal);
+  }
+
+  // -- results ------------------------------------------------------------
+
+  getResult(runId: string, signal?: AbortSignal): Promise<RunResult> {
+    return this.rpc('GetResult', wr({ run_id: runId }), decodeRunResult, signal);
+  }
+
+  getTraces(runId: string, opts: { outcome?: OutcomeName; minE2eNs?: bigint; tenantId?: bigint; limit?: number } = {}, signal?: AbortSignal): Promise<WireRequestTrace[]> {
+    const body: Record<string, Json> = { run_id: runId };
+    if (opts.outcome !== undefined) body.outcome = opts.outcome;
+    if (opts.minE2eNs !== undefined) body.min_e2e_ns = opts.minE2eNs.toString();
+    if (opts.tenantId !== undefined) body.tenant_id = opts.tenantId.toString();
+    if (opts.limit !== undefined) body.limit = opts.limit;
+    return this.rpc('GetTraces', wr(body), decodeGetTraces, signal);
+  }
 }
 
 // ---------------------------------------------------------------------------
 // Server-sent events
 // ---------------------------------------------------------------------------
 
+/** One SSE event: its `event:` name, its `id:` if it carried one, and the joined `data:` lines. */
+export interface SseEvent {
+  event: string;
+  id: string | null;
+  data: string;
+}
+
 export interface SseSplit {
-  frames: string[];
-  /** What is left over: a partial frame, to be prefixed to the next chunk. */
+  events: SseEvent[];
+  /** What is left over: a partial event, to be prefixed to the next chunk. */
   rest: string;
 }
 
 /**
- * Split a buffer into complete SSE frames, returning the incomplete tail.
+ * Split a buffer into complete SSE events, returning the incomplete tail.
  *
- * Pure and exported on purpose: frame boundaries are the part of this transport most likely to be
- * wrong, and a chunk boundary in the middle of a JSON object is the failure that only shows up
- * under load. Testing it needs no network.
+ * Pure and exported on purpose: framing is the part of this transport most likely to be wrong, and
+ * a chunk boundary in the middle of a JSON object is the failure that only shows up under load.
+ * Testing it needs no network.
  */
 export function parseSseFrames(buffer: string): SseSplit {
-  const frames: string[] = [];
+  const events: SseEvent[] = [];
   const boundary = /\r?\n\r?\n/g;
   let start = 0;
   let m: RegExpExecArray | null;
   while ((m = boundary.exec(buffer)) !== null) {
     const block = buffer.slice(start, m.index);
     start = m.index + m[0].length;
-    const data = sseFrameData(block);
-    if (data !== null) frames.push(data);
+    const ev = sseEvent(block);
+    if (ev !== null) events.push(ev);
   }
-  return { frames, rest: buffer.slice(start) };
+  return { events, rest: buffer.slice(start) };
 }
 
-/** The `data:` payload of one frame block, or null for a block that carries none (a keepalive). */
-function sseFrameData(block: string): string | null {
-  const lines = block.split(/\r?\n/);
+/** One event block, or null for a block that carries nothing (a comment keepalive). */
+function sseEvent(block: string): SseEvent | null {
   const data: string[] = [];
-  for (const line of lines) {
-    if (line === '' || line.startsWith(':')) continue; // comment / keepalive
+  let event = 'message';
+  let id: string | null = null;
+  let seen = false;
+  for (const line of block.split(/\r?\n/)) {
+    if (line === '' || line.startsWith(':')) continue;
     const colon = line.indexOf(':');
     const field = colon === -1 ? line : line.slice(0, colon);
-    if (field !== 'data') continue; // event:, id:, retry: are not used by this transport
     let value = colon === -1 ? '' : line.slice(colon + 1);
     if (value.startsWith(' ')) value = value.slice(1);
-    data.push(value);
+    if (field === 'data') {
+      data.push(value);
+      seen = true;
+    } else if (field === 'event') {
+      event = value;
+      seen = true;
+    } else if (field === 'id') {
+      id = value;
+      seen = true;
+    }
+    // `retry:` is EventSource's reconnect hint; this client has its own backoff.
   }
-  return data.length ? data.join('\n') : null;
+  return seen ? { event, id, data: data.join('\n') } : null;
 }
 
 /** Stateful wrapper over `parseSseFrames`, so a caller never has to hold the tail itself. */
 export class SseBuffer {
   private rest = '';
-  push(chunk: string): string[] {
-    const { frames, rest } = parseSseFrames(this.rest + chunk);
+  push(chunk: string): SseEvent[] {
+    const { events, rest } = parseSseFrames(this.rest + chunk);
     this.rest = rest;
-    return frames;
+    return events;
   }
   /** Anything still buffered when the stream ends. A well-behaved server leaves nothing. */
   pending(): string {
@@ -947,21 +1020,27 @@ export class SseBuffer {
 }
 
 export interface StreamOptions {
-  onFrame: (data: string) => void;
+  onEvent: (ev: SseEvent) => void;
+  /** Sent as `Last-Event-ID` so the server replays from its ring. Absent on a fresh open. */
+  lastEventId?: string;
   signal?: AbortSignal;
   fetchImpl?: FetchLike;
 }
 
 /**
- * Read an SSE stream with `fetch` and a manual frame parser. The fallback path, and the only path
- * when a caller supplied its own `fetch` or when `EventSource` is absent (Node, a worker, a test).
+ * Read an SSE stream with `fetch` and the frame parser above.
  *
- * Resolves when the server closes the stream, which for this transport is expected rather than
- * exceptional: subscriptions are bounded and the caller reconnects.
+ * `fetch` rather than `EventSource`, deliberately. `EventSource` reconnects on its own with its own
+ * `Last-Event-ID`, cannot tell a 410 from a dropped socket, and hides the response status entirely;
+ * WIRE.md makes all three the client's business. Resolves when the server closes the stream, which
+ * for this transport is expected rather than exceptional; rejects with an `IngressError` carrying
+ * the HTTP status when the server refused the stream, `gone` for a 410.
  */
-export async function readSseWithFetch(url: string, o: StreamOptions): Promise<void> {
+export async function readSseStream(url: string, o: StreamOptions): Promise<void> {
   const f = o.fetchImpl ?? ((input: string, init?: RequestInit) => fetch(input, init));
-  const res = await f(url, { method: 'GET', headers: { accept: 'text/event-stream' }, signal: o.signal });
+  const headers: Record<string, string> = { accept: 'text/event-stream' };
+  if (o.lastEventId !== undefined) headers['last-event-id'] = o.lastEventId;
+  const res = await f(url, { method: 'GET', headers, signal: o.signal });
   if (!res.ok) {
     const text = await res.text();
     let parsed: Json;
@@ -972,7 +1051,7 @@ export async function readSseWithFetch(url: string, o: StreamOptions): Promise<v
     }
     throw toIngressError(parsed, res.status, `GET ${url}`);
   }
-  if (!res.body) throw new IngressError(0, `GET ${url}: response has no body to stream`, res.status);
+  if (!res.body) throw new IngressError(`GET ${url}: response has no body to stream`, res.status);
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   const buf = new SseBuffer();
@@ -980,53 +1059,22 @@ export async function readSseWithFetch(url: string, o: StreamOptions): Promise<v
     const { done, value } = await reader.read();
     if (done) break;
     // `stream: true` because a multi-byte character can straddle a chunk just as a frame can.
-    for (const frame of buf.push(decoder.decode(value, { stream: true }))) o.onFrame(frame);
+    for (const ev of buf.push(decoder.decode(value, { stream: true }))) o.onEvent(ev);
   }
-  for (const frame of buf.push(decoder.decode())) o.onFrame(frame);
+  for (const ev of buf.push(decoder.decode())) o.onEvent(ev);
 }
 
 export interface StreamHandle {
-  /** Resolves when the server closed the stream; rejects on a transport error. */
+  /** Resolves when the server closed the stream; rejects on a refused stream or a transport error. */
   done: Promise<void>;
   close(): void;
 }
 
-/**
- * Open a stream, preferring `EventSource` because the browser owns the parsing, the connection
- * accounting and the back-pressure. It is only usable for a plain GET with no custom fetch, which
- * is exactly what this transport's stream endpoint is.
- */
 export function openStream(url: string, o: StreamOptions): StreamHandle {
-  const nativeUsable = typeof EventSource !== 'undefined' && !o.fetchImpl;
-  if (!nativeUsable) {
-    const ctl = new AbortController();
-    const signal = o.signal ?? ctl.signal;
-    const done = readSseWithFetch(url, { ...o, signal });
-    return { done, close: () => ctl.abort() };
-  }
-  const es = new EventSource(url);
-  let settle: () => void = () => {};
-  let fail: (e: unknown) => void = () => {};
-  const done = new Promise<void>((resolve, reject) => {
-    settle = resolve;
-    fail = reject;
-  });
-  let closed = false;
-  const shut = () => {
-    closed = true;
-    es.close();
-  };
-  es.onmessage = (ev: MessageEvent) => o.onFrame(typeof ev.data === 'string' ? ev.data : String(ev.data));
-  es.onerror = () => {
-    // EventSource reports a closed stream and a failed connection the same way, so treat a closed
-    // readyState as the ordinary end of a bounded stream and let the caller decide to reconnect.
-    if (closed) return;
-    shut();
-    if (es.readyState === 2) settle();
-    else fail(new IngressError(0, `stream ${url}: connection error`, 0));
-  };
-  o.signal?.addEventListener('abort', shut);
-  return { done, close: shut };
+  const ctl = new AbortController();
+  o.signal?.addEventListener('abort', () => ctl.abort());
+  const done = readSseStream(url, { ...o, signal: ctl.signal });
+  return { done, close: () => ctl.abort() };
 }
 
 // ---------------------------------------------------------------------------
@@ -1047,7 +1095,13 @@ export function backoffDelayMs(attempt: number, rnd: () => number = Math.random)
   return Math.floor(rnd() * ceiling);
 }
 
-export type StreamPhase = 'opening' | 'streaming' | 'reconnecting' | 'reopening' | 'closed' | 'failed';
+/**
+ * `opening` is the first stream; `streaming` once its `open` event arrived; `reconnecting` is a
+ * resumed stream on the same subscription with `Last-Event-ID`; `reopening` is a new subscription
+ * after the old one was lost (lease expired, server said 410, or renew said `expired`); `complete`
+ * is the run's `final` update; `closed` is the caller's doing; `failed` is a rejected open.
+ */
+export type StreamPhase = 'opening' | 'streaming' | 'reconnecting' | 'reopening' | 'complete' | 'closed' | 'failed';
 
 export interface SubscribeOptions {
   runId: string;
@@ -1061,6 +1115,7 @@ export interface SubscribeOptions {
   /** Seams, so the selftest can drive this without a clock or a network. */
   rnd?: () => number;
   sleep?: (ms: number) => Promise<void>;
+  /** A monotonic-enough local clock in milliseconds. Only ever compared with itself. */
   now?: () => number;
   openStreamImpl?: (url: string, o: StreamOptions) => StreamHandle;
 }
@@ -1069,6 +1124,8 @@ export interface SubscriptionHandle {
   close(): void;
   phase(): StreamPhase;
   subscriptionId(): string | null;
+  /** The `id:` of the last update delivered, i.e. what the next reconnect will send. */
+  lastEventId(): string | null;
   /** Resolves when the handle is closed and its loop has stopped. */
   done: Promise<void>;
 }
@@ -1080,11 +1137,16 @@ function isWireTarget(t: WireTarget | UiTarget): t is WireTarget {
 /**
  * One subscription for one entity, kept alive for as long as the caller wants it.
  *
- * Three things the protos make the client's job, all of them here rather than in the panels:
- * the lease is renewed at half its length and not at all while the document is hidden, so a
- * backgrounded tab expires instead of costing the server forever; a stream the server closes is
- * reconnected with jittered backoff while the lease is still live; and an expired lease is a
- * reopen from scratch rather than a reconnect, because the server has forgotten the subscription.
+ * Everything the protos and WIRE.md make the client's job is here rather than in the panels:
+ *
+ *   - The lease is counted down locally from `lease_ns` and renewed at half its length, and not at
+ *     all while the document is hidden, so a backgrounded tab expires instead of costing the server
+ *     forever. The server's `lease_expires_at_wall_ns` is never compared to the browser clock; the
+ *     renew response's `expired` flag is the only authority.
+ *   - A stream the server closes while the lease lives is reconnected with jittered backoff and
+ *     `Last-Event-ID`, so the server replays what was missed.
+ *   - A 410, an `expired` renew, or a lease that ran down locally means the server has forgotten the
+ *     subscription: reopen from scratch, with no `Last-Event-ID`.
  */
 export function subscribeToTarget(client: IngressClient, o: SubscribeOptions): SubscriptionHandle {
   const leaseNs = o.leaseNs ?? DEFAULT_LEASE_NS;
@@ -1094,31 +1156,54 @@ export function subscribeToTarget(client: IngressClient, o: SubscribeOptions): S
   const sleep = o.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const openStreamImpl = o.openStreamImpl ?? openStream;
   const target = isWireTarget(o.target) ? o.target : uiTargetToWire(o.target);
+  const req: OpenSubscriptionRequest = {
+    runId: o.runId,
+    target,
+    metrics: o.metrics,
+    samplesPerSimSecond: o.samplesPerSimSecond,
+    percentiles: o.percentiles,
+    leaseNs,
+  };
 
   let phase: StreamPhase = 'opening';
   let sid: string | null = null;
+  let lastId: string | null = null;
   let closed = false;
+  let finished = false;
+  let attempt = 0;
   let current: StreamHandle | null = null;
-  // The lease deadline is tracked on the browser's clock. The server's absolute
-  // `leaseExpiresAtUnixNs` is on the server's, and the two are not comparable; the server remains
-  // the authority and says so through `expired` on renew.
+  // Local countdown of the lease, on the browser's own clock and compared only with itself.
   let leaseDeadlineMs = now() + leaseMs;
   let renewTimer: ReturnType<typeof setInterval> | null = null;
 
+  // What was last announced, kept apart from `phase` so the first `opening` is announced too.
+  let announced: StreamPhase | null = null;
   const setPhase = (p: StreamPhase, detail?: string) => {
     phase = p;
+    announced = p;
     o.onPhase?.(p, detail);
+  };
+  // Read through a call: the closure above assigns `phase`, which TypeScript's narrowing cannot see.
+  const currentPhase = (): StreamPhase => phase;
+  /** Enter a phase unless already announced, so a 410 reported from the catch is not said twice. */
+  const enter = (p: StreamPhase) => {
+    if (announced !== p) setPhase(p);
   };
 
   const visible = () => typeof document === 'undefined' || document.visibilityState === 'visible';
+
+  const forget = () => {
+    // The server no longer has this subscription, so there is nothing to resume from.
+    sid = null;
+    lastId = null;
+  };
 
   const renewNow = async () => {
     if (closed || sid === null) return;
     try {
       const r = await client.renewSubscription(sid, leaseNs);
       if (r.expired) {
-        // The server dropped it: nothing to renew, so the loop must open a new subscription.
-        sid = null;
+        forget();
         current?.close();
         return;
       }
@@ -1142,66 +1227,90 @@ export function subscribeToTarget(client: IngressClient, o: SubscribeOptions): S
     }, Math.max(1000, leaseMs / 2));
   };
 
+  const onEvent = (ev: SseEvent) => {
+    if (ev.event === 'open') {
+      const res = decodeOpenSubscription(JSON.parse(ev.data));
+      if (res.rejectedReason) {
+        setPhase('failed', res.rejectedReason);
+        closed = true;
+        current?.close();
+        return;
+      }
+      if (sid !== res.subscriptionId) {
+        // A different id means the server opened a new subscription rather than resuming ours,
+        // so anything remembered about the old one is stale.
+        sid = res.subscriptionId;
+        lastId = '0';
+      }
+      leaseDeadlineMs = now() + leaseMs;
+      attempt = 0;
+      startRenewals();
+      setPhase('streaming');
+      return;
+    }
+    if (ev.event === 'update') {
+      if (ev.id !== null) lastId = ev.id;
+      let u: SubscriptionUpdate;
+      try {
+        u = decodeSubscriptionUpdate(JSON.parse(ev.data));
+      } catch (e) {
+        setPhase('streaming', `undecodable update: ${e instanceof Error ? e.message : String(e)}`);
+        return;
+      }
+      enter('streaming');
+      o.onUpdate(u);
+      if (u.final) finished = true;
+      return;
+    }
+    // An event name this client does not know: a newer server, not an error.
+  };
+
   const loop = (async () => {
-    let attempt = 0;
-    // Distinguishes the first open from every later one, so the UI can say "reopening" rather than
-    // "opening" when a lease was allowed to lapse: those are different stories about the same tab.
     let everOpened = false;
     while (!closed) {
-      if (sid === null) {
-        setPhase(everOpened ? 'reopening' : 'opening');
-        try {
-          const res = await client.openSubscription({
-            runId: o.runId,
-            target,
-            metrics: o.metrics,
-            samplesPerSimSecond: o.samplesPerSimSecond,
-            percentiles: o.percentiles,
-            leaseNs,
-          });
-          if (res.rejectedReason) {
-            setPhase('failed', res.rejectedReason);
-            return;
-          }
-          sid = res.subscriptionId;
-          everOpened = true;
-          leaseDeadlineMs = now() + leaseMs;
-          attempt = 0;
-          startRenewals();
-        } catch (e) {
-          setPhase('reopening', e instanceof Error ? e.message : String(e));
-          await sleep(backoffDelayMs(attempt++, rnd));
-          continue;
-        }
-      }
-      setPhase('streaming');
+      const resuming = sid !== null;
+      if (resuming) enter('reconnecting');
+      else enter(everOpened ? 'reopening' : 'opening');
+      let errored = false;
       try {
-        current = openStreamImpl(client.streamUrl(sid), {
-          onFrame: (data) => {
-            try {
-              o.onUpdate(decodeSubscriptionUpdate(JSON.parse(data)));
-            } catch (e) {
-              setPhase('streaming', `undecodable frame: ${e instanceof Error ? e.message : String(e)}`);
-            }
-          },
+        current = openStreamImpl(client.openSubscriptionUrl(req, sid ?? undefined), {
+          onEvent,
+          lastEventId: resuming ? (lastId ?? '0') : undefined,
+          fetchImpl: client.fetchImpl,
         });
         await current.done;
+        if (sid !== null) everOpened = true;
       } catch (e) {
-        setPhase('reconnecting', e instanceof Error ? e.message : String(e));
+        if (closed) break;
+        errored = true;
+        if (e instanceof IngressError && e.gone) {
+          // The ring cannot cover the gap, or the subscription is unknown: start over.
+          forget();
+          setPhase('reopening', e.message);
+        } else {
+          setPhase('reconnecting', e instanceof Error ? e.message : String(e));
+        }
       } finally {
         current = null;
       }
       if (closed) break;
-      if (sid !== null && now() < leaseDeadlineMs) {
-        setPhase('reconnecting');
+      if (finished) {
+        setPhase('complete');
+        break;
+      }
+      const leaseLive = sid !== null && now() < leaseDeadlineMs;
+      // A lease that ran down means the server has forgotten the subscription: reopen, not resume.
+      if (!leaseLive) forget();
+      if (errored || leaseLive) {
+        // Back off before resuming a stream the server closed, and before retrying anything that
+        // failed, so a fleet of tabs does not hammer a server that is already struggling.
         await sleep(backoffDelayMs(attempt++, rnd));
       } else {
-        // Lease gone: the subscription no longer exists server-side, so reopen rather than reconnect.
-        sid = null;
         attempt = 0;
       }
     }
-    setPhase('closed');
+    if (renewTimer !== null) clearInterval(renewTimer);
+    if (currentPhase() !== 'complete' && currentPhase() !== 'failed') setPhase('closed');
   })();
 
   return {
@@ -1212,12 +1321,13 @@ export function subscribeToTarget(client: IngressClient, o: SubscribeOptions): S
       if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', onVisibility);
       current?.close();
       const id = sid;
-      sid = null;
+      forget();
       // Best effort: a closed tab cannot be relied on to reach this, which is why the lease exists.
       if (id !== null) void client.closeSubscription(id).catch(() => undefined);
     },
     phase: () => phase,
     subscriptionId: () => sid,
+    lastEventId: () => lastId,
     done: loop,
   };
 }
@@ -1228,7 +1338,19 @@ export function subscribeToTarget(client: IngressClient, o: SubscribeOptions): S
 
 export type ScenarioValue = number | string | boolean;
 
-/** Exactly the keys `Scenario::parse` in `src/scenario.rs` accepts. An unknown key is an error there. */
+/** `--set k=v` pairs as the server takes them: every value a string, exactly as on a command line. */
+export type Overrides = Record<string, string>;
+
+/**
+ * `StartRunRequest.scenario` per WIRE.md: the flat `key = value` text `sim-run run` reads, plus
+ * overrides applied on top of it.
+ */
+export interface ScenarioEnvelope {
+  text: string;
+  overrides: Overrides;
+}
+
+/** Exactly the keys `Scenario::parse` in `crates/sim-scenario` accepts. An unknown key is an error there. */
 export const SCENARIO_KEYS = [
   'name', 'seed', 'duration_s', 'warmup_s',
   'replicas', 'max_batch', 'step_base_ms', 'step_per_seq_ms', 'step_per_kv_ktoken_ms',
@@ -1254,7 +1376,8 @@ export const WORKLOAD_KEYS: readonly ScenarioKey[] = [
 export const POLICY_KEYS: readonly ScenarioKey[] = ['routing', 'p2c_choices', 'probe_live'];
 
 /**
- * config.ts's `RoutingKind` to the engine's routing name (`src/policy.rs`).
+ * config.ts's `RoutingKind` to the engine's routing name (`crates/sim-policy`), spelled as the
+ * `scenarios/*.txt` files spell it.
  *
  * `least_kv_tokens` and `least_queue_tokens` are the same policy under two names, which is a
  * mismatch worth fixing in one of the two files rather than translating forever. `prefix_affinity`
@@ -1266,7 +1389,7 @@ export const ROUTING_TO_ENGINE: Record<RoutingKind, string | null> = {
   random: 'random',
   least_requests: 'least_requests',
   least_kv_tokens: 'least_queue_tokens',
-  power_of_two_choices: 'power_of_two_choices',
+  power_of_two_choices: 'p2c',
   prefix_affinity: null,
 };
 
@@ -1281,7 +1404,7 @@ export interface WireEncoding {
 }
 
 /**
- * `ScenarioConfig` to the flat key set the server accepts.
+ * `ScenarioConfig` to the flat key set the engine accepts.
  *
  * Everything the engine has is mapped, including the SLO thresholds and the sample rate: the engine
  * does have `ttft_slo_ms`, `itl_slo_ms`, `e2e_slo_s` and `sample_interval_ms`, so dropping them
@@ -1300,12 +1423,17 @@ export function scenarioConfigToWire(c: ScenarioConfig, extra: Partial<Record<Sc
     max_batch: c.fleet.maxBatch,
     step_base_ms: c.fleet.stepBaseMs,
     step_per_seq_ms: c.fleet.stepPerSeqMs,
+    step_per_kv_ktoken_ms: c.fleet.stepPerKvKtokenMs,
     prefill_tokens_per_s: c.fleet.prefillTokensPerS,
     kv_capacity_tokens: c.fleet.kvTokensPerReplica,
+    step_token_budget: c.fleet.stepTokenBudget,
     max_queue: c.fleet.maxQueue,
 
     telemetry_interval_ms: c.telemetryIntervalMs,
     telemetry_delay_ms: c.telemetryDelayMs,
+
+    client_timeout_s: c.clientTimeoutS,
+    max_attempts: c.maxAttempts,
 
     ttft_slo_ms: c.slo.ttftMs,
     itl_slo_ms: c.slo.itlMs,
@@ -1365,7 +1493,42 @@ export function unacceptedKeys(fields: Record<string, ScenarioValue>, accepted: 
   return Object.keys(fields).filter((k) => !accepted.includes(k));
 }
 
-/** `{"text": ...}`: the other accepted form of `scenario`, a `scenarios/*.txt` file verbatim. */
-export function scenarioText(text: string): Record<string, Json> {
-  return { text };
+/** One value as `Scenario::parse` reads it: numbers via `parse::<f64>`, `probe_live` as literal `true`. */
+export function scenarioValueText(v: ScenarioValue): string {
+  return typeof v === 'string' ? v : String(v);
+}
+
+/**
+ * The flat `key = value` text, one line per field in `SCENARIO_KEYS` order so two equal configs
+ * produce identical text. Exactly what `sim-run run` reads and `Scenario::to_text` writes.
+ */
+export function scenarioText(fields: Record<string, ScenarioValue>): string {
+  const order = new Map<string, number>(SCENARIO_KEYS.map((k, i) => [k, i]));
+  const keys = Object.keys(fields).sort((a, b) => (order.get(a) ?? SCENARIO_KEYS.length) - (order.get(b) ?? SCENARIO_KEYS.length) || a.localeCompare(b));
+  return keys.map((k) => `${k} = ${scenarioValueText(fields[k])}\n`).join('');
+}
+
+/** The inverse, for the self-test and for reading a served `scenarios/*.txt`: comments and blanks skipped. */
+export function parseScenarioText(text: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const raw of text.split('\n')) {
+    const line = raw.split('#')[0].trim();
+    if (line === '') continue;
+    const eq = line.indexOf('=');
+    if (eq === -1) throw new Error(`expected key = value, got ${JSON.stringify(raw)}`);
+    out[line.slice(0, eq).trim()] = line.slice(eq + 1).trim();
+  }
+  return out;
+}
+
+/** Flat fields as `--set` overrides: every value a string. */
+export function toOverrides(fields: Record<string, ScenarioValue>): Overrides {
+  const out: Overrides = {};
+  for (const [k, v] of Object.entries(fields)) out[k] = scenarioValueText(v);
+  return out;
+}
+
+/** `StartRunRequest.scenario`: the text, plus any overrides layered on top. */
+export function scenarioEnvelope(fields: Record<string, ScenarioValue>, overrides: Overrides = {}): ScenarioEnvelope {
+  return wr({ text: scenarioText(fields), overrides }) as unknown as ScenarioEnvelope;
 }
