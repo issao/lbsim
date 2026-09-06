@@ -146,9 +146,21 @@ degrading it, and three of the four would be invisible on a conventional dashboa
 
 1. **The cost model is calibrated at two points**, batch-1 and batch-256 decode, against published
    figures. Between and beyond them it is an interpolation of a roofline, not a measurement.
-2. **Absolute numbers should not be quoted; ratios should.** A ±30% error in the utilization constants
-   moves every latency here without changing any ordering. A sensitivity sweep confirming that has not
-   been run yet, and until it has, the orderings are the claim and the magnitudes are illustration.
+2. **Absolute numbers should not be quoted; ratios should.** Now checked rather than asserted:
+   `./check-sensitivity.sh` perturbs the bandwidth and prefill constants by ±30%, separately and
+   together, and the policy ranking is **identical in all seven cases**. Goodput moves by up to 30%,
+   as it should, while power-of-two-choices stays first and least-requests stays last throughout.
+
+   | Perturbation | goodput, p2c | goodput, least_requests | ranking |
+   |---|---|---|---|
+   | nominal | 18,127 | 6,943 | unchanged |
+   | bandwidth −30% | 17,029 | 6,236 | unchanged |
+   | bandwidth +30% | 19,212 | 7,600 | unchanged |
+   | prefill −30% | 17,165 | 4,844 | unchanged |
+   | prefill +30% | 18,695 | 8,515 | unchanged |
+
+   So the orderings are conclusions and the magnitudes are illustration. The script exits non-zero if
+   any ordering ever flips, which makes this a regression test rather than a one-off observation.
 3. **Preemption is absent.** In a real engine, result 5 would additionally trigger key-value eviction
    and a recompute cascade, so the collapse there is if anything understated.
 4. **The workload is synthetic**, calibrated against the distributions in `docs/calibration.md`. The
