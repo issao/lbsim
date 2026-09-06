@@ -76,7 +76,7 @@ From `docs/ARCHITECTURE.md` section 14. Each has a stated default being taken.
    Faithful, since reaching a pooled tier genuinely is a network operation, and it keeps shards
    free of shared mutable state. Default: yes.
 
-## 4. Should Claude build the cargo workspace skeleton while gated?
+## 4. Superseded: the workspace skeleton is now M0 of the execution plan
 
 Two of the three groundwork items are **done**, and both were worth doing:
 
@@ -145,6 +145,11 @@ the cause and it will recur. `tools/sync.sh` now warns on an unexpected stash an
 between runs, so a repeat is visible immediately rather than discovered later.
 
 ## Done
+
+- [x] **All proto feedback folded in and the interfaces simplified.** Twenty-one instructions across
+      two rounds. The pass removed one file, one duplicated workload model, thirty hand-named
+      scorecard fields, seven identifier wrapper messages, two redundant services and the per-token
+      stream.
 
 - [x] **Architecture reviewed.** Findings 1, 3 and 4 accepted; finding 2 parked with a trigger
       and a knob design; the three-layer deployment supplied and now written up as
