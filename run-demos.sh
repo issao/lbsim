@@ -31,4 +31,8 @@ $S sweep scenarios/route_p2c.txt \
          --over long_probability=0.0,0.04,0.08,0.16,0.32 \
          --out out/5-long-context.html
 
+echo; echo "== 6. retry storm: whether the fleet comes back after the spike =="
+$S compare scenarios/retry_none.txt scenarios/retry_budget.txt scenarios/retry_storm.txt \
+           --out out/6-retry.html
+
 echo; echo "reports in out/"

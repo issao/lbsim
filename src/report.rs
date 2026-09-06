@@ -189,6 +189,17 @@ fn ms(v: Nanos) -> String {
 }
 
 fn print_summary(runs: &[RunResult]) {
+    for r in runs {
+        if let Some((pre, post, ok)) = r.recovery() {
+            println!(
+                "recovery {:<26} attempts={} budget={:.0}% retries={:<6} queue {:.0} -> {:.0}  {}",
+                truncate(&r.scenario.name, 26), r.scenario.max_attempts,
+                r.scenario.retry_budget_fraction * 100.0, r.retries, pre, post,
+                if ok { "recovered" } else { "STAYED COLLAPSED" }
+            );
+        }
+    }
+
     println!(
         "{:<32} {:>9} {:>9} {:>8} {:>8} {:>8} {:>7} {:>8}",
         "scenario", "goodput", "thruput", "ttft99", "itl99", "e2e99", "slo", "imbal"
@@ -289,6 +300,30 @@ round-robin with heterogeneous request sizes the dark patches move between repli
 fleet is below its rated capacity: the rolling hotspot. A policy that samples rather than cycles
 shows a flat field instead.</p>"##);
         let _ = write!(h, "{}", heatmap(r, 1000, 8, i));
+    }
+
+    if runs.iter().any(|r| r.recovery().is_some()) {
+        let _ = write!(h, "<h2>Recovery after the spike</h2>");
+        let _ = write!(h, r##"<p class="note">The question is not whether latency rose during the spike, it is
+whether the fleet came back afterwards. A metastable collapse is one it stays in once offered load
+returns to normal, so only the tail of the run answers it. Queue depth is compared before the spike
+against the final quarter.</p>"##);
+        let _ = write!(h, "<table><tr><th>scenario</th><th>attempts</th><th>retry budget</th><th>retries</th><th>queue before</th><th>queue after</th><th>recovered</th></tr>");
+        for r in runs {
+            if let Some((pre, post, ok)) = r.recovery() {
+                let _ = write!(
+                    h,
+                    "<tr><td>{}</td><td>{}</td><td>{:.0}%</td><td>{}</td><td>{:.0}</td><td>{:.0}</td><td><b>{}</b></td></tr>",
+                    esc(&r.scenario.name),
+                    r.scenario.max_attempts,
+                    r.scenario.retry_budget_fraction * 100.0,
+                    r.retries,
+                    pre, post,
+                    if ok { "yes" } else { "NO" }
+                );
+            }
+        }
+        let _ = write!(h, "</table>");
     }
 
     let _ = write!(h, "<h2>Oscillation</h2>");

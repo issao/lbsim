@@ -128,16 +128,48 @@ This is the clearest argument in this set for the design decision that capacity,
 routing signals must all be denominated in tokens. A system that counts requests cannot see this
 happening.
 
+## 6. A retry budget is the difference between a bad minute and an outage
+
+A load spike to three times normal for forty seconds, then a return to normal. All three runs are
+identical except for retry policy. Queue depth is compared before the spike against the final quarter
+of the run, which is the only window that answers the question.
+
+| Retry policy | Retries | Goodput | Attainment | Queue before → after | Recovered |
+|---|---|---|---|---|---|
+| none | 0 | 20,161 | 84.5% | 2 → 2 | yes |
+| 3 attempts, 10% budget | 3,841 | 17,373 | 81.1% | 2 → 2 | yes |
+| 3 attempts, no budget | **35,806** | **7,344** | 46.3% | **2 → 6** | **no** |
+
+**The unbudgeted run never comes back.** Offered load returned to normal after forty seconds and its
+queue is still three times pre-spike depth at the end of a four-minute run. That is a metastable
+collapse: the system is in a state it sustains on its own, and the original cause is gone.
+
+The mechanism is visible in the retry count. Unbudgeted retries reach 35,806 against 3,841 with a 10%
+cap, a ninefold difference, because each timeout adds load precisely when the fleet is least able to
+absorb it. Retries here are far more expensive than in a stateless service: a request that times out
+after twenty seconds has already consumed twenty seconds of device time producing tokens nobody will
+read.
+
+**A 10% budget recovers 86% of the no-retry goodput and turns the collapse into a recovery.** That is
+the whole intervention. Not smarter routing, not more capacity, just a cap on how much of the offered
+load may be retries.
+
+Note also that **load imbalance is 0.22 to 0.25 in all three runs**, essentially identical. The
+collapse is invisible in the balancer's own metric, which is the same lesson as result 5 arriving by a
+different route.
+
 ---
 
-## What these five have in common
+## What these six have in common
 
 Every one is a case where **the obvious metric moves the wrong way, or not at all**:
 
 - Throughput is flat while goodput varies 8x, in results 1 and 3.
-- Load imbalance improves while service collapses, in result 5.
+- Load imbalance improves while service collapses, in result 5, and is identical across a collapse in
+  result 6.
 - More offered load produces less delivered work, in result 4.
 - The best-informed policy performs worst, in result 1.
+- The cause of a collapse is gone while the collapse continues, in result 6.
 
 That is the argument for building this at all. Each of these is discoverable in production only by
 degrading it, and three of the four would be invisible on a conventional dashboard.
@@ -161,7 +193,8 @@ degrading it, and three of the four would be invisible on a conventional dashboa
 
    So the orderings are conclusions and the magnitudes are illustration. The script exits non-zero if
    any ordering ever flips, which makes this a regression test rather than a one-off observation.
-3. **Preemption is absent.** In a real engine, result 5 would additionally trigger key-value eviction
-   and a recompute cascade, so the collapse there is if anything understated.
+3. **Preemption is absent.** In a real engine, results 5 and 6 would additionally trigger key-value
+   eviction and a recompute cascade, which is itself a positive feedback loop, so both collapses are if
+   anything understated.
 4. **The workload is synthetic**, calibrated against the distributions in `docs/calibration.md`. The
    prefix-sharing structure, which nothing public measures, is not modelled at all.

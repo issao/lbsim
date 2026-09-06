@@ -13,7 +13,7 @@
 
 use crate::metrics::{Histogram, Outcome, RequestRecord, Series};
 use crate::policy::{ReplicaView, Routing};
-use crate::queue::{EventQueue, PRIO_HIGH, PRIO_OBSERVE};
+use crate::queue::{EventQueue, PRIO_OBSERVE};
 use crate::rng::{Rng, Streams};
 use crate::scenario::Scenario;
 use crate::workload::{Request, Workload};
@@ -152,6 +152,49 @@ impl RunResult {
             acc / n as f64
         }
     }
+    /// Did the fleet come back after the spike ended?
+    ///
+    /// Returns (mean queue before the spike, mean queue in the final quarter, recovered). This is the
+    /// question that separates a bad few minutes from an outage: a metastable collapse is one the
+    /// fleet stays in after offered load returns to normal, so comparing during-spike numbers proves
+    /// nothing. Only the tail of the run does.
+    pub fn recovery(&self) -> Option<(f64, f64, bool)> {
+        let sc = &self.scenario;
+        if sc.load_step_at_s < 0.0 || sc.load_step_until_s < 0.0 {
+            return None;
+        }
+        let start = self.measured_from.saturating_sub((sc.warmup_s * 1e9) as Nanos);
+        let at = |secs: f64| start + (secs * 1e9) as Nanos;
+        let pre_from = at(sc.warmup_s);
+        let pre_to = at(sc.load_step_at_s);
+        // The final quarter, and at least 30 s after the spike ended, so recovery has had a chance.
+        let post_from = at((sc.duration_s * 0.75).max(sc.load_step_until_s + 30.0));
+        let window = |lo: Nanos, hi: Nanos| -> f64 {
+            let vals: Vec<f64> = self
+                .fleet_queue
+                .t
+                .iter()
+                .zip(self.fleet_queue.v.iter())
+                .filter(|(t, _)| **t >= lo && **t < hi)
+                .map(|(_, v)| *v)
+                .collect();
+            if vals.is_empty() {
+                f64::NAN
+            } else {
+                vals.iter().sum::<f64>() / vals.len() as f64
+            }
+        };
+        let pre = window(pre_from, pre_to);
+        let post = window(post_from, self.measured_to);
+        if pre.is_nan() || post.is_nan() {
+            return None;
+        }
+        // Recovered if the queue came back to within 50% of where it was. A loose threshold on
+        // purpose: the distinction being drawn is "returned to normal" against "stayed collapsed",
+        // not a precise steady state.
+        Some((pre, post, post <= pre * 1.5 + 1.0))
+    }
+
     pub fn outcome(&self, label: &str) -> u64 {
         *self.outcomes.get(label).unwrap_or(&0)
     }
@@ -428,17 +471,18 @@ pub fn run(sc: &Scenario) -> Result<RunResult, String> {
                         let mut again = req.clone();
                         again.attempts += 1;
                         again.attempt_at = now + (sc.retry_backoff_s * 1e9) as Nanos;
+                        // The deadline runs from *this* attempt, since a client that retries gives
+                        // itself a fresh timeout. Latency, however, is still measured from the
+                        // original arrival below: from the user's point of view the wait started when
+                        // they first asked.
                         again.deadline = again.attempt_at + (sc.client_timeout_s * 1e9) as Nanos;
                         again.id = 1_000_000_000 + again.id * 8 + again.attempts as u64;
+                        again.arrived_at = req.arrived_at;
                         let at = again.attempt_at;
-                        let r2 = routing;
-                        // Re-route: a retry must not land on the same struggling replica by default.
-                        q.schedule_prio(at, PRIO_HIGH, Ev::Arrival);
-                        let _ = r2;
-                        let mut clone = again;
-                        clone.arrived_at = req.arrived_at;
+                        // Re-routed rather than pinned, so a retry does not land on the same
+                        // struggling replica by construction.
                         dispatch(
-                            &mut q, &routing, &views, &mut rr_cursor, &mut route_rng, sc, at, clone,
+                            &mut q, &routing, &views, &mut rr_cursor, &mut route_rng, sc, at, again,
                         );
                     }
                 }
