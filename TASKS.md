@@ -79,7 +79,8 @@ not a pricing surprise.
 - [ ] Re-check the two budgets with the command above
 - [ ] Delete the deploy key when this phase ends:
       `gcloud iam service-accounts keys list --iam-account=lbsim-deployer@lbsim-gcp.iam.gserviceaccount.com`
-      then `gcloud iam service-accounts keys delete KEY_ID --iam-account=...`. The key id starts `94afd556`
+      then `gcloud iam service-accounts keys delete KEY_ID --iam-account=...`. The list command shows
+      the id, so it does not need recording here
 - [ ] Decide whether to unlink `lbsim-prod` from billing. It has a registry and Cloud Run but no deploy
       account and no results bucket, so it is half-provisioned and duplicating it is a way to be surprised
 

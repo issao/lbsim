@@ -83,29 +83,45 @@ plus any instruction markers inside them. **It lives only as long as this sessio
 session restarts, re-arm it, and until then rely on `tools/sync.sh` at every turn boundary.
 Never claim the watcher is running without checking.
 
-## Cloud credentials: this sandbox is the user's own Google account
+## Cloud: what Claude may and may not do
 
-`gcloud` here is authenticated as `issaofujiwara@gmail.com` with **full account permissions**, not a
-scoped service account. Anything Claude or a subagent runs can do anything the user can do, including
-change billing configuration. On 2026-09-06 a subagent deleted one of the user's budgets while
-cleaning up a duplicate it had created, and recreated it from its name and amount.
+**The credential here is a scoped deploy identity, not the user's account.** As of 2026-09-06 the
+sandbox holds only `lbsim-deployer@lbsim-gcp`, with Cloud Run admin, Artifact Registry writer, Cloud
+Build editor, service account user, monitoring viewer, and object admin on `gs://lbsim-gcp-runs`. The
+user's own credential was revoked from here.
 
-Therefore, and without exception:
+That history matters, because it is why the boundary exists. Before the switch `gcloud` was
+authenticated as the user with full permissions, and a subagent used it to delete one of the user's
+budgets while cleaning up a duplicate it had created. The boundary is now verified rather than
+promised: an attempted self-grant of a role was refused, because the identity cannot even read the
+policy it would need to modify.
 
-- **Never run a mutating `gcloud`, `gsutil` or `bq` command without the user's explicit approval for
-  that specific action.** Read-only inspection is fine: `list`, `describe`, `get-*`.
-- **Never touch billing.** Budgets, billing accounts, project links, quotas. These are the user's
-  financial guardrails and they are the one thing that must not be "cleaned up".
-- **Never delete a cloud resource Claude did not create in the same session**, and say so before
-  deleting one it did.
-- **Filters used with any delete must be exact matches, never prefixes or substrings.** That is
-  precisely how the budget was lost: a filter intended for one name matched two.
-- **Do not delegate cloud work to a subagent** unless the task is read-only. A subagent inherits these
-  credentials and cannot be supervised mid-action.
+**Standing authorization, granted 2026-09-06:** *"you can actually deploy without asking for
+permission. As long as it helps development, feel free to deploy as needed for up to 10 replicas at a
+time."*
 
-Prefer the pattern where the user runs mutating commands themselves. In an interactive session they can
-prefix a command with `!` and its output lands in the conversation, which costs one line per deploy and
-keeps authority where it belongs.
+- **Allowed unattended:** build images, push to Artifact Registry, create and update Cloud Run services
+  and jobs, create domain mappings, read monitoring. Cap every service at `--max-instances 10` and
+  every job at `--parallelism 10`, and always `--min-instances 0`.
+- **Ask first:** deleting anything Claude did not create in this session, and anything outside
+  `lbsim-gcp`.
+- **Billing is off limits, and now also impossible.** Budgets, billing accounts, project links, quotas.
+  The user asked for exactly this: deploy powers without billing powers. Claude can no longer even
+  *read* the budget, which is the correct trade and means budget verification belongs to the user.
+- **Any delete filter must be an exact match, never a prefix or substring.** That is precisely how the
+  budget was lost: a filter meant for one name matched two.
+- **Every `gcloud` call takes `--quiet`.** It offers to enable APIs interactively, and unattended that
+  prompt hangs a deploy rather than failing it. A hang is harder to diagnose than an error.
+- **Do not delegate mutating cloud work to a subagent.** A subagent inherits this credential and cannot
+  be supervised mid-action, which is how the budget incident happened.
+- **Watch instance-hours, not the bill.** Non-zero while nobody is using the dashboard means the idle
+  shutdown is broken. That is the real cost control; the budget is only the tripwire behind it.
+
+**Secrets never enter the repo or the conversation.** The deploy key lives at
+`~/.config/gcloud/lbsim-deployer.json`, mode 600, outside any git repository. `.gitignore` carries
+credential-shaped patterns and `tools/sync.sh` runs a secret scan over the tree on every invocation. A
+credential pasted into a transcript is disclosed rather than transient, whatever its expiry, so it is
+never the right mechanism.
 
 ## Ground rules
 
