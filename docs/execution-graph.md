@@ -278,6 +278,8 @@ when it is specified to the five-field standard.
 ### U42 SLO class targets
 Per-class targets for U25. Default if nothing is said: interactive TTFT 2 s / ITL 80 ms, agent 5 s / 150 ms,
 batch 60 s / no ITL target. Rework if changed later: none to code.
+Issao: That looks good. ideally we would have an average throughput for batch averaged at a longer time
+window, but don't worry about it for now, record it for future work.
 
 ### U43 rule-set version sign-off
 U20 bumps the arena rule set to v2 (share-of-offered-work objective, cap 0.95). Every score records its
