@@ -304,7 +304,7 @@ message PerturbationSpec {
   }
   Kind kind = 1;
   double amplitude_fraction = 2;
-  uint64 start_ns = 3;
+  uint64 start_offset_ns = 3;
   double frequency_hz = 4;
   double sweep_min_hz = 5;
   double sweep_max_hz = 6;
@@ -370,7 +370,7 @@ message FailureSpec {
 }
 
 message FailureEvent {
-  uint64 at_ns = 1;
+  uint64 at_offset_ns = 1;
   enum Kind {
     KIND_UNSPECIFIED = 0;
     KIND_REPLICA_CRASH = 1;         // announced, in-flight requests lost

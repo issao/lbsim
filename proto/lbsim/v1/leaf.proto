@@ -66,13 +66,13 @@ message ConfigureShardRequest {
 message ConfigureShardResponse {
   bool accepted = 1;
   string rejected_reason = 2;
-  uint64 next_event_ns = 3;
+  uint64 next_event_unix_ns = 3;
 }
 
 message AdvanceRequest {
   uint32 shard_id = 1;
   // Advance no further than this. Ingress guarantees no message will arrive before it.
-  uint64 advance_until_ns = 2;
+  uint64 advance_until_unix_ns = 2;
 
   // Work whose modelled delivery time falls inside the window, batched. Each carries its own
   // delivery timestamp; the shard applies each at its own time, not at the window boundary.
@@ -91,7 +91,7 @@ message AdvanceRequest {
 
 message DispatchedWork {
   // When this arrives at the replica, inside the window.
-  uint64 deliver_at_ns = 1;
+  uint64 deliver_at_unix_ns = 1;
   ReplicaId replica = 2;
   ExecuteRequest request = 3;
   // Facts the simulator knows and no policy may see. Carried on this hop because the Leaf is
@@ -101,7 +101,7 @@ message DispatchedWork {
 }
 
 message ControlAction {
-  uint64 apply_at_ns = 1;
+  uint64 apply_at_unix_ns = 1;
   oneof kind {
     CancelRequest cancel = 10;
     EjectReplica eject = 11;
@@ -126,11 +126,11 @@ message ControlAction {
 
 message AdvanceResponse {
   uint32 shard_id = 1;
-  // How far the shard actually got. Never beyond advance_until_ns.
-  uint64 advanced_to_ns = 2;
+  // How far the shard actually got. Never beyond advance_until_unix_ns.
+  uint64 advanced_to_unix_ns = 2;
   // Earliest future event in this shard. Ingress takes the minimum across shards to size the
   // next window, so this is what keeps the barrier loop from advancing past a pending event.
-  uint64 next_event_ns = 3;
+  uint64 next_event_unix_ns = 3;
 
   // Requests that finished, failed or were shed, with their timing. Ingress needs these to
   // release per-request routing state and to feed client retry behaviour.
@@ -162,7 +162,7 @@ message AdvanceResponse {
 
 message FirstToken {
   RequestId request = 1;
-  uint64 at_ns = 2;
+  uint64 at_unix_ns = 2;
   uint32 cached_prefix_tokens = 3;
 }
 
@@ -176,7 +176,7 @@ message RefereeCount { int32 verdict = 1; uint64 count = 2; }
 // tier operation is therefore a modelled network round trip, which is physically faithful:
 // moving KV to a pooled tier genuinely is a network operation. See docs/ARCHITECTURE.md 10.6.
 message TierRequest {
-  uint64 requested_at_ns = 1;
+  uint64 requested_at_unix_ns = 1;
   uint32 shard_id = 2;
   ClusterId cluster = 3;
   RequestId request = 4;
@@ -188,8 +188,8 @@ message TierRequest {
 }
 
 message TierGrant {
-  // When the answer is physically due at the Leaf: requested_at_ns plus the modelled round trip.
-  uint64 deliver_at_ns = 1;
+  // When the answer is physically due at the Leaf: requested_at_unix_ns plus the modelled round trip.
+  uint64 deliver_at_unix_ns = 1;
   RequestId request = 2;
   bool granted = 3;
   // Reflects contention from every shard, which is why this cannot be decided locally.
@@ -201,13 +201,13 @@ message TierGrant {
 // Snapshots
 // ---------------------------------------------------------------------------
 
-message SnapshotRequest { uint64 at_ns = 1; }
+message SnapshotRequest { uint64 at_unix_ns = 1; }
 message SnapshotResponse {
-  uint64 at_ns = 1;
+  uint64 at_unix_ns = 1;
   // Opaque, shard-local. Ingress stores it keyed by (run, shard, time) and never interprets it.
   bytes state = 2;
   uint64 bytes_written = 3;
 }
 
-message RestoreRequest { uint64 at_ns = 1; bytes state = 2; }
-message RestoreResponse { uint64 restored_to_ns = 1; uint64 next_event_ns = 2; bool ok = 3; }
+message RestoreRequest { uint64 at_unix_ns = 1; bytes state = 2; }
+message RestoreResponse { uint64 restored_to_unix_ns = 1; uint64 next_event_unix_ns = 2; bool ok = 3; }

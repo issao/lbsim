@@ -37,8 +37,8 @@ message DescribeRequest { string run_id = 1; uint64 seed = 2; }
 
 message NextWindowRequest {
   string run_id = 1;
-  uint64 from_sim_ns = 2;
-  uint64 to_sim_ns = 3;
+  uint64 from_sim_unix_ns = 2;
+  uint64 to_sim_unix_ns = 3;
   uint32 max_arrivals = 4;
 }
 
@@ -47,13 +47,13 @@ message ArrivalWindow {
   // True when max_arrivals truncated the window. The engine must then ask again rather than
   // assume the window was quiet, since assuming quiet would silently reduce offered load.
   bool truncated = 2;
-  uint64 covered_to_sim_ns = 3;
+  uint64 covered_to_sim_unix_ns = 3;
 }
 
 // One fully determined arrival. Used by trace replay; the synthetic generator produces these
 // internally from a LoadShape.
 message Arrival {
-  uint64 at_ns = 1;
+  uint64 at_unix_ns = 1;
   TenantId tenant = 2;
   SessionId session = 3;
   SloClass slo_class = 4;

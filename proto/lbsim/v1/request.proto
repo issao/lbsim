@@ -34,9 +34,9 @@ message InferenceRequest {
   // Client-side deadline. A request past its deadline should be shed before it consumes GPU
   // time; systems that check afterwards spend most of their capacity under overload
   // producing tokens nobody will read.
-  uint64 deadline_ns = 9;
+  uint64 deadline_unix_ns = 9;
 
-  uint64 arrived_at_ns = 10;
+  uint64 arrived_at_unix_ns = 10;
 
   // 0 for a first attempt. Retries are what turn a slowdown into a collapse, so the
   // attempt number must be visible to admission control.
@@ -70,10 +70,10 @@ message RequestRecord {
   SloClass slo_class = 3;
   Outcome outcome = 4;
 
-  uint64 arrived_at_ns = 10;
-  uint64 admitted_at_ns = 11;
-  uint64 first_token_at_ns = 12;
-  uint64 finished_at_ns = 13;
+  uint64 arrived_at_unix_ns = 10;
+  uint64 admitted_at_unix_ns = 11;
+  uint64 first_token_at_unix_ns = 12;
+  uint64 finished_at_unix_ns = 13;
 
   uint32 prompt_tokens = 20;
   uint32 output_tokens = 21;

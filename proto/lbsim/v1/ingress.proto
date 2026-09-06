@@ -101,7 +101,7 @@ message RunStatus {
     STATE_FAILED = 5;
   }
   State state = 2;
-  uint64 sim_time_ns = 3;
+  uint64 sim_time_unix_ns = 3;
   uint64 sim_duration_ns = 4;
   double realtime_factor = 5;
   string error = 6;
@@ -130,14 +130,14 @@ message StepForwardRequest {
   uint32 barrier_windows = 3;
 }
 message StepForwardResponse {
-  uint64 sim_time_ns = 1;
+  uint64 sim_time_unix_ns = 1;
   // True when the server capped the step; repeat the call to continue.
   bool capped = 2;
   bool run_complete = 3;
 }
 
 message Annotation {
-  uint64 at_ns = 1;
+  uint64 at_unix_ns = 1;
   string kind = 2;
   string message = 3;
   ClusterId cluster = 4;
@@ -155,18 +155,18 @@ message ApplyResponse {
   // True when the change altered physics and the run was rewound to a snapshot and
   // re-simulated. The UI must say so rather than implying continuity that does not exist.
   bool required_resimulation = 2;
-  uint64 rewound_to_ns = 3;
+  uint64 rewound_to_unix_ns = 3;
   string rejected_reason = 4;
 }
 
-message RewindRequest { string run_id = 1; uint64 to_sim_time_ns = 2; }
+message RewindRequest { string run_id = 1; uint64 to_sim_time_unix_ns = 2; }
 message RewindResponse {
-  uint64 sim_time_ns = 1;
+  uint64 sim_time_unix_ns = 1;
   // True when served from the observability log with no re-simulation. False means a snapshot
   // was restored and time was re-simulated, which is slower and, if a physics parameter changed
   // since, produces a different future than the one already shown.
   bool from_log = 2;
-  uint64 restored_from_snapshot_ns = 3;
+  uint64 restored_from_snapshot_unix_ns = 3;
 }
 
 message GetResultRequest { string run_id = 1; }
@@ -210,7 +210,7 @@ message ScenarioCard {
 
 message NarrationStep {
   string text = 1;
-  uint64 at_sim_time_ns = 2;
+  uint64 at_sim_time_unix_ns = 2;
   // Panels to highlight while this step is showing.
   repeated string focus_series = 3;
   string focus_component = 4;

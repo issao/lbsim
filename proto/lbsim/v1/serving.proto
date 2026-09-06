@@ -22,7 +22,7 @@ service Gateway {
 message TokenChunk {
   RequestId request = 1;
   uint32 tokens = 2;              // usually 1; more with speculative decoding
-  uint64 emitted_at_ns = 3;
+  uint64 emitted_at_unix_ns = 3;
   bool final = 4;
   Outcome outcome = 5;            // set only when final
 }

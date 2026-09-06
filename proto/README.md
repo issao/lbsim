@@ -55,10 +55,12 @@ staleness contract is visible in the type rather than enforced by convention.
 - **`Truth`, in `request.proto`, must never appear in anything a policy observes.** It holds the
   real output length. It travels on the Ingress-to-Leaf hop because the Leaf owns the physics and
   needs it to advance an epoch, and nowhere else.
-- **Simulated time is `uint64` nanoseconds**, never a float. Floats accumulate rounding and
-  make byte-identical reproducibility fragile. Intermediate math may use `f64`; stored and
-  transmitted time may not.
-- Durations are `uint64` nanoseconds with a `_ns` suffix. Token counts are `uint32` with a
+- **Simulated time is absolute Unix epoch nanoseconds in a `uint64`**, with the origin derived
+  from the scenario seed. Never a float: 2026 is about 1.79e18 ns since the epoch and a float64
+  resolves only ~200 ns there, so uint64 is mandatory rather than preferred. Intermediate math may
+  use `f64`; stored and transmitted time may not. See the Time section of `common.proto`.
+- Naming carries the distinction. `_unix_ns` is an absolute instant, `_ns` alone is a duration or
+  interval, and `_offset_ns` in scenario configuration is relative to the start of a run. Token counts are `uint32` with a
   `_tokens` suffix. Byte counts are `uint64` with a `_bytes` suffix. Rates carry their unit.
 - Ids are `uint64` dense handles, not strings. At 112,500 requests/s a string id per request
   would dominate allocation.

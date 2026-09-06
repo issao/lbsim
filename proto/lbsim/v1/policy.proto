@@ -51,7 +51,7 @@ message ConfigureResponse {
 message Observation {
   // The policy's own clock, which is accurate. Subtracting each replica's sampled_at_ns
   // from this gives the staleness, which a delay-compensating controller needs.
-  uint64 decision_time_ns = 1;
+  uint64 decision_time_unix_ns = 1;
 
   // The delayed fleet view. Never the live one.
   FleetSnapshot fleet = 2;
@@ -94,8 +94,8 @@ message SequenceState {
   // length: that lives in Truth and is not observable. Scheduling without knowing how long a
   // sequence will run is the defining difficulty of this domain.
   uint32 max_output_tokens = 7;
-  uint64 admitted_at_ns = 8;
-  uint64 deadline_ns = 9;
+  uint64 admitted_at_unix_ns = 8;
+  uint64 deadline_unix_ns = 9;
   uint64 kv_tokens = 10;
   MemoryTier kv_tier = 11;
 }
@@ -172,7 +172,7 @@ message Decision {
   repeated Intent intents = 1;
   // When the policy wants to be asked again, for periodic controllers. Zero means only on
   // the next event.
-  uint64 next_wakeup_ns = 2;
+  uint64 next_wakeup_unix_ns = 2;
 }
 
 // ---------------------------------------------------------------------------
@@ -198,7 +198,7 @@ enum RefereeVerdict {
 }
 
 message RefereeReport {
-  uint64 at_ns = 1;
+  uint64 at_unix_ns = 1;
   Intent intent = 2;
   RefereeVerdict verdict = 3;
   string detail = 4;

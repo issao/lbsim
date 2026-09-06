@@ -823,6 +823,22 @@ holds. Nothing else is owed.
 
 ### 8.1 Determinism
 
+**Simulated time is absolute Unix epoch nanoseconds in a `uint64`**, per Issao, with the origin
+derived from the seed. A run stays reproducible while its timestamps format like real ones and a
+diurnal workload lands on real times of day, which also makes a simulated trace directly
+comparable against a recorded one.
+
+That choice removes an option rather than adding one: 2026 is about 1.79e18 nanoseconds since the
+epoch and a float64 resolves only about 200 ns at that magnitude, so **no simulated timestamp may
+pass through a float**. Intermediate arithmetic inside the cost model may use `f64`; anything
+stored or transmitted may not. Naming carries the distinction: `_unix_ns` is an instant, `_ns`
+alone is a duration, and `_offset_ns` in scenario configuration is relative to run start because an
+offset is far easier to author by hand.
+
+Replica clocks are synchronised by default, so staleness is plain subtraction. Deliberate skew is
+available, because real fleets drift and skew corrupts exactly the staleness estimate a
+delay-compensating controller depends on.
+
 One global seed. Named independent streams derived from it, so that changing the arrival
 rate does not perturb prompt lengths, and enabling failure injection does not perturb the
 workload. Without stream independence an A/B comparison silently compares two different
@@ -925,28 +941,31 @@ displayed, and machine views must be paginated.
 step forward a bounded amount, set a fixed simulation speed, open or renew or close a
 subscription.
 
-**How the O(1) guarantee is actually enforced.** A subscription that names a simulated sampling
-interval is *not* sufficient, because raising the simulation speed then raises the wire rate
-proportionally, which is the exact failure Issao named. So a subscription declares a
-**wall-clock budget** and the server adapts to it:
+**How the O(1) guarantee holds.** By construction, not by enforcement. Issao reviewed an earlier
+design in which the server derived a coarser interval from a wall-clock budget, capped payload
+width and decimated, and rejected all three: *"the O(1) data doesn't have to be enforced by the
+interface, that is awkward. put it on the client to not ask for too much data"* and *"Do what the
+client requests, leave it to the client to make a reasonable set of subscriptions. they are time
+leased anyways."*
+
+He is right, and the resulting interface is both simpler and harder to misuse:
 
 | Field | Meaning |
 |---|---|
-| `max_updates_per_wall_second` | hard cap on emission rate |
-| `max_rows_per_update` | hard cap on payload width |
-| `desired_sim_interval_ns` | the client's preference, honoured only when it fits the budget |
+| `target` | **exactly one** entity: the fleet, a cluster, a pool, a tenant, an SLO class, or one machine |
+| `metrics` | an enum, so a typo is a compile error rather than an empty chart |
+| `samples_per_sim_second` | the client's chosen rate, honoured as asked |
+| `percentiles` | which ranks to report for distribution metrics |
 | `lease_ns` | wall-clock lease; the server drops the subscription when it expires |
 
-Ingress knows the current realtime factor, so it derives the effective simulated sampling
-interval as `max(desired_sim_interval_ns, realtime_factor / max_updates_per_wall_second)` and
-decimates further whenever the run speeds up. The client sets a budget it can consume; the
-server never exceeds it. That makes the bound hold under a speed change rather than only at the
-speed the client assumed.
+Payload width cannot grow with the fleet, because one subscription describes one entity and there
+is no "all replicas" selector. A dashboard showing twelve machines opens twelve subscriptions,
+which is what it wants anyway. Pagination, sort keys and cursors are gone: they were UI concerns
+leaking into a wire contract, and Issao called that out directly.
 
-**Pagination.** Any per-machine view names a sort key, a page size and a cursor. Ingress streams
-that page only. Changing page replaces the subscription. Payload width is therefore bounded by
-`max_rows_per_update` regardless of fleet size, which is what keeps a 62,500-replica run as
-cheap to observe as a 100-replica one.
+The residual risk is real and worth naming: a client asking for a very fine rate at a high
+simulation speed costs Ingress CPU and therefore wall-clock time. It never affects simulation
+fidelity, and the lease bounds how long it can last, so the tradeoff is the right one.
 
 **Leases.** A closed browser tab must not leak a subscription that keeps Ingress and every Leaf
 computing and shipping data forever. Leases expire; the Frontend renews what it still displays.
@@ -959,9 +978,22 @@ whether a dashboard is attached or not. Metrics that are genuinely expensive to 
 enabled at *scenario* level, where they become part of the run's identity, not at subscription
 level.
 
-**End of run.** Reported as a final subscription time point rather than a separate result
-message, per Issao's preference for interface symmetry. A client that stays subscribed receives
-the terminal values on the same channel it was already reading.
+**Percentiles, not histograms, on the wire.** Issao suggested computing percentiles at the Leaf
+because it is cheaper. Right where it is valid, and it is not always valid: percentiles do not
+merge, so a target spanning shards cannot be answered by combining per-shard percentiles.
+Averaging p99s yields a number that is not a percentile of anything.
+
+So the engine does both and the client never has to know which. A target owned by one Leaf, which
+covers every per-machine subscription and most per-pool ones, is computed there exactly and only
+the requested numbers cross the wire. A target spanning shards has each Leaf ship its mergeable
+histogram, and Ingress merges before computing, which is correct to bucket resolution: a tenth of
+a percent for an HDR-style histogram at three significant digits. A flag on the result says which
+path was taken, because one is exact and the other is accurate, and a reader comparing two runs
+deserves to know.
+
+**End of run.** Reported as a final subscription time point rather than a separate result message,
+per Issao's preference for interface symmetry. A client that stays subscribed receives the
+terminal values on the same channel it was already reading.
 
 ### 10.3 Ingress to Leaf, and back
 

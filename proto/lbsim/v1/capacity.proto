@@ -33,7 +33,7 @@ message ProvisionRequest {
 message ProvisionResponse {
   repeated ReplicaId replicas = 1;
   // Expected time until serving. Broken out so a scenario can show which stage dominates.
-  uint64 estimated_ready_at_ns = 2;
+  uint64 estimated_ready_at_unix_ns = 2;
   uint64 node_wait_ns = 3;      // scheduling or provisioning a GPU node
   uint64 image_pull_ns = 4;
   uint64 weight_load_ns = 5;    // usually the largest term
@@ -45,7 +45,7 @@ message ProvisionResponse {
 
 message DrainRequest { ReplicaId replica = 1; uint64 max_wait_ns = 2; }
 message DrainResponse {
-  uint64 drained_at_ns = 1;
+  uint64 drained_at_unix_ns = 1;
   // Requests still running when max_wait_ns expired and were killed. Nonzero here is a
   // scale-down policy failing its users.
   uint32 requests_abandoned = 2;
@@ -53,7 +53,7 @@ message DrainResponse {
 }
 
 message TerminateRequest { ReplicaId replica = 1; }
-message TerminateResponse { uint64 terminated_at_ns = 1; }
+message TerminateResponse { uint64 terminated_at_unix_ns = 1; }
 
 message GetPoolStateRequest { PoolId pool = 1; }
 

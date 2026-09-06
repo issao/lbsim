@@ -22,7 +22,7 @@ service TelemetryCollector {
   rpc WatchFleet(WatchFleetRequest) returns (stream FleetSnapshot);
 }
 
-message PublishAck { uint64 received_at_ns = 1; }
+message PublishAck { uint64 received_at_unix_ns = 1; }
 
 message WatchFleetRequest {
   // A consumer may subscribe to one cluster or to all of them. A router that only sees its
@@ -46,7 +46,26 @@ message ReplicaState {
   // When the replica sampled itself. The consumer's own clock minus this is the staleness
   // the policy is working with, and it must be measurable by the policy so a
   // delay-compensating controller is possible to write.
-  uint64 sampled_at_ns = 4;  // Lets use an absolute unix epoch value (initialized globally based on seed, then kept synchornzied across replicas during simulation)
+  // Absolute Unix epoch nanoseconds, per Issao, not an offset from run start. The origin is
+  // derived from the scenario seed, so a run is reproducible while its timestamps still look and
+  // format like real ones, and a diurnal workload lands on real times of day.
+  //
+  // A consequence worth stating: 2026 is about 1.79e18 nanoseconds since the epoch, and a
+  // float64 has 53 bits of mantissa, so it can only resolve about 200 ns at that magnitude.
+  // Absolute epoch time therefore makes uint64 mandatory rather than merely preferable. No
+  // simulated timestamp may ever pass through a float.
+  //
+  // Replica clocks are synchronised by default, so a consumer computes staleness by plain
+  // subtraction. `clock_skew_ns` below exists because real fleets are not perfectly
+  // synchronised, and skew corrupts exactly the staleness estimate a delay-compensating
+  // controller depends on.
+  uint64 sampled_at_unix_ns = 4;
+
+  // Simulated clock skew of this replica against true simulated time. Zero by default. Non-zero
+  // makes `sampled_at_unix_ns` deliberately wrong by that amount, so a policy inferring
+  // staleness by subtraction gets a wrong answer, which is what happens in production when NTP
+  // drifts. Signed, in nanoseconds.
+  int64 clock_skew_ns = 6;
 
   Health.Announced announced = 5;
 
@@ -90,7 +109,7 @@ message ReplicaState {
 
   // -- lifecycle -----------------------------------------------------------
 
-  uint64 became_ready_at_ns = 50;
+  uint64 became_ready_at_unix_ns = 50;
   // Set while loading weights. Cold start is 30-300 s, far slower than a traffic burst
   // develops, which is why reactive autoscaling cannot catch one.
   bool warming_up = 51;
@@ -102,7 +121,7 @@ message FleetSnapshot {
   // older sampled_at_ns, so a snapshot is a set of differently-aged observations rather than
   // a consistent cut. Real fleets have no consistent cut, and pretending otherwise is the
   // mistake that makes simulated load balancing look better than reality.
-  uint64 assembled_at_ns = 1;
+  uint64 assembled_at_unix_ns = 1;
   repeated ReplicaState replicas = 2;
   // Replicas the collector has not heard from within its timeout. Absence of data is not
   // evidence of failure, and how a policy treats these entries matters a great deal.

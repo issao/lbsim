@@ -82,5 +82,5 @@ message PrefixResidency {
   ReplicaId replica = 1;
   PrefixNodeId node = 2;
   uint32 resident_tokens = 3;
-  uint64 last_used_ns = 4;
+  uint64 last_used_unix_ns = 4;
 }
