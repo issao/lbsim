@@ -40,9 +40,12 @@ export interface RunHandle {
 }
 
 export function useRun(initial: ScenarioConfig, autoplay = true): RunHandle {
+  // Open at the end of warm-up with the window already populated: a dashboard whose panels are
+  // empty for the first minute cannot be judged.
+  const startS = Math.min(initial.warmupS, initial.durationS);
   const engine = useMemo(() => {
     const e = new MockEngine(initial);
-    e.simulateTo(Math.min(20, initial.durationS));
+    e.simulateTo(Math.min(startS + 6, initial.durationS));
     return e;
     // one engine per mount, seeded from the initial config
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -50,15 +53,15 @@ export function useRun(initial: ScenarioConfig, autoplay = true): RunHandle {
 
   const [config, setConfig] = useState<ScenarioConfig>(() => cloneConfig(initial));
   const [paused, setPaused] = useState(!autoplay);
-  const [speed, setSpeed] = useState(1);
-  const [cursorS, setCursorS] = useState(0);
+  const [speed, setSpeed] = useState(2);
+  const [cursorS, setCursorS] = useState(startS);
   const [recordedToS, setRecordedToS] = useState(engine.recordedToS);
   const [lastRewind, setLastRewind] = useState<RewindResponse | null>(null);
   const [lastUpdate, setLastUpdate] = useState<UpdateResponse | null>(null);
   const [resimulating, setResimulating] = useState(false);
   const [revision, setRevision] = useState(0);
 
-  const cursorRef = useRef(0);
+  const cursorRef = useRef(startS);
   const lastPaint = useRef(0);
 
   useEffect(() => {
@@ -133,15 +136,16 @@ export function useRun(initial: ScenarioConfig, autoplay = true): RunHandle {
 
   const restart = useCallback(
     (next: ScenarioConfig) => {
+      const s0 = Math.min(next.warmupS, next.durationS);
       engine.config = cloneConfig(next);
       engine.reset();
-      engine.simulateTo(Math.min(20, next.durationS));
+      engine.simulateTo(Math.min(s0 + 6, next.durationS));
       setConfig(cloneConfig(next));
       setRecordedToS(engine.recordedToS);
       setLastUpdate(null);
       setLastRewind(null);
       setRevision((r) => r + 1);
-      commit(0);
+      commit(s0);
     },
     [engine, commit]
   );

@@ -36,3 +36,4 @@ $S compare scenarios/retry_none.txt scenarios/retry_budget.txt scenarios/retry_s
            --out out/6-retry.html
 
 echo; echo "reports in out/"
+echo "for machine-readable telemetry, add: --telemetry out/NAME.tele [--telemetry-budget-mb N]"

@@ -165,7 +165,13 @@ impl Series {
     }
 
     pub fn max(&self) -> f64 {
-        self.v.iter().cloned().fold(f64::MIN, f64::max)
+        // NaN on empty, matching `mean`. Folding from `f64::MIN` returned -1.8e308, which a report
+        // would happily print as a peak queue depth. Reachable for a run shorter than one sample
+        // interval, and a wrong number that looks like a number is worse than an obvious absence.
+        if self.v.is_empty() {
+            return f64::NAN;
+        }
+        self.v.iter().cloned().fold(f64::NEG_INFINITY, f64::max)
     }
 
     /// Coefficient of variation. For per-replica load this is the direct measure of whether the load

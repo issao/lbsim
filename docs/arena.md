@@ -177,6 +177,48 @@ co-evolutionary noise.
 
 ---
 
+## 5b. Two flaws in this specification, found by implementing it
+
+`src/arena.rs` implements the mechanical half against the working engine. Two things in the
+specification above do not survive contact with it. Both need Issao, because both are rule changes
+rather than implementation choices, and `docs/arena-implementation.md` has the measurements.
+
+### The objective as written always scores the *easiest* load
+
+Section 1 defines a policy's score as the minimum of its goodput across the load archive. Measured
+across the frozen suite, every top-ranked policy takes its minimum on the two **lightest** loads,
+because those offer twenty times less work than the heaviest. Absolute goodput is not comparable
+across loads that differ in offered volume, so the minimum is set by the smallest load rather than by
+the hardest one, and the adversarial intent of the objective is inverted: a load generator would score
+best by proposing *trivial* loads.
+
+The fix is to normalise before taking the minimum, and there are two defensible choices. Goodput as a
+**share of offered work**, which asks how much of what arrived was served well. Or goodput as a share
+of what the **best policy on that load** achieved, which is a relative measure and is how tournaments
+usually handle heterogeneous rounds. The implementation reports the first as a diagnostic alongside the
+raw objective, and deliberately does not change the objective, because that is Issao's call.
+
+### A 99.9% cap and a length-independent first-token target cannot both hold
+
+Section 1 suggests an SLA cap of 99.9%. Measured: **no policy reaches it on any chat or long-context
+mixture at any offered rate, including a sixteenth of rated capacity.** The ceiling on the reference
+mixture is about 0.9992 and the cause is arithmetic rather than policy. Prompt lengths are lognormal,
+so roughly 1% of long-mode prompts exceed 56,500 tokens, which is two seconds of pure prefill against
+a two-second first-token budget, before any queueing at all.
+
+It is reachable only where outputs are short and prompts are small: on the code-completion load,
+round-robin attains 0.9991 at 71 requests/s.
+
+So the cap and the SLO are jointly unsatisfiable, and there are two honest resolutions. **Per-class
+targets**, so the long mode gets a first-token budget proportional to its prompt, which is the right
+answer and is why SLO classes are on the roadmap. Or **a cap of 0.95**, which is reachable across the
+whole suite and is what the implementation uses as its default, with 0.99 reachable on individual
+loads.
+
+Under a 0.95 cap the ranking is power-of-two-choices, then round robin, then random, with both
+global least-loaded policies scoring zero. Under 0.99 or 0.999 every policy scores zero, which is a
+useless tournament rather than a demanding one.
+
 ## 6. What this requires from earlier milestones
 
 Two things that are cheap now and expensive to retrofit, which is the reason this document exists

@@ -20,6 +20,12 @@ import { clamp, coeffOfVariation, drift, lognormalQuantile, normal, uniform } fr
 import { type Histogram, merge, newHistogram, record } from './hist';
 
 export const SNAPSHOT_S = 10;
+/**
+ * Seconds a session keeps its context resident between turns. This is what makes key-value
+ * capacity bind at modest request rates: a replica serving four requests can be holding the
+ * contexts of a dozen conversations, and it is the sessions rather than the batch that fill it.
+ */
+const PARK_S = 12;
 /** Extra slots for replicas an autoscale event brings up mid-run. */
 const SPARE_SLOTS = 2;
 /** Deterministic quantile probes per replica when building a fleet histogram. */
@@ -137,10 +143,21 @@ function decodeTokensPerS(c: ScenarioConfig, batch: number): number {
   return (b * 1000) / (c.fleet.stepBaseMs + c.fleet.stepPerSeqMs * b);
 }
 
-/** Requests per second one nominal replica can retire, prefill and decode together. */
+/**
+ * Nameplate: requests per second one replica retires at its maximum batch, prefill and decode
+ * together. The achievable rate is lower whenever key-value capacity caps the batch below
+ * `max_batch`, which is most of the time and the whole of the interesting part.
+ */
 export function ratedRpsPerReplica(c: ScenarioConfig): number {
   const t = tokenMeans(c);
   const costS = t.prompt / c.fleet.prefillTokensPerS + t.output / decodeTokensPerS(c, c.fleet.maxBatch);
+  return 1 / costS;
+}
+
+/** What a replica can retire once the batch is capped by whatever KV is left after parked sessions. */
+function achievableRps(c: ScenarioConfig, batchCap: number): number {
+  const t = tokenMeans(c);
+  const costS = t.prompt / c.fleet.prefillTokensPerS + t.output / decodeTokensPerS(c, Math.max(batchCap, 1));
   return 1 / costS;
 }
 
@@ -439,7 +456,15 @@ export class MockEngine {
       const receiving = present && state === 'READY';
       const arrivals = receiving ? perReplicaOffered * this.weights[i] * dt : 0;
 
-      const capRps = ratedRpsPerReplica(c) * st.speed[i] * st.kvPenalty[i] * (state === 'DRAINING' ? 0.6 : 1);
+      // Key-value capacity, not compute, is usually what caps the batch: parked sessions hold
+      // context between turns, and what is left over is what can be decoding at once.
+      const hitRate = prefixHitRate(c, t, i);
+      const ctxTokens = tk.prompt * (1 - hitRate * 0.6) + tk.output / 2;
+      const parkedSeqs = c.workload.longProbability * (arrivals / dt) * PARK_S;
+      const kvBudgetSeqs = c.fleet.kvTokensPerReplica / Math.max(ctxTokens, 1);
+      const batchCap = clamp(kvBudgetSeqs - parkedSeqs, 1, c.fleet.maxBatch);
+
+      const capRps = achievableRps(c, batchCap) * st.speed[i] * st.kvPenalty[i] * (state === 'DRAINING' ? 0.6 : 1);
       const canServe = present && state !== 'EJECTED' && state !== 'WARMING' ? capRps * dt : 0;
 
       let q = st.q[i] + arrivals;
@@ -462,12 +487,11 @@ export class MockEngine {
       const throughputRps = done / dt;
       const serviceS = (tk.output * (c.fleet.stepBaseMs + c.fleet.stepPerSeqMs * Math.max(st.batch[i], 1))) / 1000
         / Math.max(st.speed[i], 0.05);
-      const wantBatch = clamp(throughputRps * serviceS, 0, c.fleet.maxBatch);
+      const wantBatch = clamp(throughputRps * serviceS, 0, batchCap);
       st.batch[i] += (wantBatch - st.batch[i]) * 0.45;
       const batch = st.batch[i];
 
-      const ctxTokens = tk.prompt * (1 - prefixHitRate(c, t, i) * 0.6) + tk.output / 2;
-      const kvTokens = batch * ctxTokens;
+      const kvTokens = (batch + parkedSeqs) * ctxTokens;
       const rawKv = kvTokens / c.fleet.kvTokensPerReplica;
       const kvUtil = clamp(rawKv, 0, 1);
       const excess = Math.max(0, rawKv - 0.96);
@@ -481,16 +505,19 @@ export class MockEngine {
       const stepMs = (c.fleet.stepBaseMs + c.fleet.stepPerSeqMs * batch) / Math.max(st.speed[i], 0.05);
       const queueWaitMs = (q / Math.max(capRps, 0.02)) * 1000;
       const prefillContention = 1 + 0.6 * (batch / c.fleet.maxBatch);
-      const prefillMs = (tk.prompt * (1 - prefixHitRate(c, t, i) * 0.8) / c.fleet.prefillTokensPerS) * 1000 * prefillContention
+      const prefillMs = (tk.prompt * (1 - hitRate * 0.8) / c.fleet.prefillTokensPerS) * 1000 * prefillContention
         / Math.max(st.speed[i], 0.05);
       const ttftMs = queueWaitMs + prefillMs;
-      const itlMs = stepMs * (1 + (preemptRate > 0 ? 1.4 : 0));
+      // Prefill and decode share the step budget, so admitting fast costs everyone already
+      // decoding. This is the interference in dynamic 3, expressed as a multiplier.
+      const prefillShare = clamp((arrivals / dt) * tk.prompt / c.fleet.prefillTokensPerS, 0, 0.95);
+      const itlMs = stepMs * (1 + 0.9 * prefillShare) * (1 + (preemptRate > 0 ? 1.4 : 0));
       const e2eMs = ttftMs + itlMs * tk.output;
 
       // Fleet histograms: mix each replica's within-replica spread, weighted by its arrival share.
       if (receiving || q > 0) {
         const wgt = Math.max(arrivals, 1e-3);
-        const cvTtft = clamp(0.55 * c.workload.promptCv + 0.35 + 0.015 * q, 0.45, 2.6);
+        const cvTtft = clamp(0.45 * c.workload.promptCv + 0.25 + 0.014 * q, 0.4, 2.4);
         const cvItl = clamp(0.2 + 0.35 * (batch / c.fleet.maxBatch), 0.15, 1.2);
         const cvE2e = clamp(0.35 + 0.65 * c.workload.outputCv, 0.4, 2.6);
         const cvQ = clamp(0.6 + 0.02 * q, 0.5, 2.5);
@@ -509,7 +536,7 @@ export class MockEngine {
         stepWastedS += busy * dt * clamp(excess * 1.2, 0, 0.5) + (overflow > 0 ? busy * dt * 0.1 : 0);
         kvSum += kvUtil;
         kvN++;
-        hitSum += prefixHitRate(c, t, i);
+        hitSum += hitRate;
         loadForCv.push(batch * ctxTokens);
       }
 
@@ -532,7 +559,7 @@ export class MockEngine {
         queueWaitMs,
         ttftMeanMs: ttftMs,
         itlMeanMs: itlMs,
-        prefixHitRate: prefixHitRate(c, t, i),
+        prefixHitRate: hitRate,
         admittedRps: arrivals / dt,
         completedRps: done / dt,
         preemptionsPerS: preemptRate,

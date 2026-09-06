@@ -1,0 +1,107 @@
+{
+  "$schema": "./schema.md",
+  "id": "rolling-hotspot",
+  "dynamic": 1,
+  "title": "Round-robin rolling hotspot",
+  "summary": "The load-balancing fallacy this whole simulator exists to make visible: round robin equalises the thing that is easy to count and not the thing that costs money.",
+  "scenario": {
+    "name": "showcase: rolling hotspot",
+    "seed": 20260906,
+    "durationS": 120,
+    "routing.kind": "round_robin",
+    "workload.arrivalRps": 140,
+    "workload.longProbability": 0.12,
+    "workload.longPromptMean": 24000,
+    "fleet.replicas": 32
+  },
+  "steps": [
+    {
+      "at_sim_s": 10,
+      "speed": 2,
+      "control_tab": "load",
+      "observe_tab": "machine",
+      "highlight": "heatmap",
+      "title": "Every replica is getting the same number of requests",
+      "body": [
+        "The fleet is 32 replicas behind a round-robin router at 140 requests per second, which is comfortably inside its rated capacity. Eight per cent of requests carry a 24,000-token prompt; the rest carry about 1,200.",
+        "Round robin is doing exactly what it promises. Request counts are equal to within a rounding error. Look at the heatmap anyway."
+      ],
+      "look_for": "The rows are not the same colour, and nothing has gone wrong yet."
+    },
+    {
+      "at_sim_s": 30,
+      "speed": 2,
+      "observe_tab": "machine",
+      "highlight": "heatmap",
+      "title": "The hotspot is walking",
+      "body": [
+        "A band of deep colour is moving down the fleet. Every replica takes its turn holding the long requests, because the router deals them around the ring in order, and a long request occupies its replica for far longer than one turn of the ring.",
+        "Capacity here is denominated in tokens. One 24k-token context costs what twenty-five chat turns cost. Counting requests measures the wrong thing, so equalising the count guarantees unequal load."
+      ],
+      "look_for": "The diagonal stripe. Note that the imbalance coefficient of variation under the heatmap is well above 0.2."
+    },
+    {
+      "at_sim_s": 46,
+      "speed": 1,
+      "observe_tab": "machine",
+      "highlight": "replicas",
+      "title": "Which replica is worst changes identity every few seconds",
+      "body": [
+        "The table is sorted by queue depth, descending. Watch the identities in the first column rather than the numbers: the set of worst replicas keeps turning over.",
+        "This is why a page of rows is honest and a global ranking would not be. The client sorted the coarse cluster summary to choose which twenty replicas to subscribe to, and it says so under the table rather than implying it ranked all of them."
+      ],
+      "look_for": "The replica ids at the top of the page rotating, and the subscription count in the panel header staying at twenty."
+    },
+    {
+      "at_sim_s": 64,
+      "speed": 2,
+      "observe_tab": "quality",
+      "highlight": "ttft",
+      "title": "The tail follows the hotspot; the median does not",
+      "body": [
+        "Time-to-first-token p50 is nearly flat, because most requests land on a replica that is not currently hot. p99 and p99.9 are not flat at all: they track whichever replica is holding the long contexts right now.",
+        "A dashboard showing only the mean or the median would report this fleet as healthy. That is the failure mode the Service quality tab is shaped to prevent."
+      ],
+      "look_for": "The gap between p50 and p99.9, and the p99 line crossing the dashed SLO threshold."
+    },
+    {
+      "at_sim_s": 82,
+      "speed": 2,
+      "set": { "workload.longProbability": 0 },
+      "control_tab": "load",
+      "observe_tab": "machine",
+      "highlight": "heatmap",
+      "title": "Remove the size heterogeneity and round robin is fine",
+      "body": [
+        "Long-request probability just went to zero, and the heatmap flattened. Round robin was never the whole problem: the problem is round robin plus a heavy tail of request sizes.",
+        "Notice the banner at the top. That change altered physics, so the run rewound to its last snapshot and re-simulated forward from there, and it said so. History after that point is new history."
+      ],
+      "look_for": "required_resimulation = true in the banner, and the recorded extent on the scrubber shrinking back to the cursor."
+    },
+    {
+      "at_sim_s": 100,
+      "speed": 2,
+      "set": { "workload.longProbability": 0.12, "routing.kind": "power_of_two_choices" },
+      "observe_tab": "machine",
+      "highlight": "heatmap",
+      "title": "Now put the heavy tail back and change the policy instead",
+      "body": [
+        "Same workload as the first four steps: twelve per cent long requests, 140 requests per second. Only the router changed, to power-of-two-choices with d = 2.",
+        "The stripe is gone. Sampling two replicas and taking the less loaded one bounds herding by construction, and it is O(1) rather than O(fleet), so it costs less than the least-loaded scan it beats."
+      ],
+      "look_for": "The imbalance coefficient of variation, which should now be a fraction of what it was at 30 s."
+    },
+    {
+      "at_sim_s": 116,
+      "speed": 1,
+      "observe_tab": "quality",
+      "highlight": "goodput",
+      "title": "What it was worth",
+      "body": [
+        "Goodput is the number that moved. Throughput barely changed, because the same tokens were being produced either way; what changed is how many of them arrived inside their service objective.",
+        "This walkthrough demonstrated the difference by changing one thing mid-run, which is convenient but not rigorous: the two halves saw different arrival sequences. The A/B view is the rigorous version, two runs from the same seed differing only in the policy."
+      ],
+      "look_for": "The gap between the throughput and goodput lines, then open the A/B view and set A to round robin and B to power-of-two-choices."
+    }
+  ]
+}
