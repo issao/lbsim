@@ -7,156 +7,107 @@ Tick a box when you have reviewed it. Anything Claude can do alone is not in thi
 
 ---
 
-## Before you leave: read one file
+## 0. Done, and one consequence you should know about
 
-**`docs/scope-today.md`, about ten minutes.** It ranks all seventeen dynamics from your vision by what
-each needs and costs, shows the total is about 22 hours against three remaining, and recommends
-package B. If you disagree with that package, it is the only decision that changes what happens while
-you are out.
+**The deploy credential is in place and the boundary is real.** Verified by attempting to break it,
+not by reading role names:
 
-`STATUS.md` has what runs now, the first result, and the queue of work Claude will do next.
-
-## Short answer: nothing blocks starting
-
-You asked what is blocked on you to finish the execution plan and start building. **Nothing.**
-
-All twenty-five of your instructions are folded in, the interfaces are reviewed and simplified, and
-the four remaining decisions all have defaults recorded. Claude can start now with:
-
-- **M0**, the cargo workspace and CI. Half a day, and it commits to nothing later milestones cannot
-  change.
-- **M0.5**, the stand-in dashboard you asked for, against mock data. One day, shares no files with
-  M0, and it exists precisely so you can see progress and criticise the layout before anything is
-  wired up.
-
-Everything in the review list below can happen in parallel with those two. Only section 3 items
-would cause rework if they arrive late, and each says how much.
-
-**Say "go" and Claude starts on M0 and M0.5.**
-
----
-
-## 0. Read this first: a subagent changed your billing configuration
-
-**What happened.** `gcloud` in this sandbox is authenticated as your own Google account with full
-permissions, not a scoped service account. A research pass used it to provision real resources, and
-while removing a duplicate budget it had created, its filter also matched **your** `lbsim monthly cap`
-budget and deleted it. It recreated one at $50 with alerts at 50, 90 and 100 percent, rebuilt from the
-name and amount rather than from a copy.
-
-**Verified state, checked directly rather than taken on report:**
-
-| | |
+| Check | Result |
 |---|---|
-| Budgets on the lbsim billing account | `lbsim monthly` at $100, `lbsim monthly cap` at $50, both with 3 thresholds |
-| Projects linked | `lbsim-gcp` and `lbsim-prod` |
-| Cloud Run services running | **none**, so nothing is currently spending |
+| Credentials in the sandbox | only `lbsim-deployer@lbsim-gcp`; your account is revoked from here |
+| Read Cloud Run, registry, results bucket | all work |
+| List billing accounts | denied |
+| Read or modify project IAM | denied, cannot even read the policy it would need to change |
+| **Grant itself a role** | **denied**, tested with a real attempt |
 
-- [x] **Confirm the $50 budget matches what you had**, since it was rebuilt from its name and amount
-      and any other settings on it were lost.
-- [x] **Decide whether you want two projects.** `lbsim-gcp` and `lbsim-prod` are both linked to
-      billing. If one is redundant, unlinking it removes a way to be surprised.
-      Issao: Lets just keep one of them, I don't care which.
-- [ ] **Consider revoking this sandbox's credential when today is done.** `gcloud auth revoke
-      issaofujiwara@gmail.com`. Until then, every agent here can do anything you can.
-      Issao: Sounds good. Leave me a task to do that once you are done with what you need. If there is a way to downgrade your permission while still allowing claude to deploy in this project, lets do that.
+**The consequence: Claude can no longer check your budget.** That is the trade you asked for, and it is
+the right one, but it means budget verification is now yours alone. Last confirmed at 14:23, while
+Claude still had owner access:
 
-**What has changed on Claude's side.** `CLAUDE.md` now forbids any mutating cloud command without your
-explicit per-action approval, forbids touching billing at all, forbids delete filters that are not
-exact matches, and forbids delegating cloud work to a subagent unless it is read-only. That last rule
-is the one that would have prevented this: a subagent inherits these credentials and cannot be
-supervised mid-action.
-// Issao: I want claude to be able to interact with my gcp account, there is nothing of significance there. Just try to keep under a $50/month budget for now.
+| Budget | Amount | Thresholds |
+|---|---|---|
+| `lbsim monthly` | $100 | 3 |
+| `lbsim monthly cap` | $50 | 3 |
 
-This is a larger issue than the access-token question below, and it points the same way: the safe
-pattern is that you run mutating commands and Claude prepares everything else.
-// Issao: For now, I would like claude to be able to make mutating commands to the deployment as we iterate.
-
-## 1. Give Claude deploy powers without billing powers — four commands
-
-You asked for this specifically. It is achievable as a **hard boundary** rather than a promise, and
-the trick is that Claude currently has *too much* access, so the fix is to take some away.
-
-### Verified state, checked read-only
-
-| | |
-|---|---|
-| Fully provisioned project | **`lbsim-gcp`** — has the `lbsim` registry, the `lbsim-gcp-runs` bucket, Cloud Run enabled, and the deploy account |
-| `lbsim-prod` | registry and Cloud Run enabled, but **no** deploy account and no results bucket. Probably redundant |
-| `lbsim-deployer@lbsim-gcp` roles | `run.admin`, `artifactregistry.writer`, `cloudbuild.builds.editor`, `iam.serviceAccountUser`, `monitoring.viewer` |
-| Billing roles on that account | **none**, on either project. Confirmed by filtering the IAM policy |
-
-So the account you want already exists and already cannot touch billing. What is missing is that this
-sandbox is authenticated as *you*, which overrides all of it.
-
-### The four commands
-
-Run each with a leading `!` so it executes here and the key is written straight to disk. **The key must
-never pass through this conversation**; a transcript is stored, and a credential in one is disclosed
-rather than transient.
+Both on billing account `015B1A-AA7EAB-107FD2`, both project-filtered. One command to re-check, as
+yourself on any machine:
 
 ```bash
-# 1. Let the deploy account write run results. Skip if already granted.
-gcloud storage buckets add-iam-policy-binding gs://lbsim-gcp-runs \
-  --member=serviceAccount:lbsim-deployer@lbsim-gcp.iam.gserviceaccount.com \
-  --role=roles/storage.objectAdmin
-
-# 2. Create the key directly into the sandbox, never via the chat.
-gcloud iam service-accounts keys create /home/agents/.config/gcloud/lbsim-deployer.json \
-  --iam-account=lbsim-deployer@lbsim-gcp.iam.gserviceaccount.com --project=lbsim-gcp
-
-# 3. Switch this sandbox to that identity.
-gcloud auth activate-service-account --key-file=/home/agents/.config/gcloud/lbsim-deployer.json
-gcloud config set project lbsim-gcp
-
-# 4. The step that makes it a boundary rather than a convention.
-gcloud auth revoke issaofujiwara@gmail.com
+gcloud billing budgets list --billing-account=015B1A-AA7EAB-107FD2 \
+  --format="table(displayName, amount.specifiedAmount.units, thresholdRules.len())"
 ```
 
-**Step 4 is the one that matters.** Without it, steps 1 to 3 are a preference Claude could undo. With
-it, the sandbox holds only an identity that has no billing role, no project IAM, and no
-`storage.admin`, so touching your budgets becomes impossible rather than merely forbidden.
+Worth doing once, because the `$50` one was rebuilt by a subagent from its name and amount after being
+deleted, so any other settings it carried are gone.
 
-It only removes the credential *in this sandbox*. Your other machines are unaffected. If you ever need
-owner-level access here again, `gcloud auth login`.
+- [ ] Re-check the two budgets with the command above
+- [ ] Delete the deploy key when this phase ends:
+      `gcloud iam service-accounts keys list --iam-account=lbsim-deployer@lbsim-gcp.iam.gserviceaccount.com`
+      then `gcloud iam service-accounts keys delete KEY_ID --iam-account=...`. The key id starts `94afd556`
+- [ ] Decide whether to unlink `lbsim-prod` from billing. It has a registry and Cloud Run but no deploy
+      account and no results bucket, so it is half-provisioned and duplicating it is a way to be surprised
 
-### Blast radius, stated plainly
+## 1. Domain linking — three steps, and one gotcha worth knowing before you start
 
-The key is a long-lived secret sitting on disk. What it can do: deploy Cloud Run services and jobs,
-push container images, run Cloud Builds, write to one bucket, and read monitoring. What it cannot do:
-change billing, change IAM, delete buckets, or touch any other project. Worst case is compute burned
-inside the instance caps.
+Nothing here blocks a first deploy. Cloud Run hands out a `run.app` URL that needs no domain, so the
+service can be live and working before any of this. Do it when convenient.
 
-- [ ] Run the four commands
-- [ ] When today is done, delete the key: `gcloud iam service-accounts keys list --iam-account=...`
-      then `keys delete KEY_ID`
-- [ ] Decide whether to unlink `lbsim-prod` from billing, since it is half-provisioned and duplicating
-      it is a way to be surprised
+### The gotcha: domain ownership is per-account, and Claude is now a different account
 
-## 1b. Where the TXT record goes in Porkbun
+Creating a Cloud Run domain mapping requires the *calling* account to be a verified owner of the
+domain. You verified `lbsim.ai` as yourself. The deploy service account is a different identity and is
+not an owner, so **Claude cannot create the mapping** even though it can list and manage mappings
+otherwise. Confirmed: listing works, and the verified-owner check is what would refuse.
 
-Search Console's **Domain** property needs the TXT at the apex, which is why the host is left empty.
+Two ways round it, and the second is simpler:
 
-1. Log in to Porkbun, go to **Domain Management**.
-2. Find `lbsim.ai` and click **DNS** on that row. That opens *Edit DNS Records*.
-3. In the **Add a DNS record** form at the top of that page:
+- **Add the service account as a domain owner.** In Search Console, open the `lbsim.ai` property →
+  Settings → Users and permissions → Add user, and enter
+  `lbsim-deployer@lbsim-gcp.iam.gserviceaccount.com` with the **Owner** role. Search Console accepts
+  service account addresses. After that Claude can create and manage the mapping unattended.
+- **Create the mapping yourself**, one command, once. Claude does everything else.
+
+### Step 1 — verify the domain, if not already done
+
+`search.google.com/search-console`, add a **Domain** property for `lbsim.ai`, and put the TXT record it
+gives you in Porkbun. Domain Management → the **DNS** button on the `lbsim.ai` row → the *Add a DNS
+record* form:
 
 | Field | Value |
 |---|---|
-| **Type** | `TXT` |
-| **Host** | **leave completely empty.** Porkbun shows `.lbsim.ai` beside the box; empty means the apex. Do not type `@` |
-| **Answer** | the whole `google-site-verification=…` string, pasted exactly |
-| **TTL** | leave the default, 600 |
+| Type | `TXT` |
+| Host | **leave completely empty**, not `@`. Porkbun appends the domain itself |
+| Answer | the whole `google-site-verification=…` string |
+| TTL | leave the default |
 
-4. Click **Add**.
-5. Wait a minute, then click **Verify** in Search Console. Porkbun's DNS propagates quickly.
+Do not remove existing TXT records; several at the apex is normal and anything for mail must stay.
 
-**Do not delete existing TXT records** while doing this. Multiple TXT records at the apex are normal and
-expected; anything for mail or domain policy must stay.
+### Step 2 — create the mapping, after a service exists
 
-The A and AAAA records for the apex are a separate step and only needed once a service exists to point
-at. Claude will confirm the exact addresses against what the domain mapping returns rather than from a
-published list.
+Either grant the service account ownership above and Claude runs this, or run it yourself:
+
+```bash
+gcloud beta run domain-mappings create --service=lbsim --domain=lbsim.ai --region=us-central1
+```
+
+It prints the DNS records to add. **Use what it prints rather than any published list**, since the
+addresses depend on the region and the mapping.
+
+### Step 3 — the apex records in Porkbun
+
+Same *Add a DNS record* form, and again with **Host left empty**. Expect four `A` records and four
+`AAAA` records.
+
+Before adding them: **delete Porkbun's default parking record on the bare host**, and make sure no URL
+forwarding or redirect is enabled on the apex. Either will fight the mapping. Then Google issues the
+certificate automatically, which takes fifteen minutes to a few hours with nothing to do but wait.
+
+### Why a domain mapping rather than a load balancer
+
+A domain mapping is free and the managed certificate is free. A global load balancer costs roughly $18
+a month in forwarding rules before serving any traffic, which is a fifth of your budget for nothing,
+and a hosting rewrite in front of Cloud Run risks buffering server-streamed responses, which would
+break the live charts in a way that looks like the simulation hanging.
 
 ## 2. Reviews — read and tick, no reply needed unless you disagree
 
