@@ -79,9 +79,13 @@ pub struct Scenario {
     // -- tenants ---------------------------------------------------------------
     /// How many tenants share the fleet. One means no tenancy at all.
     pub tenants: usize,
-    /// Relative weights, one per tenant; empty means equal. Used both to draw a request's tenant and
-    /// as the fair share a tenant is entitled to.
+    /// Relative entitlements, one per tenant; empty means equal. This is the fair share a tenant may
+    /// claim, and it is deliberately separate from what it *sends*: a fair-share policy only has work
+    /// to do when some tenant offers more than its share.
     pub tenant_weights: Vec<f64>,
+    /// Relative offered load, one per tenant; empty means the same as `tenant_weights`, so a scenario
+    /// that says nothing has every tenant sending exactly its share.
+    pub tenant_demand: Vec<f64>,
 
     // -- telemetry ---------------------------------------------------------
     pub telemetry_interval_ms: f64,
@@ -145,6 +149,7 @@ impl Default for Scenario {
             fair_share_burst: 2.0,
             tenants: 1,
             tenant_weights: Vec::new(),
+            tenant_demand: Vec::new(),
             telemetry_interval_ms: 1000.0,
             telemetry_delay_ms: 200.0,
             client_timeout_s: 30.0,
@@ -227,15 +232,19 @@ impl Scenario {
                 "admission_headroom" => s.admission_headroom = f("admission_headroom"),
                 "fair_share_burst" => s.fair_share_burst = f("fair_share_burst"),
                 "tenants" => s.tenants = f("tenants") as usize,
-                "tenant_weights" => {
+                "tenant_weights" | "tenant_demand" => {
                     let mut ws = Vec::new();
                     for part in v.split(',').map(str::trim).filter(|p| !p.is_empty()) {
                         match part.parse::<f64>() {
                             Ok(x) => ws.push(x),
-                            Err(_) => malformed.push(format!("tenant_weights = {v:?}")),
+                            Err(_) => malformed.push(format!("{k} = {v:?}")),
                         }
                     }
-                    s.tenant_weights = ws;
+                    if k == "tenant_weights" {
+                        s.tenant_weights = ws;
+                    } else {
+                        s.tenant_demand = ws;
+                    }
                 }
                 "telemetry_interval_ms" => s.telemetry_interval_ms = f("telemetry_interval_ms"),
                 "telemetry_delay_ms" => s.telemetry_delay_ms = f("telemetry_delay_ms"),
@@ -277,12 +286,24 @@ impl Scenario {
     /// Tenant weights normalised to sum to one, one per tenant. Missing weights are one; extra weights
     /// are ignored. Empty when there is a single tenant, which is what "no tenancy" means downstream.
     pub fn tenant_shares(&self) -> Vec<f64> {
+        self.normalised(&self.tenant_weights)
+    }
+
+    /// Offered-load shares, normalised; falls back to the entitlements when `tenant_demand` is empty.
+    pub fn tenant_demand_shares(&self) -> Vec<f64> {
+        if self.tenant_demand.is_empty() {
+            self.tenant_shares()
+        } else {
+            self.normalised(&self.tenant_demand)
+        }
+    }
+
+    fn normalised(&self, weights: &[f64]) -> Vec<f64> {
         if self.tenants <= 1 {
             return Vec::new();
         }
-        let raw: Vec<f64> = (0..self.tenants)
-            .map(|i| self.tenant_weights.get(i).copied().unwrap_or(1.0).max(0.0))
-            .collect();
+        let raw: Vec<f64> =
+            (0..self.tenants).map(|i| weights.get(i).copied().unwrap_or(1.0).max(0.0)).collect();
         let total: f64 = raw.iter().sum();
         if total <= 0.0 {
             return vec![1.0 / self.tenants as f64; self.tenants];
@@ -327,7 +348,7 @@ impl Scenario {
              long_prompt_mean = {}\nlong_output_mean = {}\nload_step_at_s = {}\n\
              load_step_factor = {}\nload_step_until_s = {}\nrouting = {}\np2c_choices = {}\n\
              probe_live = {}\nadmission = {}\nadmission_headroom = {}\nfair_share_burst = {}\n\
-             tenants = {}\ntenant_weights = {}\n\
+             tenants = {}\ntenant_weights = {}\ntenant_demand = {}\n\
              telemetry_interval_ms = {}\ntelemetry_delay_ms = {}\n\
              client_timeout_s = {}\nmax_attempts = {}\nretry_budget_fraction = {}\n\
              retry_backoff_s = {}\nttft_slo_ms = {}\nitl_slo_ms = {}\ne2e_slo_s = {}\n\
@@ -342,6 +363,7 @@ impl Scenario {
             self.probe_live, self.admission, self.admission_headroom, self.fair_share_burst,
             self.tenants,
             self.tenant_weights.iter().map(|w| w.to_string()).collect::<Vec<_>>().join(","),
+            self.tenant_demand.iter().map(|w| w.to_string()).collect::<Vec<_>>().join(","),
             self.telemetry_interval_ms, self.telemetry_delay_ms,
             self.client_timeout_s, self.max_attempts, self.retry_budget_fraction,
             self.retry_backoff_s, self.ttft_slo_ms, self.itl_slo_ms, self.e2e_slo_s,

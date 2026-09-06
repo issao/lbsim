@@ -73,7 +73,7 @@ impl Workload {
         let tenant = if sc.tenants > 1 {
             let u = self.tenants.f64();
             let mut acc = 0.0;
-            let shares = sc.tenant_shares();
+            let shares = sc.tenant_demand_shares();
             let mut pick = shares.len() - 1;
             for (i, w) in shares.iter().enumerate() {
                 acc += w;
