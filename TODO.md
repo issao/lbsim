@@ -3,6 +3,17 @@
 Tasks for the user. Claude keeps this current; anything Claude can do itself does not
 belong here.
 
+## Blocking — needs your action
+
+- [ ] **Give this environment push access to GitHub.** All work is committed locally on
+      `master` (5 commits ahead of `origin/master`) but the push failed: this sandbox has no
+      GitHub credentials, and no `gh` CLI. Pick one:
+      - Paste a personal access token with `repo` scope and I will configure
+        `credential.helper store` for the remote. Simplest, and scoped to this repo.
+      - Tell me to generate an SSH keypair here; you add the public key as a deploy key with
+        write access on the repository, and I switch the remote to SSH.
+      - Or pull these commits down yourself from wherever you can reach this filesystem.
+
 ## Blocking — implementation cannot start until these are done
 
 - [ ] **Bless `docs/ARCHITECTURE.md`.** Six specific decisions are listed in its section 13.
