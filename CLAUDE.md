@@ -143,9 +143,16 @@ See `STATUS.md`. Work is delegated across long-running agents with strict file o
 
 | Agent | Owns | Must not touch |
 |---|---|---|
-| Tech lead, and the subagents it spawns | `crates/`, `src/`, `tests/`, `scenarios/`, `bench/golden-fingerprints.txt`, `tools/build.sh`, `web/` | docs, `TASKS.md`, `STATUS.md`, cloud files |
+| Tech lead, and the subagents it spawns | `crates/`, `src/`, `tests/`, `scenarios/`, `bench/golden-fingerprints.txt`, `tools/build.sh`, `web/`, `docs/execution-graph.md` | other docs, `TASKS.md`, `STATUS.md`, cloud files |
 | Cloud (finished 16:00; its handover is `docs/deploy.md`) | `Dockerfile`, `deploy.sh`, `cloudbuild.yaml`, `.dockerignore`, `docs/deploy.md` | everything else |
 | Monitor and housekeeping | `TASKS.md`, `STATUS.md`, `README.md`, `docs/*.md` except deploy | code, cloud files, this file |
+
+**The execution graph lives in `docs/execution-graph.md`**, per Issao: *"keep an instruction graph of
+everything that we need to in an md file, with sections below of what each task entails."* The tech lead
+owns it: a mermaid graph of every unit and dependency with its state, a status line with the critical
+path, and one section per unit saying what it entails, its files, its stand-in, its agent, its ETA and
+its definition of done. It is updated in the same commit as every spawn, merge and ETA change; Issao
+monitors the file rather than the chat.
 
 The main agent coordinates, owns this file, `proto/` and `docs/dashboard-plan.md`, runs `./deploy.sh` on
 request now that the cloud agent has finished, and stays out of the areas above. Any agent that
