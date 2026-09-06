@@ -1,0 +1,22 @@
+[package]
+name = "lbsim"
+version = "0.1.0"
+edition = "2021"
+description = "Discrete-event simulator for a cloud LLM inference service"
+
+# No dependencies, deliberately. Everything here is a heap, a hash, a histogram or some SVG, and a
+# zero-dependency build compiles in about a second, which is the inner loop this project lives in.
+[dependencies]
+
+[lib]
+name = "lbsim"
+path = "src/lib.rs"
+
+[[bin]]
+name = "sim-run"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1

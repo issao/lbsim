@@ -20,6 +20,41 @@ plain. Its only job is to be the thing you land on and immediately know what you
 
 ### 1.2 Load test dashboard
 
+**Playback, across the top of every view.** Play, pause, change speed, rewind, and step. Present on
+the load-test dashboard and the A/B view, not only in the control panel, because it is the one
+control a user reaches for constantly and burying it in a tab makes the whole thing feel like a
+form rather than an instrument.
+
+| Control | Interface call | Note |
+|---|---|---|
+| Play / pause | `SetSpeed(paused)` | pausing does not close subscriptions, so the charts hold their last values rather than blanking |
+| Speed | `SetSpeed(realtime_factor)` | simulated seconds per wall-clock second; the sample rate is expressed per simulated second, so a chart's density is unaffected by speed |
+| Step | `StepForward(sim_duration_ns)` | bounded server-side; the response says where it stopped |
+| Rewind | `Rewind(to_sim_time)` | the response says whether it came from the recorded log or forced re-simulation, and the scrubber must show which |
+
+The scrubber shows the recorded extent, so it is visible that scrubbing inside it is instant while
+dragging beyond it will re-simulate. A slider that behaves differently in two halves without saying
+so is worse than one that is honest about it.
+
+**Sampled request traces, as a fifth observation tab.** One request's whole journey: arrival,
+routing decision including which replicas were considered and what the router believed about the
+cache, queue wait, prefill, each stall in the token stream, and completion.
+
+Sampling is **stratified by latency bucket**, per Issao and for a concrete reason: uniform sampling
+of hundreds of millions of requests contains almost no examples above the 99.9th percentile, and
+those are the only ones worth reading. So the tab offers buckets, p50, p90, p99, p99.9, and each
+outcome, with a handful of real traces in each.
+
+It does **not** need to pause the simulation. `GetTraces` reads what the recorder already sampled, so
+opening a trace is a query rather than an interruption. Pausing is offered as a convenience, since a
+reader usually wants the surrounding charts to stop moving while they study one request, but it is
+the user's choice rather than a constraint of the interface. That distinction matters: a view that
+forces a pause cannot be used to watch a dynamic unfold, which is much of the point.
+
+Rendered as a waterfall, one row per span, with the conditions alongside each: batch size, key-value
+utilization, tokens processed. A slow span with no surrounding conditions is a mystery rather than an
+explanation.
+
 The fully customisable playground. Two panels:
 
 **Control panel, left. Tabbed.**

@@ -43,7 +43,6 @@ A sixth point, not contested: the clean architecture is also the fast one. The w
 `VISION.md` section 10 that a strict engine/policy split would cost too much performance
 dissolves once epochs are analytic, because the engine's per-decision work becomes O(1).
 Section 5.
-- Ok, I am not convinced but if that is true, I like it. convince me.
 
 ---
 

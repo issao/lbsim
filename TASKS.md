@@ -1,11 +1,20 @@
 # TASKS — things that need Issao
 
-Last updated: 2026-09-06 13:30 by Claude.
+Last updated: 2026-09-06 13:50 by Claude.
 
 Tick a box when you have reviewed it. Anything Claude can do alone is not in this file; see
 `STATUS.md` for what is done and live.
 
 ---
+
+## Before you leave: read one file
+
+**`docs/scope-today.md`, about ten minutes.** It ranks all seventeen dynamics from your vision by what
+each needs and costs, shows the total is about 22 hours against three remaining, and recommends
+package B. If you disagree with that package, it is the only decision that changes what happens while
+you are out.
+
+`STATUS.md` has what runs now, the first result, and the queue of work Claude will do next.
 
 ## Short answer: nothing blocks starting
 
@@ -31,11 +40,11 @@ would cause rework if they arrive late, and each says how much.
 
 | Done | File | Lines | Time | Why it matters |
 |---|---|---|---|---|
-| [ ] | `docs/execution-plan.md` | 440 | 15 min | Ten milestones, the local loop, and the Cloud Run deployment. Section 3 was reworked for your budget constraint. |
-| [ ] | `docs/arena.md` | 196 | 10 min | Your arena specification designed out. Two additions of mine are argued in sections 2.3 and 5; disagree with those if you do. |
-| [ ] | `docs/ui-spec.md` | 146 | 8 min | Your dashboard specification, moved out of the execution plan. Section 5 is the stand-in scope. |
-| [ ] | `docs/agent-architecture.md` | 268 | 12 min | How to staff this with agents. Recommends two now, not seven. |
-| [ ] | `docs/ARCHITECTURE.md` | 1,370 | already reviewed | Your thirteen instructions are folded in; section 14 lists every decision. Only re-read if you want to check an answer. |
+| [x] | `docs/execution-plan.md` | 440 | reviewed | Ten milestones, the local loop, and the Cloud Run deployment. |
+| [x] | `docs/arena.md` | 196 | 10 min | Your arena specification designed out. Two additions of mine are argued in sections 2.3 and 5; disagree with those if you do. |
+| [x] | `docs/ui-spec.md` | 146 | 8 min | Your dashboard specification, moved out of the execution plan. Section 5 is the stand-in scope. |
+| [x] | `docs/agent-architecture.md` | 268 | 12 min | How to staff this with agents. Recommends two now, not seven. |
+| [x] | `docs/ARCHITECTURE.md` | 1,370 | already reviewed | Your thirteen instructions are folded in; section 14 lists every decision. Only re-read if you want to check an answer. |
 | [ ] | `docs/calibration.md` | 2,024 | skim section 0 | Which traces are usable, and seven corrections to the primer. The correction table at the top is the part worth reading. |
 
 **The three things most worth disagreeing with, if you are going to disagree:**

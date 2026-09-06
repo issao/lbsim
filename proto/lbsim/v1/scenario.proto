@@ -183,8 +183,8 @@ message LatencySpec {
 
 // Which policy fills each slot, and its parameters, typed.
 //
-// Issao: *"Don't make these string, model them explicitly as protos please so that I can see the
-// schema."* An earlier version was a policy name plus `map<string, double>`, which hid every
+// Requested by Issao: *"Don't make these string, model them explicitly as protos please so that I
+// can see the schema."* An earlier version was a policy name plus `map<string, double>`, which hid every
 // parameter: you could not tell from the schema what a policy accepted, a typo in a key was silent,
 // and a UI had no way to build controls without a separate descriptor endpoint.
 //
