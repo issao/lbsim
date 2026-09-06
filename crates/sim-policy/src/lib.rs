@@ -22,6 +22,7 @@
 mod accept_all;
 mod least_kv_probe;
 mod deadline_aware;
+mod fair_share;
 mod least_queue_tokens;
 mod least_requests;
 mod p2c;
@@ -62,6 +63,7 @@ pub const ROUTING: &[PolicyEntry<dyn RoutingPolicy>] = &[
 pub const ADMISSION: &[PolicyEntry<dyn AdmissionPolicy>] = &[
     PolicyEntry { names: &["accept_all"], file: "accept_all.rs", make: accept_all::make },
     PolicyEntry { names: &["deadline_aware"], file: "deadline_aware.rs", make: deadline_aware::make },
+    PolicyEntry { names: &["fair_share"], file: "fair_share.rs", make: fair_share::make },
 ];
 
 fn lookup<'a, T: ?Sized>(
