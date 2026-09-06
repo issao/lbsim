@@ -143,7 +143,7 @@ See `STATUS.md`. Work is delegated across long-running agents with strict file o
 
 | Agent | Owns | Must not touch |
 |---|---|---|
-| Tech lead, and the subagents it spawns | `crates/`, `src/`, `tests/`, `scenarios/`, `bench/golden-fingerprints.txt`, `tools/build.sh`, `web/`, `docs/execution-graph.md` | other docs, `TASKS.md`, `STATUS.md`, cloud files |
+| Tech lead, and the subagents it spawns | `crates/`, `src/`, `tests/`, `scenarios/`, `bench/golden-fingerprints.txt`, `tools/build.sh`, `tools/integrate.sh`, `web/`, `docs/execution-graph.md` | other docs, `TASKS.md`, `STATUS.md`, cloud files |
 | Cloud (finished 16:00; its handover is `docs/deploy.md`) | `Dockerfile`, `deploy.sh`, `cloudbuild.yaml`, `.dockerignore`, `docs/deploy.md` | everything else |
 | Monitor and housekeeping | `TASKS.md`, `STATUS.md`, `README.md`, `docs/*.md` except deploy | code, cloud files, this file |
 
@@ -154,7 +154,7 @@ path, and one section per unit saying what it entails, its files, its stand-in, 
 its definition of done. It is updated in the same commit as every spawn, merge and ETA change; Issao
 monitors the file rather than the chat.
 
-The main agent coordinates, owns this file, `proto/` and `docs/dashboard-plan.md`, runs `./deploy.sh` on
+The main agent coordinates, owns this file, `proto/`, `docs/agents/` and `docs/dashboard-plan.md`, runs `./deploy.sh` on
 request now that the cloud agent has finished, and stays out of the areas above. Any agent that
 needs a file it does not own stops and says so rather than editing it. An Issao marker that lands in
 one agent's file but asks for another agent's work is *routed*: the owner records it in `TASKS.md` under
@@ -162,10 +162,23 @@ one agent's file but asks for another agent's work is *routed*: the owner record
 landed unit that belongs in a document goes to the housekeeping agent as a message, with the commit
 hash, since the agents that produce results do not own the documents that report them.
 
-**Subagents never merge or push `master`.** A subagent works on `claude/tl-<unit>` in its own worktree,
-owns exactly the files its brief lists, pushes its branch, and reports; the tech lead integrates,
-rebases onto `master`, merges `--no-ff` and pushes. A brief lists the owned files by path and says
-what to do when another file is needed: stop and report. `git add` is always by explicit
+**The tech lead does not integrate; the merge queue is a script.** Decided by Issao on 2026-09-06 after a
+measurement: the tech lead spent 28 of 32 minutes as a serial merge queue while its fleet of ten sat
+finished and idle, and every check it performed at merge time was mechanical. Now a subagent ends its unit
+with `tools/integrate.sh <branch> --remove-worktree <path>`: an exclusive lock, rebase onto `origin/master`,
+`tools/build.sh test --workspace`, `./check-fingerprints.sh`, the web build if `web/` changed, `--no-ff`
+merge, push, branch and worktree deleted. A failure exits with a code per stage and the branch untouched,
+and comes back to the tech lead as a report. The tech lead plans, briefs, spawns, and reviews merged diffs
+after the fact, filing findings as new units. A subagent still never runs `git merge` or `git push
+origin master` by hand; it runs the script.
+
+**The pipeline is continuous, not wave-synchronous.** While `docs/execution-graph.md` has queued units the
+tech lead keeps at least six in flight and spawns on every completion. The graph's per-unit sections are the
+briefs, so a spawn costs a preamble, not a design session.
+
+**Every agent is restartable from files.** A session restart kills every agent. Each agent's memory is a
+file it owns (`docs/execution-graph.md`, `STATUS.md`/`TASKS.md`, `docs/deploy.md`), and its spawn brief is
+in `docs/agents/`. The main session re-spawns the fleet from there; see `docs/agents/README.md`. `git add` is always by explicit
 path, never `-A`, because that is how one agent's in-flight files ended up in another's commit today.
 
 That rule turned out to be insufficient. **Commit with an explicit pathspec too: `git commit -m "..." -- <paths>`, message first, then the
