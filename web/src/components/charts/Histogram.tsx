@@ -60,7 +60,15 @@ export function HistogramChart({
           return (
             <g key={p}>
               <line x1={sx(v)} x2={sx(v)} y1={PAD.top} y2={H - PAD.bottom} stroke="var(--ink-1)" strokeWidth={1} />
-              <text className="axis-label" x={sx(v) + 3} y={PAD.top + 8} fill="var(--ink-2)">
+              <text
+                className="axis-label"
+                x={sx(v) + 3}
+                y={PAD.top + 8}
+                fill="var(--ink-1)"
+                stroke="var(--surface-1)"
+                strokeWidth={3}
+                paintOrder="stroke"
+              >
                 p{p} {fmtMs(v)}
               </text>
             </g>
@@ -77,7 +85,15 @@ export function HistogramChart({
               strokeWidth={1}
               strokeDasharray="3 3"
             />
-            <text className="axis-label" x={sx(threshold) + 3} y={H - PAD.bottom - 4} fill="var(--critical)">
+            <text
+              className="axis-label"
+              x={sx(threshold) + 3}
+              y={H - PAD.bottom - 4}
+              fill="var(--critical)"
+              stroke="var(--surface-1)"
+              strokeWidth={3}
+              paintOrder="stroke"
+            >
               {thresholdLabel ?? 'SLO'}
             </text>
           </g>

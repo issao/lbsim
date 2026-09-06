@@ -28,7 +28,7 @@ export function LineChart({
   yMax,
   yMin = 0,
   format,
-  xFormat = (v: number) => `${v.toFixed(0)}s`,
+  xFormat,
   thresholds = [],
   directLabels = true,
   unit,
@@ -71,6 +71,27 @@ export function LineChart({
 
   const ticks = useMemo(() => niceTicks(y0, y1, 3), [y0, y1]);
   const xticks = useMemo(() => niceTicks(x0, x1, 4), [x0, x1]);
+  // Tick precision follows the span, so a four-second window does not print "1s 1s 2s 2s".
+  const xfmt = useMemo(() => {
+    if (xFormat) return xFormat;
+    const span = Math.max(x1 - x0, 1e-6);
+    const d = span >= 20 ? 0 : span >= 4 ? 1 : 2;
+    return (v: number) => `${v.toFixed(d)}s`;
+  }, [xFormat, x0, x1]);
+
+  // Direct labels are pushed apart rather than allowed to overprint each other.
+  const endLabels = useMemo(() => {
+    if (!directLabels || series.length < 2 || series.length > 4) return [];
+    const raw = series
+      .map((s) => {
+        const last = lastDefined(s.points);
+        return last === null ? null : { key: s.key, color: s.color, v: last.v, y: sy(last.v) };
+      })
+      .filter((x): x is { key: string; color: string; v: number; y: number } => x !== null)
+      .sort((a, b) => a.y - b.y);
+    for (let i = 1; i < raw.length; i++) if (raw[i].y - raw[i - 1].y < 9) raw[i].y = raw[i - 1].y + 9;
+    return raw;
+  }, [series, sy, directLabels]);
 
   const onMove = (e: React.MouseEvent) => {
     const el = ref.current;
@@ -111,7 +132,7 @@ export function LineChart({
         ))}
         {xticks.map((t) => (
           <text key={`x${t}`} className="axis-label" x={sx(t)} y={H - 4} textAnchor="middle">
-            {xFormat(t)}
+            {xfmt(t)}
           </text>
         ))}
         <line className="zero-line" x1={PAD.left} x2={W - PAD.right} y1={sy(y0)} y2={sy(y0)} />
@@ -132,6 +153,9 @@ export function LineChart({
               x={W - PAD.right + 3}
               y={sy(t.value) + 3}
               fill={t.color ?? 'var(--critical)'}
+              stroke="var(--surface-1)"
+              strokeWidth={3}
+              paintOrder="stroke"
             >
               {t.label}
             </text>
@@ -151,23 +175,20 @@ export function LineChart({
           />
         ))}
 
-        {directLabels && series.length > 1 && series.length <= 4
-          ? series.map((s) => {
-              const last = lastDefined(s.points);
-              if (last === null) return null;
-              return (
-                <text
-                  key={`l${s.key}`}
-                  className="axis-label"
-                  x={W - PAD.right + 3}
-                  y={sy(last.v) + 3}
-                  fill={s.color}
-                >
-                  {format(last.v)}
-                </text>
-              );
-            })
-          : null}
+        {endLabels.map((l) => (
+          <text
+            key={`l${l.key}`}
+            className="axis-label"
+            x={W - PAD.right + 3}
+            y={l.y + 3}
+            fill={l.color}
+            stroke="var(--surface-1)"
+            strokeWidth={3}
+            paintOrder="stroke"
+          >
+            {format(l.v)}
+          </text>
+        ))}
 
         {hv >= 0 ? (
           <>

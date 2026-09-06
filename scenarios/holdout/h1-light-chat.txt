@@ -1,0 +1,72 @@
+# HELD-OUT SUITE 1 of 8 — frozen. docs/arena.md section 5.
+#
+# Dynamic exposed: light load, 33 rps against an analytic rated capacity of 328 for this mixture, so
+# 0.10x. Nothing is contended, and at freeze time the best policy attained 0.9965 here — the highest
+# any policy reaches on any chat load in this suite.
+#
+# Why it is in the suite: it is the control. A policy that loses goodput here has broken something
+# unrelated to load balancing, and a *round* in which every policy suddenly does worse here than ten
+# rounds ago is the signature of arena drift rather than of progress — which is the single question
+# section 5 exists to answer. It also fixes the goodput scale the other seven are read against.
+#
+# Every workload number below is traceable to docs/calibration.md. The fleet block is identical in all
+# eight files, so the only thing that varies across the suite is the load.
+name = h1-light-chat
+seed = 20260906
+duration_s = 120
+warmup_s = 15
+
+# -- fleet: a 70B-class model on 8xH100 per replica, identical in every held-out file ---------------
+# calibration.md 6.5: batch-1 decode 10.25 ms (NIM, 8xH100 bf16) and 11,082 output tok/s at max
+# throughput; 6.2's convention puts all overhead in the fixed term. step_base_ms is the 7.46 ms weight
+# read at 70% bandwidth utilization plus 2.75 ms fixed overhead, step_per_kv_ktoken_ms is the
+# bandwidth term, and kv_capacity_tokens is the primer's 1.37 M per replica (calibration.md 5.3 uses
+# the same figure). Replica count is not a calibrated number: calibration.md 9.2 records that no public
+# source gives a fleet size.
+replicas = 32
+max_batch = 256
+kv_capacity_tokens = 1370000
+step_base_ms = 10.2
+step_per_seq_ms = 0.0
+step_per_kv_ktoken_ms = 0.0175
+prefill_tokens_per_s = 28286
+step_token_budget = 1024
+max_queue = 400
+
+# -- load: calibration.md scenario A "chat-2024", plus a long-context mode ------------------------
+# prompt_mean/prompt_cv: Azure 2024 conv input mean 1,632, CV 0.94 [measured-here, 3.1 and 10].
+# output_mean/output_cv: Azure 2024 conv output mean 105.5, CV 1.50 [measured-here, 3.1, 3.4].
+# The long mode is Mooncake conversation, input mean 12,035 and output mean 343 [measured-here, 3.1],
+# at 8% of traffic. That weight is NOT a measured quantity — calibration.md 3.3 establishes only that
+# input length is multi-modal; 8% is the smallest mixture weight that still puts long-context work in
+# the same queue on every run, which is the head-of-line-blocking mechanism the suite must contain.
+# Analytic rated capacity for this mixture is 328 rps; 33 rps is 0.10x of it. The rate is deliberately
+# an order of magnitude below that figure, because the analytic number is a *saturation* capacity that
+# ignores queueing: measured SLO capacity for this mixture is about 0.45x of it (see
+# docs/arena-implementation.md). h8 offers exactly this rate with a different client, so the two
+# scenarios isolate client behaviour from load.
+arrival_rps = 33
+prompt_mean = 1632
+prompt_cv = 0.94
+output_mean = 105.5
+output_cv = 1.5
+long_probability = 0.08
+long_prompt_mean = 12035
+long_output_mean = 343
+
+# -- telemetry: calibration.md 9.2 records production staleness as unmeasured, [GUESS] 5 s with a
+# 1-30 s sweep. 1 s is the fast end of that sweep, so herding is present but not the subject here.
+telemetry_interval_ms = 1000
+telemetry_delay_ms = 200
+
+# -- client and SLOs -----------------------------------------------------------------------------
+# max_attempts = 1: retries are h8's subject, and mixing them in here would make two dynamics share
+# one scenario. client_timeout_s = 60 is a UI-side deadline, well inside the 600 s SDK default
+# (calibration.md 8.1). calibration.md 9.1 is explicit that no public trace carries an SLO label, so
+# the three SLO numbers are assumptions, identical across the chat scenarios so they stay comparable.
+client_timeout_s = 60
+max_attempts = 1
+ttft_slo_ms = 2000
+itl_slo_ms = 80
+e2e_slo_s = 60
+sample_interval_ms = 250

@@ -19,7 +19,7 @@ autoscaling, and multi-cluster. `docs/scope-today.md` says why each was cut.
 |---|---|---|---|---|
 | power of two choices | **18,127** | 3,859 ms | 97.0% | 0.33 |
 | round robin | 17,361 | 8,321 ms | 93.1% | 0.43 |
-| random | 16,961 | 8,590 ms | 92.3% | 0.55 |
+| random | 16,961 | 8,590 ms | 92.2% | 0.55 |
 | least requests | **6,943** | 20,133 ms | 39.4% | 1.27 |
 
 **Least-requests is 2.6x worse than sampling two replicas at random, and worse than round robin,
@@ -87,10 +87,10 @@ Offered rate swept with power-of-two-choices.
 |---|---|---|---|---|
 | 30 rps | 7,919 | 8,106 | 2,819 ms | 98.1% |
 | 70 rps | 18,127 | 18,744 | 3,859 ms | 97.0% |
-| 110 rps | 26,457 | 27,863 | 4,496 ms | 95.6% |
-| 150 rps | **33,068** | 35,350 | 5,637 ms | 93.8% |
-| 190 rps | 31,761 | **37,976** | 8,590 ms | 84.5% |
-| 230 rps | 18,128 | 30,175 | 38,655 ms | 59.1% |
+| 110 rps | 26,457 | 27,863 | 4,496 ms | 95.4% |
+| 150 rps | **33,068** | 35,350 | 5,637 ms | 93.3% |
+| 190 rps | 31,761 | **37,976** | 8,590 ms | 83.3% |
+| 230 rps | 18,128 | 30,175 | 38,655 ms | 53.2% |
 
 Two knees, in different places, and that is the point. **Goodput peaks at 150 requests/s**, which is
 64% of the rated 235. **Throughput peaks later, at 190.** Between those two points the fleet is doing
@@ -173,6 +173,21 @@ Every one is a case where **the obvious metric moves the wrong way, or not at al
 
 That is the argument for building this at all. Each of these is discoverable in production only by
 degrading it, and three of the four would be invisible on a conventional dashboard.
+
+## One correction to these numbers
+
+The attainment column was overstated at high load until 14:35, and the arena harness caught why.
+`slo_attainment` divided by *successful* requests rather than by all of them, so a policy that shed
+nine requests in ten and served the tenth well would have reported perfect attainment. That is exactly
+the trade the SLO gate exists to forbid, and the metric was blind to it.
+
+Fixed: the denominator is now every measured request. A shed request did not get service, whatever the
+merits of shedding it early. The old view survives as a diagnostic under a different name, because "of
+what we served, how much was good" is sometimes the question, just never the score.
+
+Impact on what is published above: attainment falls by 0.1 to 6 points, entirely at the high-load end
+where shedding actually happens, and 230 requests/s moves from 59.1% to 53.2%. **No ordering and no
+conclusion changes.** The figures in the tables are the corrected ones.
 
 ## Caveats, stated rather than buried
 
