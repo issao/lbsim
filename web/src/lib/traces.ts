@@ -129,46 +129,38 @@ function buildTrace(
     });
   }
 
-  // Decode, interrupted by preemption stalls when KV was tight at this moment.
-  let decodeBudget = Math.max(itlMs * outputTokens, 1);
-  const tight = (replica ? replica.kvUtilization : 0) > 0.92 || p >= 99;
+  // Decode, interrupted by preemption stalls when KV was tight at this moment. The segment
+  // durations are solved for the bucket's end-to-end target rather than stretched afterwards, so
+  // no span can come out with a negative duration.
+  const tight = (replica ? replica.kvUtilization : 0) > 0.9 || p >= 99;
   const stalls = tight ? 1 + Math.floor(rnd(10) * 2) : 0;
   const segs = stalls + 1;
+  const stallMs: number[] = [];
+  const stallTier: MemoryTier[] = [];
+  for (let k = 0; k < stalls; k++) {
+    const tier: MemoryTier = rnd(11 + k) < 0.6 ? 'DRAM' : 'NONE';
+    stallTier.push(tier);
+    stallMs.push(tier === 'DRAM' ? 20 + 18 * rnd(20 + k) : 240 + 90 * rnd(20 + k));
+  }
+  const stallTotal = stallMs.reduce((a, b) => a + b, 0);
+  const decodeTotal = Math.max(targetE2e - cursor - stallTotal, itlMs * outputTokens * 0.25, 1);
   for (let k = 0; k < segs; k++) {
-    push(`replica:${replica ? replica.id : 0}`, 'decode', decodeBudget / segs, {
+    push(`replica:${replica ? replica.id : 0}`, 'decode', decodeTotal / segs, {
       tokensProcessed: Math.round(outputTokens / segs),
     });
     if (k < stalls) {
-      const tier: MemoryTier = rnd(11 + k) < 0.6 ? 'DRAM' : 'NONE';
-      const stallMs = tier === 'DRAM' ? 20 + 18 * rnd(20 + k) : 240 + 90 * rnd(20 + k);
-      push(`replica:${replica ? replica.id : 0}`, tier === 'DRAM' ? 'preempted' : 'preempted-recompute', stallMs, {
-        kvTier: tier,
-        tokensProcessed: tier === 'NONE' ? Math.round(promptTokens * 0.9) : 0,
-      });
-      decodeBudget = Math.max(decodeBudget - stallMs, decodeBudget * 0.5);
+      push(
+        `replica:${replica ? replica.id : 0}`,
+        stallTier[k] === 'DRAM' ? 'preempted-swap' : 'preempted-recompute',
+        stallMs[k],
+        {
+          kvTier: stallTier[k],
+          tokensProcessed: stallTier[k] === 'NONE' ? Math.round(promptTokens * 0.9) : 0,
+        }
+      );
     }
   }
 
-  const e2eMs = cursor;
-  const scale = targetE2e / Math.max(e2eMs, 1);
-  if (scale > 1) {
-    // Stretch the decode spans so the trace matches the bucket it was drawn from.
-    let shift = 0;
-    for (const s of spans) {
-      s.startMs += shift;
-      if (s.operation === 'decode') {
-        const extra = (s.endMs - s.startMs) * (scale - 1);
-        shift += extra;
-        s.endMs += extra;
-      }
-      s.endMs += 0;
-    }
-    for (let i = 1; i < spans.length; i++) if (spans[i].startMs < spans[i - 1].endMs) {
-      const d = spans[i - 1].endMs - spans[i].startMs;
-      spans[i].startMs += d;
-      spans[i].endMs += d;
-    }
-  }
   const total = spans[spans.length - 1].endMs;
   const outcome = pickOutcome(c, bucket, total, targetTtft, rnd(30));
   const tenantIdx = Math.floor(rnd(31) * TENANTS.length);

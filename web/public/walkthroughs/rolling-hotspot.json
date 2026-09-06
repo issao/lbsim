@@ -9,7 +9,7 @@
     "seed": 20260906,
     "durationS": 120,
     "routing.kind": "round_robin",
-    "workload.arrivalRps": 140,
+    "workload.arrivalRps": 85,
     "workload.longProbability": 0.12,
     "workload.longPromptMean": 24000,
     "fleet.replicas": 32
@@ -23,7 +23,7 @@
       "highlight": "heatmap",
       "title": "Every replica is getting the same number of requests",
       "body": [
-        "The fleet is 32 replicas behind a round-robin router at 140 requests per second, which is comfortably inside its rated capacity. Eight per cent of requests carry a 24,000-token prompt; the rest carry about 1,200.",
+        "The fleet is 32 replicas behind a round-robin router at 85 requests per second, which is inside what it can serve in aggregate. Twelve per cent of requests carry a 24,000-token prompt; the rest carry about 1,200.",
         "Round robin is doing exactly what it promises. Request counts are equal to within a rounding error. Look at the heatmap anyway."
       ],
       "look_for": "The rows are not the same colour, and nothing has gone wrong yet."
@@ -86,7 +86,7 @@
       "highlight": "heatmap",
       "title": "Now put the heavy tail back and change the policy instead",
       "body": [
-        "Same workload as the first four steps: twelve per cent long requests, 140 requests per second. Only the router changed, to power-of-two-choices with d = 2.",
+        "Same workload as the first four steps: twelve per cent long requests, 85 requests per second. Only the router changed, to power-of-two-choices with d = 2.",
         "The stripe is gone. Sampling two replicas and taking the less loaded one bounds herding by construction, and it is O(1) rather than O(fleet), so it costs less than the least-loaded scan it beats."
       ],
       "look_for": "The imbalance coefficient of variation, which should now be a fraction of what it was at 30 s."

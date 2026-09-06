@@ -165,6 +165,25 @@ export function ratedFleetRps(c: ScenarioConfig): number {
   return ratedRpsPerReplica(c) * c.fleet.replicas;
 }
 
+/**
+ * What the fleet can actually retire once parked sessions have taken their share of the cache.
+ * A fixed point, because the number of parked sessions depends on the rate being served, which is
+ * exactly the coupling that turns a cache shortage into a spiral rather than a plateau.
+ */
+export function estimatedFleetRps(c: ScenarioConfig): number {
+  const tk = tokenMeans(c);
+  const hit = c.routing.kind === 'prefix_affinity' ? 0.7 : 0.08;
+  const ctx = tk.prompt * (1 - hit * 0.6) + tk.output / 2;
+  let cap = ratedFleetRps(c);
+  for (let i = 0; i < 8; i++) {
+    const perReplica = Math.min(c.workload.arrivalRps, cap) / Math.max(c.fleet.replicas, 1);
+    const parked = c.workload.longProbability * perReplica * PARK_S;
+    const batchCap = clamp(c.fleet.kvTokensPerReplica / ctx - parked, 1, c.fleet.maxBatch);
+    cap = achievableRps(c, batchCap) * c.fleet.replicas;
+  }
+  return cap;
+}
+
 function perturbationFactor(c: ScenarioConfig, t: number): number {
   const w = c.workload;
   if (w.perturbation === 'none') return 1;
@@ -537,7 +556,10 @@ export class MockEngine {
         kvSum += kvUtil;
         kvN++;
         hitSum += hitRate;
-        loadForCv.push(batch * ctxTokens);
+        // Work in flight, queued and running, in tokens. Measuring only the running batch would
+        // understate imbalance badly: a saturated replica's batch is capped, and everything the
+        // load balancer got wrong then shows up in the queue instead.
+        loadForCv.push((q + batch + parkedSeqs) * ctxTokens);
       }
 
       admitted += done / dt;

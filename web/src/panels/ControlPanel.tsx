@@ -4,7 +4,7 @@ import { SPEEDS, STEP_S } from '../lib/useRun';
 import type { RoutingConfig, ScenarioConfig } from '../lib/config';
 import { cloneConfig, PRESETS, ROUTING_LABEL, ROUTING_NOTE, VIEW_ONLY_EXPLANATION, diffConfig } from '../lib/config';
 import type { RoutingKind } from '../lib/types';
-import { ratedFleetRps } from '../lib/engine';
+import { estimatedFleetRps, ratedFleetRps } from '../lib/engine';
 import { Check, Panel, Select, Slider, Tabs, type TabDef } from '../components/ui';
 import { fmtNum, fmtTime, fmtTokens } from '../lib/format';
 
@@ -44,7 +44,7 @@ export function ControlPanel({
       highlight={highlight === 'control'}
       id="control"
     >
-      <Tabs tabs={TABS} value={tab} onChange={onTab} />
+      <Tabs tabs={TABS} value={tab} onChange={onTab} scope="control" />
       <div style={{ padding: 9, overflow: 'auto' }}>
         {tab === 'scenarios' ? <ScenariosTab run={run} /> : null}
         {tab === 'load' ? <LoadTab c={c} set={set} /> : null}
@@ -93,7 +93,8 @@ function ScenariosTab({ run }: { run: RunHandle }) {
 
 function LoadTab({ c, set }: { c: ScenarioConfig; set: (m: (d: ScenarioConfig) => void) => void }) {
   const rated = ratedFleetRps(c);
-  const rho = c.workload.arrivalRps / Math.max(rated, 1e-9);
+  const est = estimatedFleetRps(c);
+  const rho = c.workload.arrivalRps / Math.max(est, 1e-9);
   return (
     <>
       <p className="section-label">Arrivals</p>
@@ -107,7 +108,8 @@ function LoadTab({ c, set }: { c: ScenarioConfig; set: (m: (d: ScenarioConfig) =
         onChange={(v) => set((d) => { d.workload.arrivalRps = v; })}
         note={
           <>
-            rated fleet capacity {fmtNum(rated, 0)} rps &middot; offered/rated{' '}
+            capacity {fmtNum(est, 0)} rps once parked sessions have their share of the cache, against a{' '}
+            {fmtNum(rated, 0)} rps nameplate &middot; offered/capacity{' '}
             <b style={{ color: rho > 1 ? 'var(--critical)' : rho > 0.85 ? 'var(--serious)' : 'var(--ink-2)' }}>
               {rho.toFixed(2)}
             </b>
@@ -404,9 +406,9 @@ function ClusterTab({ c, set }: { c: ScenarioConfig; set: (m: (d: ScenarioConfig
       <Slider
         label="KV capacity per replica"
         value={c.fleet.kvTokensPerReplica}
-        min={40000}
-        max={800000}
-        step={20000}
+        min={10000}
+        max={400000}
+        step={5000}
         format={(v) => `${fmtTokens(v)} tok`}
         onChange={(v) => set((d) => { d.fleet.kvTokensPerReplica = v; })}
         note="lower it until preemption starts and throughput falls as load rises"

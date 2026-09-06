@@ -31,7 +31,9 @@ export function Heatmap({
 }) {
   const [hover, setHover] = useState<{ r: number; c: number; x: number; y: number } | null>(null);
   const cols = colTimes.length;
-  const cellW = Math.max(2, Math.min(9, Math.floor(760 / Math.max(cols, 1))));
+  // Drawn at 1:1 pixels and left-aligned, scrolling if it has to. Scaling a heatmap to fit its
+  // container blurs the cell boundaries, which are the whole signal.
+  const cellW = Math.max(2, Math.min(14, Math.floor(1010 / Math.max(cols, 1))));
   const W = cellW * cols;
   const LABEL_W = 26;
 
@@ -39,7 +41,8 @@ export function Heatmap({
     <div className="chart">
       <div className="heat-wrap">
         <svg
-          viewBox={`0 0 ${LABEL_W + W + 4} ${rows.length * cellH + 14}`}
+          className="heat-svg"
+          width={LABEL_W + W + 4}
           height={rows.length * cellH + 14}
           role="img"
           aria-label={`${valueLabel} per ${rowLabel} over time`}

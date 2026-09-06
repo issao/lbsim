@@ -3,7 +3,7 @@ import { BASE, cloneConfig, comparability, FIELD_LABEL, PRESETS, ROUTING_LABEL, 
 import type { RoutingKind } from '../lib/types';
 import { useRun, type RunHandle } from '../lib/useRun';
 import { windowFrames, attainment, goodput, percentileSeries, series, xs } from '../lib/derive';
-import { ratedFleetRps } from '../lib/engine';
+import { estimatedFleetRps } from '../lib/engine';
 import { PlaybackBar } from '../components/PlaybackBar';
 import { MockTag, Panel, Select, Slider, Tile } from '../components/ui';
 import { LineChart } from '../components/charts/LineChart';
@@ -44,6 +44,9 @@ export function Compare() {
   const fb = windowFrames(b.engine, b.cursorS);
   const la = fa[fa.length - 1];
   const lb = fb[fb.length - 1];
+  // One colour scale across both heatmaps, or the panels would invite a comparison they do not
+  // support: the same shade would mean different numbers on each side.
+  const sharedHeatMax = Math.max(4, maxQueue(fa), maxQueue(fb));
 
   const setBoth = (mut: (d: ScenarioConfig) => void) => {
     const na = cloneConfig(a.config);
@@ -77,7 +80,7 @@ export function Compare() {
               step={5}
               format={(v) => `${v} rps`}
               onChange={(v) => setBoth((d) => { d.workload.arrivalRps = v; })}
-              note={`rated fleet capacity ${fmtNum(ratedFleetRps(a.config), 0)} rps`}
+              note={`capacity about ${fmtNum(estimatedFleetRps(a.config), 0)} rps, identical for both runs`}
             />
             <Slider
               label="long-request probability (both)"
@@ -109,6 +112,8 @@ export function Compare() {
                     const nb = cloneConfig(b.config);
                     nb.seed = e.target.checked ? b.config.seed + 1 : a.config.seed;
                     b.restart(nb);
+                    // Keep the two clocks together, or the panels would differ in time as well.
+                    b.scrubTo(a.cursorS);
                   }}
                 />
                 <span>give run B a different seed</span>
@@ -121,12 +126,16 @@ export function Compare() {
         </Panel>
 
         {!gate.ok ? (
-          <Refusal a={a.config} b={b.config} blocking={gate.blocking} onFix={() => { setDrift(false); b.restart({ ...cloneConfig(a.config), name: b.config.name, routing: { ...b.config.routing } }); }} />
+          <Refusal a={a.config} b={b.config} blocking={gate.blocking} onFix={() => {
+              setDrift(false);
+              b.restart({ ...cloneConfig(a.config), name: b.config.name, routing: { ...b.config.routing } });
+              b.scrubTo(a.cursorS);
+            }} />
         ) : null}
 
         <div className="ab-grid">
-          <Side run={a} label="A" other={b} enabled={gate.ok} />
-          <Side run={b} label="B" other={a} enabled={gate.ok} />
+          <Side run={a} label="A" other={b} enabled={gate.ok} heatMax={sharedHeatMax} />
+          <Side run={b} label="B" other={a} enabled={gate.ok} heatMax={sharedHeatMax} />
         </div>
 
         {gate.ok && la && lb ? (
@@ -178,8 +187,8 @@ function Refusal({
 }) {
   const val = (c: ScenarioConfig, path: string): string => {
     const [head, tail] = path.split('.');
-    const obj = tail ? (c as unknown as Record<string, Record<string, unknown>>)[head] : (c as unknown as Record<string, unknown>);
-    const v = tail ? obj[tail] : obj;
+    const root = c as unknown as Record<string, unknown>;
+    const v = tail ? (root[head] as Record<string, unknown>)[tail] : root[head];
     return String(v);
   };
   return (
@@ -209,7 +218,25 @@ function Refusal({
   );
 }
 
-function Side({ run, label, other, enabled }: { run: RunHandle; label: string; other: RunHandle; enabled: boolean }) {
+function maxQueue(frames: { replicas: { queuedSeqs: number }[] }[]): number {
+  let m = 0;
+  for (const f of frames) for (const r of f.replicas) if (r.queuedSeqs > m) m = r.queuedSeqs;
+  return m;
+}
+
+function Side({
+  run,
+  label,
+  other,
+  enabled,
+  heatMax,
+}: {
+  run: RunHandle;
+  label: string;
+  other: RunHandle;
+  enabled: boolean;
+  heatMax: number;
+}) {
   const frames = windowFrames(run.engine, run.cursorS);
   const last = frames[frames.length - 1];
   const kinds = Object.keys(ROUTING_LABEL) as RoutingKind[];
@@ -222,14 +249,16 @@ function Side({ run, label, other, enabled }: { run: RunHandle; label: string; o
     }));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [frames.length, run.revision, last?.tick]);
-  const heatMax = Math.max(1, ...heatRows.flatMap((r) => r.values));
 
   if (!last) return <Panel title={label} sub="warming up">{null}</Panel>;
   const att = attainment(last, run.config.slo);
 
   return (
     <div className="grid" style={{ gridTemplateColumns: 'minmax(0, 1fr)' }}>
-      <Panel title={`Run ${label}`} sub={ROUTING_LABEL[run.config.routing.kind]}>
+      <Panel
+        title={`Run ${label}`}
+        sub={enabled ? ROUTING_LABEL[run.config.routing.kind] : `${ROUTING_LABEL[run.config.routing.kind]} — shown for reference, not comparable`}
+      >
         <Select
           label="routing policy"
           value={run.config.routing.kind}
@@ -268,7 +297,7 @@ function Side({ run, label, other, enabled }: { run: RunHandle; label: string; o
           rowLabel="replica"
           valueLabel="queued requests"
           format={(x) => x.toFixed(0)}
-          vmax={Math.max(heatMax, 4)}
+          vmax={heatMax}
           cellH={6}
         />
       </Panel>

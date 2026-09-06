@@ -8,7 +8,7 @@
     "seed": 20260906,
     "durationS": 120,
     "routing.kind": "least_kv_tokens",
-    "workload.arrivalRps": 130,
+    "workload.arrivalRps": 105,
     "telemetryIntervalMs": 1000,
     "telemetryDelayMs": 200
   },

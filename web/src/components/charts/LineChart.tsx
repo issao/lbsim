@@ -150,8 +150,8 @@ export function LineChart({
             />
             <text
               className="axis-label"
-              x={W - PAD.right + 3}
-              y={sy(t.value) + 3}
+              x={PAD.left + 3}
+              y={sy(t.value) - 3}
               fill={t.color ?? 'var(--critical)'}
               stroke="var(--surface-1)"
               strokeWidth={3}

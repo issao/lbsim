@@ -49,7 +49,7 @@ export function Traces({
     <div className="grid" style={{ gridTemplateColumns: 'minmax(280px, 380px) minmax(0, 1fr)' }}>
       <Panel
         title="Sampled traces"
-        sub="stratified by latency bucket"
+        sub="by latency bucket"
         bodyClass="tight"
         highlight={highlight === 'trace-list'}
         id="trace-list"

@@ -370,6 +370,7 @@ table.data caption { caption-side: bottom; text-align: left; padding: 5px 6px; f
 .tooltip .tt-row b { font-family: var(--mono); font-weight: 500; }
 
 .heat-wrap { overflow-x: auto; }
+.chart svg.heat-svg { width: auto; max-width: none; }
 .heat-legend { display: flex; align-items: center; gap: 5px; font-size: 10px; color: var(--ink-3); margin-top: 4px; }
 .heat-legend .ramp { display: flex; }
 .heat-legend .ramp i { width: 12px; height: 8px; display: inline-block; }
@@ -377,7 +378,7 @@ table.data caption { caption-side: bottom; text-align: left; padding: 5px 6px; f
 /* ---------------------------------------------------------------- waterfall */
 
 .waterfall { width: 100%; }
-.wf-row { display: grid; grid-template-columns: 118px minmax(90px, 1fr) 58px 58px 60px 66px; gap: 6px; align-items: center; font-size: 10.5px; padding: 1px 0; }
+.wf-row { display: grid; grid-template-columns: 132px minmax(90px, 1fr) 58px 58px 60px 66px; gap: 6px; align-items: center; font-size: 10.5px; padding: 1px 0; }
 .wf-row.head { color: var(--ink-3); font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.04em; border-bottom: 1px solid var(--line); padding-bottom: 3px; margin-bottom: 3px; }
 .wf-row:hover:not(.head) { background: var(--surface-2); }
 .wf-op { font-family: var(--mono); color: var(--ink-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -397,14 +398,14 @@ table.data caption { caption-side: bottom; text-align: left; padding: 5px 6px; f
 
 .home { max-width: 860px; margin: 0 auto; padding: 40px 20px 60px; }
 .home h1 { font-size: 20px; font-weight: 600; margin: 0 0 4px; letter-spacing: -0.01em; }
-.home .lede { color: var(--ink-2); margin: 0 0 22px; max-width: 62ch; }
+.home .lede { color: var(--ink-2); margin: 0 0 22px; }
 .home ul.surfaces { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--line); }
 .home ul.surfaces li { border-bottom: 1px solid var(--line); padding: 11px 2px; display: grid; grid-template-columns: 190px minmax(0, 1fr); gap: 16px; align-items: baseline; }
 @media (max-width: 620px) { .home ul.surfaces li { grid-template-columns: minmax(0, 1fr); gap: 2px; } }
 .home ul.surfaces a { font-size: 13px; font-weight: 550; }
 .home ul.surfaces p { margin: 0; color: var(--ink-2); }
 .home ul.surfaces code { font-family: var(--mono); font-size: 10.5px; color: var(--ink-3); }
-.home .footnote { margin-top: 26px; color: var(--ink-3); font-size: 11px; max-width: 66ch; }
+.home .footnote { margin-top: 26px; color: var(--ink-3); font-size: 11px; }
 .home .footnote h2 { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-2); margin: 0 0 4px; }
 
 /* ---------------------------------------------------------------- A/B */
@@ -432,7 +433,7 @@ table.data caption { caption-side: bottom; text-align: left; padding: 5px 6px; f
 .card-title { font-size: 12.5px; font-weight: 600; }
 .card-body { font-size: 11px; color: var(--ink-2); margin: 0; }
 .card-foot { margin-top: auto; display: flex; align-items: center; gap: 6px; font-size: 10px; color: var(--ink-3); }
-.card-foot .phase { border: 1px solid var(--line-strong); border-radius: 2px; padding: 0 4px; }
+.card-foot .phase { border: 1px solid var(--line-strong); border-radius: 2px; padding: 0 4px; white-space: nowrap; }
 
 .walkthrough {
   position: fixed; right: 16px; bottom: 16px; width: 340px; z-index: 40;

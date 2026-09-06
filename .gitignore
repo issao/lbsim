@@ -31,3 +31,20 @@ bench/queue/target/
 # Rust build and simulator output
 /target/
 /out/
+
+# Credentials. Nothing of this shape should ever be in this repo; the deploy key lives in
+# ~/.config/gcloud, outside it. These rules exist so an accident is caught by git rather than by a
+# later audit.
+*.pem
+*.p12
+*.key
+id_rsa*
+.env
+.env.*
+.netrc
+.npmrc
+credentials.json
+client_secret*.json
+service-account*.json
+*-key.json
+gcloud/

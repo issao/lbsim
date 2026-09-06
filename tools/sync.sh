@@ -158,6 +158,29 @@ if [ -f tools/check_diagram.py ]; then
   fi
 fi
 
+# Secret scan on what is about to be, or has just been, committed. A one-off audit answers a question;
+# a check that runs every time answers it continuously, and the failure mode here is silent and
+# permanent, since a secret in git history survives deletion.
+if git rev-parse --git-dir >/dev/null 2>&1; then
+  leak=$(git grep -I -n -E \
+    -e '-----BEGIN [A-Z ]*PRIVATE KEY-----' \
+    -e '"private_key_id"[[:space:]]*:' \
+    -e '"type"[[:space:]]*:[[:space:]]*"service_account"' \
+    -e 'ya29\.[A-Za-z0-9_-]{40,}' \
+    -e 'AIza[0-9A-Za-z_-]{35}' \
+    -e 'AKIA[0-9A-Z]{16}' \
+    -e 'xox[baprs]-[0-9A-Za-z-]{20,}' \
+    -- HEAD 2>/dev/null | head -5)
+  if [ -n "$leak" ]; then
+    attention=1
+    say "SECRET-SHAPED CONTENT IN THE TREE:"
+    printf '%s\n' "$leak" | sed 's/^/    /'
+    say "    -> do not just delete it. It is in history; rotate the credential first"
+  else
+    say "secret scan: clean"
+  fi
+fi
+
 if [ -f tools/inbox.py ]; then
   if python3 tools/inbox.py --selftest >/dev/null 2>&1; then
     say "inbox scanner: regression cases pass"

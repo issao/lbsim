@@ -82,8 +82,29 @@ pub fn cli(args: Vec<String>) -> Result<(), String> {
             let o = Opts { out: out.clone(), telemetry, budget_mb, overrides: Vec::new() };
             emit(&runs, o.out.as_deref().unwrap_or("out/sweep.html"), &o)
         }
+        "serve" => {
+            // Serving is not simulation, so threads are fine here; the no-threads rule in CLAUDE.md
+            // is about keeping the simulated clock the only notion of time.
+            let mut dir = "web/dist".to_string();
+            let port: u16 = std::env::var("PORT")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(8080);
+            let mut i = 0;
+            while i < rest.len() {
+                match rest[i].as_str() {
+                    "--dir" => {
+                        dir = rest.get(i + 1).cloned().ok_or("--dir needs a path")?;
+                        i += 2;
+                    }
+                    other => return Err(format!("unexpected argument {other:?}")),
+                }
+            }
+            crate::serve::serve(&dir, port)
+        }
         _ => {
             println!("sim-run <command>");
+            println!("  serve   [--dir DIR]               static server; PORT from the environment");
             println!("  run     <scenario.txt> [...]      one or more scenarios into one report");
             println!("  compare <a.txt> <b.txt> [...]     same load, different policies, checked");
             println!("  sweep   <s.txt> --over key=v1,v2  one parameter across several values");
