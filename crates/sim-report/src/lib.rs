@@ -5,11 +5,12 @@
 //! attached to a message, or committed. No chart library: every panel here is a polyline, a grid of
 //! rectangles, or a table.
 
-use sim_metrics::Histogram;
+use sim_metrics::{Histogram, RequestRecord, Series};
 use sim_scenario::Scenario;
 use sim_leaf::{self as sim, RunResult};
 use sim_core::Nanos;
-use std::fmt::Write as _;
+use std::cmp::Ordering;
+use std::fmt::{Display, Write as _};
 
 /// Parsed command-line options shared by every subcommand.
 pub struct Opts {
@@ -125,6 +126,18 @@ pub fn check_comparable(runs: &[RunResult]) -> Result<(), String> {
     Ok(())
 }
 
+/// The four latency distributions every artefact reports, as (csv key, prose label, accessor). One
+/// list so the summary CSV and the HTML can never disagree about which distributions exist.
+const HISTOGRAMS: [(&str, &str, fn(&RunResult) -> &Histogram); 4] = [
+    ("ttft", "time to first token", |r| &r.ttft),
+    ("itl_max", "worst gap between tokens", |r| &r.itl_max),
+    ("e2e", "end to end", |r| &r.e2e),
+    ("queue_wait", "queue wait", |r| &r.queue_wait),
+];
+
+/// Outcome labels in reporting order, shared by the summary CSV and the outcomes table.
+const OUTCOMES: [&str; 5] = ["ok", "ok_slo_violated", "rejected", "timeout_queued", "timeout_running"];
+
 /// How much telemetry a run may leave behind, in bytes.
 ///
 /// Issao's constraint: a run must leave enough to analyse afterwards, but must not violate the
@@ -153,163 +166,40 @@ fn dump(runs: &[RunResult], dir: &str, budget_bytes: u64) -> Result<(), String> 
     use std::io::Write as _;
     std::fs::create_dir_all(dir).map_err(|e| format!("{dir}: {e}"))?;
 
-    let n = runs.len().max(1) as u64;
     // Split the budget: most to requests, which is the file an agent reasons over, the rest to series.
-    let per_run = budget_bytes / n;
-    let req_budget = per_run * 65 / 100;
-    let ser_budget = per_run * 30 / 100;
-    let max_req_rows = (req_budget / BYTES_PER_REQUEST_ROW).max(1_000) as usize;
-    let max_ser_rows = (ser_budget / BYTES_PER_SERIES_ROW).max(1_000) as usize;
+    let per_run = budget_bytes / runs.len().max(1) as u64;
+    let max_req_rows = (per_run * 65 / 100 / BYTES_PER_REQUEST_ROW).max(1_000) as usize;
+    let max_ser_rows = (per_run * 30 / 100 / BYTES_PER_SERIES_ROW).max(1_000) as usize;
 
     let mut manifest = std::fs::File::create(format!("{dir}/manifest.csv"))
         .map_err(|e| format!("{dir}/manifest.csv: {e}"))?;
-    writeln!(
-        manifest,
-        "run,file,rows_written,rows_available,sampling,note"
-    )
-    .ok();
+    writeln!(manifest, "run,file,rows_written,rows_available,sampling,note").ok();
+    let write = |path: String, body: &str| std::fs::write(&path, body).map_err(|e| format!("{path}: {e}"));
 
     for (i, r) in runs.iter().enumerate() {
-        let slug: String = r
-            .scenario
-            .name
-            .chars()
-            .map(|c| if c.is_alphanumeric() { c } else { '_' })
-            .collect();
-        let base = format!("{dir}/{:02}-{slug}", i);
+        let slug: String = r.scenario.name.chars().map(|c| if c.is_alphanumeric() { c } else { '_' }).collect();
+        let stem = format!("{i:02}-{slug}");
+        let base = format!("{dir}/{stem}");
 
-        // 1. The resolved scenario. Reproducibility starts here, and it is tiny.
-        std::fs::write(format!("{base}.scenario.txt"), r.scenario.to_text())
-            .map_err(|e| format!("{base}.scenario.txt: {e}"))?;
+        // Reproducibility starts at the resolved scenario, and it is tiny.
+        write(format!("{base}.scenario.txt"), &r.scenario.to_text())?;
+        write(format!("{base}.summary.csv"), &summary_csv(r))?;
 
-        // 2. Run-level summary, including the determinism fingerprint. Always complete: bounded.
-        let mut f = std::fs::File::create(format!("{base}.summary.csv"))
-            .map_err(|e| format!("{base}.summary.csv: {e}"))?;
-        writeln!(f, "metric,value").ok();
-        let mut row = |k: &str, v: String| {
-            writeln!(f, "{k},{v}").ok();
-        };
-        row("name", r.scenario.name.clone());
-        row("routing", r.routing_label.clone());
-        row("seed", r.scenario.seed.to_string());
-        row("fingerprint", r.fingerprint.to_string());
-        row("events", r.events.to_string());
-        row("offered_rps", format!("{:.3}", r.scenario.arrival_rps));
-        row("rated_rps", format!("{:.3}", r.rated_rps));
-        row("effective_batch_limit", format!("{:.1}", r.scenario.effective_batch()));
-        row("completed_rps", format!("{:.3}", r.completed_rps()));
-        row("goodput_tokens_s", format!("{:.1}", r.goodput_tokens_s()));
-        row("throughput_tokens_s", format!("{:.1}", r.throughput_tokens_s()));
-        row("slo_attainment", format!("{:.6}", r.slo_attainment()));
-        row("load_imbalance_cv", format!("{:.4}", r.load_imbalance_cv()));
-        row("replicas_inspected_per_decision", r.replicas_inspected_per_decision.to_string());
-        row("retries", r.retries.to_string());
-        row("first_attempts", r.first_attempts.to_string());
-        for q in [50.0, 90.0, 99.0, 99.9] {
-            row(&format!("ttft_p{q}_ns"), r.ttft.percentile(q).to_string());
-            row(&format!("itl_max_p{q}_ns"), r.itl_max.percentile(q).to_string());
-            row(&format!("e2e_p{q}_ns"), r.e2e.percentile(q).to_string());
-            row(&format!("queue_wait_p{q}_ns"), r.queue_wait.percentile(q).to_string());
-        }
-        for label in ["ok", "ok_slo_violated", "rejected", "timeout_queued", "timeout_running"] {
-            row(&format!("outcome_{label}"), r.outcome(label).to_string());
-        }
-        if let Some((pre, post, ok)) = r.recovery() {
-            row("recovery_queue_before", format!("{pre:.2}"));
-            row("recovery_queue_after", format!("{post:.2}"));
-            row("recovered", ok.to_string());
-        }
-
-        // 3. Requests, stratified to fit. One row per request: where it went and what it experienced,
-        //    so a policy generator can find *which* requests suffered rather than only that a
-        //    percentile moved.
-        let total = r.records.len();
-        let mut chosen: Vec<&sim_metrics::RequestRecord> = Vec::new();
-        let (failures, successes): (Vec<_>, Vec<_>) =
-            r.records.iter().partition(|x| !x.outcome.is_success());
-        // Every failure. They are rare and they are what an analysis looks for first.
-        chosen.extend(failures.iter().copied().take(max_req_rows));
-        let room = max_req_rows.saturating_sub(chosen.len());
-        let sampling = if successes.len() <= room {
-            chosen.extend(successes.iter().copied());
-            "complete".to_string()
-        } else if room == 0 {
-            "failures only".to_string()
-        } else {
-            // Sort by end-to-end latency and take an even stride, which keeps the shape of the
-            // distribution including its tail. Uniform random sampling would keep almost nothing
-            // above the 99th percentile.
-            let mut by_latency: Vec<&sim_metrics::RequestRecord> = successes.clone();
-            by_latency.sort_by_key(|x| x.e2e().unwrap_or(0));
-            let stride = (by_latency.len() + room - 1) / room;
-            chosen.extend(by_latency.iter().step_by(stride).copied());
-            format!("1 in {stride} by latency stride, all failures kept")
-        };
-
-        let mut f = std::fs::File::create(format!("{base}.requests.csv"))
-            .map_err(|e| format!("{base}.requests.csv: {e}"))?;
-        writeln!(
-            f,
-            "id,outcome,replica,attempts,arrived_at_unix_ns,admitted_at_unix_ns,\
-             first_token_at_unix_ns,finished_at_unix_ns,prompt_tokens,output_tokens,\
-             queue_wait_ns,ttft_ns,e2e_ns,mean_itl_ns,max_itl_ns"
-        )
-        .ok();
-        for rec in &chosen {
-            writeln!(
-                f,
-                "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
-                rec.id, rec.outcome.label(), rec.replica, rec.attempts,
-                rec.arrived_at, rec.admitted_at, rec.first_token_at, rec.finished_at,
-                rec.prompt_tokens, rec.output_tokens,
-                rec.queue_wait(),
-                rec.ttft().map(|v| v.to_string()).unwrap_or_default(),
-                rec.e2e().map(|v| v.to_string()).unwrap_or_default(),
-                rec.mean_itl, rec.max_itl
-            )
-            .ok();
-        }
+        let (body, written, sampling) = requests_csv(r, max_req_rows);
+        write(format!("{base}.requests.csv"), &body)?;
         writeln!(
             manifest,
-            "{},{}.requests.csv,{},{},{},per-request detail",
-            r.scenario.name, format!("{:02}-{slug}", i), chosen.len(), total, sampling
+            "{},{stem}.requests.csv,{written},{},{sampling},per-request detail",
+            r.scenario.name, r.records.len()
         )
         .ok();
 
-        // 4. Series, long format, decimated to fit. Per-replica load included, so the hotspot is
-        //    analysable rather than only visible.
-        let all: Vec<&sim_metrics::Series> = std::iter::once(&r.fleet_queue)
-            .chain(std::iter::once(&r.fleet_running))
-            .chain(std::iter::once(&r.fleet_kv_utilization))
-            .chain(std::iter::once(&r.offered_rps))
-            .chain(r.replica_load.iter())
-            .collect();
-        let available: usize = all.iter().map(|s| s.t.len()).sum();
-        let stride = if available <= max_ser_rows {
-            1
-        } else {
-            (available + max_ser_rows - 1) / max_ser_rows
-        };
-        let mut f = std::fs::File::create(format!("{base}.series.csv"))
-            .map_err(|e| format!("{base}.series.csv: {e}"))?;
-        writeln!(f, "series,t_unix_ns,value").ok();
-        let mut written = 0usize;
-        for s in &all {
-            for (k, (t, v)) in s.t.iter().zip(s.v.iter()).enumerate() {
-                if k % stride == 0 {
-                    writeln!(f, "{},{},{:.4}", s.name, t, v).ok();
-                    written += 1;
-                }
-            }
-        }
+        let (body, written, available, sampling) = series_csv(r, max_ser_rows);
+        write(format!("{base}.series.csv"), &body)?;
         writeln!(
             manifest,
-            "{},{}.series.csv,{},{},{},time series including per-replica load",
-            r.scenario.name,
-            format!("{:02}-{slug}", i),
-            written,
-            available,
-            if stride == 1 { "complete".into() } else { format!("1 in {stride}") }
+            "{},{stem}.series.csv,{written},{available},{sampling},time series including per-replica load",
+            r.scenario.name
         )
         .ok();
     }
@@ -334,6 +224,113 @@ fn dump(runs: &[RunResult], dir: &str, budget_bytes: u64) -> Result<(), String> 
         ));
     }
     Ok(())
+}
+
+/// Run-level metrics including the determinism fingerprint. Bounded, so never sampled.
+fn summary_csv(r: &RunResult) -> String {
+    let mut s = String::from("metric,value\n");
+    let mut row = |k: &str, v: String| {
+        let _ = writeln!(s, "{k},{v}");
+    };
+    row("name", r.scenario.name.clone());
+    row("routing", r.routing_label.clone());
+    row("seed", r.scenario.seed.to_string());
+    row("fingerprint", r.fingerprint.to_string());
+    row("events", r.events.to_string());
+    row("offered_rps", format!("{:.3}", r.scenario.arrival_rps));
+    row("rated_rps", format!("{:.3}", r.rated_rps));
+    row("effective_batch_limit", format!("{:.1}", r.scenario.effective_batch()));
+    row("completed_rps", format!("{:.3}", r.completed_rps()));
+    row("goodput_tokens_s", format!("{:.1}", r.goodput_tokens_s()));
+    row("throughput_tokens_s", format!("{:.1}", r.throughput_tokens_s()));
+    row("slo_attainment", format!("{:.6}", r.slo_attainment()));
+    row("load_imbalance_cv", format!("{:.4}", r.load_imbalance_cv()));
+    row("replicas_inspected_per_decision", r.replicas_inspected_per_decision.to_string());
+    row("retries", r.retries.to_string());
+    row("first_attempts", r.first_attempts.to_string());
+    for q in [50.0, 90.0, 99.0, 99.9] {
+        for (key, _, hist) in HISTOGRAMS {
+            row(&format!("{key}_p{q}_ns"), hist(r).percentile(q).to_string());
+        }
+    }
+    for label in OUTCOMES {
+        row(&format!("outcome_{label}"), r.outcome(label).to_string());
+    }
+    if let Some((pre, post, ok)) = r.recovery() {
+        row("recovery_queue_before", format!("{pre:.2}"));
+        row("recovery_queue_after", format!("{post:.2}"));
+        row("recovered", ok.to_string());
+    }
+    s
+}
+
+/// One row per request, where it went and what it experienced, so a policy generator can find
+/// *which* requests suffered rather than only that a percentile moved. Stratified to fit `max_rows`;
+/// returns the body, the rows kept and the sampling label for the manifest.
+fn requests_csv(r: &RunResult, max_rows: usize) -> (String, usize, String) {
+    let (failures, mut successes): (Vec<_>, Vec<_>) =
+        r.records.iter().partition(|x| !x.outcome.is_success());
+    // Every failure. They are rare and they are what an analysis looks for first.
+    let mut chosen: Vec<&RequestRecord> = failures.iter().copied().take(max_rows).collect();
+    let room = max_rows.saturating_sub(chosen.len());
+    let sampling = if successes.len() <= room {
+        chosen.extend(successes.iter().copied());
+        "complete".to_string()
+    } else if room == 0 {
+        "failures only".to_string()
+    } else {
+        // Sort by end-to-end latency and take an even stride, which keeps the shape of the
+        // distribution including its tail. Uniform random sampling would keep almost nothing
+        // above the 99th percentile.
+        successes.sort_by_key(|x| x.e2e().unwrap_or(0));
+        let stride = successes.len().div_ceil(room);
+        chosen.extend(successes.iter().step_by(stride).copied());
+        format!("1 in {stride} by latency stride, all failures kept")
+    };
+
+    let mut s = String::from(
+        "id,outcome,replica,attempts,arrived_at_unix_ns,admitted_at_unix_ns,\
+         first_token_at_unix_ns,finished_at_unix_ns,prompt_tokens,output_tokens,\
+         queue_wait_ns,ttft_ns,e2e_ns,mean_itl_ns,max_itl_ns\n",
+    );
+    for rec in &chosen {
+        let _ = writeln!(
+            s,
+            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+            rec.id, rec.outcome.label(), rec.replica, rec.attempts,
+            rec.arrived_at, rec.admitted_at, rec.first_token_at, rec.finished_at,
+            rec.prompt_tokens, rec.output_tokens,
+            rec.queue_wait(),
+            rec.ttft().map(|v| v.to_string()).unwrap_or_default(),
+            rec.e2e().map(|v| v.to_string()).unwrap_or_default(),
+            rec.mean_itl, rec.max_itl
+        );
+    }
+    (s, chosen.len(), sampling)
+}
+
+/// Every fleet series plus per-replica load in long format, so the hotspot is analysable rather than
+/// only visible. Decimated by one stride to fit `max_rows`; returns the body, rows written, rows
+/// available and the sampling label.
+fn series_csv(r: &RunResult, max_rows: usize) -> (String, usize, usize, String) {
+    let all: Vec<&Series> = [&r.fleet_queue, &r.fleet_running, &r.fleet_kv_utilization, &r.offered_rps]
+        .into_iter()
+        .chain(r.replica_load.iter())
+        .collect();
+    let available: usize = all.iter().map(|s| s.t.len()).sum();
+    let stride = available.div_ceil(max_rows).max(1);
+    let mut s = String::from("series,t_unix_ns,value\n");
+    let mut written = 0usize;
+    for series in &all {
+        for (k, (t, v)) in series.t.iter().zip(series.v.iter()).enumerate() {
+            if k % stride == 0 {
+                let _ = writeln!(s, "{},{},{:.4}", series.name, t, v);
+                written += 1;
+            }
+        }
+    }
+    let sampling = if stride == 1 { "complete".into() } else { format!("1 in {stride}") };
+    (s, written, available, sampling)
 }
 
 pub fn emit(runs: &[RunResult], out: &str, opts: &Opts) -> Result<(), String> {
@@ -403,38 +400,39 @@ fn truncate(s: &str, n: usize) -> String {
 // ---------------------------------------------------------------------------
 
 const PALETTE: [&str; 6] = ["#1565C0", "#C62828", "#2E7D32", "#F9A825", "#6A1B9A", "#00838F"];
+/// Every chart shares one width so the time axes line up down the page; heights vary by panel.
+const CHART_W: usize = 1000;
+/// Left gutter that holds the axis labels.
+const PAD: f64 = 44.0;
+/// Heatmap row height: thin, because a fleet of dozens of replicas still has to fit on one screen.
+const ROW_H: usize = 8;
 
 fn render(runs: &[RunResult]) -> String {
-    let mut h = String::new();
-    let _ = write!(h, r##"<!doctype html><meta charset="utf-8"><title>lbsim report</title>
+    let mut h = String::from(r##"<!doctype html><meta charset="utf-8"><title>lbsim report</title>
 <style>
-:root{{color-scheme:light}}
-body{{font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;margin:0;background:#fbfbfa;color:#1a1a1a}}
-main{{max-width:1180px;margin:0 auto;padding:32px 24px 64px}}
-h1{{font-size:24px;margin:0 0 4px}}
-h2{{font-size:17px;margin:36px 0 10px;padding-bottom:6px;border-bottom:1px solid #e3e3e0}}
-h3{{font-size:14px;margin:22px 0 8px;color:#444}}
-p.note{{color:#5a5a56;margin:6px 0 16px;max-width:72ch}}
-table{{border-collapse:collapse;font-size:13px;margin:8px 0 4px}}
-th,td{{padding:5px 11px;text-align:right;border-bottom:1px solid #ececea}}
-th:first-child,td:first-child{{text-align:left}}
-th{{font-weight:600;color:#444;background:#f4f4f2}}
-tr.best td{{background:#f0f7f0}}
-code{{background:#f0f0ee;padding:1px 4px;border-radius:3px;font-size:12px}}
-.legend{{font-size:12px;margin:4px 0 10px}}
-.legend span{{display:inline-block;margin-right:14px}}
-.sw{{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px;vertical-align:middle}}
-.grid{{display:grid;gap:22px}}
-figure{{margin:0}}
-figcaption{{font-size:12px;color:#5a5a56;margin-top:4px}}
+:root{color-scheme:light}
+body{font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;margin:0;background:#fbfbfa;color:#1a1a1a}
+main{max-width:1180px;margin:0 auto;padding:32px 24px 64px}
+h1{font-size:24px;margin:0 0 4px}
+h2{font-size:17px;margin:36px 0 10px;padding-bottom:6px;border-bottom:1px solid #e3e3e0}
+h3{font-size:14px;margin:22px 0 8px;color:#444}
+p.note{color:#5a5a56;margin:6px 0 16px;max-width:72ch}
+table{border-collapse:collapse;font-size:13px;margin:8px 0 4px}
+th,td{padding:5px 11px;text-align:right;border-bottom:1px solid #ececea}
+th:first-child,td:first-child{text-align:left}
+th{font-weight:600;color:#444;background:#f4f4f2}
+tr.best td{background:#f0f7f0}
+code{background:#f0f0ee;padding:1px 4px;border-radius:3px;font-size:12px}
+.legend{font-size:12px;margin:4px 0 10px}
+.legend span{display:inline-block;margin-right:14px}
+.sw{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:5px;vertical-align:middle}
+.grid{display:grid;gap:22px}
+figure{margin:0}
+figcaption{font-size:12px;color:#5a5a56;margin-top:4px}
 </style><main>"##);
-    let _ = write!(h, "<h1>lbsim report</h1>");
-    let _ = write!(
-        h,
-        r##"<p class="note">Package B of <code>docs/scope-today.md</code>. Queueing and control dynamics with
+    heading(&mut h, "h1", "lbsim report", r##"Package B of <code>docs/scope-today.md</code>. Queueing and control dynamics with
 two-phase request timing. Key-value cache capacity, preemption, prefix caching, tiering and
-autoscaling are deliberately absent; that document says why each was cut.</p>"##
-    );
+autoscaling are deliberately absent; that document says why each was cut."##);
 
     findings(&mut h, runs);
     summary_table(&mut h, runs);
@@ -442,69 +440,42 @@ autoscaling are deliberately absent; that document says why each was cut.</p>"##
     latency_table(&mut h, runs);
     outcome_table(&mut h, runs);
 
-    let _ = write!(h, "<h2>Fleet queue depth over time</h2>");
-    let _ = write!(h, r##"<p class="note">The signature of a load-balancing failure is here rather than in an average.
+    heading(&mut h, "h2", "Fleet queue depth over time", r##"The signature of a load-balancing failure is here rather than in an average.
 A rising line under one policy and a flat one under another, at identical offered load and seed, is
 the whole result. Sustained ringing at a frequency related to the telemetry period is the control
-loop oscillating.</p>"##);
+loop oscillating."##);
     legend(&mut h, runs);
-    let _ = write!(h, "{}", multi_line_chart(runs, |r| &r.fleet_queue, 1000, 240));
+    multi_line_chart(&mut h, runs, |r| &r.fleet_queue, 240);
 
-    let _ = write!(h, "<h2>Key-value cache utilization</h2>");
-    let _ = write!(h, r##"<p class="note">Mean across the fleet, as a percentage of each replica's token budget.
+    heading(&mut h, "h2", "Key-value cache utilization", r##"Mean across the fleet, as a percentage of each replica's token budget.
 Capacity here is a token budget rather than a request count, which is the central departure from a
 stateless service: one 24,000-token context consumes what eight chat turns consume, so a queue of long
-prompts blocks admission that a request count would have allowed.</p>"##);
+prompts blocks admission that a request count would have allowed."##);
     legend(&mut h, runs);
-    let _ = write!(h, "{}", multi_line_chart(runs, |r| &r.fleet_kv_utilization, 1000, 170));
+    multi_line_chart(&mut h, runs, |r| &r.fleet_kv_utilization, 170);
 
-    let _ = write!(h, "<h2>Offered load</h2>");
+    heading(&mut h, "h2", "Offered load", "");
     legend(&mut h, runs);
-    let _ = write!(h, "{}", multi_line_chart(runs, |r| &r.offered_rps, 1000, 130));
+    multi_line_chart(&mut h, runs, |r| &r.offered_rps, 130);
 
-    for (i, r) in runs.iter().enumerate() {
-        let _ = write!(h, "<h2>Per-replica load: {}</h2>", esc(&r.scenario.name));
-        let _ = write!(h, r##"<p class="note">One row per replica, time left to right. Dark means a deep queue. Under
+    for r in runs {
+        heading(&mut h, "h2", &format!("Per-replica load: {}", esc(&r.scenario.name)), r##"One row per replica, time left to right. Dark means a deep queue. Under
 round-robin with heterogeneous request sizes the dark patches move between replicas even though the
 fleet is below its rated capacity: the rolling hotspot. A policy that samples rather than cycles
-shows a flat field instead.</p>"##);
-        let _ = write!(h, "{}", heatmap(r, 1000, 8, i));
+shows a flat field instead."##);
+        heatmap(&mut h, r);
     }
 
-    if runs.iter().any(|r| r.recovery().is_some()) {
-        let _ = write!(h, "<h2>Recovery after the spike</h2>");
-        let _ = write!(h, r##"<p class="note">The question is not whether latency rose during the spike, it is
-whether the fleet came back afterwards. A metastable collapse is one it stays in once offered load
-returns to normal, so only the tail of the run answers it. Queue depth is compared before the spike
-against the final quarter.</p>"##);
-        let _ = write!(h, "<table><tr><th>scenario</th><th>attempts</th><th>retry budget</th><th>retries</th><th>queue before</th><th>queue after</th><th>recovered</th></tr>");
-        for r in runs {
-            if let Some((pre, post, ok)) = r.recovery() {
-                let _ = write!(
-                    h,
-                    "<tr><td>{}</td><td>{}</td><td>{:.0}%</td><td>{}</td><td>{:.0}</td><td>{:.0}</td><td><b>{}</b></td></tr>",
-                    esc(&r.scenario.name),
-                    r.scenario.max_attempts,
-                    r.scenario.retry_budget_fraction * 100.0,
-                    r.retries,
-                    pre, post,
-                    if ok { "yes" } else { "NO" }
-                );
-            }
-        }
-        let _ = write!(h, "</table>");
-    }
+    recovery_table(&mut h, runs);
 
-    let _ = write!(h, "<h2>Oscillation</h2>");
-    let _ = write!(h, r##"<p class="note">Dominant frequency in fleet queue depth, from a discrete Fourier transform of
+    heading(&mut h, "h2", "Oscillation", r##"Dominant frequency in fleet queue depth, from a discrete Fourier transform of
 the mean-removed signal, beside the telemetry sampling frequency. A peak near or below the sampling
 frequency is the sampled-delayed feedback loop ringing, which is the thing to predict rather than
-merely notice.</p>"##);
+merely notice."##);
     oscillation_table(&mut h, runs);
 
-    let _ = write!(h, "<h2>Scenarios, verbatim</h2>");
-    let _ = write!(h, r##"<p class="note">Every number above is reproducible from these. Same seed, same output, byte for
-byte; the fingerprint is an event-count-and-checksum pair asserted by the test suite.</p>"##);
+    heading(&mut h, "h2", "Scenarios, verbatim", r##"Every number above is reproducible from these. Same seed, same output, byte for
+byte; the fingerprint is an event-count-and-checksum pair asserted by the test suite."##);
     for r in runs {
         let _ = write!(
             h,
@@ -513,8 +484,41 @@ byte; the fingerprint is an event-count-and-checksum pair asserted by the test s
             esc(&r.scenario.to_text())
         );
     }
-    let _ = write!(h, "</main>");
+    h.push_str("</main>");
     h
+}
+
+/// A heading and the note a reader needs to interpret what follows it. A section whose meaning is
+/// self-evident passes an empty note and gets only the heading.
+fn heading(h: &mut String, tag: &str, title: &str, note: &str) {
+    let _ = write!(h, "<{tag}>{title}</{tag}>");
+    if !note.is_empty() {
+        let _ = write!(h, r##"<p class="note">{note}</p>"##);
+    }
+}
+
+/// Header cells are raw HTML, because some carry a `<small>` qualifier; rows arrive fully rendered so
+/// each table keeps its own number formatting and row attributes.
+fn table(h: &mut String, headers: &[&str], rows: impl IntoIterator<Item = String>) {
+    h.push_str("<table><tr>");
+    for th in headers {
+        let _ = write!(h, "<th>{th}</th>");
+    }
+    h.push_str("</tr>");
+    for row in rows {
+        h.push_str(&row);
+    }
+    h.push_str("</table>");
+}
+
+fn goodput_cmp(a: &RunResult, b: &RunResult) -> Ordering {
+    a.goodput_tokens_s().partial_cmp(&b.goodput_tokens_s()).unwrap()
+}
+
+/// The runs at either end of an integer metric. Ties resolve as `min_by_key` and `max_by_key` do:
+/// first minimum, last maximum.
+fn extremes<K: Ord>(runs: &[RunResult], key: impl Fn(&RunResult) -> K) -> (&RunResult, &RunResult) {
+    (runs.iter().min_by_key(|r| key(r)).unwrap(), runs.iter().max_by_key(|r| key(r)).unwrap())
 }
 
 /// Findings, computed from the run rather than written by hand.
@@ -525,8 +529,8 @@ fn findings(h: &mut String, runs: &[RunResult]) {
     if runs.len() < 2 {
         return;
     }
-    let _ = write!(h, "<h2>What this run shows</h2>");
-    let _ = write!(h, "<ul style=\"max-width:78ch;color:#333\">");
+    heading(h, "h2", "What this run shows", "");
+    h.push_str("<ul style=\"max-width:78ch;color:#333\">");
 
     let load_frac = runs[0].scenario.arrival_rps / runs[0].rated_rps;
     let _ = write!(
@@ -537,8 +541,8 @@ fn findings(h: &mut String, runs: &[RunResult]) {
         runs[0].scenario.arrival_rps, runs[0].rated_rps, load_frac * 100.0
     );
 
-    let best = runs.iter().max_by(|a, b| a.goodput_tokens_s().partial_cmp(&b.goodput_tokens_s()).unwrap()).unwrap();
-    let worst = runs.iter().min_by(|a, b| a.goodput_tokens_s().partial_cmp(&b.goodput_tokens_s()).unwrap()).unwrap();
+    let best = runs.iter().max_by(|a, b| goodput_cmp(a, b)).unwrap();
+    let worst = runs.iter().min_by(|a, b| goodput_cmp(a, b)).unwrap();
     if worst.goodput_tokens_s() > 0.0 {
         let _ = write!(
             h,
@@ -554,18 +558,18 @@ fn findings(h: &mut String, runs: &[RunResult]) {
         );
     }
 
-    let t_best = runs.iter().min_by_key(|r| r.ttft.percentile(99.0)).unwrap();
-    let t_worst = runs.iter().max_by_key(|r| r.ttft.percentile(99.0)).unwrap();
-    if t_best.ttft.percentile(99.0) > 0 {
+    let (t_best, t_worst) = extremes(runs, |r| r.ttft.percentile(99.0));
+    let (lo, hi) = (t_best.ttft.percentile(99.0), t_worst.ttft.percentile(99.0));
+    if lo > 0 {
         let _ = write!(
             h,
             "<li><b>Tail time-to-first-token spans {:.1}x</b>, {} ms under <i>{}</i> against {} ms \
              under <i>{}</i>. Per-replica load spread moves with it, {:.2} against {:.2}, which is \
              the mechanism rather than a coincidence: an uneven fleet has deep queues somewhere even \
              when its average queue is shallow.</li>",
-            t_worst.ttft.percentile(99.0) as f64 / t_best.ttft.percentile(99.0) as f64,
-            ms(t_best.ttft.percentile(99.0)), esc(&t_best.scenario.name),
-            ms(t_worst.ttft.percentile(99.0)), esc(&t_worst.scenario.name),
+            hi as f64 / lo as f64,
+            ms(lo), esc(&t_best.scenario.name),
+            ms(hi), esc(&t_worst.scenario.name),
             t_best.load_imbalance_cv(), t_worst.load_imbalance_cv()
         );
     }
@@ -594,11 +598,9 @@ fn findings(h: &mut String, runs: &[RunResult]) {
     }
 
     // A sweep over one key: state the direction rather than leaving the reader to infer it.
-    let itls: Vec<u64> = runs.iter().map(|r| r.itl_max.percentile(99.0)).collect();
-    let spread = *itls.iter().max().unwrap() as f64 / (*itls.iter().min().unwrap()).max(1) as f64;
+    let (a, b) = extremes(runs, |r| r.itl_max.percentile(99.0));
+    let spread = b.itl_max.percentile(99.0) as f64 / a.itl_max.percentile(99.0).max(1) as f64;
     if spread > 2.0 {
-        let a = runs.iter().min_by_key(|r| r.itl_max.percentile(99.0)).unwrap();
-        let b = runs.iter().max_by_key(|r| r.itl_max.percentile(99.0)).unwrap();
         let _ = write!(
             h,
             "<li><b>The worst gap between tokens spans {:.1}x</b>, {} ms against {} ms, while tail \
@@ -611,11 +613,11 @@ fn findings(h: &mut String, runs: &[RunResult]) {
         );
     }
 
-    let _ = write!(h, "</ul>");
+    h.push_str("</ul>");
 }
 
 fn legend(h: &mut String, runs: &[RunResult]) {
-    let _ = write!(h, r##"<div class="legend">"##);
+    h.push_str(r##"<div class="legend">"##);
     for (i, r) in runs.iter().enumerate() {
         let _ = write!(
             h,
@@ -624,28 +626,22 @@ fn legend(h: &mut String, runs: &[RunResult]) {
             esc(&r.scenario.name)
         );
     }
-    let _ = write!(h, "</div>");
+    h.push_str("</div>");
 }
 
 fn summary_table(h: &mut String, runs: &[RunResult]) {
-    let _ = write!(h, "<h2>Scorecard</h2>");
-    let _ = write!(h, r##"<p class="note">Goodput leads deliberately: a fleet can have excellent throughput and near-zero
+    heading(h, "h2", "Scorecard", r##"Goodput leads deliberately: a fleet can have excellent throughput and near-zero
 goodput by making everyone slightly too slow, so ranking on throughput picks the wrong policy. The
 imbalance column is the coefficient of variation of per-replica load, time-averaged, which is the
 direct measure of whether the balancer is doing its job. Inspected is replicas examined per routing
-decision, and anything proportional to fleet size does not hold at scale.</p>"##);
-    let best = runs
-        .iter()
-        .enumerate()
-        .max_by(|a, b| a.1.goodput_tokens_s().partial_cmp(&b.1.goodput_tokens_s()).unwrap())
-        .map(|(i, _)| i);
-    let _ = write!(h, "<table><tr><th>scenario</th><th>routing</th><th>offered rps</th><th>rated rps</th><th>completed rps</th><th>goodput tok/s</th><th>throughput tok/s</th><th>imbalance CV</th><th>batch limit</th><th>inspected</th></tr>");
-    for (i, r) in runs.iter().enumerate() {
-        let cls = if Some(i) == best { " class=\"best\"" } else { "" };
-        let _ = write!(
-            h,
+decision, and anything proportional to fleet size does not hold at scale."##);
+    let best = runs.iter().enumerate().max_by(|a, b| goodput_cmp(a.1, b.1)).map(|(i, _)| i);
+    let headers = ["scenario", "routing", "offered rps", "rated rps", "completed rps", "goodput tok/s",
+        "throughput tok/s", "imbalance CV", "batch limit", "inspected"];
+    table(h, &headers, runs.iter().enumerate().map(|(i, r)| {
+        format!(
             "<tr{}><td>{}</td><td>{}</td><td>{:.0}</td><td>{:.0}</td><td>{:.1}</td><td>{:.0}</td><td>{:.0}</td><td>{:.2}</td><td>{:.0}</td><td>{}</td></tr>",
-            cls,
+            if Some(i) == best { " class=\"best\"" } else { "" },
             esc(&r.scenario.name),
             esc(&r.routing_label),
             r.scenario.arrival_rps,
@@ -656,18 +652,17 @@ decision, and anything proportional to fleet size does not hold at scale.</p>"##
             r.load_imbalance_cv(),
             r.scenario.effective_batch(),
             r.replicas_inspected_per_decision
-        );
-    }
-    let _ = write!(h, "</table>");
+        )
+    }));
 }
 
 fn slo_table(h: &mut String, runs: &[RunResult]) {
-    let _ = write!(h, "<h3>Service level</h3>");
-    let _ = write!(h, "<table><tr><th>scenario</th><th>attainment<br><small>all requests</small></th><th>of those served</th><th>ttft within SLO</th><th>worst-gap within SLO</th><th>retries</th></tr>");
-    for r in runs {
+    heading(h, "h3", "Service level", "");
+    let headers = ["scenario", "attainment<br><small>all requests</small>", "of those served",
+        "ttft within SLO", "worst-gap within SLO", "retries"];
+    table(h, &headers, runs.iter().map(|r| {
         let sc = &r.scenario;
-        let _ = write!(
-            h,
+        format!(
             "<tr><td>{}</td><td>{:.2}%</td><td>{:.2}%</td><td>{:.2}%</td><td>{:.2}%</td><td>{}</td></tr>",
             esc(&sc.name),
             r.slo_attainment() * 100.0,
@@ -675,33 +670,21 @@ fn slo_table(h: &mut String, runs: &[RunResult]) {
             r.ttft.fraction_below((sc.ttft_slo_ms * 1e6) as u64) * 100.0,
             r.itl_max.fraction_below((sc.itl_slo_ms * 1e6) as u64) * 100.0,
             r.retries
-        );
-    }
-    let _ = write!(h, "</table>");
+        )
+    }));
 }
 
 fn latency_table(h: &mut String, runs: &[RunResult]) {
-    let _ = write!(h, "<h2>Latency</h2>");
-    let _ = write!(h, r##"<p class="note">Time-to-first-token and inter-token latency are separate quantities, which is
+    heading(h, "h2", "Latency", r##"Time-to-first-token and inter-token latency are separate quantities, which is
 the observable that makes this domain different from a web service. The worst-gap column is the
 largest pause between consecutive tokens within a single request: one long stall is what a user
-perceives, and a mean hides it entirely.</p>"##);
-    for (label, pick) in [
-        ("time to first token", 0usize),
-        ("worst gap between tokens", 1),
-        ("end to end", 2),
-        ("queue wait", 3),
-    ] {
-        let _ = write!(h, "<h3>{label} (ms)</h3><table><tr><th>scenario</th><th>count</th><th>mean</th><th>p50</th><th>p90</th><th>p99</th><th>p99.9</th><th>max</th></tr>");
-        for r in runs {
-            let hist: &Histogram = match pick {
-                0 => &r.ttft,
-                1 => &r.itl_max,
-                2 => &r.e2e,
-                _ => &r.queue_wait,
-            };
-            let _ = write!(
-                h,
+perceives, and a mean hides it entirely."##);
+    for (_, label, hist) in HISTOGRAMS {
+        heading(h, "h3", &format!("{label} (ms)"), "");
+        let headers = ["scenario", "count", "mean", "p50", "p90", "p99", "p99.9", "max"];
+        table(h, &headers, runs.iter().map(|r| {
+            let hist = hist(r);
+            format!(
                 "<tr><td>{}</td><td>{}</td><td>{:.0}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
                 esc(&r.scenario.name),
                 hist.count(),
@@ -711,136 +694,131 @@ perceives, and a mean hides it entirely.</p>"##);
                 ms(hist.percentile(99.0)),
                 ms(hist.percentile(99.9)),
                 ms(hist.max())
-            );
-        }
-        let _ = write!(h, "</table>");
+            )
+        }));
     }
 }
 
 fn outcome_table(h: &mut String, runs: &[RunResult]) {
-    let _ = write!(h, "<h3>Outcomes</h3>");
-    let _ = write!(h, r##"<p class="note">When a request failed matters more than that it failed. Shedding early is cheap;
+    heading(h, "h3", "Outcomes", r##"When a request failed matters more than that it failed. Shedding early is cheap;
 timing out after running has already burned device time on tokens nobody will read, which under
-overload is most of the fleet's capacity.</p>"##);
-    let _ = write!(h, "<table><tr><th>scenario</th><th>ok</th><th>ok but late</th><th>rejected early</th><th>timeout queued</th><th>timeout running</th></tr>");
-    for r in runs {
-        let _ = write!(
-            h,
-            "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
-            esc(&r.scenario.name),
-            r.outcome("ok"),
-            r.outcome("ok_slo_violated"),
-            r.outcome("rejected"),
-            r.outcome("timeout_queued"),
-            r.outcome("timeout_running")
-        );
+overload is most of the fleet's capacity."##);
+    let headers = ["scenario", "ok", "ok but late", "rejected early", "timeout queued", "timeout running"];
+    table(h, &headers, runs.iter().map(|r| {
+        let mut row = format!("<tr><td>{}</td>", esc(&r.scenario.name));
+        for label in OUTCOMES {
+            let _ = write!(row, "<td>{}</td>", r.outcome(label));
+        }
+        row + "</tr>"
+    }));
+}
+
+fn recovery_table(h: &mut String, runs: &[RunResult]) {
+    if !runs.iter().any(|r| r.recovery().is_some()) {
+        return;
     }
-    let _ = write!(h, "</table>");
+    heading(h, "h2", "Recovery after the spike", r##"The question is not whether latency rose during the spike, it is
+whether the fleet came back afterwards. A metastable collapse is one it stays in once offered load
+returns to normal, so only the tail of the run answers it. Queue depth is compared before the spike
+against the final quarter."##);
+    let headers = ["scenario", "attempts", "retry budget", "retries", "queue before", "queue after", "recovered"];
+    table(h, &headers, runs.iter().filter_map(|r| {
+        r.recovery().map(|(pre, post, ok)| {
+            format!(
+                "<tr><td>{}</td><td>{}</td><td>{:.0}%</td><td>{}</td><td>{:.0}</td><td>{:.0}</td><td><b>{}</b></td></tr>",
+                esc(&r.scenario.name),
+                r.scenario.max_attempts,
+                r.scenario.retry_budget_fraction * 100.0,
+                r.retries,
+                pre, post,
+                if ok { "yes" } else { "NO" }
+            )
+        })
+    }));
 }
 
 fn oscillation_table(h: &mut String, runs: &[RunResult]) {
-    let _ = write!(h, "<table><tr><th>scenario</th><th>telemetry period</th><th>telemetry delay</th><th>dominant freq</th><th>relative amplitude</th></tr>");
-    for r in runs {
+    let headers = ["scenario", "telemetry period", "telemetry delay", "dominant freq", "relative amplitude"];
+    table(h, &headers, runs.iter().map(|r| {
         let iv = r.scenario.sample_interval_ms / 1000.0;
         let (f, amp) = r.fleet_queue.dominant_frequency(iv);
-        let _ = write!(
-            h,
+        format!(
             "<tr><td>{}</td><td>{:.0} ms</td><td>{:.0} ms</td><td>{:.3} Hz</td><td>{:.2}</td></tr>",
             esc(&r.scenario.name),
             r.scenario.telemetry_interval_ms,
             r.scenario.telemetry_delay_ms,
             f,
             amp
-        );
-    }
-    let _ = write!(h, "</table>");
+        )
+    }));
 }
 
-fn multi_line_chart(
-    runs: &[RunResult],
-    pick: fn(&RunResult) -> &sim_metrics::Series,
-    w: usize,
-    hgt: usize,
-) -> String {
-    let pad = 44.0;
-    let mut ymax = 0.0f64;
-    let mut n = 0usize;
-    for r in runs {
-        let s = pick(r);
-        ymax = ymax.max(s.max());
-        n = n.max(s.v.len());
-    }
-    if ymax <= 0.0 {
-        ymax = 1.0;
-    }
-    let ymax = ymax * 1.08;
-    let mut svg = format!(
-        r##"<figure><svg viewBox="0 0 {w} {hgt}" width="100%" height="{hgt}" role="img"><rect width="{w}" height="{hgt}" fill="#fff" stroke="#e3e3e0"/>"##
+fn frame(h: &mut String, hgt: usize) {
+    let _ = write!(
+        h,
+        r##"<figure><svg viewBox="0 0 {CHART_W} {hgt}" width="100%" height="{hgt}" role="img"><rect width="{CHART_W}" height="{hgt}" fill="#fff" stroke="#e3e3e0"/>"##
     );
-    // Gridlines and y labels.
+}
+
+fn label(h: &mut String, x: impl Display, y: impl Display, anchor_end: bool, text: impl Display) {
+    let anchor = if anchor_end { r##" text-anchor="end""## } else { "" };
+    let _ = write!(h, r##"<text x="{x}" y="{y}" font-size="10" fill="#8a8a86"{anchor}>{text}</text>"##);
+}
+
+/// The time axis and caption every chart ends with, so the panels read as one system.
+fn close_figure(h: &mut String, hgt: f64, right: impl Display, caption: &str) {
+    label(h, PAD, hgt - 6.0, false, "0 s");
+    label(h, CHART_W as f64 - 8.0, hgt - 6.0, true, right);
+    let _ = write!(h, "</svg><figcaption>{caption}</figcaption></figure>");
+}
+
+fn multi_line_chart(h: &mut String, runs: &[RunResult], pick: fn(&RunResult) -> &Series, hgt: usize) {
+    let n = runs.iter().map(|r| pick(r).v.len()).max().unwrap_or(0);
+    let ymax = runs.iter().map(|r| pick(r).max()).fold(0.0, f64::max);
+    let ymax = if ymax <= 0.0 { 1.0 } else { ymax } * 1.08;
+    frame(h, hgt);
     for k in 0..=4 {
-        let y = pad / 2.0 + (hgt as f64 - pad) * (k as f64 / 4.0);
-        let val = ymax * (1.0 - k as f64 / 4.0);
+        let y = PAD / 2.0 + (hgt as f64 - PAD) * (k as f64 / 4.0);
         let _ = write!(
-            svg,
-            r##"<line x1="{pad}" y1="{y:.1}" x2="{}" y2="{y:.1}" stroke="#f0f0ee"/><text x="{}" y="{:.1}" font-size="10" fill="#8a8a86" text-anchor="end">{:.0}</text>"##,
-            w as f64 - 8.0,
-            pad - 6.0,
-            y + 3.0,
-            val
+            h,
+            r##"<line x1="{PAD}" y1="{y:.1}" x2="{}" y2="{y:.1}" stroke="#f0f0ee"/>"##,
+            CHART_W as f64 - 8.0
         );
+        label(h, PAD - 6.0, format_args!("{:.1}", y + 3.0), true, format_args!("{:.0}", ymax * (1.0 - k as f64 / 4.0)));
     }
     for (i, r) in runs.iter().enumerate() {
         let s = pick(r);
         if s.v.is_empty() {
             continue;
         }
-        let mut pts = String::new();
-        for (j, v) in s.v.iter().enumerate() {
-            let x = pad + (w as f64 - pad - 8.0) * (j as f64 / (n.max(2) - 1) as f64);
-            let y = pad / 2.0 + (hgt as f64 - pad) * (1.0 - (v / ymax).clamp(0.0, 1.0));
-            let _ = write!(pts, "{x:.1},{y:.1} ");
-        }
+        let pts: Vec<String> = s.v.iter().enumerate().map(|(j, v)| {
+            let x = PAD + (CHART_W as f64 - PAD - 8.0) * (j as f64 / (n.max(2) - 1) as f64);
+            let y = PAD / 2.0 + (hgt as f64 - PAD) * (1.0 - (v / ymax).clamp(0.0, 1.0));
+            format!("{x:.1},{y:.1}")
+        }).collect();
         let _ = write!(
-            svg,
+            h,
             r##"<polyline points="{}" fill="none" stroke="{}" stroke-width="1.6"/>"##,
-            pts.trim(),
+            pts.join(" "),
             PALETTE[i % PALETTE.len()]
         );
     }
-    let secs = runs
-        .first()
-        .map(|r| r.scenario.duration_s)
-        .unwrap_or(0.0);
-    let _ = write!(
-        svg,
-        r##"<text x="{pad}" y="{}" font-size="10" fill="#8a8a86">0 s</text><text x="{}" y="{}" font-size="10" fill="#8a8a86" text-anchor="end">{:.0} s</text></svg><figcaption>simulated time</figcaption></figure>"##,
-        hgt as f64 - 6.0,
-        w as f64 - 8.0,
-        hgt as f64 - 6.0,
-        secs
-    );
-    svg
+    let secs = runs.first().map(|r| r.scenario.duration_s).unwrap_or(0.0);
+    close_figure(h, hgt as f64, format_args!("{secs:.0} s"), "simulated time");
 }
 
-fn heatmap(r: &RunResult, w: usize, row_h: usize, _idx: usize) -> String {
+fn heatmap(h: &mut String, r: &RunResult) {
     let rows = r.replica_load.len();
     if rows == 0 {
-        return String::new();
+        return;
     }
     let cols = r.replica_load[0].v.len().max(1);
-    let hgt = rows * row_h + 26;
-    let pad = 44.0;
-    let cw = (w as f64 - pad - 8.0) / cols as f64;
-    let mut vmax = 1.0f64;
-    for s in &r.replica_load {
-        vmax = vmax.max(s.max());
-    }
-    let mut svg = format!(
-        r##"<figure><svg viewBox="0 0 {w} {hgt}" width="100%" height="{hgt}" role="img"><rect width="{w}" height="{hgt}" fill="#fff" stroke="#e3e3e0"/>"##
-    );
+    let hgt = rows * ROW_H + 26;
+    let cw = (CHART_W as f64 - PAD - 8.0) / cols as f64;
+    let vmax = r.replica_load.iter().map(Series::max).fold(1.0, f64::max);
+    frame(h, hgt);
     for (ri, s) in r.replica_load.iter().enumerate() {
-        let y = ri * row_h + 4;
+        let y = ri * ROW_H + 4;
         for (ci, v) in s.v.iter().enumerate() {
             if *v <= 0.0 {
                 continue;
@@ -849,34 +827,23 @@ fn heatmap(r: &RunResult, w: usize, row_h: usize, _idx: usize) -> String {
             // A single-hue ramp: light for idle, dark for a deep queue. One hue because the value is
             // a magnitude, not a category.
             let l = 96.0 - 62.0 * t;
-            let x = pad + ci as f64 * cw;
+            let x = PAD + ci as f64 * cw;
             let _ = write!(
-                svg,
+                h,
                 r##"<rect x="{x:.2}" y="{y}" width="{:.2}" height="{}" fill="hsl(212 62% {l:.0}%)"/>"##,
                 cw.max(0.6),
-                row_h - 1
+                ROW_H - 1
             );
         }
     }
-    let _ = write!(
-        svg,
-        r##"<text x="{}" y="14" font-size="10" fill="#8a8a86" text-anchor="end">replica 0</text><text x="{}" y="{}" font-size="10" fill="#8a8a86" text-anchor="end">replica {}</text>"##,
-        pad - 6.0,
-        pad - 6.0,
-        rows * row_h,
-        rows - 1
+    label(h, PAD - 6.0, 14, true, "replica 0");
+    label(h, PAD - 6.0, rows * ROW_H, true, format_args!("replica {}", rows - 1));
+    close_figure(
+        h,
+        hgt as f64,
+        format_args!("{:.0} s, darkest = {:.0} queued+running", r.scenario.duration_s, vmax),
+        &esc(&r.routing_label),
     );
-    let _ = write!(
-        svg,
-        r##"<text x="{pad}" y="{}" font-size="10" fill="#8a8a86">0 s</text><text x="{}" y="{}" font-size="10" fill="#8a8a86" text-anchor="end">{:.0} s, darkest = {:.0} queued+running</text></svg><figcaption>{}</figcaption></figure>"##,
-        hgt - 6,
-        w as f64 - 8.0,
-        hgt - 6,
-        r.scenario.duration_s,
-        vmax,
-        esc(&r.routing_label)
-    );
-    svg
 }
 
 fn esc(s: &str) -> String {
