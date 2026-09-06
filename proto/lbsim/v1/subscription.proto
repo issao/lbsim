@@ -37,7 +37,7 @@ enum Scope {
 message MetricSelector {
   // Series or histogram names, e.g. "kv_utilization", "ttft", "queue_depth". Empty means the
   // scenario's default panel set.
-  repeated string names = 1;
+  repeated string names = 1;  // Issao: Have the metrics be enums for clarity.
   Scope scope = 2;
 
   // Narrow the selection. Empty means all at that scope.
@@ -47,7 +47,7 @@ message MetricSelector {
 
   // Required when scope is SCOPE_REPLICA. Without a page, a 62,500-replica fleet would make
   // the payload width scale with the fleet, which is the thing this interface exists to prevent.
-  Page page = 20;
+  Page page = 20;  // Issao: Better interface is just selecting a single replica and have a separate metric selected message per replica.
 }
 
 // Cursor-based rather than offset-based, because the sort key is live data: rows reorder
@@ -61,6 +61,7 @@ message Page {
   // Opaque, from a previous SubscriptionUpdate. Empty starts at the first page.
   bytes cursor = 4;
 }
+// Issao: Page is all ui details, doesn't belong here. Metric subscription is all based on selecting a cluster, a pool, a machine.
 
 // ---------------------------------------------------------------------------
 // How much to send
@@ -71,11 +72,11 @@ message Budget {
   // Hard cap on emission rate in *wall-clock* seconds. The server derives the simulated
   // sampling interval as max(desired_sim_interval_ns, realtime_factor / this) and re-derives it
   // whenever the speed changes.
-  double max_updates_per_wall_second = 1;
+  double max_updates_per_wall_second = 1; // Issao: Instead of this make it just a sample rate (i.e. timeseries points per simulation second)
 
   // Hard cap on payload width. With SCOPE_REPLICA this bounds the page size actually served,
   // which may be smaller than the page requested.
-  uint32 max_rows_per_update = 2;
+  uint32 max_rows_per_update = 2; // Issao: the O(1) data doesn't have to be enforced by the interface, that is awkward. put it on the client to not ask for too much data.
 
   // The client's preference, honoured only where it fits the caps above.
   uint64 desired_sim_interval_ns = 3;
@@ -96,6 +97,7 @@ message OpenSubscriptionResponse {
   string subscription_id = 1;
   // What the server actually granted, which may be coarser than requested. Shown to the user so
   // a chart is never silently sampled differently from what its axis claims.
+  // Issao: Do what the client requests, leave it to the client to make a resaonable set of subscriptions. they are time leased anyways.
   uint64 granted_sim_interval_ns = 2;
   uint32 granted_rows_per_update = 3;
   uint64 lease_expires_at_wall_ns = 4;
@@ -148,5 +150,5 @@ message MetricRow {
   map<string, double> values = 10;
   // Distributions, keyed by metric name. Mergeable, so Ingress can combine shards exactly.
   // Percentiles are computed after merging: they cannot be recovered from per-shard percentiles.
-  map<string, Histogram> histograms = 11;
+  map<string, Histogram> histograms = 11;  // Issao: Consider computing requested percentiles at the leaf instead of returning histograms, it is cheaper.
 }
