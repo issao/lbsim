@@ -219,6 +219,11 @@ Under a 0.95 cap the ranking is power-of-two-choices, then round robin, then ran
 global least-loaded policies scoring zero. Under 0.99 or 0.999 every policy scores zero, which is a
 useless tournament rather than a demanding one.
 
+Issao, 16:05: *"SLA 0.95 ok for now, but we need to figure out how to do better."* So 0.95 is the
+rule of record, and the open design task is a target that a 0.99 cap can be held against: a
+first-token budget that scales with prompt length, or per-class budgets. Either makes the gate
+measure policy rather than prompt-length arithmetic.
+
 ## 6. What this requires from earlier milestones
 
 Two things that are cheap now and expensive to retrofit, which is the reason this document exists
@@ -228,8 +233,12 @@ before the arena does.
    gives each slot a typed configuration, so a generator can propose a policy choice and every one
    of its parameters as data, and the schema states exactly what is tunable. What it cannot do is
    propose a new policy *structure*: that would need a small interpreted decision language.
-   **Tuning typed parameters is the right scope for a first arena**, and it works with the
-   interfaces exactly as they stand. Recorded as a limitation rather than a gap.
+   Issao overrode that limitation, 16:05: *"Arena policy generator should actually have full power
+   to write code to write new policies, as well as tuning parameters on existing policies."* So a
+   candidate is either a `PolicySpec` with new parameters or a new implementation of the policy
+   trait, written by the generator as code. The referee's strict mode and the `Observation`/`Intent`
+   boundary are what make that safe: generated code cannot express a physics violation. Whether
+   `PolicySpec` needs an open slot for a generated policy is a proto question for the main agent.
 
    A consequence of typing them, worth naming: adding a policy is now a schema change. For the
    arena that is fine, since it tunes what ships. It would matter if the arena were ever allowed to

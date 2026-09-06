@@ -3,7 +3,7 @@
 What is live on `origin/master`, what each agent is doing now, and the assumptions being acted on.
 For things that need *you*, see `TASKS.md`.
 
-**Last updated:** 2026-09-06 15:50 by Claude.
+**Last updated:** 2026-09-06 16:20 by Claude.
 
 ---
 
@@ -46,9 +46,12 @@ The main agent coordinates and owns `CLAUDE.md` and `proto/`.
 
 - Package B of `docs/scope-today.md` plus item 7 is today's scope; the dashboard and the arena were
   reinstated by Issao and are built.
-- Arena scoring defaults: SLA cap 0.95, raw objective with goodput share reported beside it, until
-  Issao rules on `TASKS.md` item 2.
-- Prefix-sharing topology is swept, not fixed; affected conclusions are ranges.
+- Arena: SLA cap 0.95 is Issao's rule for now; the raw objective stays with goodput share beside it
+  until he rules on `TASKS.md` item 2. The policy generator may write code, not only parameters.
+- Prefix-sharing topology comes from a session model with fork-off and merge-back rates, swept.
+- Leaf shards are separate processes; memory tiers are Ingress-owned with a seeded bloom-filter
+  residency hint. Both are design of record, `docs/ARCHITECTURE.md` §14, not yet built.
+- `lbsim.ai` is dark: its DNS zone went with `lbsim-prod`. `TASKS.md` item 1.
 - Deployment scales to zero within a replica budget of ten, public, on the `run.app` URL until the
   domain steps in `TASKS.md` item 1 are done. Scale-to-zero is measured by `deploy.sh --check-idle`,
   not assumed.
