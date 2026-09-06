@@ -5,57 +5,57 @@ right now. Claude keeps this file current; anything Claude can do alone is not h
 
 Each item says what happens if you do not answer, so nothing stalls indefinitely.
 
-Last updated: 2026-09-06 12:50 by Claude.
+Last updated: 2026-09-06 13:00 by Claude.
 
 ---
 
-## 1. Review `docs/agent-architecture.md`
+## 1. Review `docs/execution-plan.md`
 
-You asked for a proposed agent structure. Written up, with a recommendation you may not like:
-**staff two agents now, not seven.** Architect and Verifier. Fan-out before the protos are blessed
-produces incompatible designs, and this project has already shown why in miniature.
+You asked for an execution plan with a GCP deployment goal and a fastest-local-iteration dev plan.
+Ten milestones, each with an observable definition of done. Three things in it worth your
+attention:
 
-Beyond the Architect and TL you named, I argue for four more, in priority order. The one I would
-hire before any implementer is a **Verifier**, because my own architecture document was wrong twice
-in one session in ways that propagated: I proposed a queue mitigation that measurement showed was
-slower than the standard library, and I quoted a decode-only throughput figure as a fleet budget
-input, which you caught rather than I did. Its standing mandate would be that every quantitative
-claim must be reproducible by a script in `bench/` or marked as an estimate.
+**M1 is a walking skeleton, not a layer.** It targets the round-robin rolling hotspot end to end,
+with decode disabled so the workload behaves like stateless serving. That produces a genuinely
+useful result in two or three days and exercises every layer, at the cost of the first working
+thing not being LLM-specific yet.
 
-The other three are a Physics owner for the cost model and the differential oracle, a Calibration
-owner for trace work and sensitivity sweeps, and a Frontend owner against frozen interfaces.
+**Cloud Run, not GKE, and possibly forever.** A run is a long-lived stateful thing holding about
+1.3 GB, so it wants one instance for its life. Session affinity plus CPU-always-allocated plus a
+max-instances cap of ten maps directly onto your note about ten backend replicas: ten instances,
+ten concurrent runs. No Kubernetes, and no Envoy either, because `tonic-web` speaks gRPC-web
+natively. Section 3.2 has the five `gcloud` commands.
 
-One recommendation to push back on if you disagree: **the comment watcher should stay a script, not
-an agent.** A missed instruction is the worst failure this project has, and today four of seven
-instructions in one proto file were invisible to the scanner until I fixed it. That was a mechanical
-bug with a regression test. An agent might have caught them, or might not, and there would be no
-way to know which.
+**One reversal of an earlier decision, please sanity-check it.** Scenarios in protobuf text format
+rather than TOML. `Scenario` is already a proto message, so TOML would mean a converter and two
+places for a default to drift. If hand-authoring prototxt turns out to be annoying we add a TOML
+front end then.
 
-**If you say nothing:** Claude proceeds as Architect plus an ad-hoc Verifier pass on each unit of
-work, and does not fan out.
+Section 3.3 lists four things that must be true in the code for the Cloud Run deployment to work,
+all of which are unpleasant to retrofit. Worth a look even if the rest can wait.
 
-## 2. BLOCKING — the interfaces in `proto/`
+**If you say nothing:** Claude starts at M0, the workspace and CI, which is half a day and commits
+to nothing that later milestones cannot change.
 
-Thirteen files. Your subscription and telemetry feedback is folded in and the markers are removed;
-see `STATUS.md` for what changed. Still unreviewed: `policy.proto`, `leaf.proto`, `scenario.proto`,
-`workload.proto`, `ingress.proto`, `metrics.proto`, `common.proto`, `request.proto`,
-`serving.proto`, `kv.proto`, `capacity.proto`.
+## 2. Review `docs/agent-architecture.md`
 
-Suggested order by consequence: `policy.proto` first, since it decides whether the agent arena can
-be trusted; then `leaf.proto`, which carries your three-layer sketch; then `scenario.proto`, the
-largest and the one you will live in; then `workload.proto`, which is the load-shape interface you
-asked for.
+Proposed structure for staffing this with agents. Headline recommendation you may not like: **two
+agents now, not seven.** Architect and Verifier. Fan-out before interfaces are blessed produces
+incompatible designs.
 
-Two notes on things I changed beyond what you flagged. Absolute epoch time is applied to all
-thirteen files rather than only `telemetry.proto`, and it turns out to *remove* an option:
-float64 resolves only about 200 ns at 1.79e18, so no simulated timestamp may pass through a float.
-And on percentiles at the leaf, I did not do quite what you suggested, because percentiles do not
-merge; the engine computes them at the Leaf when one shard owns the target and merges histograms
-otherwise, with a flag saying which.
+Beyond the Architect and TL you named I argue for four more. The one I would hire before any
+implementer is a **Verifier**, because my own architecture document was wrong twice in one session
+in ways that propagated: a queue mitigation that measurement showed was slower than the standard
+library, and a decode-only throughput figure quoted as a fleet budget input, which you caught
+rather than I did. Its standing mandate would be that every quantitative claim must be reproducible
+by a script in `bench/` or marked as an estimate.
 
-Leave corrections as comments in the files, prefixed or not. Both are caught now.
+One recommendation to push back on if you disagree: **the comment watcher stays a script, not an
+agent.** A missed instruction is the worst failure this project has, and four of seven instructions
+in one proto file were invisible until a mechanical fix with a regression test.
 
-**If you say nothing:** Claude treats the interfaces as accepted and starts generating code.
+**If you say nothing:** Claude works as Architect with an ad-hoc Verifier pass per unit, and does
+not fan out.
 
 ## 3. Five smaller decisions, all with a default so none of them blocks
 
