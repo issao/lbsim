@@ -10,10 +10,10 @@ performance, service quality and robustness. Rust engine, React dashboard, proto
 ```bash
 export PATH="$HOME/local/bin:$HOME/.local/bin:$PATH"   # this sandbox; see docs/toolchain.md
 ./run-demos.sh              # six experiments, six self-contained HTML reports in out/
-cargo test --workspace      # 73 tests, 3 ignored as known defects
+tools/build.sh test --workspace             # 73 tests, 3 ignored as known defects; build.sh bounds cargo to two processes machine-wide
 ./check-fingerprints.sh     # every report number byte-identical to bench/golden-fingerprints.txt
 ./check-sensitivity.sh      # the policy ordering must survive 30% cost-model error
-cargo test --release --lib -- --nocapture   # one arena round on the held-out suite
+tools/build.sh test --release -p sim-arena -- --nocapture arena_round   # one arena round on the held-out suite
 cd web && npm install && npm run dev        # the stand-in dashboard, mock data, localhost:5173
 ```
 
@@ -39,6 +39,10 @@ Every run is deterministic: same scenario and seed, byte-identical output. Scena
 
 ## Working rules
 
-`CLAUDE.md` has them. The short version: every unit of work ends in a commit on a `claude/<topic>`
-branch, merged to `master` with `--no-ff` and pushed. Instructions to Claude are lines inside any file
-that begin with his name and a colon; `tools/sync.sh` finds them, and the tree itself is the queue.
+`CLAUDE.md` has them. The short version: every agent works in its own worktree on a `claude/<topic>`
+branch; subagents push their branch and report, and the owning long-running agent rebases, merges to
+`master` with `--no-ff` and pushes. Every cargo call goes through `tools/build.sh`. "No behaviour
+change" means `./check-fingerprints.sh` prints `PASS`. Timestamps in the documents come from the clock
+or the commit that carried the event, never from estimation. Instructions to Claude are lines inside
+any file that begin with his name and a colon; `tools/sync.sh` finds them, the tree itself is the
+queue, and a marker that asks for another agent's work is routed under "Routed to" in `TASKS.md`.

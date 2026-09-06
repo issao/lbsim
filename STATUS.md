@@ -3,7 +3,7 @@
 What is live on `origin/master`, what each agent is doing now, and the assumptions being acted on.
 For things that need *you*, see `TASKS.md`.
 
-**Last updated:** 2026-09-06 16:18 PDT by Claude.
+**Last updated:** 2026-09-06 16:19 PDT by Claude.
 
 ---
 
@@ -17,11 +17,11 @@ Scope is `docs/scope-today.md` package B plus item 7, and both side missions Iss
 | What | Where | Verified by |
 |---|---|---|
 | Simulator, six dynamics reproducing | `src/`, `scenarios/` | `./run-demos.sh`, six HTML reports in `out/` |
-| Test suite: 73 pass, 3 ignored as known defects; `tests/layering.rs` enforces the downward crate dependency direction | `tests/`, `crates/*/` | `cargo test --workspace` |
+| Test suite: 73 pass, 3 ignored as known defects; `tests/layering.rs` enforces the downward crate dependency direction | `tests/`, `crates/*/` | `tools/build.sh test --workspace` |
 | Golden fingerprints: every demo, the held-out suite and a live probe, byte-identical to the baseline | `bench/golden-fingerprints.txt` | `./check-fingerprints.sh` |
 | Frontend-to-Ingress wire: JSON over HTTP/1.1, SSE subscriptions, field names held to the proto by a test | `crates/sim-ingress/WIRE.md` | `cargo test -p sim-ingress` |
 | Policy ordering survives ±30% cost-model error | `check-sensitivity.sh` | run it; exits non-zero on a flip |
-| Arena, mechanical half, eight-scenario held-out suite | `src/arena.rs`, `scenarios/holdout/` | `cargo test --release --lib -- --nocapture` |
+| Arena, mechanical half, eight-scenario held-out suite | `crates/sim-arena/`, `scenarios/holdout/` | `tools/build.sh test --release -p sim-arena -- --nocapture arena_round` |
 | Stand-in dashboard, three surfaces, mock data | `web/` | `cd web && npm run build` |
 | **Deployed, public at <https://lbsim.ai>** since 16:16, also <https://lbsim-irpwc2yaoa-uc.a.run.app>; dashboard at `/` with links to the reports at `/reports/1-routing.html` to `6-retry.html`; revision `lbsim-00004-t5q` from 6ebfd4e | `Dockerfile`, `cloudbuild.yaml`, `deploy.sh` | `curl -sI` on the URL returns 200; `./deploy.sh --check-idle` reads the instance count from Cloud Monitoring |
 | Reference cost model, exact against a naive oracle | `bench/validate_epochs.py` | `tools/sync.sh` runs it |
@@ -107,6 +107,7 @@ lead's ETA, wall clock from 15:55 PDT and conditional on agents landing at today
 
 ## Tree state
 
-Each agent commits on its own `claude/<topic>` branch, merges to `master` with `--no-ff`, and pushes.
-The housekeeping agent works in a separate worktree at `/home/agents/repo/lbsim-docs` so that another
-agent's uncommitted files in `/home/agents/repo/lbsim` never enter its commits.
+Every agent works in its own worktree beside the repo (`/home/agents/repo/lbsim-<name>`) on a
+`claude/<topic>` branch. Subagents push their branch and report; they never merge or push `master`.
+The tech lead, the main agent and the housekeeping agent rebase onto `master`, merge `--no-ff` and
+push. The rules in full are in `CLAUDE.md`; where this file and `CLAUDE.md` differ, `CLAUDE.md` wins.

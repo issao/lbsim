@@ -3,11 +3,11 @@
 `docs/arena.md` is the specification and stays the authority. This records what of it exists in code,
 the numbers the code actually measured, and what the judging half of the referee still has to do.
 
-Everything is in `src/arena.rs`, plus the frozen suite in `scenarios/holdout/`. Zero dependencies,
+Everything is in `crates/sim-arena/src/lib.rs` since the workspace split (163995c), plus the frozen suite in `scenarios/holdout/`. Zero dependencies,
 single-threaded, same seed for every policy. Not yet wired into the CLI: `arena::arena_main` is the
 entry point a `sim-run arena` arm would call, and wiring it is one line in `report::cli`.
 
-Reproduce with `cargo test --release --lib -- --nocapture` (5 s, 41 runs per round).
+Reproduce with `tools/build.sh test --release -p sim-arena -- --nocapture arena_round` (5 s, 41 runs per round).
 
 ---
 
