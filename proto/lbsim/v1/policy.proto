@@ -1,0 +1,175 @@
+syntax = "proto3";
+
+package lbsim.v1;
+
+import "lbsim/v1/common.proto";
+import "lbsim/v1/request.proto";
+import "lbsim/v1/telemetry.proto";
+
+// The engine/policy seam.
+//
+// A policy is a pure function from a stale Observation to a list of Intents. It holds its
+// own private state (estimators, controller integrators) but never touches simulation state.
+// Cheating is not punished after the fact, it is unrepresentable: an Observation contains no
+// fresh state and no Truth, and an Intent cannot express a physics violation that the referee
+// will pass. See docs/ARCHITECTURE.md section 5.
+
+// ---------------------------------------------------------------------------
+// What a policy may see
+// ---------------------------------------------------------------------------
+
+message Observation {
+  // The policy's own clock, which is accurate. Subtracting each replica's sampled_at_ns
+  // from this gives the staleness, which a delay-compensating controller needs.
+  uint64 decision_time_ns = 1;
+
+  // The delayed fleet view. Never the live one.
+  FleetSnapshot fleet = 2;
+
+  // Set for a per-request decision such as routing or admission. Absent for a periodic
+  // decision such as autoscaling.
+  InferenceRequest request = 3;
+
+  // Aggregate signals the policy is allowed to have, because a real control plane would.
+  double offered_rps_estimate = 10;
+  double admitted_rps_estimate = 11;
+  // Per-tenant token consumption, for fair queueing. Tokens, not requests, because that is
+  // what capacity is denominated in.
+  map<uint64, uint64> tenant_tokens_recent = 12;
+
+  // Local, non-stale state the deciding component genuinely owns. A replica's own scheduler
+  // knows its own queue exactly; a router does not.
+  LocalState local = 20;
+}
+
+// State the deciding component owns directly and therefore knows without delay. Populated
+// only for the component making the decision, so a replica scheduler sees its own batch and
+// a router sees none of this.
+message LocalState {
+  repeated SequenceState sequences = 1;
+  uint64 kv_tokens_resident = 2;
+  uint64 kv_tokens_capacity = 3;
+  uint32 step_token_budget = 4;
+  uint64 last_step_time_ns = 5;
+}
+
+message SequenceState {
+  RequestId request = 1;
+  TenantId tenant = 2;
+  SloClass slo_class = 3;
+  Phase phase = 4;
+  uint32 prompt_tokens = 5;
+  uint32 tokens_generated = 6;
+  // The client's cap, which is an upper bound and usually a loose one. NOT the true output
+  // length: that lives in Truth and is not observable. Scheduling without knowing how long a
+  // sequence will run is the defining difficulty of this domain.
+  uint32 max_output_tokens = 7;
+  uint64 admitted_at_ns = 8;
+  uint64 deadline_ns = 9;
+  uint64 kv_tokens = 10;
+  MemoryTier kv_tier = 11;
+}
+
+// ---------------------------------------------------------------------------
+// What a policy may ask for
+// ---------------------------------------------------------------------------
+
+message Intent {
+  oneof kind {
+    Route route = 1;
+    Admit admit = 2;
+    Reject reject = 3;
+    Preempt preempt = 4;
+    Resume resume = 5;
+    SetStepBudget set_step_budget = 6;
+    MigrateKv migrate_kv = 7;
+    ScalePool scale_pool = 8;
+    EjectReplica eject_replica = 9;
+    ScheduleRetry schedule_retry = 10;
+    RequestProbe request_probe = 11;
+  }
+
+  // Send a request to a replica. Takes effect after the modelled RPC delay, not instantly.
+  message Route {
+    RequestId request = 1;
+    ReplicaId replica = 2;
+    repeated ReplicaId considered = 3;      // recorded so herding is measurable
+    uint32 predicted_cache_hit_tokens = 4;  // recorded so affinity error is measurable
+  }
+
+  // Bring a queued request into the running batch. The referee rejects this if it would
+  // overcommit KV, so a policy cannot admit its way out of a capacity shortage.
+  message Admit { RequestId request = 1; }
+
+  // Shed. The referee records whether GPU time had already been spent, since shedding early
+  // and shedding late are very different outcomes.
+  message Reject { RequestId request = 1; Outcome reason = 2; }
+
+  // Evict a running sequence. `to_tier` chooses the classic tradeoff: DRAM is a ~20 ms
+  // transfer each way, NONE means recomputing prefill later, which for 4k tokens is ~270 ms.
+  // Under heavy preemption the shared PCIe or RDMA path saturates and the advantage inverts.
+  message Preempt { RequestId request = 1; MemoryTier to_tier = 2; }
+
+  message Resume { RequestId request = 1; }
+
+  // The chunked-prefill knob. Raising it improves time-to-first-token and worsens
+  // inter-token latency for everyone already decoding, and raises KV pressure by admitting
+  // faster. The referee clamps it to the engine maximum.
+  message SetStepBudget { uint32 tokens = 1; uint32 max_prefill_tokens = 2; }
+
+  // Move parked KV between tiers. Debits shared tier bandwidth for its duration.
+  message MigrateKv { RequestId request = 1; MemoryTier to_tier = 2; }
+
+  // Autoscale. Takes effect after cold start, 30-300 s, which is the actuator delay that
+  // makes reactive scaling oscillate.
+  message ScalePool { PoolId pool = 1; int32 delta_replicas = 2; }
+
+  // Remove a replica from routing without terminating it: the response to a suspected
+  // straggler. Detection latency is the policy property under test.
+  message EjectReplica { ReplicaId replica = 1; bool eject = 2; }
+
+  // Client-side retry. Retries are what turn a slowdown into a collapse, so the retry
+  // decision is a policy with a budget, not an automatic behaviour.
+  message ScheduleRetry { RequestId request = 1; uint64 delay_ns = 2; }
+
+  // Ask a replica for fresh state instead of waiting for the next snapshot. Costs a modelled
+  // RPC, so the price of freshness is visible rather than free. This is what makes
+  // power-of-two-choices with live probes comparable against scrape-based least-loaded.
+  message RequestProbe { repeated ReplicaId replicas = 1; }
+}
+
+message Decision {
+  repeated Intent intents = 1;
+  // When the policy wants to be asked again, for periodic controllers. Zero means only on
+  // the next event.
+  uint64 next_wakeup_ns = 2;
+}
+
+// ---------------------------------------------------------------------------
+// Referee
+// ---------------------------------------------------------------------------
+
+// Why an intent was refused. In `strict` mode a violation aborts the run, which is what
+// tests and the policy arena use so a cheating policy cannot score. In `tolerant` mode the
+// referee clamps and counts, so an agent-written policy degrades instead of killing a long
+// run. See docs/ARCHITECTURE.md 5.2.
+enum RefereeVerdict {
+  REFEREE_VERDICT_UNSPECIFIED = 0;
+  REFEREE_VERDICT_ACCEPTED = 1;
+  REFEREE_VERDICT_CLAMPED = 2;               // legal after adjustment; adjusted value applied
+  REFEREE_VERDICT_KV_OVERCOMMIT = 3;
+  REFEREE_VERDICT_BUDGET_EXCEEDED = 4;
+  REFEREE_VERDICT_UNKNOWN_ENTITY = 5;
+  REFEREE_VERDICT_WRONG_PHASE = 6;           // e.g. preempting something already preempted
+  REFEREE_VERDICT_STALE_REFERENCE = 7;       // referred to state newer than the observation
+  REFEREE_VERDICT_CAUSALITY_VIOLATION = 8;   // effect scheduled before its actuation delay
+  REFEREE_VERDICT_BANDWIDTH_OVERCOMMIT = 9;
+  REFEREE_VERDICT_CONSERVATION_VIOLATION = 10; // tried to change work that is not the policy's to change
+}
+
+message RefereeReport {
+  uint64 at_ns = 1;
+  Intent intent = 2;
+  RefereeVerdict verdict = 3;
+  string detail = 4;
+}

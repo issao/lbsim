@@ -1,0 +1,204 @@
+syntax = "proto3";
+
+package lbsim.v1;
+
+import "lbsim/v1/common.proto";
+import "lbsim/v1/metrics.proto";
+import "lbsim/v1/scenario.proto";
+
+// The simulator's own service, served for real over gRPC and grpc-web to the React
+// dashboard. Unlike everything in serving.proto, these are actual RPCs.
+
+service SimControl {
+  // -- running ----------------------------------------------------------
+
+  rpc StartRun(StartRunRequest) returns (StartRunResponse);
+  rpc StopRun(StopRunRequest) returns (StopRunResponse);
+  rpc GetRun(GetRunRequest) returns (RunStatus);
+  rpc ListRuns(ListRunsRequest) returns (ListRunsResponse);
+
+  // Live metrics while a run proceeds. The interactive playground needs to see a dynamic
+  // unfold, not only its summary.
+  rpc StreamRun(StreamRunRequest) returns (stream RunUpdate);
+
+  // -- interactive control ---------------------------------------------
+
+  // Change parameters mid-run: the playground's core interaction. Anything that alters
+  // physics forces re-simulation from the last snapshot; anything that only alters the view
+  // does not. The response says which happened, so the UI can tell the user honestly.
+  rpc Apply(ApplyRequest) returns (ApplyResponse);
+
+  // Scrub. Reads the recorded event log, so it needs no re-simulation and is fast enough for
+  // a slider. See docs/ARCHITECTURE.md 8.2.
+  rpc Seek(SeekRequest) returns (SeekResponse);
+
+  // -- results ---------------------------------------------------------
+
+  rpc GetResult(GetResultRequest) returns (RunResult);
+  rpc GetTraces(GetTracesRequest) returns (GetTracesResponse);
+  // A/B: two runs whose seeds match, so the difference is the policy and not the workload.
+  // The server rejects a comparison across differing seeds or workloads rather than letting
+  // a user draw a conclusion from two unlike runs.
+  rpc Compare(CompareRequest) returns (CompareResponse);
+  // Self-contained static HTML, per VISION section 8, with links back into a live instance
+  // for replay.
+  rpc ExportReport(ExportReportRequest) returns (ExportReportResponse);
+
+  // -- catalogue -------------------------------------------------------
+
+  // Preloaded scenario cards for the showcase, each with its narration steps.
+  rpc ListScenarios(ListScenariosRequest) returns (ListScenariosResponse);
+  rpc GetScenario(GetScenarioRequest) returns (GetScenarioResponse);
+  // Names and parameter schemas of available policies, so the UI builds its controls from
+  // the server rather than hardcoding them.
+  rpc ListPolicies(ListPoliciesRequest) returns (ListPoliciesResponse);
+}
+
+message StartRunRequest {
+  Scenario scenario = 1;
+  // Cap on simulated seconds per wall-clock second. Slow it down to watch a dynamic unfold,
+  // or leave unset to run as fast as possible.
+  double max_realtime_factor = 2;
+  bool record_traces = 3;
+}
+message StartRunResponse { string run_id = 1; }
+
+message StopRunRequest { string run_id = 1; }
+message StopRunResponse { bool stopped = 1; }
+
+message GetRunRequest { string run_id = 1; }
+
+message RunStatus {
+  string run_id = 1;
+  enum State {
+    STATE_UNSPECIFIED = 0;
+    STATE_QUEUED = 1;
+    STATE_RUNNING = 2;
+    STATE_PAUSED = 3;
+    STATE_COMPLETE = 4;
+    STATE_FAILED = 5;
+  }
+  State state = 2;
+  uint64 sim_time_ns = 3;
+  uint64 sim_duration_ns = 4;
+  double realtime_factor = 5;
+  string error = 6;
+}
+
+message ListRunsRequest { uint32 limit = 1; string cursor = 2; }
+message ListRunsResponse { repeated RunStatus runs = 1; string next_cursor = 2; }
+
+message StreamRunRequest {
+  string run_id = 1;
+  uint64 update_interval_ns = 2;
+  // Restrict to the series the client is actually displaying. At 6,250 replicas, streaming
+  // everything would swamp the browser.
+  repeated string series_names = 3;
+  repeated ClusterId clusters = 4;
+}
+
+message RunUpdate {
+  uint64 sim_time_ns = 1;
+  repeated Series series_delta = 2;
+  Scorecard running_scorecard = 3;
+  // Notable moments for the narration timeline: a failure fired, preemption began, the fleet
+  // collapsed, autoscaling triggered.
+  repeated Annotation annotations = 4;
+}
+
+message Annotation {
+  uint64 at_ns = 1;
+  string kind = 2;
+  string message = 3;
+  ClusterId cluster = 4;
+  ReplicaId replica = 5;
+}
+
+message ApplyRequest {
+  string run_id = 1;
+  // Dotted paths into Scenario, e.g. "policies.routing.name". Kept as a path/value map rather
+  // than a whole Scenario so the server can tell whether physics changed.
+  map<string, string> set = 2;
+}
+message ApplyResponse {
+  bool accepted = 1;
+  // True when the change altered physics and the run was rewound to a snapshot and
+  // re-simulated. The UI must say so rather than implying continuity that does not exist.
+  bool required_resimulation = 2;
+  uint64 rewound_to_ns = 3;
+  string rejected_reason = 4;
+}
+
+message SeekRequest { string run_id = 1; uint64 to_sim_time_ns = 2; }
+message SeekResponse { uint64 sim_time_ns = 1; bool from_log = 2; }
+
+message GetResultRequest { string run_id = 1; }
+
+message GetTracesRequest {
+  string run_id = 1;
+  // Filters, so a user can ask for exactly the interesting tail.
+  Outcome outcome = 2;
+  uint64 min_e2e_ns = 3;
+  TenantId tenant = 4;
+  uint32 limit = 5;
+}
+message GetTracesResponse { repeated RequestTrace traces = 1; }
+
+message CompareRequest { repeated string run_ids = 1; }
+message CompareResponse {
+  repeated RunResult results = 1;
+  // Set when the runs are not comparable, for example different seeds or workloads. Better to
+  // refuse than to let someone attribute a workload difference to a policy.
+  string incomparable_reason = 2;
+}
+
+message ExportReportRequest { repeated string run_ids = 1; bool embed_traces = 2; }
+message ExportReportResponse { bytes html = 1; string filename = 2; }
+
+message ListScenariosRequest { string tag = 1; }
+message ListScenariosResponse { repeated ScenarioCard cards = 1; }
+
+// A showcase entry: the scenario plus the story it tells.
+message ScenarioCard {
+  string id = 1;
+  string title = 2;
+  string summary = 3;
+  repeated string tags = 4;
+  // The step-by-step narration for the walkthrough popup in VISION section 6.
+  repeated NarrationStep steps = 5;
+  // The companion run to compare against, so the card demonstrates a contrast rather than
+  // just a behaviour.
+  string baseline_scenario_id = 6;
+}
+
+message NarrationStep {
+  string text = 1;
+  uint64 at_sim_time_ns = 2;
+  // Panels to highlight while this step is showing.
+  repeated string focus_series = 3;
+  string focus_component = 4;
+}
+
+message GetScenarioRequest { string id = 1; }
+message GetScenarioResponse { Scenario scenario = 1; ScenarioCard card = 2; }
+
+message ListPoliciesRequest { string slot = 1; }
+message ListPoliciesResponse { repeated PolicyDescriptor policies = 1; }
+
+// Lets the dashboard build its controls from the server, so adding a policy needs no
+// frontend change. Also what the agent arena reads to discover what it may vary.
+message PolicyDescriptor {
+  string name = 1;
+  string slot = 2;
+  string description = 3;
+  repeated ParamDescriptor params = 4;
+}
+
+message ParamDescriptor {
+  string name = 1;
+  string description = 2;
+  double default_value = 3;
+  double min_value = 4;
+  double max_value = 5;
+  bool is_integer = 6;
+}

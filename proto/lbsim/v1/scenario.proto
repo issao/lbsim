@@ -1,0 +1,441 @@
+syntax = "proto3";
+
+package lbsim.v1;
+
+import "lbsim/v1/common.proto";
+
+// A complete, reproducible experiment definition.
+//
+// This message is the canonical schema. Humans author scenarios in TOML, which is parsed
+// into it; the dashboard edits it directly. A run records the fully resolved Scenario
+// alongside its results, so any result can be reproduced from its own output.
+//
+// Reference values for the hardware and model fields are in
+// docs/llm-serving-primer.md section 10.7.
+
+message Scenario {
+  string name = 1;
+  string description = 2;
+
+  // The single seed everything derives from. Named sub-streams are hashed from it, so
+  // changing the arrival rate does not perturb prompt lengths and enabling failure injection
+  // does not perturb the workload. Without that independence an A/B comparison silently
+  // compares two different workloads.
+  uint64 seed = 3;
+
+  uint64 duration_ns = 4;
+  // Excluded from all reported statistics, so a run measures steady state rather than the
+  // transient of an empty fleet filling up.
+  uint64 warmup_ns = 5;
+
+  repeated ModelSpec models = 10;
+  repeated AcceleratorSpec accelerators = 11;
+  repeated ClusterSpec clusters = 12;
+  WorkloadSpec workload = 13;
+  PolicySpec policies = 14;
+  TelemetrySpec telemetry = 15;
+  FailureSpec failures = 16;
+  FidelitySpec fidelity = 17;
+  ObservabilitySpec observability = 18;
+}
+
+// ---------------------------------------------------------------------------
+// Hardware and model
+// ---------------------------------------------------------------------------
+
+message AcceleratorSpec {
+  string name = 1;                     // "h100-sxm-80"
+  uint64 hbm_bytes = 2;
+  uint64 hbm_bandwidth_bytes_per_s = 3;
+  // Dense, without sparsity, which is what inference actually achieves.
+  double peak_dense_flops_bf16 = 4;
+  double peak_dense_flops_fp8 = 5;
+  // Unidirectional, per GPU.
+  uint64 nvlink_bytes_per_s = 6;
+}
+
+message ModelSpec {
+  uint32 id = 1;
+  string name = 2;
+  uint64 n_params = 3;
+  uint32 n_layers = 4;
+  // Grouped-query attention: KV heads, not attention heads. Using the wrong one misstates
+  // KV size by up to 8x, which would invalidate every capacity conclusion.
+  uint32 n_kv_heads = 5;
+  uint32 head_dim = 6;
+  uint32 dtype_bytes = 7;
+  // Derived as 2 * layers * kv_heads * head_dim * dtype_bytes. Stated explicitly so a
+  // scenario can override it for a model with an unusual attention variant, and checked
+  // against the derivation at load time.
+  uint64 kv_bytes_per_token = 8;
+  uint64 weight_bytes = 9;
+}
+
+message ReplicaSpec {
+  string accelerator = 1;
+  uint32 model_id = 2;
+  // Tensor-parallel degree. Also the failure domain: one GPU fault kills the whole replica
+  // and every request in flight on it.
+  uint32 tensor_parallel = 3;
+  uint32 pipeline_parallel = 4;
+
+  // -- engine efficiency, the calibration surface -------------------------
+
+  // Memory-bandwidth utilization during decode. 0.60-0.85 realistic.
+  double mbu_decode = 10;
+  // Model-FLOPS utilization during prefill. 0.35-0.60 realistic.
+  double mfu_prefill = 11;
+  // Fixed per-step cost: kernel launch, sampling, scheduler. Dominates at low batch, where
+  // measured decode is 2-3x the roofline prediction. Calibrate this first; it anchors
+  // everything else.
+  uint64 fixed_step_overhead_ns = 12;
+  // Per-layer tensor-parallel all-reduce cost, which is why more GPUs is not linearly better.
+  uint64 tp_collective_ns_per_layer = 13;
+
+  // -- capacity ----------------------------------------------------------
+
+  uint64 kv_capacity_tokens = 20;
+  uint32 kv_block_tokens = 21;         // 16 in vLLM; makes allocation granular
+  uint32 max_num_seqs = 22;
+  // Chunked prefill budget. Bounds the inter-token stall a long prompt inflicts on everyone
+  // already decoding: a 32k prompt at an 8k budget becomes four smaller stalls instead of
+  // one two-second one.
+  uint32 max_batched_tokens_per_step = 23;
+  // Ceiling on the prefix cache, so it cannot consume the KV budget entirely.
+  uint64 prefix_cache_max_tokens = 24;
+  uint32 prefix_cache_max_nodes = 25;
+
+  // -- lifecycle ---------------------------------------------------------
+
+  uint64 cold_start_warm_node_ns = 30;
+  uint64 cold_start_cold_node_ns = 31;
+  double cold_start_jitter_cv = 32;
+}
+
+// ---------------------------------------------------------------------------
+// Topology
+// ---------------------------------------------------------------------------
+
+message ClusterSpec {
+  ClusterId id = 1;
+  string name = 2;
+  // Drives the diurnal phase offset of this cluster's traffic. Multi-geo diurnal patterns
+  // are what make global autoscaling interesting: capacity can follow the sun.
+  string region = 3;
+  double utc_offset_hours = 4;
+
+  repeated PoolSpec pools = 10;
+
+  // Cluster-pooled memory tiers.
+  uint64 dram_tier_bytes = 20;
+  uint64 dram_tier_bandwidth_bytes_per_s = 21;
+  uint64 ssd_tier_bytes = 22;
+  uint64 ssd_tier_bandwidth_bytes_per_s = 23;
+  // Aggregate RDMA, shared between KV movement, weight loading and control traffic. Sharing
+  // it is what makes prefill/decode disaggregation stop being free under load.
+  uint64 rdma_bytes_per_s = 24;
+
+  // -- modelled call latencies -------------------------------------------
+
+  LatencySpec gateway_to_router = 30;
+  LatencySpec router_to_replica = 31;
+  LatencySpec intra_cluster = 32;
+  // To every other cluster. 10-100 ms, and also the safe lookahead that lets each cluster
+  // run on its own thread deterministically.
+  map<uint64, LatencySpec> to_cluster = 33;
+
+  uint32 router_instances = 40;
+  // More routers sharing one stale snapshot means a bigger stampede onto whichever replica
+  // last looked idle. This field is the herding knob.
+  uint32 gateway_instances = 41;
+}
+
+message PoolSpec {
+  PoolId id = 1;
+  string name = 2;
+  ReplicaSpec replica = 3;
+  uint32 initial_replicas = 4;
+  uint32 min_replicas = 5;
+  uint32 max_replicas = 6;
+  uint32 warm_idle_replicas = 7;
+  // For prefill/decode disaggregation: a pool may serve only one phase.
+  enum Role {
+    ROLE_UNSPECIFIED = 0;
+    ROLE_BOTH = 1;
+    ROLE_PREFILL_ONLY = 2;
+    ROLE_DECODE_ONLY = 3;
+  }
+  Role role = 8;
+}
+
+message LatencySpec {
+  uint64 median_ns = 1;
+  double cv = 2;             // lognormal spread
+  double loss_probability = 3;
+  uint64 timeout_ns = 4;
+}
+
+// ---------------------------------------------------------------------------
+// Workload
+// ---------------------------------------------------------------------------
+
+message WorkloadSpec {
+  repeated TenantSpec tenants = 1;
+  // Replay a recorded trace instead of generating traffic. Empty means generate.
+  string trace_path = 2;
+  // Independent perturbation used for control analysis: a step or a sinusoid layered on top
+  // of the baseline load, so gain and phase from offered load to observed queue depth can be
+  // measured and a Bode plot drawn. See docs/ARCHITECTURE.md 6.2.
+  PerturbationSpec perturbation = 3;
+}
+
+message TenantSpec {
+  TenantId id = 1;
+  string name = 2;
+  uint32 model_id = 3;
+  SloClass slo_class = 4;
+  repeated ClusterId origin_clusters = 5;
+
+  ArrivalSpec arrival = 10;
+  ShapeSpec shape = 11;
+  SessionSpec sessions = 12;
+  RetrySpec retry = 13;
+
+  // SLO targets, which define goodput for this tenant. A request that completes late costs
+  // capacity and earns no goodput, which is why throughput alone ranks policies wrongly.
+  uint64 ttft_slo_ns = 20;
+  uint64 itl_slo_ns = 21;
+  uint64 e2e_slo_ns = 22;
+  // Weight for fair queueing, denominated in tokens rather than requests.
+  double fair_share_weight = 23;
+}
+
+message ArrivalSpec {
+  enum Process {
+    PROCESS_UNSPECIFIED = 0;
+    PROCESS_POISSON = 1;
+    // Interarrival CV above 1. Real traffic is burstier than Poisson, and Poisson will
+    // understate queueing.
+    PROCESS_LOGNORMAL = 2;
+    // On/off bursts: the arrival pattern that actually breaks autoscaling.
+    PROCESS_MARKOV_MODULATED = 3;
+    PROCESS_CONSTANT = 4;
+  }
+  Process process = 1;
+  double base_rps = 2;
+  double interarrival_cv = 3;
+
+  // Diurnal envelope, phase-shifted per cluster by its UTC offset.
+  double diurnal_amplitude = 10;      // 0 disables
+  uint64 diurnal_period_ns = 11;      // 86400e9 for a day
+
+  // Markov-modulated burst parameters.
+  double burst_multiplier = 20;
+  uint64 mean_burst_ns = 21;
+  uint64 mean_quiet_ns = 22;
+}
+
+message ShapeSpec {
+  // Prompt and output lengths are strongly right-skewed and often bimodal: interactive chat
+  // and long-document work share a queue, and that mixture is what creates head-of-line
+  // blocking. A unimodal workload hides the problem being studied.
+  double prompt_short_mean_tokens = 1;
+  double prompt_long_mean_tokens = 2;
+  double prompt_long_probability = 3;
+  double prompt_cv = 4;
+  uint32 prompt_max_tokens = 5;
+
+  double output_short_mean_tokens = 10;
+  double output_long_mean_tokens = 11;
+  double output_long_probability = 12;
+  double output_cv = 13;
+  uint32 output_max_tokens = 14;
+
+  // Ratio of max_output_tokens the client requests to the true output length. Clients
+  // over-ask, admission control charges for the ask, and the gap is where preemption is born.
+  double max_tokens_overask_factor = 20;
+}
+
+message SessionSpec {
+  // Fraction of requests that continue an existing session rather than starting one. Session
+  // turns resend the whole history, so this drives prefix-cache hit rate more than anything
+  // else does.
+  double continuation_probability = 1;
+  double mean_turns = 2;
+  uint64 mean_think_time_ns = 3;
+
+  // Shared system prompt across a tenant's traffic: a single hot root in the prefix tree.
+  uint32 system_prompt_tokens = 10;
+  uint32 distinct_system_prompts = 11;
+  // Popularity skew over those prompts. Uniform choice badly understates real hit rates.
+  double system_prompt_zipf_s = 12;
+
+  // Agent and tree-search traffic: several requests branching from one shared parent. The
+  // structure that makes prefix caching valuable and affinity routing tempting.
+  double fork_probability = 20;
+  uint32 mean_fork_width = 21;
+}
+
+message RetrySpec {
+  uint32 max_attempts = 1;
+  uint64 base_backoff_ns = 2;
+  double backoff_multiplier = 3;
+  double jitter = 4;
+  // Cap on the fraction of traffic that may be retries. Without it, a slowdown becomes a
+  // retry storm and then a metastable collapse the fleet does not recover from when load
+  // returns to normal.
+  double retry_budget_fraction = 5;
+  uint64 client_timeout_ns = 6;
+  // Retrying after a 30 s timeout means 30 s of GPU work was already spent, so a retry here
+  // costs far more than in a stateless service. Cancelling first is a policy choice.
+  bool cancel_before_retry = 7;
+}
+
+message PerturbationSpec {
+  enum Kind {
+    KIND_UNSPECIFIED = 0;
+    KIND_NONE = 1;
+    KIND_STEP = 2;
+    KIND_SINUSOID = 3;
+    // Sweep frequency across a range to produce an empirical Bode plot, from which loop gain
+    // and phase margin follow, so oscillation onset can be predicted rather than merely
+    // observed.
+    KIND_FREQUENCY_SWEEP = 4;
+  }
+  Kind kind = 1;
+  double amplitude_fraction = 2;
+  uint64 start_ns = 3;
+  double frequency_hz = 4;
+  double sweep_min_hz = 5;
+  double sweep_max_hz = 6;
+  uint64 sweep_duration_ns = 7;
+}
+
+// ---------------------------------------------------------------------------
+// Policies
+// ---------------------------------------------------------------------------
+
+message PolicySpec {
+  // Named policy plus its own parameters. Kept as a name and a parameter map rather than a
+  // closed enum so a new policy needs no schema change, which matters for the agent arena.
+  PolicyRef routing = 1;
+  PolicyRef gateway_admission = 2;
+  PolicyRef replica_scheduling = 3;
+  PolicyRef preemption = 4;
+  PolicyRef autoscaling = 5;
+  PolicyRef failure_detection = 6;
+  PolicyRef kv_tiering = 7;
+  PolicyRef speculative_decoding = 8;
+
+  // strict aborts the run on any physics violation, which is what the arena uses so a
+  // cheating policy cannot score. tolerant clamps and counts.
+  enum RefereeMode {
+    REFEREE_MODE_UNSPECIFIED = 0;
+    REFEREE_MODE_STRICT = 1;
+    REFEREE_MODE_TOLERANT = 2;
+  }
+  RefereeMode referee_mode = 20;
+}
+
+message PolicyRef {
+  string name = 1;                      // "round_robin", "p2c", "least_kv", "prefix_affinity"
+  map<string, double> params = 2;
+  map<string, string> string_params = 3;
+}
+
+// ---------------------------------------------------------------------------
+// Telemetry, failures, fidelity, observability
+// ---------------------------------------------------------------------------
+
+message TelemetrySpec {
+  // The sensor period. With the propagation delay below, these two numbers plus the cold
+  // start time are the whole reason control-theoretic instability appears.
+  uint64 publish_interval_ns = 1;
+  double publish_jitter = 2;
+  LatencySpec propagation = 3;
+  // How long before a consumer treats a silent replica as unknown. How a policy handles
+  // "unknown" matters greatly, and absence of data is not evidence of failure.
+  uint64 staleness_timeout_ns = 4;
+  // Allow policies to pay for a fresh probe instead of waiting. Needed to compare
+  // probe-based power-of-two-choices against scrape-based least-loaded honestly.
+  bool allow_probes = 5;
+  uint64 probe_cost_ns = 6;
+}
+
+message FailureSpec {
+  repeated FailureEvent events = 1;
+  // Background rates, so the fleet is never perfectly healthy, which is the realistic case.
+  double replica_mtbf_hours = 10;
+  double gray_failure_probability = 11;
+}
+
+message FailureEvent {
+  uint64 at_ns = 1;
+  enum Kind {
+    KIND_UNSPECIFIED = 0;
+    KIND_REPLICA_CRASH = 1;         // announced, in-flight requests lost
+    KIND_REPLICA_GRAY_SLOWDOWN = 2; // reports healthy, serves at a fraction of speed
+    KIND_REPLICA_STALL = 3;         // accepts work, never completes it
+    KIND_TELEMETRY_FREEZE = 4;      // keeps publishing stale values
+    KIND_CLUSTER_PARTITION = 5;
+    KIND_ZONE_LOSS = 6;             // lose a fraction of a cluster at once
+    KIND_LOAD_SPIKE = 7;
+    KIND_CAPACITY_UNAVAILABLE = 8;  // autoscaling requests start failing
+  }
+  Kind kind = 2;
+  repeated ReplicaId replicas = 3;
+  ClusterId cluster = 4;
+  double fraction = 5;
+  uint64 duration_ns = 6;
+  double magnitude = 7;
+}
+
+message FidelitySpec {
+  // How often policies are consulted. This, not request aggregation, is the honest fidelity
+  // dial: even every_step costs only ~1.4x, because 40 steps/s is small next to ~100
+  // composition changes/s. See docs/ARCHITECTURE.md 3.4.
+  enum DecisionInterval {
+    DECISION_INTERVAL_UNSPECIFIED = 0;
+    DECISION_INTERVAL_ON_CHANGE = 1;
+    DECISION_INTERVAL_EVERY_N_MS = 2;
+    DECISION_INTERVAL_EVERY_N_STEPS = 3;
+    DECISION_INTERVAL_EVERY_STEP = 4;
+  }
+  DecisionInterval decision_interval = 1;
+  uint32 decision_interval_value = 2;
+
+  // Turn decode off to make traffic behave like stateless serving. Needed for the
+  // round-robin rolling-hotspot demonstration, which requires no LLM-specific modelling at
+  // all and is therefore the right first scenario.
+  bool disable_decode = 10;
+  bool disable_prefix_cache = 11;
+  bool disable_preemption = 12;
+
+  // Clusters simulated as aggregate flow rather than individual requests. Use for regions
+  // outside the focus of an experiment, so they still create realistic cross-region pressure
+  // at ~1% of the cost. Never for the cluster under study: aggregation averages away the
+  // heterogeneity that causes hotspots and tail latency.
+  repeated ClusterId fluid_clusters = 20;
+
+  // Speculative decoding acceptance is resampled every N steps rather than every step, which
+  // keeps the closed-form epoch advance intact. Understates variance below that timescale.
+  uint32 spec_decode_resample_steps = 30;
+}
+
+message ObservabilitySpec {
+  uint64 series_sample_interval_ns = 1;
+  uint64 histogram_interval_ns = 2;
+
+  // At ~112,500 completions per second, a simulated hour is ~405M requests, so full records
+  // exist only for samples. Uniform sampling of that many requests contains almost no p99.9
+  // examples, which are the ones worth reading, so sampling is stratified by latency bucket
+  // and by outcome as well.
+  double trace_sample_rate = 10;
+  uint32 traces_per_latency_bucket = 11;
+  uint32 traces_per_outcome = 12;
+
+  // Coarse snapshots bound how much must be re-simulated when a dashboard user changes a
+  // parameter mid-run. Interactive scrubbing reads the event log instead and needs no
+  // re-simulation.
+  uint64 snapshot_interval_ns = 20;
+}

@@ -1,0 +1,169 @@
+syntax = "proto3";
+
+package lbsim.v1;
+
+import "lbsim/v1/common.proto";
+import "lbsim/v1/kv.proto";
+import "lbsim/v1/request.proto";
+
+// Results. Aggregated online, because a simulated hour at target scale produces ~405 million
+// request completions and keeping rows for all of them is not possible.
+// See docs/ARCHITECTURE.md 8.3.
+
+// ---------------------------------------------------------------------------
+// Distributions
+// ---------------------------------------------------------------------------
+
+// Log-linear bucketed histogram, HDR style. Bounded memory, mergeable across shards and
+// intervals, and accurate enough in the tail to trust p99.9.
+message Histogram {
+  string name = 1;
+  uint32 significant_digits = 2;
+  uint64 lowest_discernible = 3;
+  uint64 highest_trackable = 4;
+  // Sparse: only non-empty buckets. Most of the range is empty in practice.
+  repeated uint32 bucket_index = 10;
+  repeated uint64 bucket_count = 11;
+  uint64 total_count = 20;
+  uint64 sum = 21;
+  uint64 min = 22;
+  uint64 max = 23;
+}
+
+// A gauge sampled on a fixed interval. Values are treated as step functions, so the
+// time-weighted mean is the meaningful average: the arithmetic mean of samples is wrong
+// whenever the value is bursty, which is the normal case here.
+message Series {
+  string name = 1;
+  uint64 interval_ns = 2;
+  uint64 start_ns = 3;
+  repeated double value = 4;
+  // Sentinel index for gaps, so a missing sample is distinguishable from a zero.
+  repeated uint32 missing_index = 5;
+}
+
+// ---------------------------------------------------------------------------
+// Scorecard
+// ---------------------------------------------------------------------------
+
+// The comparison surface between two policy configurations. Goodput leads deliberately:
+// a fleet can have excellent throughput and near-zero goodput by making everyone slightly
+// too slow, so any ranking on throughput alone picks the wrong policy.
+message Scorecard {
+  // Tokens per second delivered *within SLO*. The headline number.
+  double goodput_tokens_per_s = 1;
+  double throughput_tokens_per_s = 2;
+  double throughput_requests_per_s = 3;
+
+  double slo_attainment = 10;        // fraction of requests meeting every SLO term
+  double ttft_slo_attainment = 11;
+  double itl_slo_attainment = 12;
+  double e2e_slo_attainment = 13;
+
+  Histogram ttft = 20;
+  Histogram itl = 21;
+  Histogram e2e = 22;
+  Histogram queue_wait = 23;
+
+  map<int32, uint64> outcome_counts = 30;   // keyed by Outcome
+
+  // -- efficiency ---------------------------------------------------------
+
+  // Time-weighted mean fraction of KV capacity in use. High and near capacity is where
+  // preemption cascades begin.
+  double mean_kv_utilization = 40;
+  double mean_batch_size = 41;
+  double mean_step_time_ns = 42;
+  double prefix_cache_hit_rate = 43;
+  // GPU-seconds spent on tokens that were never delivered: timed-out, cancelled or preempted
+  // and recomputed. Under overload this is most of the fleet's capacity, and it is invisible
+  // in a utilization metric.
+  double wasted_gpu_fraction = 44;
+
+  // -- stability ----------------------------------------------------------
+
+  uint64 total_preemptions = 50;
+  uint64 total_retries = 51;
+  // Coefficient of variation of per-replica load across the fleet, time-averaged. The direct
+  // measure of a load balancer doing its job.
+  double load_imbalance_cv = 52;
+  // Peak frequency and amplitude of oscillation in fleet queue depth. Nonzero amplitude at a
+  // frequency related to the telemetry period is the control-loop instability signature.
+  double oscillation_frequency_hz = 53;
+  double oscillation_amplitude = 54;
+  // Did the fleet fail to recover after offered load returned to normal? The definition of a
+  // metastable collapse, and a pass/fail that matters more than any percentile.
+  bool metastable_collapse = 55;
+  uint64 recovery_time_ns = 56;
+
+  // -- fairness -----------------------------------------------------------
+
+  map<uint64, double> tenant_goodput = 60;
+  // Ratio of the worst-served tenant's normalised goodput to the best. One is perfect.
+  double fairness_min_max_ratio = 61;
+
+  // -- cost -------------------------------------------------------------
+
+  double mean_ready_replicas = 70;
+  double mean_warm_idle_replicas = 71;
+  double gpu_seconds_total = 72;
+}
+
+// ---------------------------------------------------------------------------
+// Tracing
+// ---------------------------------------------------------------------------
+
+// One sampled request's full journey, for reading by a human. Sampling is stratified so the
+// tail is always represented.
+message RequestTrace {
+  RequestRecord record = 1;
+  repeated TraceSpan spans = 2;
+}
+
+message TraceSpan {
+  uint64 start_ns = 1;
+  uint64 end_ns = 2;
+  string component = 3;               // "gateway", "router", "replica:1234"
+  string operation = 4;               // "queue", "prefill", "decode", "preempted", "rpc"
+  ReplicaId replica = 5;
+  // Why this span took as long as it did: the batch it shared, the KV pressure at the time.
+  // Without this a slow span is a mystery.
+  uint32 concurrent_seqs = 10;
+  double kv_utilization = 11;
+  uint32 tokens_processed = 12;
+  MemoryTier kv_tier = 13;
+}
+
+// ---------------------------------------------------------------------------
+// A complete run
+// ---------------------------------------------------------------------------
+
+message RunResult {
+  string run_id = 1;
+  // The fully resolved scenario, so a result can always be reproduced from its own output.
+  bytes scenario_serialized = 2;
+  uint64 seed = 3;
+
+  // Determinism fingerprint: event count plus a rolling checksum of applied intents. Two runs
+  // of the same scenario and seed must match here, which makes determinism a test rather
+  // than a hope.
+  uint64 event_count = 10;
+  uint64 state_checksum = 11;
+
+  Scorecard overall = 20;
+  map<uint64, Scorecard> per_cluster = 21;
+  map<uint64, Scorecard> per_tenant = 22;
+  map<int32, Scorecard> per_slo_class = 23;
+
+  repeated Series series = 30;
+  repeated RequestTrace traces = 31;
+  repeated TierState final_tier_state = 32;
+
+  // Physics violations the referee clamped in tolerant mode. Any nonzero count invalidates
+  // the run's conclusions unless it was expected.
+  uint64 referee_violations = 40;
+  map<int32, uint64> referee_violations_by_verdict = 41;
+
+  double wall_clock_seconds = 50;
+  double realtime_factor = 51;      // simulated seconds per wall-clock second
+}

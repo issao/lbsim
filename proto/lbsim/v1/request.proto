@@ -1,0 +1,102 @@
+syntax = "proto3";
+
+package lbsim.v1;
+
+import "lbsim/v1/common.proto";
+
+// The unit of work, and its record.
+//
+// Two things a real request does not carry are present here because the *simulator* needs
+// them and the modelled system must not see them: `Truth` holds the output length and other
+// facts that are unknowable at admission time. Keeping them in a separate message, never
+// included in anything a policy observes, makes it structurally impossible for a policy to
+// cheat by reading the future. See docs/ARCHITECTURE.md 5.2.
+
+message InferenceRequest {
+  RequestId id = 1;
+  TenantId tenant = 2;
+  SessionId session = 3;
+  SloClass slo_class = 4;
+
+  // Known at arrival: the prompt is in hand.
+  uint32 prompt_tokens = 5;
+
+  // The caller's cap. Charged optimistically by admission control, because the true output
+  // length is unknown. The gap between this and reality is what makes KV planning hard.
+  uint32 max_output_tokens = 6;
+
+  // Shared-prefix identity. `prefix_node` names the deepest shared node; `unshared_suffix_tokens`
+  // is this request's own tail. prompt_tokens must equal the summed ancestor tokens plus
+  // the suffix, and the referee checks that.
+  PrefixNodeId prefix_node = 7;
+  uint32 unshared_suffix_tokens = 8;
+
+  // Client-side deadline. A request past its deadline should be shed before it consumes GPU
+  // time; systems that check afterwards spend most of their capacity under overload
+  // producing tokens nobody will read.
+  uint64 deadline_ns = 9;
+
+  uint64 arrived_at_ns = 10;
+
+  // 0 for a first attempt. Retries are what turn a slowdown into a collapse, so the
+  // attempt number must be visible to admission control.
+  uint32 attempt = 11;
+
+  // Model being requested. Multi-model fleets make weight residency a scheduling problem.
+  uint32 model_id = 12;
+}
+
+// Facts the simulator knows and the modelled system cannot. Never embedded in an
+// Observation, never visible to a Policy. This separation is enforced by the type system
+// rather than by review.
+message Truth {
+  RequestId id = 1;
+
+  // The output length that will actually occur. Drawn by the workload model at arrival.
+  // Admission control must guess; the guess being wrong is the origin of preemption.
+  uint32 true_output_tokens = 2;
+
+  // For speculative decoding: the per-token acceptance probability of the draft model for
+  // this request. Varies by request because some continuations are far more predictable
+  // than others, and a constant rate would hide that.
+  double draft_acceptance_rate = 3;
+}
+
+// One row per request, aggregated online. See docs/ARCHITECTURE.md 8.3: at target scale a
+// simulated hour produces ~405M of these, so full rows are kept only for sampled traces.
+message RequestRecord {
+  RequestId id = 1;
+  TenantId tenant = 2;
+  SloClass slo_class = 3;
+  Outcome outcome = 4;
+
+  uint64 arrived_at_ns = 10;
+  uint64 admitted_at_ns = 11;
+  uint64 first_token_at_ns = 12;
+  uint64 finished_at_ns = 13;
+
+  uint32 prompt_tokens = 20;
+  uint32 output_tokens = 21;
+  // Prompt tokens served from a cached prefix, so never prefilled. The difference between
+  // this and prompt_tokens is the real prefill work.
+  uint32 cached_prefix_tokens = 22;
+
+  ClusterId cluster = 30;
+  ReplicaId replica = 31;
+  // Every replica this request touched, in order. Longer than one entry means it was
+  // preempted and resumed elsewhere, or retried.
+  repeated ReplicaId replica_path = 32;
+
+  uint32 attempts = 40;
+  uint32 preemptions = 41;
+  uint64 queue_wait_ns = 42;
+  // Time spent preempted rather than either queued or decoding. Invisible in a naive
+  // latency breakdown, and often the dominant term during a preemption cascade.
+  uint64 preempted_ns = 43;
+
+  // Derived, stored because the dashboard reads them constantly.
+  uint64 ttft_ns = 50;
+  uint64 e2e_ns = 51;
+  uint64 mean_itl_ns = 52;
+  uint64 p99_itl_ns = 53;  // within this one request: a single stall shows up here
+}
