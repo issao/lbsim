@@ -5,6 +5,7 @@
 //! to parse into, and a converter would be more work than the format is worth. The keys match the
 //! proto field names so the eventual move is mechanical.
 
+use sim_physics::CostModel;
 use std::collections::BTreeMap;
 
 #[derive(Clone, Debug)]
@@ -229,39 +230,42 @@ impl Scenario {
         Ok(s)
     }
 
-    /// Rated capacity, in requests per second, from the cost model rather than from a guess.
-    ///
-    /// Prefill and decode contend for the same device, so device-seconds per request are additive.
-    /// This is the number `docs/ARCHITECTURE.md` section 1.2 got wrong by quoting decode-only
-    /// throughput, which Issao caught.
-    pub fn rated_rps(&self) -> f64 {
+    /// The cost-model constants, for `sim_physics`. The formulas live there; this only carries the
+    /// numbers across.
+    pub fn cost_model(&self) -> CostModel {
+        CostModel {
+            step_base_ms: self.step_base_ms,
+            step_per_seq_ms: self.step_per_seq_ms,
+            step_per_kv_ktoken_ms: self.step_per_kv_ktoken_ms,
+            prefill_tokens_per_s: self.prefill_tokens_per_s,
+        }
+    }
+
+    /// Mean prompt and output length over the two-mode mixture.
+    pub fn mixture_means(&self) -> (f64, f64) {
         let p_mean = self.prompt_mean * (1.0 - self.long_probability)
             + self.long_prompt_mean * self.long_probability;
         let o_mean = self.output_mean * (1.0 - self.long_probability)
             + self.long_output_mean * self.long_probability;
-        // Mean resident context over a request's life: the prompt plus half its output.
-        let ctx_mean = p_mean + o_mean / 2.0;
-        // Whichever binds first: the sequence-count cap or the token budget.
-        let batch = (self.kv_capacity_tokens / ctx_mean).min(self.max_batch as f64).max(1.0);
-        let step_s = (self.step_base_ms
-            + self.step_per_seq_ms * batch
-            + self.step_per_kv_ktoken_ms * batch * ctx_mean / 1000.0)
-            / 1000.0;
-        let prefill_s = p_mean / self.prefill_tokens_per_s;
-        let decode_s = o_mean * step_s / batch;
-        self.replicas as f64 / (prefill_s + decode_s)
+        (p_mean, o_mean)
+    }
 
+    /// Rated capacity, in requests per second, from the cost model rather than from a guess.
+    ///
+    /// This is the number `docs/ARCHITECTURE.md` section 1.2 got wrong by quoting decode-only
+    /// throughput, which Issao caught. The formula is `CostModel::rated_rps`.
+    pub fn rated_rps(&self) -> f64 {
+        let (p_mean, o_mean) = self.mixture_means();
+        self.cost_model()
+            .rated_rps(self.replicas, self.kv_capacity_tokens, self.max_batch, p_mean, o_mean)
     }
 
     /// Effective batch limit: the sequence cap, or the token budget, whichever binds first. Reported
     /// so it is visible which one actually constrains a scenario.
     pub fn effective_batch(&self) -> f64 {
-        let p_mean = self.prompt_mean * (1.0 - self.long_probability)
-            + self.long_prompt_mean * self.long_probability;
-        let o_mean = self.output_mean * (1.0 - self.long_probability)
-            + self.long_output_mean * self.long_probability;
+        let (p_mean, o_mean) = self.mixture_means();
         let ctx_mean = p_mean + o_mean / 2.0;
-        (self.kv_capacity_tokens / ctx_mean).min(self.max_batch as f64).max(1.0)
+        self.cost_model().effective_batch(self.kv_capacity_tokens, self.max_batch, ctx_mean)
     }
 
     pub fn to_text(&self) -> String {

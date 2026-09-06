@@ -1,20 +1,45 @@
-[package]
-name = "lbsim"
+# A workspace, per docs/ARCHITECTURE.md section 10.8. One crate per layer, dependency direction
+# strictly downward, enforced by tests/layering.rs rather than by review.
+#
+# Why a workspace and not modules: crate boundaries are ownership boundaries. "One agent owns one
+# crate" is unambiguous in a way "one agent owns these files" is not, and a crate that cannot name
+# another crate's types cannot quietly grow a dependency on them.
+#
+# The root package `lbsim` is a facade: it re-exports every crate under the module names the original
+# single crate had, so the integration tests in tests/ and any external caller keep compiling unchanged.
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+default-members = [".", "crates/*"]
+
+[workspace.package]
 version = "0.1.0"
 edition = "2021"
+
+[package]
+name = "lbsim"
+version.workspace = true
+edition.workspace = true
 description = "Discrete-event simulator for a cloud LLM inference service"
 
-# No dependencies, deliberately. Everything here is a heap, a hash, a histogram or some SVG, and a
-# zero-dependency build compiles in about a second, which is the inner loop this project lives in.
+# No dependencies outside the workspace, deliberately. Everything here is a heap, a hash, a histogram
+# or some SVG, and a zero-dependency build compiles in about a second, which is the inner loop this
+# project lives in.
 [dependencies]
+sim-core = { path = "crates/sim-core" }
+sim-physics = { path = "crates/sim-physics" }
+sim-scenario = { path = "crates/sim-scenario" }
+sim-metrics = { path = "crates/sim-metrics" }
+sim-workload = { path = "crates/sim-workload" }
+sim-policy = { path = "crates/sim-policy" }
+sim-leaf = { path = "crates/sim-leaf" }
+sim-report = { path = "crates/sim-report" }
+sim-arena = { path = "crates/sim-arena" }
+sim-ingress = { path = "crates/sim-ingress" }
 
 [lib]
 name = "lbsim"
 path = "src/lib.rs"
-
-[[bin]]
-name = "sim-run"
-path = "src/main.rs"
 
 [profile.release]
 opt-level = 3

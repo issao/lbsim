@@ -10,8 +10,8 @@
 //! O(log N), never a scan of the fleet. `LeastRequests` and `LeastQueueTokens` violate that
 //! deliberately, because they are the baselines whose cost and behaviour are the point.
 
-use crate::rng::Rng;
-use crate::Nanos;
+use sim_core::rng::Rng;
+use sim_core::Nanos;
 
 /// What a replica reports about itself. Not everything the simulator knows: a replica cannot report
 /// the true output length of its running requests, because it does not know it.

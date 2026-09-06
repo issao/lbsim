@@ -1,0 +1,10 @@
+[package]
+name = "sim-arena"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+sim-scenario = { path = "../sim-scenario" }
+sim-metrics = { path = "../sim-metrics" }
+sim-workload = { path = "../sim-workload" }
+sim-leaf = { path = "../sim-leaf" }

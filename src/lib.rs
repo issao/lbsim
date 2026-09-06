@@ -1,34 +1,25 @@
 //! A discrete-event simulator for a cloud LLM inference service.
 //!
-//! Scope today is `docs/scope-today.md` package B: the queueing and control dynamics plus two-phase
-//! request timing, so time-to-first-token and inter-token latency are separate observables. KV
-//! capacity, preemption, prefix caching, tiering and autoscaling are deliberately absent; see that
-//! document for why each was cut.
+//! This crate is a facade. The simulator is a workspace of crates under `crates/`, one per layer of
+//! `docs/ARCHITECTURE.md` section 10.8, with a strictly downward dependency direction that
+//! `tests/layering.rs` enforces. This crate re-exports each of them under the module name the original
+//! single crate used, so `lbsim::sim::run`, `lbsim::scenario::Scenario` and the rest keep resolving
+//! for the integration tests in `tests/` and for any external caller.
 //!
-//! Deviation from `docs/ARCHITECTURE.md` section 10.8 worth naming: that specifies a workspace of
-//! several crates with an enforced dependency direction. This is one crate with modules, because
-//! today's constraint is a deadline and the split is mechanical to do later. The module boundaries
-//! match the eventual crate boundaries so that split stays cheap.
+//! Nothing lives here. A type or function that needs a home goes in the crate that owns its layer.
 
-pub mod metrics;
-pub mod policy;
-pub mod queue;
-pub mod report;
-pub mod rng;
-pub mod scenario;
-pub mod serve;
-pub mod sim;
-pub mod workload;
+pub use sim_core::{queue, rng, Nanos, EPOCH_BASE, MILLI, SECOND};
 
-/// Simulated time, absolute Unix epoch nanoseconds, per `proto/lbsim/v1/common.proto`.
-///
-/// Never a float. 2026 is about 1.79e18 nanoseconds since the epoch and an `f64` resolves only
-/// ~200 ns at that magnitude, so absolute epoch time makes `u64` mandatory rather than preferable.
-pub type Nanos = u64;
+pub use sim_arena as arena;
+pub use sim_leaf as sim;
+pub use sim_metrics as metrics;
+pub use sim_physics as physics;
+pub use sim_policy as policy;
+pub use sim_report as report;
+pub use sim_scenario as scenario;
+pub use sim_workload as workload;
 
-/// The origin of simulated time, derived from the seed so runs are reproducible while timestamps
-/// still format like real ones. 2026-01-01T00:00:00Z.
-pub const EPOCH_BASE: Nanos = 1_767_225_600_000_000_000;
-
-pub const SECOND: Nanos = 1_000_000_000;
-pub const MILLI: Nanos = 1_000_000;
+/// The HTTP surface. Named `serve` for compatibility with the original module.
+pub mod serve {
+    pub use sim_ingress::serve;
+}

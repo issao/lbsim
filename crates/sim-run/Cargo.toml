@@ -1,0 +1,15 @@
+[package]
+name = "sim-run"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+sim-scenario = { path = "../sim-scenario" }
+sim-leaf = { path = "../sim-leaf" }
+sim-report = { path = "../sim-report" }
+sim-arena = { path = "../sim-arena" }
+sim-ingress = { path = "../sim-ingress" }
+
+[[bin]]
+name = "sim-run"
+path = "src/main.rs"

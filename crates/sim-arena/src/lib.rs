@@ -31,10 +31,10 @@
 //! Nothing in here is parallel or wall-clock dependent: a round is a nested loop in a fixed order
 //! with the seed taken from the scenario file, so every policy meets byte-identical load.
 
-use crate::metrics::Outcome;
-use crate::scenario::Scenario;
-use crate::sim::{self, RunResult};
-use crate::workload::Workload;
+use sim_metrics::Outcome;
+use sim_scenario::Scenario;
+use sim_leaf::{self as sim, RunResult};
+use sim_workload::Workload;
 
 /// The cap from `docs/arena.md` section 1: *"keeping out-of-SLO sessions under an SLA cap (say
 /// 99.9%)"*.
@@ -786,7 +786,7 @@ pub const HOLDOUT: &[&str] = &[
     "scenarios/holdout/h8-retry-storm.txt",
 ];
 
-/// Paths of the held-out suite, resolved against `dir` (the crate root in normal use).
+/// Paths of the held-out suite, resolved against `dir` (the workspace root in normal use).
 pub fn holdout_suite(dir: &str) -> Vec<String> {
     HOLDOUT
         .iter()
@@ -1251,7 +1251,7 @@ mod tests {
     use super::*;
 
     fn holdout() -> Vec<String> {
-        holdout_suite(env!("CARGO_MANIFEST_DIR"))
+        holdout_suite(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."))
     }
     fn policies() -> Vec<String> {
         POLICIES.iter().map(|s| s.to_string()).collect()
@@ -1337,7 +1337,7 @@ mod suite_anchoring {
     #[test]
     #[ignore]
     fn attainment_vs_rate() {
-        for f in holdout_suite(env!("CARGO_MANIFEST_DIR")) {
+        for f in holdout_suite(concat!(env!("CARGO_MANIFEST_DIR"), "/../..")) {
             let text = std::fs::read_to_string(&f).unwrap();
             let base = Scenario::parse(&text).unwrap();
             let rated = base.rated_rps();

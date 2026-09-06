@@ -1,0 +1,10 @@
+[package]
+name = "sim-ingress"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+sim-core = { path = "../sim-core" }
+sim-scenario = { path = "../sim-scenario" }
+sim-metrics = { path = "../sim-metrics" }
+sim-leaf = { path = "../sim-leaf" }

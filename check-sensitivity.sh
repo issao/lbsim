@@ -9,8 +9,9 @@
 set -uo pipefail
 cd "$(dirname "$0")"
 export PATH="$HOME/local/bin:$HOME/.local/bin:$PATH"
-cargo build --release --quiet
-S=./target/release/sim-run
+# Through cargo rather than ./target: .cargo/config.toml points every worktree at one shared target
+# directory, so a relative path is wrong in all but the original checkout.
+S="cargo run --release --quiet --bin sim-run --"
 SCN="scenarios/route_p2c.txt scenarios/route_round_robin.txt scenarios/route_random.txt scenarios/route_least_requests.txt"
 
 # label : step_base_ms : step_per_kv_ktoken_ms : prefill_tokens_per_s
@@ -37,6 +38,12 @@ for c in "${CASES[@]}"; do
       --set prefill_tokens_per_s="$pf" --out /dev/null 2>/dev/null \
     | sed -n '4,20p' | awk '$2+0 == $2 && $2 != "" {print $1, $2}' | sort -k2 -nr | awk '{printf "%s ", $1}')
   printf "%-16s %s\n" "$label" "$ranking"
+  # An empty ranking is a broken run, not an agreement. Without this check a missing binary produced
+  # seven empty rankings that all matched, and the script said PASS.
+  if [ -z "$ranking" ]; then
+    echo "    NO RANKING PRODUCED; the run failed"
+    fail=1
+  fi
   if [ -z "$expected" ]; then
     expected="$ranking"
   elif [ "$ranking" != "$expected" ]; then
