@@ -99,10 +99,13 @@ fi
 # does not. See the header of cloudbuild.yaml.
 #
 # The excludes mirror .gcloudignore and .dockerignore. They are spelled out here because tar does
-# not understand gitignore syntax, so the three lists have to be kept in step by hand.
+# not understand gitignore syntax, so the three lists have to be kept in step by hand. .cargo is the
+# one that is not merely about upload size: .cargo/config.toml pins an absolute target-dir on this
+# machine, and a container that inherits it writes the binary outside ./target.
 TARBALL=$(mktemp /tmp/lbsim-src-XXXXXX.tgz)
 trap 'rm -f "$TARBALL"' EXIT
 tar czf "$TARBALL" \
+  --exclude=./.cargo \
   --exclude=./.git \
   --exclude=./target \
   --exclude=./out \

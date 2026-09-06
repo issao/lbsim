@@ -1,13 +1,17 @@
 # What never needs to reach a build.
 #
 # deploy.sh does not actually use this file: it tars the context itself, with the same list spelled
-# out as tar --exclude flags, because `gcloud builds submit` cannot stage source with the
-# permissions this account has (see cloudbuild.yaml). This file exists so that anyone who *does*
-# run a plain `gcloud builds submit .` gets the same context, and it is the third copy of the list
-# alongside .dockerignore and deploy.sh. Keep the three in step.
+# out as tar --exclude flags, because `gcloud builds submit` cannot stage source with the permissions
+# this account has (see cloudbuild.yaml). This file exists so that anyone who *does* run a plain
+# `gcloud builds submit .` gets the same context, and it is the third copy of the list alongside
+# .dockerignore and deploy.sh. Keep the three in step.
 #
 # Without this file gcloud falls back to .gitignore, which would exclude nothing useful and include
 # .git — several hundred megabytes of history for a build that only needs the checkout.
+#
+# .cargo/ is excluded here as well as in .dockerignore, belt and braces: it pins an absolute host
+# target-dir that breaks the build inside a container. See .dockerignore for the full story.
+.cargo/
 .git/
 .gitignore
 target/
