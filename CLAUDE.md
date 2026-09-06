@@ -151,6 +151,13 @@ The main agent coordinates, owns this file and `proto/`, and stays out of the ar
 needs a file it does not own stops and says so rather than editing it. `git add` is always by explicit
 path, never `-A`, because that is how one agent's in-flight files ended up in another's commit today.
 
+**Each agent works in its own git worktree**, not the shared checkout. A shared checkout means one
+agent's dirty files make `tools/sync.sh` refuse for everyone. The housekeeping agent already works in
+`/home/agents/repo/lbsim-docs`; the tech lead is moving its subagents to worktrees. Memory is safe
+because `.cargo/config.toml` points every worktree at one absolute target directory, so cargo's file
+lock serializes builds. `tools/sync.sh` keeps its state files under `git rev-parse --git-dir`, which is
+per-worktree.
+
 `TASKS.md` tracks what is waiting on the user, stack ranked. `STATUS.md` tracks what is done
 and live. Keep both current.
 

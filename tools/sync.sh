@@ -47,7 +47,8 @@ fi
 
 # HEAD moving without this script doing it is the other half of the same symptom.
 head_now=$(git rev-parse HEAD)
-head_file=".git/lbsim-last-head"
+gitdir=$(git rev-parse --git-dir 2>/dev/null || echo .git)
+head_file="$gitdir/lbsim-last-head"
 if [ -f "$head_file" ]; then
   head_prev=$(cat "$head_file")
   if [ "$head_prev" != "$head_now" ]; then
@@ -104,7 +105,7 @@ fi
 # Marker scanning finds lines that name him. It does not find an instruction written as a plain
 # comment, and he writes those too: one arrived as a bare trailing comment on a proto field and
 # would have gone unread. So diff his commits and show every comment line they added.
-seen_file=".git/lbsim-last-remote"
+seen_file="${gitdir:-$(git rev-parse --git-dir 2>/dev/null || echo .git)}/lbsim-last-remote"
 remote_now=$(git rev-parse --verify --quiet origin/master || echo "")
 if [ -n "$remote_now" ] && [ -f "$seen_file" ]; then
   remote_prev=$(cat "$seen_file")
