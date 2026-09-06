@@ -1,0 +1,56 @@
+1-routing/00-round_robin.summary.csv                         fingerprint=13831056220097169671   events=297161    summary_md5=d95b41f1658f
+1-routing/01-p2c.summary.csv                                 fingerprint=13155901060006219336   events=296643    summary_md5=0bfb6770c71c
+1-routing/02-least_requests.summary.csv                      fingerprint=16448447818164244385   events=245191    summary_md5=d532d1450a66
+1-routing/03-random.summary.csv                              fingerprint=17138230929116121469   events=296227    summary_md5=71f6fa7551ae
+2-staleness/00-telemetry_interval_ms___100.summary.csv       fingerprint=16393865130379415143   events=352465    summary_md5=da7851829984
+2-staleness/01-telemetry_interval_ms___250.summary.csv       fingerprint=16416231017560174181   events=307351    summary_md5=027912a13c69
+2-staleness/02-telemetry_interval_ms___500.summary.csv       fingerprint=11216039682751027244   events=279763    summary_md5=ad1f269d628d
+2-staleness/03-telemetry_interval_ms___1000.summary.csv      fingerprint=16448447818164244385   events=245191    summary_md5=18d7ff9501b7
+2-staleness/04-telemetry_interval_ms___2000.summary.csv      fingerprint=7251813521880172349    events=183639    summary_md5=d106e7a82a8c
+2-staleness/05-telemetry_interval_ms___4000.summary.csv      fingerprint=17180289366105092703   events=70869     summary_md5=6f97997a5169
+3-chunking/00-step_token_budget___512.summary.csv            fingerprint=2389217450113631760    events=294793    summary_md5=9ee422b68ede
+3-chunking/01-step_token_budget___1024.summary.csv           fingerprint=13155901060006219336   events=296643    summary_md5=fa8bf409b4bf
+3-chunking/02-step_token_budget___2048.summary.csv           fingerprint=16424511211336418404   events=297471    summary_md5=17f9333875be
+3-chunking/03-step_token_budget___4096.summary.csv           fingerprint=207004515082755842     events=297886    summary_md5=c21f0dfc1098
+3-chunking/04-step_token_budget___8192.summary.csv           fingerprint=10022186494259227921   events=298103    summary_md5=9f5db5b26f2d
+3-chunking/05-step_token_budget___16384.summary.csv          fingerprint=18431050327492646699   events=298171    summary_md5=04934b433b82
+4-load-curve/00-arrival_rps___30.summary.csv                 fingerprint=2649472256442106238    events=341568    summary_md5=e2998d5f0002
+4-load-curve/01-arrival_rps___70.summary.csv                 fingerprint=13155901060006219336   events=296643    summary_md5=68b3fc150b31
+4-load-curve/02-arrival_rps___110.summary.csv                fingerprint=16844309916969748842   events=249291    summary_md5=f6c5f26cc00c
+4-load-curve/03-arrival_rps___150.summary.csv                fingerprint=7297984748972676171    events=204892    summary_md5=1603ef5dcabd
+4-load-curve/04-arrival_rps___190.summary.csv                fingerprint=10268079604814367208   events=163816    summary_md5=73c8e8b04514
+4-load-curve/05-arrival_rps___230.summary.csv                fingerprint=1144953221072416981    events=150727    summary_md5=8e346ec2ee0c
+5-long-context/00-long_probability___0_0.summary.csv         fingerprint=13272951190200294244   events=362234    summary_md5=4751909ec88c
+5-long-context/01-long_probability___0_04.summary.csv        fingerprint=8039339303988037376    events=327368    summary_md5=7c1ac386b013
+5-long-context/02-long_probability___0_08.summary.csv        fingerprint=13155901060006219336   events=296643    summary_md5=4934d6ef4aa3
+5-long-context/03-long_probability___0_16.summary.csv        fingerprint=13579563792942417390   events=236023    summary_md5=eae480f11b82
+5-long-context/04-long_probability___0_32.summary.csv        fingerprint=8501796434626860542    events=120873    summary_md5=c3f0e939cdb2
+6-retry/00-no_retries.summary.csv                            fingerprint=17777272245169136575   events=458630    summary_md5=e4432010a108
+6-retry/01-retry_with_budget.summary.csv                     fingerprint=10157961101567318137   events=414456    summary_md5=ad728451237b
+6-retry/02-retry_storm_no_budget.summary.csv                 fingerprint=13291526699749124177   events=388785    summary_md5=44bc70bcfdc6
+7-least-queue-tokens/00-least_queue_tokens.summary.csv       fingerprint=1043877871932145385    events=245848    summary_md5=08ec181d563a
+8-probe-live/00-p2c.summary.csv                              fingerprint=10821562866174437288   events=296615    summary_md5=4f2b85e2b03f
+h-h1-light-chat/00-h1_light_chat.summary.csv                 fingerprint=3620185753179056913    events=296734    summary_md5=9d82250692b3
+h-h2-near-rated-chat/00-h2_near_rated_chat.summary.csv       fingerprint=652735556096617465     events=261757    summary_md5=56de873fa8e2
+h-h3-over-rated-chat/00-h3_over_rated_chat.summary.csv       fingerprint=4139815211886168572    events=214079    summary_md5=46386c86f07c
+h-h4-long-prompt-mixture/00-h4_long_prompt_mixture.summary.csv fingerprint=5473306496819133746    events=216326    summary_md5=02c1e8119d66
+h-h5-bursty-step/00-h5_bursty_step.summary.csv               fingerprint=13803006810368287317   events=308141    summary_md5=ff5111fd530e
+h-h6-low-rate-heavy-context/00-h6_low_rate_heavy_context.summary.csv fingerprint=15940118259117105240   events=231936    summary_md5=10be43f0b8a3
+h-h7-code-completion/00-h7_code_completion.summary.csv       fingerprint=18343344250318204309   events=249330    summary_md5=86728b1a62f6
+h-h8-retry-storm/00-h8_retry_storm.summary.csv               fingerprint=4264169605968401035    events=309388    summary_md5=b999943696c1
+1-routing.html                                               html_md5=e0a9c8c33bf7
+2-staleness.html                                             html_md5=8c1f32af6b58
+3-chunking.html                                              html_md5=d302c5c0072c
+4-load-curve.html                                            html_md5=04cea9a43fdb
+5-long-context.html                                          html_md5=314e7c29bb53
+6-retry.html                                                 html_md5=6caf2d0049d8
+7-least-queue-tokens.html                                    html_md5=b8c9a8e2f408
+8-probe-live.html                                            html_md5=12e4a0360329
+h-h1-light-chat.html                                         html_md5=3d2a8c8e3940
+h-h2-near-rated-chat.html                                    html_md5=91f1f814dcbb
+h-h3-over-rated-chat.html                                    html_md5=2817611f1781
+h-h4-long-prompt-mixture.html                                html_md5=1502d4f42235
+h-h5-bursty-step.html                                        html_md5=386ed4a48fe5
+h-h6-low-rate-heavy-context.html                             html_md5=83e5ddafe7e7
+h-h7-code-completion.html                                    html_md5=99913cc4766c
+h-h8-retry-storm.html                                        html_md5=3b0cd2676139
