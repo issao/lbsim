@@ -225,6 +225,19 @@ Ordered by how much damage ignoring them causes.
    branches mid-edit, silently reverting a large document. With several agents in one directory that
    becomes routine rather than exceptional. `sync.sh` now warns on an unexpected stash and on HEAD
    moving between runs, which is a detector, not a cure.
+
+   The cure, in three commands, which every subagent runs before touching a file:
+
+   ```bash
+   git fetch origin
+   git worktree add /home/agents/repo/lbsim-wt-<name> -b claude/tl-<name> origin/master
+   cd /home/agents/repo/lbsim-wt-<name>   # build only through tools/build.sh
+   ```
+
+   Each worktree has its own cargo target directory (`.cargo/config.toml`); a shared one handed a
+   worktree another branch's compiled crates on 2026-09-06. `tools/build.sh` bounds concurrent
+   builds to two machine-wide. When the branch is merged, `git worktree remove` deletes the
+   directory and its target with it.
 4. **Never leave the tree dirty, and always push to `master`.** Issao pulls `master`; work sitting
    on an unpushed branch does not exist. `sync.sh` refuses to operate on a dirty tree for this
    reason.
