@@ -46,6 +46,8 @@ because it cannot even read the policy it would need to modify.
 
 ### Checking the budget in the console, without the CLI
 
+Issao: Done.
+
 Since Claude can no longer see billing, this is the path you will want. It is not under the project.
 
 1. Go to `console.cloud.google.com`.
@@ -109,7 +111,7 @@ gcloud projects add-iam-policy-binding lbsim-gcp \
 That still grants nothing over billing, nothing over IAM, and no ability to turn APIs on or off. It is
 the smallest thing that unblocks a build.
 
-- [ ] Run the command above. Claude will retry the deploy immediately and report the URL.
+- [x] Run the command above. Claude will retry the deploy immediately and report the URL.
 
 Everything else is ready: `Dockerfile`, `.dockerignore`, `deploy.sh`, and a static server with a health
 check that touches no run state and path handling verified against both plain and percent-encoded
