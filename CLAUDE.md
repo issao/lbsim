@@ -151,6 +151,15 @@ The main agent coordinates, owns this file and `proto/`, and stays out of the ar
 needs a file it does not own stops and says so rather than editing it. `git add` is always by explicit
 path, never `-A`, because that is how one agent's in-flight files ended up in another's commit today.
 
+That rule turned out to be insufficient. **Commit with an explicit pathspec too: `git commit -m "..." -- <paths>`, message first, then the
+separator, then the paths.** Getting the order wrong makes git read the message as a pathspec and fail
+loudly, which is at least the safe direction.
+Another agent had *staged* its files in the shared checkout without committing, and a plain `git commit`
+swept everything in the index, explicit `git add` or not. `git commit -- <paths>` commits only those
+paths regardless of what else is staged. Before committing in a shared checkout, `git diff --cached
+--name-only` shows whether the index holds anyone else's work. The real cure is the worktree rule below,
+which the main agent now follows as well.
+
 **A simplification pass runs on a cadence**, per the user: after every wave of merges or every four
 merges, the tech lead spawns one simplification agent, never more than one at a time. Its mandate is
 the `/simplify` skill's: reuse, simplification, efficiency and altitude cleanups, no bug hunting, no

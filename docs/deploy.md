@@ -95,6 +95,19 @@ gcloud builds log <ID> --project lbsim-gcp --quiet
 
 Do not "simplify" this back to `builds submit --tag` without re-checking those two permissions first.
 
+### The gap this leaves: no logs
+
+`gcloud builds log <ID>` works, but **`gcloud run services logs read` does not**:
+
+```
+ERROR: PERMISSION_DENIED: Permission denied for all log views.
+```
+
+The deploy account has no logging role, so container stdout and the request log are invisible to it.
+Nothing needed them yet, because a build failure reports through Cloud Build and a serving failure
+shows up as a status code. The first container that crashes on startup will need them, and the fix is
+`roles/logging.viewer` on the project — worth granting *then*, with a reason, rather than now.
+
 ### One consequence: three copies of the exclude list
 
 `.dockerignore`, `.gcloudignore` and the `tar --exclude` flags in `deploy.sh` all list the same
@@ -305,32 +318,40 @@ in project `lbsim-prod` and that project's billing has been detached — a read-
 also off in `lbsim-gcp`, and enabling an API is a mutation this account will not perform.
 
 **So the registrar's nameserver delegation has to change, whichever route you take.** It currently
-points at a zone that no longer exists. Pick one:
+points at a zone that no longer exists. You have been asked to take the first route, and it is the
+simpler one:
 
-* **Route 1, Porkbun DNS.** In Porkbun, Domain Management → `lbsim.ai` → the nameserver setting, and
+* **Route 1, Porkbun DNS — the chosen route.** In Porkbun, Domain Management → `lbsim.ai` → the nameserver setting, and
   switch it back to Porkbun's own nameservers (use Porkbun's "use our nameservers" option rather than
   typing hostnames from memory). Porkbun's DNS panel then becomes authoritative and the original
   instructions — TXT at an empty host, then the A/AAAA records — work as written. Also delete
   Porkbun's default parking record on the bare host and make sure no URL forwarding is enabled on the
   apex; either will fight the mapping.
-* **Route 2, Cloud DNS in `lbsim-gcp`.** Create a managed zone for `lbsim.ai` in `lbsim-gcp`, then
+* **Route 2, Cloud DNS in `lbsim-gcp` — the alternative, not being taken.** Create a managed zone for `lbsim.ai` in `lbsim-gcp`, then
   set the registrar's nameservers to **the four the new zone is assigned**, which may or may not be
   the same `ns-cloud-d*` set. Do not assume they are.
 
 Then, in order:
 
-1. Add the Search Console `google-site-verification=…` TXT record at the apex, in whichever DNS now
-   answers. Check it is actually served before going to Search Console:
+1. Wait for the delegation change to propagate, then confirm it before touching Search Console.
+   Registrar nameserver changes take minutes to a couple of days. The check is on the NS record, not
+   the TXT record, and the answer must no longer be `ns-cloud-d*`:
+   ```bash
+   dig +short NS lbsim.ai        # must show the new nameservers
+   dig SOA lbsim.ai | grep status # must be NOERROR, not REFUSED or SERVFAIL
+   ```
+2. Add the Search Console `google-site-verification=…` TXT record at the apex, in whichever DNS now
+   answers, and confirm it is actually served before going to Search Console:
    `dig +short TXT lbsim.ai`
-2. Create the mapping — either yourself, or by Claude once the service account is an Owner:
+3. Create the mapping — either yourself, or by Claude once the service account is an Owner:
    ```bash
    gcloud beta run domain-mappings create --service=lbsim --domain=lbsim.ai \
      --region=us-central1 --project=lbsim-gcp --quiet
    ```
-3. Add **exactly the `A` and `AAAA` records that command prints**, four of each. Do not use a
+4. Add **exactly the `A` and `AAAA` records that command prints**, four of each. Do not use a
    published list; the addresses depend on the region and the mapping. These replace whatever the
    apex points at, which takes `lbsim.ai` away from Firebase Hosting if it ever comes back.
-4. Wait. Google issues the managed certificate automatically, fifteen minutes to a few hours, with
+5. Wait. Google issues the managed certificate automatically, fifteen minutes to a few hours, with
    nothing to do.
 
 **If you do nothing, everything keeps working** on the `run.app` URL. The domain is only a nicer
@@ -387,6 +408,9 @@ Held: `run.admin`, `artifactregistry.writer`, `cloudbuild.builds.editor`, `iam.s
 Deliberately absent, and none of it is wanted: any billing permission, any project-level IAM, any
 quota change, `storage.buckets.*`, the ability to enable or disable an API, `monitoring.editor`, and
 domain ownership. Everything above is designed to work inside that, or to say plainly that it cannot.
+
+The one that will bite first is `logging.viewer`: container logs cannot be read at all, so a
+container that crashes on startup can be seen to fail but not diagnosed. See section 3.
 
 The consequence worth remembering: **Claude cannot see your budget.** Budget verification is yours
 alone, and the instance caps in section 4 are the practical control — the budget is only the tripwire
