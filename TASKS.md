@@ -81,6 +81,7 @@ balancer costs about $18 a month in forwarding rules before serving a byte. Esti
 The SLA cap is answered: 0.95 for now, and doing better is routed above.
 
 **If you do nothing:** the default stands, and every score records the rule set it was earned under.
+Issao: That is ok for now, but we should aim to improve SLO target later.
 
 ## 3. Decisions with a default
 
