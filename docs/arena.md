@@ -182,12 +182,16 @@ co-evolutionary noise.
 Two things that are cheap now and expensive to retrofit, which is the reason this document exists
 before the arena does.
 
-1. **A policy must be expressible as data, not only as code.** `PolicyRef` in `scenario.proto` is a
-   name plus a parameter map, and the arena needs a generator to propose new *structures*, not only
-   new parameter values. Either the policy trait is implemented once as a small interpreted
-   decision language, or the arena is limited to tuning parameters of hand-written policies.
-   **Tuning parameters is the right scope for a first arena**, and it works with what exists today.
-   Note the limitation rather than building the language now.
+1. **A policy must be expressible as data, not only as code.** `PolicySpec` in `scenario.proto` now
+   gives each slot a typed configuration, so a generator can propose a policy choice and every one
+   of its parameters as data, and the schema states exactly what is tunable. What it cannot do is
+   propose a new policy *structure*: that would need a small interpreted decision language.
+   **Tuning typed parameters is the right scope for a first arena**, and it works with the
+   interfaces exactly as they stand. Recorded as a limitation rather than a gap.
+
+   A consequence of typing them, worth naming: adding a policy is now a schema change. For the
+   arena that is fine, since it tunes what ships. It would matter if the arena were ever allowed to
+   invent policies, which is the same boundary as above.
 2. **Rated capacity needs a home in the interfaces.** A policy must be able to declare and update
    it, and the referee must be able to read it. It is one field on the policy configuration plus
    one intent, and adding it later means a proto change during a live experiment.

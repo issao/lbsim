@@ -4,6 +4,7 @@ package lbsim.v1;
 
 import "lbsim/v1/common.proto";
 import "lbsim/v1/request.proto";
+import "lbsim/v1/scenario.proto";
 import "lbsim/v1/telemetry.proto";
 
 // The engine/policy seam.
@@ -31,12 +32,22 @@ service Policy {
 }
 
 message ConfigureRequest {
-  string name = 1;
-  map<string, double> params = 2;
-  map<string, string> string_params = 3;
-  // The policy's own RNG seed, derived from the scenario seed. A policy that randomises must
-  // do it from here, or the run stops being reproducible.
-  uint64 seed = 4;
+  // Exactly the configuration for the slot this policy fills, typed. There is no untyped parameter
+  // map: per Issao, the schema has to be visible, and an implementation should not have to discover
+  // its own parameters by string lookup.
+  oneof config {
+    RoutingPolicy routing = 1;
+    AdmissionPolicy admission = 2;
+    SchedulingPolicy replica_scheduling = 3;
+    PreemptionPolicy preemption = 4;
+    AutoscalingPolicy autoscaling = 5;
+    FailureDetectionPolicy failure_detection = 6;
+    KvTieringPolicy kv_tiering = 7;
+  }
+
+  // The policy's own RNG seed, derived from the scenario seed. A policy that randomises must draw
+  // from here, or the run stops being reproducible.
+  uint64 seed = 10;
 }
 
 message ConfigureResponse {

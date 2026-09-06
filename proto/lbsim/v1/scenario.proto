@@ -181,20 +181,31 @@ message LatencySpec {
 // Policies
 // ---------------------------------------------------------------------------
 
+// Which policy fills each slot, and its parameters, typed.
+//
+// Issao: *"Don't make these string, model them explicitly as protos please so that I can see the
+// schema."* An earlier version was a policy name plus `map<string, double>`, which hid every
+// parameter: you could not tell from the schema what a policy accepted, a typo in a key was silent,
+// and a UI had no way to build controls without a separate descriptor endpoint.
+//
+// The cost of typing them is that adding a policy is now a schema change. That is the right trade
+// here: the arena tunes parameters of policies that ship rather than inventing new ones, per
+// docs/arena.md section 6, and a visible schema is worth more than open extensibility to a project
+// whose whole purpose is comparing named policies. It also removed the need for a policy-descriptor
+// endpoint, because the schema *is* the descriptor.
 message PolicySpec {
-  // Named policy plus its own parameters. Kept as a name and a parameter map rather than a
-  // closed enum so a new policy needs no schema change, which matters for the agent arena.
-  PolicyRef routing = 1;
-  PolicyRef gateway_admission = 2;
-  PolicyRef replica_scheduling = 3;
-  PolicyRef preemption = 4;
-  PolicyRef autoscaling = 5;
-  PolicyRef failure_detection = 6;
-  PolicyRef kv_tiering = 7;
-  PolicyRef speculative_decoding = 8;
+  RoutingPolicy routing = 1;
+  AdmissionPolicy admission = 2;
+  SchedulingPolicy replica_scheduling = 3;
+  PreemptionPolicy preemption = 4;
+  AutoscalingPolicy autoscaling = 5;
+  FailureDetectionPolicy failure_detection = 6;
+  KvTieringPolicy kv_tiering = 7;
+  // Speculative decoding is configured in FidelitySpec, not here, since it is a property of the
+  // engine rather than a decision made per request.
 
-  // strict aborts the run on any physics violation, which is what the arena uses so a
-  // cheating policy cannot score. tolerant clamps and counts.
+  // strict aborts the run on any physics violation, which is what the arena uses so a cheating
+  // policy cannot score. tolerant clamps and counts.
   enum RefereeMode {
     REFEREE_MODE_UNSPECIFIED = 0;
     REFEREE_MODE_STRICT = 1;
@@ -203,10 +214,183 @@ message PolicySpec {
   RefereeMode referee_mode = 20;
 }
 
-message PolicyRef {
-  string name = 1;                      // "round_robin", "p2c", "least_kv", "prefix_affinity"
-  map<string, double> params = 2;
-  map<string, string> string_params = 3;
+// Where to send a request. The measured constraint from docs/ARCHITECTURE.md section 10.4 applies
+// to every option here: a decision must be O(1) or O(log N), never a scan of the fleet.
+message RoutingPolicy {
+  message RoundRobin {}
+  message Random {}
+  // Fewest in-flight requests. Included as a baseline that is *wrong* for this domain, since
+  // capacity is denominated in tokens: one 100k-token context costs what 25 chat turns cost.
+  message LeastRequests {}
+  // Fewest resident KV tokens: the same idea measured in the right unit.
+  message LeastKvTokens {}
+  // Sample `choices` replicas at random, take the least loaded. Robust to stale telemetry because
+  // only a fraction of routers consider any one apparently-idle replica at a time, which is what
+  // bounds herding. Also O(1) by construction.
+  message PowerOfTwoChoices {
+    uint32 choices = 1;          // d; 2 is where almost all the benefit lives
+    // Pay a modelled probe for fresh state instead of reading the delayed snapshot. Makes the cost
+    // of freshness visible rather than free.
+    bool probe_live = 2;
+  }
+  // Prefer the replica already holding this request's prefix, until imbalance exceeds the cap.
+  message PrefixAffinity {
+    // Yield to load when the candidate's load exceeds the fleet mean by this ratio. 1.0 disables
+    // affinity entirely; a large value ignores load and produces hotspots.
+    double max_load_ratio = 1;
+    // Fall back to sampling this many candidates when affinity is refused.
+    uint32 fallback_choices = 2;
+  }
+  oneof kind {
+    RoundRobin round_robin = 10;
+    Random random = 11;
+    LeastRequests least_requests = 12;
+    LeastKvTokens least_kv_tokens = 13;
+    PowerOfTwoChoices power_of_two_choices = 14;
+    PrefixAffinity prefix_affinity = 15;
+  }
+}
+
+// Whether to accept a request at all. Rate limits are denominated in tokens, never requests.
+message AdmissionPolicy {
+  message AcceptAll {}
+  message TokenBucket {
+    double tokens_per_second = 1;
+    double burst_tokens = 2;
+    // Charged at admission against max_output_tokens and refunded on completion, because the true
+    // output length is unknown. The gap between the charge and reality is where preemption is born.
+    bool charge_max_tokens = 3;
+  }
+  // Shed anything that cannot meet its deadline, *before* it consumes GPU time. Systems that check
+  // afterwards spend most of their capacity under overload producing tokens nobody will read.
+  message DeadlineAware {
+    double queue_wait_headroom = 1;   // fraction of the deadline reserved for serving
+  }
+  // Weighted fair share over tenants, in tokens.
+  message FairShare {
+    double burst_multiplier = 1;
+  }
+  oneof kind {
+    AcceptAll accept_all = 10;
+    TokenBucket token_bucket = 11;
+    DeadlineAware deadline_aware = 12;
+    FairShare fair_share = 13;
+  }
+}
+
+// What the replica does each step: which queued requests to admit and how to split the step budget
+// between prefill and decode. This is where the utilization-versus-latency tradeoff lives.
+message SchedulingPolicy {
+  message Fcfs {}
+  // Favour prefill: better time-to-first-token, worse inter-token latency for everyone already
+  // decoding, and faster KV growth because admission accelerates.
+  message PrefillPriority {
+    uint32 max_prefill_tokens_per_step = 1;
+  }
+  // Favour decode: the reverse, and it can starve arrivals.
+  message DecodePriority {
+    uint32 min_decode_tokens_per_step = 1;
+  }
+  // Earliest deadline first over the queue.
+  message EarliestDeadlineFirst {}
+  oneof kind {
+    Fcfs fcfs = 10;
+    PrefillPriority prefill_priority = 11;
+    DecodePriority decode_priority = 12;
+    EarliestDeadlineFirst earliest_deadline_first = 13;
+  }
+}
+
+// What to evict when KV fills, and where its state goes. Swap costs roughly 20 ms each way to
+// cluster DRAM; recompute costs roughly 270 ms of prefill for 4k tokens, so swap wins until the
+// shared bandwidth saturates and the advantage inverts.
+message PreemptionPolicy {
+  message Never {}
+  message Recompute { Victim victim = 1; }
+  message SwapToDram { Victim victim = 1; }
+  message SwapToDramElseRecompute { Victim victim = 1; }
+  enum Victim {
+    VICTIM_UNSPECIFIED = 0;
+    VICTIM_NEWEST = 1;              // least work lost
+    VICTIM_LARGEST_KV = 2;          // frees the most, fastest
+    VICTIM_LOWEST_SLO_CLASS = 3;    // batch traffic exists to be preempted
+    VICTIM_LATEST_DEADLINE = 4;
+  }
+  oneof kind {
+    Never never = 10;
+    Recompute recompute = 11;
+    SwapToDram swap_to_dram = 12;
+    SwapToDramElseRecompute swap_else_recompute = 13;
+  }
+}
+
+// When to change fleet size. The actuator delay is a cold start of 30 to 300 seconds against a
+// burst that develops in tens of seconds, which is why reactive scaling cannot catch one.
+message AutoscalingPolicy {
+  message Fixed {}
+  message ReactiveThreshold {
+    // Scale on queue depth or KV utilization, never on GPU utilization: a decode-bound replica
+    // reports high utilization across a wide range of actual load.
+    double scale_up_above = 1;
+    double scale_down_below = 2;
+    uint64 cooldown_ns = 3;
+    uint32 step_replicas = 4;
+  }
+  // Follow a learned or configured diurnal curve, acting ahead of demand by the cold-start time.
+  message PredictiveDiurnal {
+    uint64 lookahead_ns = 1;
+    double headroom_fraction = 2;
+  }
+  // Hold loaded-but-idle replicas. The only thing that makes scaling fast enough to matter, and it
+  // costs money to hold, so the size is a genuine tradeoff rather than a free win.
+  message WarmPool {
+    uint32 warm_replicas = 1;
+    double scale_up_above = 2;
+  }
+  oneof kind {
+    Fixed fixed = 10;
+    ReactiveThreshold reactive_threshold = 11;
+    PredictiveDiurnal predictive_diurnal = 12;
+    WarmPool warm_pool = 13;
+  }
+}
+
+// How to notice a replica that is failing without saying so. Detection latency is the property
+// under test, since a replica reporting healthy while serving at a tenth of its speed keeps
+// receiving work.
+message FailureDetectionPolicy {
+  message TrustAnnounced {}
+  message LatencyOutlier {
+    // Eject when a replica's observed latency exceeds the fleet median by this factor for the
+    // window below.
+    double median_multiple = 1;
+    uint64 window_ns = 2;
+    uint64 reinstate_after_ns = 3;
+  }
+  message SilenceTimeout {
+    uint64 silent_for_ns = 1;
+  }
+  oneof kind {
+    TrustAnnounced trust_announced = 10;
+    LatencyOutlier latency_outlier = 11;
+    SilenceTimeout silence_timeout = 12;
+  }
+}
+
+// Where preempted KV and cached prefixes go. Tier capacities and bandwidths are in ClusterSpec.
+message KvTieringPolicy {
+  message DiscardOnly {}
+  message DramThenDiscard { double dram_reserve_fraction = 1; }
+  message DramThenSsd {
+    double dram_reserve_fraction = 1;
+    // Below this remaining SSD fraction, stop spilling rather than thrash.
+    double ssd_stop_below = 2;
+  }
+  oneof kind {
+    DiscardOnly discard_only = 10;
+    DramThenDiscard dram_then_discard = 11;
+    DramThenSsd dram_then_ssd = 12;
+  }
 }
 
 // ---------------------------------------------------------------------------
