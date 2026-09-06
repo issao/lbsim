@@ -17,7 +17,7 @@ service Gateway {
   // The public entry point. Streams tokens back, so the client observes time-to-first-token
   // and inter-token latency separately, which is the whole reason latency is not one number.
   rpc Generate(InferenceRequest) returns (stream TokenChunk);
-}
+}  // Issao: I don't think we need to model this level of detail of serving. is this here just as an example?
 
 message TokenChunk {
   RequestId request = 1;
