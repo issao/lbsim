@@ -9,10 +9,10 @@
 use lbsim::scenario::Scenario;
 
 /// Every key `parse` accepts, which is also every key `to_text` must emit.
-const KEYS: [&str; 43] = [
+const KEYS: [&str; 44] = [
     "name", "seed", "duration_s", "warmup_s", "replicas", "max_batch", "step_base_ms",
     "step_per_seq_ms", "step_per_kv_ktoken_ms", "kv_capacity_tokens", "prefill_tokens_per_s",
-    "step_token_budget", "max_queue", "arrival_rps", "prompt_mean", "prompt_cv", "output_mean",
+    "step_token_budget", "max_queue", "disable_decode", "arrival_rps", "prompt_mean", "prompt_cv", "output_mean",
     "output_cv", "long_probability", "long_prompt_mean", "long_output_mean", "load_step_at_s",
     "load_step_factor", "load_step_until_s", "routing", "p2c_choices", "probe_live",
     "admission", "admission_headroom", "fair_share_burst", "tenants", "tenant_weights", "tenant_demand",
@@ -38,6 +38,7 @@ fn all_fields_distinct() -> Scenario {
         prefill_tokens_per_s: 31_250.0,
         step_token_budget: 1536,
         max_queue: 17,
+        disable_decode: true,
         arrival_rps: 19.5,
         prompt_mean: 1500.5,
         prompt_cv: 1.75,

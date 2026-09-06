@@ -31,6 +31,10 @@ run 5-long-context sweep scenarios/route_p2c.txt --over long_probability=0.0,0.0
 run 6-retry compare scenarios/retry_none.txt scenarios/retry_budget.txt scenarios/retry_storm.txt
 run 7-least-queue-tokens run scenarios/route_least_queue_tokens.txt
 run 8-probe-live run scenarios/route_p2c.txt --set probe_live=true
+run 7-no-decode compare scenarios/route_round_robin_no_decode.txt scenarios/route_p2c_no_decode.txt
+run 8-admission compare scenarios/admit_accept_all.txt scenarios/admit_deadline_aware.txt
+run 9-fair-share compare scenarios/admit_tenants_accept_all.txt scenarios/admit_fair_share.txt
+run 10-probes compare scenarios/route_p2c.txt scenarios/route_least_kv_probe.txt
 for h in scenarios/holdout/*.txt; do run "h-$(basename "$h" .txt)" run "$h"; done
 
 lines=$( {
