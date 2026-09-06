@@ -1,0 +1,20 @@
+# Coordination for concurrent builds by several agents.
+#
+# Every checkout of this repo, including git worktrees, shares ONE target directory. Cargo takes a file
+# lock on the target directory, so concurrent `cargo build` or `cargo test` invocations queue behind
+# each other instead of each spawning its own rustc fleet. That is the whole coordination mechanism:
+# no daemon, no script, cargo's own lock. A waiting build prints "Blocking waiting for file lock on
+# build directory", which is the expected sight when several agents are active.
+#
+# The cost is cache churn when agents build different branches back to back. With zero dependencies
+# and a one-second build, that cost is nothing. The benefit is that memory stays bounded on a machine
+# where a runaway once consumed all 24 GB.
+[build]
+target-dir = "/home/agents/repo/lbsim/target"
+# Bound rustc parallelism per build. Release already uses one codegen unit; this caps debug builds,
+# which default to many parallel codegen units and are what tests run under.
+jobs = 4
+
+# Warnings are not errors here on purpose. Several agents commit concurrently, and a warning in one
+# agent's branch must not break another agent's build the moment master is merged. Clippy at -D
+# warnings runs in CI, not in the inner loop.
