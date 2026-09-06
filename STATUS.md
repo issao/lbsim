@@ -39,7 +39,7 @@ difference between a bad minute and an outage. Numbers in `docs/findings.md`.
 
 | Agent | Owns | Now |
 |---|---|---|
-| Tech lead | `src/`, `tests/`, `scenarios/`, `web/src/lib/` | Landed, all byte-identical against `./check-fingerprints.sh`: the eleven-crate workspace (163995c); golden fingerprints and `WIRE.md` (0efb8bd); the policy trait and registry, plus `admission`, `fair_share_burst`, `tenants`, `tenant_weights`, `tenant_demand` in scenarios (289cb22, cfc8f03); leases and the idle guard (d688f8f); Issao's homepage links and `tools/build.sh`, which bounds concurrent cargo builds to two (16daf22); simplification pass 1 on `sim-report`, 884 to 851 lines (4b29810). In flight, seven agents in their own worktrees: engine (`claude/tl-engine`), physics oracle (`tl-physics`), export (`tl-export`), web transport (`tl-web`), three policies. Queued: preemption and KV eviction, SLO classes, the live ingress server, the dashboard replay source, speculative decoding, prefix caching. From Issao at 15:50: *"continue making more progress on the scope-today.md dynamics we talked about when it is possible to do so in parallel"*, which is that queue |
+| Tech lead | `src/`, `tests/`, `scenarios/`, `web/src/lib/` | Landed, all byte-identical against `./check-fingerprints.sh`: the eleven-crate workspace (163995c); golden fingerprints and `WIRE.md` (0efb8bd); the policy trait and registry, plus `admission`, `fair_share_burst`, `tenants`, `tenant_weights`, `tenant_demand` in scenarios (289cb22, cfc8f03); leases and the idle guard (d688f8f); Issao's homepage links and `tools/build.sh`, which bounds concurrent cargo builds to two (16daf22); simplification pass 1 on `sim-report`, 884 to 851 lines (4b29810); the browser transport client against `WIRE.md`, mock still the default (389f41e, 16:14). In flight, six agents in their own worktrees: engine (`claude/tl-engine`), physics oracle (`tl-physics`), export (`tl-export`), three policies. Queued: preemption and KV eviction, SLO classes, the live ingress server, the dashboard replay source, speculative decoding, prefix caching. From Issao at 15:50: *"continue making more progress on the scope-today.md dynamics we talked about when it is possible to do so in parallel"*, which is that queue |
 | Cloud | `Dockerfile`, `deploy.sh`, `cloudbuild.yaml`, `docs/deploy.md` | **finished.** Redeploys are now run by the main agent on request: `./deploy.sh`, about 2.5 minutes end to end. First deploy at 15:22 (72dfb16); scale-to-zero verified twice (993c03a); `docs/deploy.md` is its handover. No further grant was needed, the pending `legacyBucketReader` request is withdrawn: the blocker was two bucket permissions, worked around in `cloudbuild.yaml` |
 | Monitor and housekeeping | `TASKS.md`, `STATUS.md`, `README.md`, `docs/*.md` | inbox and PR loop every 90 s; documents tidied; keeping them aligned to each merge. The homepage-link instruction routed at 15:57 was done by the tech lead at 15:59 |
 
@@ -60,7 +60,7 @@ One row per milestone in `docs/execution-plan.md` §1, read from `master` at 604
 | M5 policies | partial, in flight | five routing policies behind a one-file-per-policy registry (289cb22), the fan-out point; least-KV-probe, deadline and fair-share policies on three branches; no prefix affinity, no per-decision cost measurement |
 | M6 failures | done | retry contrast, finding 6 |
 | M7 control analysis | not started | |
-| M8 dashboard and first deploy | in progress | static deploy live, scale-to-zero measured (993c03a); `sim-ingress` has leases and the idle guard (d688f8f) but no run or subscription endpoint; `sim-run export` to `WIRE.md` JSON on `claude/tl-export`, browser transport on `claude/tl-web`; dashboard still mock |
+| M8 dashboard and first deploy | in progress | static deploy live, scale-to-zero measured (993c03a); `sim-ingress` has leases and the idle guard (d688f8f) but no run or subscription endpoint; `sim-run export` to `WIRE.md` JSON on `claude/tl-export`; browser transport merged (389f41e) with mock still the default; dashboard still mock |
 | M9 scale validation | not measured | |
 
 ## When the dashboard shows real demos
@@ -73,8 +73,8 @@ since cf12e33, live since 16:03 in revision `lbsim-00004-t5q`, built from `maste
 `docs/dashboard-plan.md` (16c28ac) is the breakdown of why the first dashboard with real runs is
 estimated at 19:00 and what can be pulled in; its estimate table moves only on word from the tech lead
 or the main agent. Three things stand between it and real data: an Ingress endpoint that runs a scenario and streams
-metrics over the JSON/SSE wire in `crates/sim-ingress/WIRE.md`; the browser transport client, in the
-tech lead's worktree and not merged, replacing the mock engine; and a rebuild and redeploy, measured at
+metrics over the JSON/SSE wire in `crates/sim-ingress/WIRE.md`; the browser transport client, merged at 16:14 (389f41e) but not yet the default, replacing the
+mock engine; and a rebuild and redeploy, measured at
 1m22s. The shortest path, asked of the tech lead by the main agent: pre-baked run output in wire format
 served statically, so every panel shows real data before the live path exists.
 
