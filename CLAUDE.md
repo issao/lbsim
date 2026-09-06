@@ -17,9 +17,12 @@ diagram-to-proto convention.
 - **Never leave the working tree dirty.** Every unit of work ends in a commit.
 - Work on a branch named `claude/<topic>`. The user keeps their own edits on their
   own branch.
-- **Always merge back to `origin`.** Do not leave work stranded on a local branch:
-  when a unit of work is complete, merge the branch into `master` and push both
-  `master` and the branch to `origin`. A session must never end with unpushed commits.
+- **Always push to `origin master`.** The user pulls `master` into a local clone, so work
+  that is not on `origin/master` does not reach them. When a unit of work is complete:
+  merge the working branch into `master`, then `git push origin master` (and the branch).
+  A session must never end with unpushed commits on `master`.
+  If the push fails for lack of credentials, say so prominently rather than
+  reporting the work as delivered.
 - Merge with `--no-ff` so each unit of work stays visible as a group in history.
 - If `master` has moved, rebase the working branch onto it before merging, so history
   stays linear and the user's own branch does not collide.

@@ -193,7 +193,10 @@ Results should be presented as a static HTML report, with interactive links to r
 
 ## 9. Architecture sketch (Claude)
 
-<!-- I will fill this after sections 1-8 and after your wire diagram exists. -->
+See `docs/ARCHITECTURE.md`. Section 10 describes the system in prose, section 1 gives the
+scale budget, section 3 the analytic epoch mechanism that makes the scale target reachable,
+and section 13 lists the decisions that need your answer. `docs/diagrams/system.drawio` draws
+the same structure, with each arrow naming a `service.Method` from `proto/`.
 
 ## 10. Open questions
 

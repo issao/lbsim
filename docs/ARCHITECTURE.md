@@ -543,7 +543,106 @@ engine that is not needed.
 
 ---
 
-## 10. Component structure
+## 10. The system in words
+
+`docs/diagrams/system.drawio` draws this, in two pages: the data plane with its policy
+boundary, and the control plane with the engine and product surface. Every arrow there names
+a `service.Method` in `proto/`, and `tools/check_diagram.py` fails if the diagram and the
+interfaces disagree. What follows is the same thing in prose, which is the authoritative
+version.
+
+### 10.1 The life of a request
+
+A **workload generator** stands in for clients. It draws an arrival time, a tenant, an SLO
+class, a prompt length, and a shared-prefix identity. It also draws the *true* output length
+and hides it in a `Truth` record that nothing downstream can see, because a real system does
+not know how long a generation will run and every hard scheduling problem here follows from
+that ignorance.
+
+The request enters a **gateway**, which owns rate limiting and the outermost admission
+decision. Rate limits are denominated in tokens, not requests, because a single
+hundred-thousand-token prompt costs what twenty-five chat turns cost. The gateway consults an
+admission policy and may shed immediately, which is the cheap failure, deliberately distinct
+in the outcome enum from shedding after GPU time has been spent.
+
+A **router** picks a replica. It sees only a delayed fleet snapshot, so this is where herding
+lives: with many routers reading one stale snapshot, all of them conclude the same replica is
+idle. The router records which candidates it considered and how many cached prefix tokens it
+believed the winner held, so both herding and affinity misprediction are measurable rather
+than inferred.
+
+A **replica engine** receives the request and is itself a scheduler. Under continuous
+batching it decides every step whether to admit from its own queue, and it can preempt. So
+there are two scheduling layers, router and replica, and they can work against each other.
+The replica tracks resident KV in tokens against a fixed budget, splits long prefills into
+chunks so one arrival cannot insert a two-second stall into everyone else's token stream, and
+evicts to a **KV tier pool** when the budget runs out. Tokens stream back, and the client
+observes time-to-first-token and inter-token latency as separate quantities.
+
+If the client's deadline passes first, it cancels and possibly retries under a budget. A
+retry here is far more expensive than in a stateless service, because thirty seconds of GPU
+work has usually already been spent.
+
+### 10.2 The control loop above it
+
+Each replica samples itself on a period and publishes a snapshot to a **telemetry
+collector**. The collector assembles fleet snapshots in which every entry carries its own
+sampling timestamp, so a snapshot is a set of differently-aged observations rather than a
+consistent cut. Real fleets have no consistent cut, and pretending otherwise is what makes
+simulated load balancing look better than reality.
+
+Routing, autoscaling and failure-detection policies all read from that delayed view and
+nothing else. Freshness is purchasable, through a probe that costs a modelled round trip, so
+the price of knowing more is visible rather than free.
+
+The autoscaler acts through a **capacity manager**, and this is where the loop's dominant
+delay lives. Provisioning takes from thirty seconds to five minutes, because tens to hundreds
+of gigabytes of weights must be read and loaded. A burst develops in tens of seconds. So the
+sensor period, the propagation delay, and that actuator delay together form a sampled-data
+feedback system whose instability is not an accident but a prediction. Driving offered load
+with a sinusoid and sweeping its frequency yields gain and phase, and therefore loop gain and
+phase margin, which is how oscillation onset becomes something you compute rather than
+something you notice.
+
+### 10.3 The engine beneath both
+
+Nothing above touches state directly. Policies return **intents**, and every intent passes a
+**referee** that enforces the invariants a policy must not be able to break: KV is never
+overcommitted, step budgets never exceed the engine maximum, no effect lands earlier than its
+actuation delay, no intent references state newer than the observation it came from, and work
+is never created or destroyed. In strict mode a violation aborts the run, which is what the
+policy arena uses so that a cheating policy cannot score. Cheating is unrepresentable rather
+than merely forbidden, because the observation type contains no fresh state and the intent
+type cannot express an illegal action.
+
+A **cost model** turns batch state into elapsed time. Between composition changes the batch is
+fixed, so step time follows a linear recurrence and the sum of the next N steps has a closed
+form. Advancing a replica is therefore a handful of arithmetic operations whether the next
+event is three steps away or thirty thousand, and the simulation's cost stops depending on how
+many tokens are generated.
+
+A **two-level event queue** orders the fleet: each replica holds its own next-event time and a
+small global heap orders the replicas. The global structure stays cache-resident regardless of
+how many requests are in flight, which is the difference between the plan working and not.
+
+**Seeded RNG streams**, named and independent, feed everything stochastic. Changing the
+arrival rate must not perturb prompt lengths, and enabling failure injection must not perturb
+the workload, or an A/B comparison silently compares two different worlds.
+
+**Metrics** aggregate online, into histograms and fixed-rate series, with full traces kept
+only for a stratified sample. At target scale a simulated hour completes hundreds of millions
+of requests, so this is a constraint rather than a preference.
+
+### 10.4 The product on top
+
+A **runner** executes scenario sweeps in batch and emits a self-contained static HTML report.
+A **server** exposes the control interface over real gRPC to a **React dashboard**, which is
+both the interactive playground and the showcase of preloaded scenarios with their narration.
+Scrubbing reads the recorded event log and needs no re-simulation; changing a parameter that
+alters physics rewinds to a snapshot and re-simulates, and the response says so explicitly so
+the interface never implies a continuity that does not exist.
+
+### 10.5 Crates
 
 Rust workspace. Dependency direction is strictly downward; nothing below depends on
 anything above it.
