@@ -134,6 +134,134 @@ impl Histogram {
     }
 }
 
+/// A histogram with only its occupied buckets, for keeping many of them.
+///
+/// The dense form is 3,072 buckets, 24 KB, right for a run-wide aggregate and wrong for one per
+/// sample: a 120 s run at four samples a second holds four per frame, close to 50 MB of mostly
+/// zeros. This keeps `(bucket, count)` pairs in bucket order and answers the same questions the
+/// dense form does, to the bit, because it walks the same buckets in the same order.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct SparseHistogram {
+    pub pairs: Vec<(u16, u64)>,
+    pub count: u64,
+    pub sum: u128,
+    pub min: u64,
+    pub max: u64,
+}
+
+impl SparseHistogram {
+    pub fn count(&self) -> u64 {
+        self.count
+    }
+
+    pub fn mean(&self) -> f64 {
+        if self.count == 0 {
+            return f64::NAN;
+        }
+        self.sum as f64 / self.count as f64
+    }
+
+    pub fn min(&self) -> u64 {
+        if self.count == 0 {
+            0
+        } else {
+            self.min
+        }
+    }
+
+    pub fn max(&self) -> u64 {
+        self.max
+    }
+
+    /// `q` in [0, 100]. The dense algorithm over the occupied buckets only; zeros never move the
+    /// running total, so skipping them cannot change where it crosses the target.
+    pub fn percentile(&self, q: f64) -> u64 {
+        if self.count == 0 {
+            return 0;
+        }
+        let target = ((q / 100.0) * self.count as f64).ceil().max(1.0) as u64;
+        let mut seen = 0u64;
+        for (i, c) in self.pairs.iter() {
+            seen += *c;
+            if seen >= target {
+                return Histogram::value_of(*i as usize);
+            }
+        }
+        self.max
+    }
+
+    /// Fraction of samples at or below `v`.
+    pub fn fraction_below(&self, v: u64) -> f64 {
+        if self.count == 0 {
+            return f64::NAN;
+        }
+        let limit = Histogram::index(v);
+        let below: u64 = self.pairs.iter().filter(|(i, _)| *i as usize <= limit).map(|(_, c)| *c).sum();
+        below as f64 / self.count as f64
+    }
+}
+
+impl Histogram {
+    pub fn to_sparse(&self) -> SparseHistogram {
+        SparseHistogram {
+            pairs: self
+                .buckets
+                .iter()
+                .enumerate()
+                .filter(|(_, c)| **c > 0)
+                .map(|(i, c)| (i as u16, *c))
+                .collect(),
+            count: self.count,
+            sum: self.sum,
+            min: self.min,
+            max: self.max,
+        }
+    }
+}
+
+/// One replica as it stood at a sample instant. The per-replica part of a frame, and what the
+/// dashboard's fleet heat map is drawn from.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct ReplicaSample {
+    pub queued: u32,
+    pub running: u32,
+    pub kv_tokens: u64,
+    pub last_step_ns: Nanos,
+}
+
+/// Everything observable about one sample interval, closed at `t`.
+///
+/// A run-wide histogram answers "how did the run go"; a frame answers "what is happening now",
+/// which is the question a live dashboard and the Leaf-to-Ingress metrics flow of
+/// `docs/ARCHITECTURE.md` 10.3 both ask. Counters and histograms cover the window `(previous
+/// sample, t]`, keyed by when a request *finished*, so a spike shows up in the frame where it hurt.
+/// The gauges that the fleet-wide `Series` already carry, queue depth and the like, are not repeated
+/// here; the per-replica breakdown is.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Frame {
+    pub t: Nanos,
+    pub offered_rps: f64,
+    /// Requests that entered a replica queue in the window.
+    pub admitted: u64,
+    /// Requests that finished in the window, by how: successes of either kind, sheds, timeouts of
+    /// either kind, and the successes that met every SLO.
+    pub completed: u64,
+    pub rejected: u64,
+    pub timed_out: u64,
+    pub within_slo: u64,
+    /// Tokens delivered by the completions in the window, all of them and those within SLO.
+    pub output_tokens: u64,
+    pub goodput_tokens: u64,
+    /// Latency distributions of the completions in the window, recorded by the same rules as the
+    /// run-wide ones: a time to first token only when there was one, a worst gap only when there was
+    /// more than one token.
+    pub ttft: SparseHistogram,
+    pub itl_max: SparseHistogram,
+    pub e2e: SparseHistogram,
+    pub queue_wait: SparseHistogram,
+    pub replicas: Vec<ReplicaSample>,
+}
+
 /// A sampled gauge. Values are step functions, so the meaningful average is time-weighted: the
 /// arithmetic mean of samples is wrong whenever the value is bursty, which is the normal case.
 #[derive(Clone, Default)]

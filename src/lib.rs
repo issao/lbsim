@@ -12,7 +12,9 @@ pub use sim_core::{queue, rng, Nanos, EPOCH_BASE, MILLI, SECOND};
 
 pub use sim_arena as arena;
 pub use sim_leaf as sim;
+pub use sim_leaf_api as leaf_api;
 pub use sim_metrics as metrics;
+pub use sim_model as model;
 pub use sim_physics as physics;
 pub use sim_policy as policy;
 pub use sim_report as report;
