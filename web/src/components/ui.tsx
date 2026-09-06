@@ -54,10 +54,12 @@ export function Tabs<T extends string>({
   tabs,
   value,
   onChange,
+  scope,
 }: {
   tabs: TabDef<T>[];
   value: T;
   onChange: (v: T) => void;
+  scope: string;
 }) {
   return (
     <div className="tabs" role="tablist">
@@ -67,7 +69,7 @@ export function Tabs<T extends string>({
           role="tab"
           aria-selected={t.id === value}
           onClick={() => onChange(t.id)}
-          data-tab={t.id}
+          data-tab={`${scope}:${t.id}`}
         >
           {t.label}
           {t.count !== undefined ? <span className="tab-count">{t.count}</span> : null}

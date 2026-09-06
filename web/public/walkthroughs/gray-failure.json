@@ -8,7 +8,7 @@
     "seed": 20260906,
     "durationS": 120,
     "routing.kind": "power_of_two_choices",
-    "workload.arrivalRps": 150
+    "workload.arrivalRps": 100
   },
   "steps": [
     {

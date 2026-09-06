@@ -86,7 +86,7 @@ export const BASE: ScenarioConfig = {
     stepBaseMs: 2.75,
     stepPerSeqMs: 0.25,
     prefillTokensPerS: 25000,
-    kvTokensPerReplica: 400000,
+    kvTokensPerReplica: 60000,
     maxQueue: 200,
     accelerator: '8xH100-80GB',
   },
@@ -151,7 +151,7 @@ export const PRESETS: Preset[] = [
       const c = cloneConfig(BASE);
       c.name = 'rolling-hotspot';
       c.routing = { ...c.routing, kind: 'round_robin' };
-      c.workload = { ...c.workload, arrivalRps: 140, longProbability: 0.12 };
+      c.workload = { ...c.workload, arrivalRps: 85, longProbability: 0.12 };
       return c;
     },
   },
@@ -166,7 +166,7 @@ export const PRESETS: Preset[] = [
       c.routing = { ...c.routing, kind: 'least_kv_tokens' };
       c.telemetryDelayMs = 900;
       c.telemetryIntervalMs = 1500;
-      c.workload = { ...c.workload, arrivalRps: 130 };
+      c.workload = { ...c.workload, arrivalRps: 105 };
       return c;
     },
   },
@@ -174,12 +174,12 @@ export const PRESETS: Preset[] = [
     id: 'kv-spiral',
     title: 'KV pressure at modest rps',
     file: 'scenarios/base.txt',
-    summary: 'Dynamic 4. Long contexts, small KV pool: preemption starts, and throughput falls as load rises.',
+    summary: 'Dynamic 4. Long contexts held between turns: sessions fill the cache at a request rate the fleet could otherwise serve.',
     apply: () => {
       const c = cloneConfig(BASE);
       c.name = 'kv-pressure';
-      c.workload = { ...c.workload, arrivalRps: 90, longProbability: 0.22, longPromptMean: 40000 };
-      c.fleet = { ...c.fleet, kvTokensPerReplica: 180000 };
+      c.workload = { ...c.workload, arrivalRps: 55, longProbability: 0.25, longPromptMean: 16000 };
+      c.fleet = { ...c.fleet, kvTokensPerReplica: 50000 };
       return c;
     },
   },
@@ -191,7 +191,7 @@ export const PRESETS: Preset[] = [
     apply: () => {
       const c = cloneConfig(BASE);
       c.name = 'overload';
-      c.workload = { ...c.workload, arrivalRps: 260 };
+      c.workload = { ...c.workload, arrivalRps: 210 };
       c.routing = { ...c.routing, kind: 'power_of_two_choices' };
       return c;
     },

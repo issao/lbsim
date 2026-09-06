@@ -39,7 +39,7 @@ export function ObservationPanel({
 }) {
   return (
     <section className="panel observe-panel">
-      <Tabs tabs={TABS} value={tab} onChange={onTab} />
+      <Tabs tabs={TABS} value={tab} onChange={onTab} scope="observe" />
       <div className="panel-body scroll">
         {tab === 'cluster' ? (
           <ClusterHealth

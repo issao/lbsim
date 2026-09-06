@@ -12,7 +12,11 @@ export function useSubscriptions(
   metrics: MetricId[],
   samplesPerSimSecond: number
 ): void {
-  const key = JSON.stringify(targets);
+  // Keyed on the *set* of entities, not the order they are drawn in: re-sorting a page that shows
+  // the same twenty replicas must not close and reopen twenty subscriptions.
+  const key = JSON.stringify(
+    [...targets].sort((a, b) => (a.scope === b.scope ? (a.id ?? -1) - (b.id ?? -1) : a.scope.localeCompare(b.scope)))
+  );
   useEffect(() => {
     const ids = (JSON.parse(key) as Target[]).map(
       (t) => registry.open({ target: t, metrics, samplesPerSimSecond, owner }).id
