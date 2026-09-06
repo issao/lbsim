@@ -52,21 +52,25 @@ name and amount rather than from a copy.
 | Projects linked | `lbsim-gcp` and `lbsim-prod` |
 | Cloud Run services running | **none**, so nothing is currently spending |
 
-- [ ] **Confirm the $50 budget matches what you had**, since it was rebuilt from its name and amount
+- [x] **Confirm the $50 budget matches what you had**, since it was rebuilt from its name and amount
       and any other settings on it were lost.
-- [ ] **Decide whether you want two projects.** `lbsim-gcp` and `lbsim-prod` are both linked to
+- [x] **Decide whether you want two projects.** `lbsim-gcp` and `lbsim-prod` are both linked to
       billing. If one is redundant, unlinking it removes a way to be surprised.
+      Issao: Lets just keep one of them, I don't care which.
 - [ ] **Consider revoking this sandbox's credential when today is done.** `gcloud auth revoke
       issaofujiwara@gmail.com`. Until then, every agent here can do anything you can.
+      Issao: Sounds good. Leave me a task to do that once you are done with what you need. If there is a way to downgrade your permission while still allowing claude to deploy in this project, lets do that.
 
 **What has changed on Claude's side.** `CLAUDE.md` now forbids any mutating cloud command without your
 explicit per-action approval, forbids touching billing at all, forbids delete filters that are not
 exact matches, and forbids delegating cloud work to a subagent unless it is read-only. That last rule
 is the one that would have prevented this: a subagent inherits these credentials and cannot be
 supervised mid-action.
+// Issao: I want claude to be able to interact with my gcp account, there is nothing of significance there. Just try to keep under a $50/month budget for now.
 
 This is a larger issue than the access-token question below, and it points the same way: the safe
 pattern is that you run mutating commands and Claude prepares everything else.
+// Issao: For now, I would like claude to be able to make mutating commands to the deployment as we iterate.
 
 ## 1. HARD BLOCKER — four things only you can do, for the cloud deployment
 
