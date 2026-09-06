@@ -1,0 +1,9 @@
+target/
+out/
+web/node_modules/
+web/dist/
+.git/
+tests/
+bench/
+docs/
+!docs/findings.md

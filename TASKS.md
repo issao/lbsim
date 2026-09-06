@@ -84,6 +84,40 @@ not a pricing surprise.
 - [ ] Decide whether to unlink `lbsim-prod` from billing. It has a registry and Cloud Run but no deploy
       account and no results bucket, so it is half-provisioned and duplicating it is a way to be surprised
 
+## 0b. One grant needed to finish the deploy — one command
+
+Everything for the deploy is written, committed and verified except this. Cloud Build refuses with:
+
+> The user is forbidden from accessing the bucket [lbsim-gcp_cloudbuild] ... or if the user has the
+> "serviceusage.services.use" permission
+
+The message is misleading. It is not really about the bucket: I retried with a bucket the deploy account
+does own and got the same error. The missing permission is `serviceusage.services.use`, which Cloud
+Build needs in order to attribute API usage to the project.
+
+**The error suggests Service Usage Admin. Do not grant that** — it can enable and disable APIs. The
+minimal role is Service Usage Consumer, which only permits *using* APIs that are already enabled:
+
+```bash
+gcloud projects add-iam-policy-binding lbsim-gcp \
+  --member=serviceAccount:lbsim-deployer@lbsim-gcp.iam.gserviceaccount.com \
+  --role=roles/serviceusage.serviceUsageConsumer
+```
+
+That still grants nothing over billing, nothing over IAM, and no ability to turn APIs on or off. It is
+the smallest thing that unblocks a build.
+
+- [ ] Run the command above. Claude will retry the deploy immediately and report the URL.
+
+Everything else is ready: `Dockerfile`, `.dockerignore`, `deploy.sh`, and a static server with a health
+check that touches no run state and path handling verified against both plain and percent-encoded
+traversal. The image generates all six reports at build time, so it ships real results.
+
+The service will be **private**. Viewing it is
+`gcloud run services proxy lbsim --project lbsim-gcp --region us-central1 --port 8080`. Say so if you
+would rather it were public and I will flip one flag; it is mock data and published findings, so the
+risk is low, but that is your call rather than mine.
+
 ## 1. Domain linking — three steps, and one gotcha worth knowing before you start
 
 Nothing here blocks a first deploy. Cloud Run hands out a `run.app` URL that needs no domain, so the
