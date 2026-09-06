@@ -62,12 +62,26 @@ pub struct Scenario {
     pub load_step_factor: f64,
     pub load_step_until_s: f64,
 
-    // -- routing -----------------------------------------------------------
+    // -- policies ------------------------------------------------------------
+    // Names resolve through the registries in `sim_policy`; an unknown name is an error at run start.
     pub routing: String,
     pub p2c_choices: usize,
     /// Pay a modelled probe for fresh state instead of reading the delayed snapshot, so the cost of
     /// freshness is visible rather than free.
     pub probe_live: bool,
+    pub admission: String,
+    /// For deadline-aware admission: the fraction of a request's deadline reserved for serving it, so
+    /// a request that would spend more than the rest waiting is shed before it costs anything.
+    pub admission_headroom: f64,
+    /// For weighted fair share: how far a tenant may burst above its share before being shed.
+    pub fair_share_burst: f64,
+
+    // -- tenants ---------------------------------------------------------------
+    /// How many tenants share the fleet. One means no tenancy at all.
+    pub tenants: usize,
+    /// Relative weights, one per tenant; empty means equal. Used both to draw a request's tenant and
+    /// as the fair share a tenant is entitled to.
+    pub tenant_weights: Vec<f64>,
 
     // -- telemetry ---------------------------------------------------------
     pub telemetry_interval_ms: f64,
@@ -126,6 +140,11 @@ impl Default for Scenario {
             routing: "round_robin".into(),
             p2c_choices: 2,
             probe_live: false,
+            admission: "accept_all".into(),
+            admission_headroom: 0.5,
+            fair_share_burst: 2.0,
+            tenants: 1,
+            tenant_weights: Vec::new(),
             telemetry_interval_ms: 1000.0,
             telemetry_delay_ms: 200.0,
             client_timeout_s: 30.0,
@@ -204,6 +223,20 @@ impl Scenario {
                 "routing" => s.routing = v.clone(),
                 "p2c_choices" => s.p2c_choices = f("p2c_choices") as usize,
                 "probe_live" => s.probe_live = v == "true",
+                "admission" => s.admission = v.clone(),
+                "admission_headroom" => s.admission_headroom = f("admission_headroom"),
+                "fair_share_burst" => s.fair_share_burst = f("fair_share_burst"),
+                "tenants" => s.tenants = f("tenants") as usize,
+                "tenant_weights" => {
+                    let mut ws = Vec::new();
+                    for part in v.split(',').map(str::trim).filter(|p| !p.is_empty()) {
+                        match part.parse::<f64>() {
+                            Ok(x) => ws.push(x),
+                            Err(_) => malformed.push(format!("tenant_weights = {v:?}")),
+                        }
+                    }
+                    s.tenant_weights = ws;
+                }
                 "telemetry_interval_ms" => s.telemetry_interval_ms = f("telemetry_interval_ms"),
                 "telemetry_delay_ms" => s.telemetry_delay_ms = f("telemetry_delay_ms"),
                 "client_timeout_s" => s.client_timeout_s = f("client_timeout_s"),
@@ -239,6 +272,22 @@ impl Scenario {
             step_per_kv_ktoken_ms: self.step_per_kv_ktoken_ms,
             prefill_tokens_per_s: self.prefill_tokens_per_s,
         }
+    }
+
+    /// Tenant weights normalised to sum to one, one per tenant. Missing weights are one; extra weights
+    /// are ignored. Empty when there is a single tenant, which is what "no tenancy" means downstream.
+    pub fn tenant_shares(&self) -> Vec<f64> {
+        if self.tenants <= 1 {
+            return Vec::new();
+        }
+        let raw: Vec<f64> = (0..self.tenants)
+            .map(|i| self.tenant_weights.get(i).copied().unwrap_or(1.0).max(0.0))
+            .collect();
+        let total: f64 = raw.iter().sum();
+        if total <= 0.0 {
+            return vec![1.0 / self.tenants as f64; self.tenants];
+        }
+        raw.iter().map(|w| w / total).collect()
     }
 
     /// Mean prompt and output length over the two-mode mixture.
@@ -277,7 +326,9 @@ impl Scenario {
              prompt_cv = {}\noutput_mean = {}\noutput_cv = {}\nlong_probability = {}\n\
              long_prompt_mean = {}\nlong_output_mean = {}\nload_step_at_s = {}\n\
              load_step_factor = {}\nload_step_until_s = {}\nrouting = {}\np2c_choices = {}\n\
-             probe_live = {}\ntelemetry_interval_ms = {}\ntelemetry_delay_ms = {}\n\
+             probe_live = {}\nadmission = {}\nadmission_headroom = {}\nfair_share_burst = {}\n\
+             tenants = {}\ntenant_weights = {}\n\
+             telemetry_interval_ms = {}\ntelemetry_delay_ms = {}\n\
              client_timeout_s = {}\nmax_attempts = {}\nretry_budget_fraction = {}\n\
              retry_backoff_s = {}\nttft_slo_ms = {}\nitl_slo_ms = {}\ne2e_slo_s = {}\n\
              sample_interval_ms = {}\n",
@@ -288,7 +339,10 @@ impl Scenario {
             self.prompt_cv, self.output_mean, self.output_cv, self.long_probability,
             self.long_prompt_mean, self.long_output_mean, self.load_step_at_s,
             self.load_step_factor, self.load_step_until_s, self.routing, self.p2c_choices,
-            self.probe_live, self.telemetry_interval_ms, self.telemetry_delay_ms,
+            self.probe_live, self.admission, self.admission_headroom, self.fair_share_burst,
+            self.tenants,
+            self.tenant_weights.iter().map(|w| w.to_string()).collect::<Vec<_>>().join(","),
+            self.telemetry_interval_ms, self.telemetry_delay_ms,
             self.client_timeout_s, self.max_attempts, self.retry_budget_fraction,
             self.retry_backoff_s, self.ttft_slo_ms, self.itl_slo_ms, self.e2e_slo_s,
             self.sample_interval_ms

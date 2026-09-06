@@ -12,7 +12,7 @@
 //! at today's scale, and the epoch advance lands with the KV model.
 
 use sim_metrics::{Histogram, Outcome, RequestRecord, Series};
-use sim_policy::{ReplicaView, Routing};
+use sim_policy::{Admission, AdmissionContext, AdmissionPolicy, ReplicaView, RequestView, RouteContext, RoutingPolicy};
 use sim_core::queue::{EventQueue, PRIO_OBSERVE};
 use sim_core::rng::{Rng, Streams};
 use sim_scenario::Scenario;
@@ -309,7 +309,9 @@ fn validate(sc: &Scenario) -> Result<(), String> {
 
 pub fn run(sc: &Scenario) -> Result<RunResult, String> {
     validate(sc)?;
-    let routing = Routing::parse(&sc.routing, sc.p2c_choices)?;
+    let mut router = sim_policy::make_routing(sc)?;
+    let mut admission = sim_policy::make_admission(sc)?;
+    let tenant_shares = sc.tenant_shares();
     let streams = Streams::new(sc.seed);
     let mut route_rng: Rng = streams.stream("route");
     let mut workload = Workload::new(&streams);
@@ -324,7 +326,6 @@ pub fn run(sc: &Scenario) -> Result<RunResult, String> {
     let mut placed: HashMap<u64, usize> = HashMap::new();
     let mut done: HashMap<u64, bool> = HashMap::new();
     let mut records: Vec<RequestRecord> = Vec::new();
-    let mut rr_cursor = 0usize;
 
     let step_budget = sc.step_token_budget;
     let cost = sc.cost_model();
@@ -394,9 +395,11 @@ pub fn run(sc: &Scenario) -> Result<RunResult, String> {
                 let elapsed = (now - start) as f64 / 1e9;
                 let req = workload.make(sc, now);
                 first_attempts += 1;
-                dispatch(
-                    &mut q, &routing, &views, &mut rr_cursor, &mut route_rng, sc, now, req,
+                let d = dispatch(
+                    &mut *router, &mut *admission, &views, &replicas, &tenant_shares, &mut route_rng,
+                    sc, now, &req,
                 );
+                place(&mut q, &mut records, &mut outcomes, &mut done, d, req, now);
                 let gap = workload.next_gap_ns(sc, elapsed);
                 q.schedule(now + gap.max(1), Ev::Arrival);
             }
@@ -524,6 +527,7 @@ pub fn run(sc: &Scenario) -> Result<RunResult, String> {
                         && s.max_itl <= (sc.itl_slo_ms * 1e6) as Nanos
                         && token_at - s.req.arrived_at <= (sc.e2e_slo_s * 1e9) as Nanos;
                     let outcome = if within { Outcome::Ok } else { Outcome::OkSloViolated };
+                    admission.on_complete(s.req.tenant, s.req.output, token_at);
                     finish(
                         &mut records, &mut outcomes, &mut done, outcome, &s.req, token_at, i,
                         s.admitted_at, s.first_token_at, s.max_itl, mean_itl,
@@ -542,17 +546,7 @@ pub fn run(sc: &Scenario) -> Result<RunResult, String> {
             }
 
             Ev::TelemetryPublish(i) => {
-                let r = &replicas[i];
-                let view = ReplicaView {
-                    sampled_at: now,
-                    queued: r.queue.len() as u32,
-                    running: r.running.len() as u32,
-                    queued_tokens: r.queued_tokens
-                        + r.running.iter().map(|s| s.prefill_left as u64 + s.output_left as u64).sum::<u64>(),
-                    kv_tokens: r.kv_tokens,
-                    last_step_ns: r.last_step_ns,
-                    ejected: false,
-                };
+                let view = view_of(&replicas[i], now);
                 // Delayed delivery. This one line is the whole staleness mechanism: a policy cannot
                 // see the fleet as it is, only as it was.
                 q.schedule(now + tele_delay, Ev::TelemetryDeliver(i, view));
@@ -610,9 +604,11 @@ pub fn run(sc: &Scenario) -> Result<RunResult, String> {
                         let at = again.attempt_at;
                         // Re-routed rather than pinned, so a retry does not land on the same
                         // struggling replica by construction.
-                        dispatch(
-                            &mut q, &routing, &views, &mut rr_cursor, &mut route_rng, sc, at, again,
+                        let d = dispatch(
+                            &mut *router, &mut *admission, &views, &replicas, &tenant_shares,
+                            &mut route_rng, sc, at, &again,
                         );
+                        place(&mut q, &mut records, &mut outcomes, &mut done, d, again, at);
                     }
                 }
             }
@@ -667,7 +663,7 @@ pub fn run(sc: &Scenario) -> Result<RunResult, String> {
 
     Ok(RunResult {
         scenario: sc.clone(),
-        routing_label: routing.label(),
+        routing_label: router.label(),
         records: measured,
         ttft,
         itl_max,
@@ -684,33 +680,95 @@ pub fn run(sc: &Scenario) -> Result<RunResult, String> {
         measured_from,
         measured_to: end,
         rated_rps: sc.rated_rps(),
-        replicas_inspected_per_decision: routing.inspected(sc.replicas),
+        replicas_inspected_per_decision: router.inspected(sc.replicas),
         retries,
         first_attempts,
     })
 }
 
+/// What a replica reports about itself, as a policy will see it after the telemetry delay, or right
+/// now if a policy pays for a probe. One function so the two views cannot disagree.
+fn view_of(r: &Replica, now: Nanos) -> ReplicaView {
+    ReplicaView {
+        sampled_at: now,
+        queued: r.queue.len() as u32,
+        running: r.running.len() as u32,
+        queued_tokens: r.queued_tokens
+            + r.running.iter().map(|s| s.prefill_left as u64 + s.output_left as u64).sum::<u64>(),
+        kv_tokens: r.kv_tokens,
+        last_step_ns: r.last_step_ns,
+        ejected: false,
+    }
+}
+
+/// The router's decision for one request, before it has cost anything.
+enum Dispatch {
+    /// Send to this replica after this much modelled delay.
+    Route { target: usize, delay: Nanos },
+    /// Admission shed it. The cheap failure, and it never touched a replica.
+    Rejected,
+    /// No usable replica at all.
+    Dropped,
+}
+
+/// Admission, then routing, from the stale view only. Probes are the exception and are charged: one
+/// modelled round trip each, on top of the flat `probe_live` charge a scenario can ask for.
 #[allow(clippy::too_many_arguments)]
 fn dispatch(
-    q: &mut EventQueue<Ev>,
-    routing: &Routing,
+    router: &mut dyn RoutingPolicy,
+    admission: &mut dyn AdmissionPolicy,
     views: &[ReplicaView],
-    rr_cursor: &mut usize,
+    replicas: &[Replica],
+    tenant_shares: &[f64],
     rng: &mut Rng,
     sc: &Scenario,
     now: Nanos,
-    req: Request,
-) {
-    match routing.choose(views, rr_cursor, rng) {
+    req: &Request,
+) -> Dispatch {
+    let request = RequestView {
+        id: req.id,
+        prompt_tokens: req.prompt,
+        arrived_at: req.arrived_at,
+        deadline: req.deadline,
+        tenant: req.tenant,
+        attempts: req.attempts,
+    };
+    let actx = AdmissionContext { now, views, request: &request, tenant_weights: tenant_shares };
+    if admission.admit(&actx) == Admission::Reject {
+        return Dispatch::Rejected;
+    }
+    let live = |i: usize| view_of(&replicas[i], now);
+    let mut ctx = RouteContext::new(now, views, &request, rng, &live);
+    match router.choose(&mut ctx) {
         Some(target) => {
-            // A probe buys fresh state and costs a round trip, so the price of freshness is visible
-            // rather than free.
-            let delay = if sc.probe_live { PROBE_COST } else { 0 };
-            q.schedule(now + delay, Ev::Admit(target, req));
+            let paid = ctx.probes() as Nanos + if sc.probe_live { 1 } else { 0 };
+            Dispatch::Route { target, delay: paid * PROBE_COST }
         }
-        None => {}
+        None => Dispatch::Dropped,
     }
 }
+
+/// Apply a dispatch: schedule the admission at the replica, or record the shed.
+fn place(
+    q: &mut EventQueue<Ev>,
+    records: &mut Vec<RequestRecord>,
+    outcomes: &mut HashMap<&'static str, u64>,
+    done: &mut HashMap<u64, bool>,
+    d: Dispatch,
+    req: Request,
+    now: Nanos,
+) {
+    match d {
+        Dispatch::Route { target, delay } => q.schedule(now + delay, Ev::Admit(target, req)),
+        Dispatch::Rejected => {
+            finish(records, outcomes, done, Outcome::Rejected, &req, now, NO_REPLICA, 0, 0, 0, 0)
+        }
+        Dispatch::Dropped => {}
+    }
+}
+
+/// The replica index recorded for a request that admission shed before routing.
+pub const NO_REPLICA: usize = usize::MAX;
 
 #[allow(clippy::too_many_arguments)]
 fn finish(
