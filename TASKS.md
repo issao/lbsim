@@ -57,6 +57,8 @@ the objective you specified, so both are yours.
 | Score the minimum of goodput as a **share of offered work**, not absolute goodput | the minimum is otherwise always set by the lightest load, so a load generator would win by proposing trivial loads | raw objective kept; the share is reported beside it |
 | SLA cap **0.95**, or per-class first-token targets | at 0.999 every policy scores zero on every chat mixture, from prompt-length arithmetic alone | 0.95 |
 
+Issao: SLA 0.95 ok for now, but we need to figure out how to do better.
+
 **If you do nothing:** the defaults stand, and every score records the rule set it was earned under.
 
 ## 3. Decisions with a default, ordered by rework if they arrive late
@@ -70,22 +72,25 @@ the objective you specified, so both are yours.
 | Prefix-affinity index at Ingress is a bounded top-K, not exact (§10.4) | bounded | small |
 | Cluster memory tiers owned by Ingress; a tier operation is a modelled round trip (§10.6) | Ingress-owned | moderate |
 
+Issao: Arena policy generator should actually have full power to write code to write new policies, as well as tuning parameters on existing policies.
+
+Issao: Re prefix sharing topology. I don't, assume some reasonable distributions of lengths of session and how often they fork off and merge back new agents and create a distribution based on that.
+
+Issao: Leaf shards should become separate processes in a sharded server.
+
+Issao: If cluster memory tiers are owned by ingress, it can just tell the leaf if it is in DRAM/SSD or not. We can save a lot of resources if we need to by turning
+this into a bloom filter tuned appropriately using the global seed, preserving an acceptible false negative cache miss rate that is deterministic and also realistic
+from a machine loss perspective.
+
 ## 4. Later, when this phase ends
 
 - [ ] Delete the deploy key. `gcloud iam service-accounts keys list --iam-account=lbsim-deployer@lbsim-gcp.iam.gserviceaccount.com`
       shows the id, which starts `94afd556`; then `keys delete KEY_ID --iam-account=...`.
-- [ ] Decide what `lbsim-prod` is for. It has a registry and Cloud Run but no deploy account and no
+- [x] Decide what `lbsim-prod` is for. It has a registry and Cloud Run but no deploy account and no
       results bucket, and it is the project serving `lbsim.ai` through Firebase Hosting today. Unlink
-      it from billing only if nothing there is wanted.
+      it from billing only if nothing there is wanted.  Issao: removed already.
 
 **If you do nothing:** the key stays until you delete it, and `lbsim-prod` keeps costing what it costs.
-
-## Heads up
-
-Something outside these sessions moves the working tree. A VS Code Git extension attached to
-`/home/agents/repo/lbsim` once stashed uncommitted work and switched branches. Nothing was lost, and
-`tools/sync.sh` now warns on an unexpected stash. If you are pointing an editor at this sandbox, that
-is the cause and it will recur.
 
 ---
 
