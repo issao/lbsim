@@ -5,6 +5,20 @@ eight-hour total budget, of which about three hours went on design, so roughly s
 follows is deferred. That document ranks every dynamic by cost, proposes three packages that fit, and
 recommends one. This file remains the plan for the whole project.
 
+**Where this stands at 15:40.** What was built today diverges from the milestones as written, and
+the divergences are recorded here rather than rewritten out of the plan:
+
+- One crate, `lbsim`, with no dependencies, rather than the workspace of `docs/ARCHITECTURE.md`
+  section 10.8. `prost` and `tonic` are not wired; nothing speaks the protos over a wire yet.
+- Scenarios are `key = value` text files in `scenarios/`, not prototxt. Section 0's argument for
+  prototxt still holds once the proto codegen exists; until then the text format costs nothing.
+- M1's target was reached and passed: six dynamics reproduce, in `docs/findings.md`. M0.5 is done
+  under `web/`. M6's retry contrast is done. The arena's mechanical half is done ahead of order,
+  because Issao asked for it.
+- The deploy is `deploy.sh` and `docs/deploy.md` when it lands, not section 3.4: project `lbsim-gcp`,
+  a static server for the reports, public at Issao's decision, `--max-instances 10`. The budgets set
+  are $100 and $50, not the single $50 of section 3.6. The reasoning in 3.1 to 3.7 stands.
+
 Two things shape it. The fastest possible local loop matters more than anything else, because
 this project is a research instrument and its value is proportional to how many experiments get
 run. And the deployment target is Google Cloud, which should change almost nothing about how the
@@ -439,8 +453,7 @@ M5 ──> M8 dashboard ──> M9 scale validation
 - M8 can start once `ingress.proto` and `subscription.proto` are frozen, which they now are,
   though it should wait until M6 so there is a dynamic worth watching.
 
-**Blocked on Issao:** the interfaces are reviewed and folded in, so M0 can start on his word. The
-open questions in `TASKS.md` all have defaults and none of them blocks.
+Nothing is blocked on Issao. The open questions in `TASKS.md` all have defaults.
 
 ---
 

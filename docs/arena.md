@@ -1,8 +1,8 @@
 # The policy arena
 
-Design, from Issao's specification. Not built. It comes last in `docs/execution-plan.md` because
-it needs a credible simulator underneath it, but the rules belong on paper now, because two of
-them constrain earlier milestones.
+Design, from Issao's specification, and the authority for the rules. The mechanical half is built, at
+his instruction, in `src/arena.rs`; `docs/arena-implementation.md` records what exists and what it
+measured. Section 5b records two rule changes the measurements demand, which need him.
 
 ---
 

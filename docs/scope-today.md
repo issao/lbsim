@@ -114,15 +114,16 @@ demoted, and two side missions running in parallel. Working order:
 | Order | Item | Cost | State |
 |---|---|---|---|
 | 1 | Foundation | 1.0 h | **done** |
-| 2 | Rolling hotspot, 1 | 1.25 h | **done**, tuning left |
-| 3 | Two-phase timing, 3 | 0.75 h | **done**, panel left |
-| 4 | KV capacity, 7 | 0.5 h | next |
-| 5 | Stale-telemetry oscillation, 2 | 0.75 h | queued |
-| 6 | Retry storm, 4 | 0.5 h | demoted, last |
-| — | Tests | parallel | side mission |
-| — | Stand-in dashboard | parallel | side mission |
+| 2 | Rolling hotspot, 1 | 1.25 h | **done**, finding 1 |
+| 3 | Two-phase timing, 3 | 0.75 h | **done**, finding 3 |
+| 4 | KV capacity, 7 | 0.5 h | **done**, finding 5 |
+| 5 | Stale-telemetry oscillation, 2 | 0.75 h | **done**, finding 2 |
+| 6 | Retry storm, 4 | 0.5 h | **done**, finding 6 |
+| — | Tests | parallel | **done**, 45 pass |
+| — | Stand-in dashboard | parallel | **done**, `web/` |
 
-The reasoning below is kept as written, since it is what the decision was made against.
+Every row was done by 15:00. Findings are numbered in `docs/findings.md`. The reasoning below is kept
+as written, since it is what the decision was made against.
 
 **Take B.** Four dynamics working end to end beats one dynamic half-built, and the two-phase timing
 keeps the artefact recognisably about inference.
@@ -153,12 +154,12 @@ capacity behaviour.
 | Autoscaling and multi-geo, 12 and 13 | the largest single item; nothing else depends on it |
 | Tiering and disaggregation, 14 and 15 | interesting, and additive rather than structural |
 | Speculative decoding, 16 | 30 minutes once 7 exists; pointless before |
-| React dashboard | the static HTML report serves the same purpose today at a tenth of the cost |
+| React dashboard | **reinstated by Issao**: *"Don't cut the react dashboard. I want that. start executing on that in parallel, it should not have a lot of dependencies."* Built as the stand-in under `web/` |
 | Ingress/Leaf shard split | measurement says one core carries the whole fleet, so this buys nothing today and its determinism test deserves care |
 
-// Issao Don't cut the react dashboard. I want that. start executing on that in parallel, it should not have a lot of dependencies.
-
-// Issao Also, to what extent it doesn't slow down everything else. Start executing on the Arena story, I think that will be fun.
+The arena was also pulled forward, by Issao: *"Also, to what extent it doesn't slow down everything
+else. Start executing on the Arena story, I think that will be fun."* Its mechanical half is built;
+`docs/arena-implementation.md` has the measured round.
 
 ---
 

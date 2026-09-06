@@ -6,6 +6,9 @@ phenomena rather than "realistic load."
 
 Numbers marked ~ are order-of-magnitude and must be calibrated, not trusted.
 
+`docs/calibration.md` corrects this document in seven places, listed in the table at its top. Where the
+two disagree, calibration wins; the text here is left as written so the corrections stay legible.
+
 ---
 
 ## 1. A request has two phases with opposite resource profiles
