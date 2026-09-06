@@ -57,6 +57,9 @@ SKIP_DIRS = {".git", "target", "node_modules", "dist", ".venv", "out", "results"
 _COMMENT_PREFIX = re.compile(r"^\s*(?://+|\#+|/\*+|\*+/|\*+(?=\s)|<!--|--|;+|%+)?\s*")
 _COMMENT_SUFFIX = re.compile(r"\s*(?:-->|\*/)\s*$")
 
+# Openers to look behind when a marker trails code on the same line.
+_OPENERS = ("//", "#", "<!--", "/*", "--", ";;", "%%")
+
 
 def git(*args: str) -> str:
     out = subprocess.run(
@@ -99,15 +102,32 @@ class Message:
 
 
 def marker_at(line: str) -> str | None:
-    """Return the message text if `line` *begins* a marker, else None.
+    """Return the message text if `line` carries a marker, else None.
 
-    Anchored deliberately. A mid-line mention, or one inside backticks, is prose about the
-    convention rather than an instruction, and must not match.
+    Two shapes are accepted, because both are used in practice:
+
+      - the marker begins the line, with optional comment syntax before it;
+      - the marker *trails code*, after a comment opener on the same line.
+
+    The second shape was missed by an earlier version, which anchored only to the start of the
+    line. Three instructions sat unread in a proto file as a result. A missed instruction is the
+    worst failure this tool can have, so position is now generous while what follows the opener
+    stays strict: the text after an opener must *begin* with the marker, so a mid-sentence
+    mention of the convention still does not match, and neither does markdown bold.
     """
     body = strip_comment(line)
-    if not body.startswith(MARKER):
-        return None
-    return body[len(MARKER):].strip()
+    if body.startswith(MARKER):
+        return body[len(MARKER):].strip()
+
+    for opener in _OPENERS:
+        idx = line.find(opener)
+        while idx != -1:
+            rest = _COMMENT_SUFFIX.sub("", line[idx + len(opener):].strip())
+            if rest.startswith(MARKER):
+                return rest[len(MARKER):].strip()
+            idx = line.find(opener, idx + 1)
+    return None
+
 
 
 def scan(path: Path) -> list[Message]:
@@ -133,8 +153,8 @@ def scan(path: Path) -> list[Message]:
         # line or a new marker ends the block.
         j = i + 1
         while j < len(lines):
-            if marker_at(lines[j]) is not None:
-                break
+            if MARKER in lines[j]:
+                break          # a new marker, or prose quoting one
             body = strip_comment(lines[j])
             if not body:
                 break
