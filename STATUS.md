@@ -3,13 +3,13 @@
 What is finished, what is live, what Claude is doing now. Updated by Claude at every unit of
 work. For things that need *you*, see `TASKS.md`.
 
-**Last updated:** 2026-09-06 12:50 by Claude.
+**Last updated:** 2026-09-06 13:05 by Claude.
 
 ---
 
 ## Phase
 
-**Design, one gate left.** No simulator code exists, by your instruction. The architecture is
+**Design complete, awaiting review of two plans.** No simulator code exists, by your instruction. The architecture is
 reviewed and its decisions are recorded in `docs/ARCHITECTURE.md` section 14. The remaining gate
 is the interface review, `TASKS.md` item 1.
 
@@ -20,7 +20,8 @@ is the interface review, `TASKS.md` item 1.
 | Vision | `VISION.md` | yours, sections 1-8 complete; section 9 points at the architecture |
 | Domain primer | `docs/llm-serving-primer.md` | complete, 585 lines, includes hardware reference numbers |
 | Architecture and fidelity analysis | `docs/ARCHITECTURE.md` | **reviewed**; decisions in section 14, your three-layer deployment in section 10 |
-| Interfaces | `proto/lbsim/v1/*.proto` | thirteen files, all compile; subscription and telemetry feedback folded in |
+| Interfaces | `proto/lbsim/v1/*.proto` | **twelve files, reviewed and simplified**; all feedback folded in |
+| Execution plan | `docs/execution-plan.md` | proposal, **awaiting your review** |
 | Calibration reference | `docs/calibration.md` | complete; four replayable traces identified, seven primer corrections |
 | Agent architecture | `docs/agent-architecture.md` | proposal, **awaiting your review** |
 | Reference cost model | `bench/validate_epochs.py` | four properties pass, including the compute branch and speculation |
@@ -127,9 +128,28 @@ And one instruction carried no name prefix at all, so `sync.sh` now diffs upstre
 surfaces every comment line they add. A missed instruction is the worst failure mode here, so both
 have regression tests.
 
+## The simplification pass
+
+You asked for it and it found real bloat, some of it mine:
+
+- Seven identifier wrapper messages became plain `uint64` fields. A wrapper cost an allocation and
+  an indirection per id, for type safety proto does not enforce anyway.
+- `capacity.proto` deleted. Under your three-layer design capacity management *is* Ingress, so a
+  separate service was a second name for the same round trip. Same for the key-value tier service.
+- The scorecard was thirty hand-named fields duplicating the metric enum. It is keyed by that enum
+  now, so a report and a live chart cannot disagree about what a quantity means.
+- The whole workload description was defined twice, in `scenario.proto` and `workload.proto`. That
+  duplication was mine. It lives in one place now.
+- Per-token streaming is gone. You asked whether it was needed. It was illustrative, and it also
+  contradicted the architecture, since a token stream implies per-token events, which is exactly
+  the cost the epoch design exists to avoid.
+
+Result: twelve files and 991 declaration lines, from thirteen and 1,185.
+
 ## Doing now
 
-Nothing blocking. Awaiting review of `docs/agent-architecture.md` and the remaining interfaces.
+Nothing. Awaiting review of `docs/execution-plan.md` and `docs/agent-architecture.md`. No code
+until then.
 
 ## Assumptions Claude is running on
 
