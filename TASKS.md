@@ -1,6 +1,6 @@
 # TASKS — things that need Issao
 
-Last updated: 2026-09-06 17:10 by Claude.
+Last updated: 2026-09-06 18:10 by Claude.
 
 Stack ranked, most blocking first. Every item says what Claude does if you say nothing, so nothing
 here stalls the work. What is finished and live is in `STATUS.md`.
@@ -102,8 +102,12 @@ design task for a better target is routed to the tech lead above.
       Today it cannot read container or request logs; nothing has needed them yet, and `docs/deploy.md`
       records the gap. Not worth granting pre-emptively.
 
-**If you do nothing:** the key stays until you delete it, and the first startup crash is undiagnosable
-until you grant the role.
+- [ ] Two more grants to hold back until needed, both from `docs/deploy.md`: `storage.buckets.update`
+      for the 90-day delete rule on `gs://lbsim-gcp-runs`, which matters once runs write results there;
+      and `artifactregistry.repoAdmin`, or running the tear-down as yourself, when this phase ends.
+
+**If you do nothing:** the key stays until you delete it, the first startup crash is undiagnosable
+until you grant the role, and the results bucket keeps everything it is ever given.
 
 ---
 
