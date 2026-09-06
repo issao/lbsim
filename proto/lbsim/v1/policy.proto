@@ -84,8 +84,8 @@ message LocalState {
 }
 
 message SequenceState {
-  RequestId request = 1;
-  TenantId tenant = 2;
+  uint64 request_id = 1;
+  uint64 tenant_id = 2;
   SloClass slo_class = 3;
   Phase phase = 4;
   uint32 prompt_tokens = 5;
@@ -121,26 +121,26 @@ message Intent {
 
   // Send a request to a replica. Takes effect after the modelled RPC delay, not instantly.
   message Route {
-    RequestId request = 1;
-    ReplicaId replica = 2;
-    repeated ReplicaId considered = 3;      // recorded so herding is measurable
+    uint64 request_id = 1;
+    uint64 replica_id = 2;
+    repeated uint64 considered_id = 3;      // recorded so herding is measurable
     uint32 predicted_cache_hit_tokens = 4;  // recorded so affinity error is measurable
   }
 
   // Bring a queued request into the running batch. The referee rejects this if it would
   // overcommit KV, so a policy cannot admit its way out of a capacity shortage.
-  message Admit { RequestId request = 1; }
+  message Admit { uint64 request_id = 1; }
 
   // Shed. The referee records whether GPU time had already been spent, since shedding early
   // and shedding late are very different outcomes.
-  message Reject { RequestId request = 1; Outcome reason = 2; }
+  message Reject { uint64 request_id = 1; Outcome reason = 2; }
 
   // Evict a running sequence. `to_tier` chooses the classic tradeoff: DRAM is a ~20 ms
   // transfer each way, NONE means recomputing prefill later, which for 4k tokens is ~270 ms.
   // Under heavy preemption the shared PCIe or RDMA path saturates and the advantage inverts.
-  message Preempt { RequestId request = 1; MemoryTier to_tier = 2; }
+  message Preempt { uint64 request_id = 1; MemoryTier to_tier = 2; }
 
-  message Resume { RequestId request = 1; }
+  message Resume { uint64 request_id = 1; }
 
   // The chunked-prefill knob. Raising it improves time-to-first-token and worsens
   // inter-token latency for everyone already decoding, and raises KV pressure by admitting
@@ -148,24 +148,24 @@ message Intent {
   message SetStepBudget { uint32 tokens = 1; uint32 max_prefill_tokens = 2; }
 
   // Move parked KV between tiers. Debits shared tier bandwidth for its duration.
-  message MigrateKv { RequestId request = 1; MemoryTier to_tier = 2; }
+  message MigrateKv { uint64 request_id = 1; MemoryTier to_tier = 2; }
 
   // Autoscale. Takes effect after cold start, 30-300 s, which is the actuator delay that
   // makes reactive scaling oscillate.
-  message ScalePool { PoolId pool = 1; int32 delta_replicas = 2; }
+  message ScalePool { uint64 pool_id = 1; int32 delta_replicas = 2; }
 
   // Remove a replica from routing without terminating it: the response to a suspected
   // straggler. Detection latency is the policy property under test.
-  message EjectReplica { ReplicaId replica = 1; bool eject = 2; }
+  message EjectReplica { uint64 replica_id = 1; bool eject = 2; }
 
   // Client-side retry. Retries are what turn a slowdown into a collapse, so the retry
   // decision is a policy with a budget, not an automatic behaviour.
-  message ScheduleRetry { RequestId request = 1; uint64 delay_ns = 2; }
+  message ScheduleRetry { uint64 request_id = 1; uint64 delay_ns = 2; }
 
   // Ask a replica for fresh state instead of waiting for the next snapshot. Costs a modelled
   // RPC, so the price of freshness is visible rather than free. This is what makes
   // power-of-two-choices with live probes comparable against scrape-based least-loaded.
-  message RequestProbe { repeated ReplicaId replicas = 1; }
+  message RequestProbe { repeated uint64 replica_ids = 1; }
 }
 
 message Decision {

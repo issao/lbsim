@@ -20,7 +20,7 @@ service Gateway {
 }
 
 message TokenChunk {
-  RequestId request = 1;
+  uint64 request_id = 1;
   uint32 tokens = 2;              // usually 1; more with speculative decoding
   uint64 emitted_at_unix_ns = 3;
   bool final = 4;
@@ -41,12 +41,12 @@ service Router {
 message RouteRequest {
   InferenceRequest request = 1;
   // Replicas already tried and failed, so a retry does not land on the same broken one.
-  repeated ReplicaId exclude = 2;
+  repeated uint64 exclude_id = 2;
 }
 
 message RouteResponse {
-  ReplicaId replica = 1;
-  ClusterId cluster = 2;
+  uint64 replica_id = 1;
+  uint64 cluster_id = 2;
   // Set instead of a replica when the router sheds. Cheap failure, deliberately distinct
   // from an expensive one.
   Outcome rejected = 3;
@@ -55,7 +55,7 @@ message RouteResponse {
   uint32 predicted_cache_hit_tokens = 4;
   // Which candidates the policy considered. For power-of-two-choices this is 2. Recorded so
   // herding is observable rather than inferred.
-  repeated ReplicaId considered = 5;
+  repeated uint64 considered_id = 5;
 }
 
 // ---------------------------------------------------------------------------
@@ -80,5 +80,5 @@ message ExecuteRequest {
   uint32 resume_tokens_already_generated = 3;
 }
 
-message CancelRequest { RequestId request = 1; }
+message CancelRequest { uint64 request_id = 1; }
 message CancelResponse { bool was_running = 1; uint32 tokens_wasted = 2; }

@@ -57,7 +57,7 @@ message ConfigureShardRequest {
   Scenario scenario = 3;
   // Replicas this shard owns. Whole nodes, never split, so a replica's KV and prefix tree are
   // always shard-local.
-  repeated ReplicaId replicas = 4;
+  repeated uint64 replica_ids = 4;
   // Derived from the master seed and the shard id, so shard count cannot change the workload a
   // replica sees. A test asserts identical fingerprints across shard counts.
   uint64 shard_seed = 5;
@@ -92,7 +92,7 @@ message AdvanceRequest {
 message DispatchedWork {
   // When this arrives at the replica, inside the window.
   uint64 deliver_at_unix_ns = 1;
-  ReplicaId replica = 2;
+  uint64 replica_id = 2;
   ExecuteRequest request = 3;
   // Facts the simulator knows and no policy may see. Carried on this hop because the Leaf is
   // the physics owner and must know the true output length to advance an epoch; it is never
@@ -107,10 +107,10 @@ message ControlAction {
     EjectReplica eject = 11;
     ReplicaLifecycle lifecycle = 12;
   }
-  message EjectReplica { ReplicaId replica = 1; bool eject = 2; }
+  message EjectReplica { uint64 replica_id = 1; bool eject = 2; }
   // Provisioning and draining land here because the Leaf owns the replica's existence.
   message ReplicaLifecycle {
-    ReplicaId replica = 1;
+    uint64 replica_id = 1;
     enum Op {
       OP_UNSPECIFIED = 0;
       OP_BEGIN_WARMUP = 1;
@@ -161,7 +161,7 @@ message AdvanceResponse {
 }
 
 message FirstToken {
-  RequestId request = 1;
+  uint64 request_id = 1;
   uint64 at_unix_ns = 2;
   uint32 cached_prefix_tokens = 3;
 }
@@ -178,8 +178,8 @@ message RefereeCount { int32 verdict = 1; uint64 count = 2; }
 message TierRequest {
   uint64 requested_at_unix_ns = 1;
   uint32 shard_id = 2;
-  ClusterId cluster = 3;
-  RequestId request = 4;
+  uint64 cluster_id = 3;
+  uint64 request_id = 4;
   oneof op {
     StoreRequest store = 10;
     FetchRequest fetch = 11;
@@ -190,7 +190,7 @@ message TierRequest {
 message TierGrant {
   // When the answer is physically due at the Leaf: requested_at_unix_ns plus the modelled round trip.
   uint64 deliver_at_unix_ns = 1;
-  RequestId request = 2;
+  uint64 request_id = 2;
   bool granted = 3;
   // Reflects contention from every shard, which is why this cannot be decided locally.
   uint64 transfer_ns = 4;

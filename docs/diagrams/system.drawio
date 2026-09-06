@@ -131,7 +131,7 @@
         <object label="Autoscaling policy&#10;reactive or predictive" component="sim-policy::autoscaling" id="p_scale">
           <mxCell style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF8E1;strokeColor=#F9A825;fontSize=10;" vertex="1" parent="1"><mxGeometry x="490" y="230" width="200" height="60" as="geometry" /></mxCell>
         </object>
-        <object label="Capacity manager&#10;warm pool, quota" component="sim-model::capacity" id="cm">
+        <object label="Capacity management&#10;warm pool, quota (in Ingress)" component="sim-ingress::capacity" id="cm">
           <mxCell style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E3F2FD;strokeColor=#1565C0;fontSize=10;" vertex="1" parent="1"><mxGeometry x="900" y="230" width="175" height="60" as="geometry" /></mxCell>
         </object>
 
@@ -179,10 +179,10 @@
         <object label="Intent.EjectReplica" proto="proto/lbsim/v1/policy.proto" rpc="Intent.EjectReplica" kind="intent" id="e2_pdetect_rt">
           <mxCell style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=9;strokeColor=#F9A825;dashed=1;" edge="1" parent="1" source="p_detect" target="rt2"><mxGeometry relative="1" as="geometry" /></mxCell>
         </object>
-        <object label="Provision / Drain" proto="proto/lbsim/v1/capacity.proto" rpc="CapacityManager.Provision" kind="rpc" id="e2_pscale_cm">
+        <object label="Intent.ScalePool" proto="proto/lbsim/v1/policy.proto" rpc="Intent.ScalePool" kind="intent" id="e2_pscale_cm">
           <mxCell style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=9;strokeColor=#F9A825;dashed=1;" edge="1" parent="1" source="p_scale" target="cm"><mxGeometry relative="1" as="geometry" /></mxCell>
         </object>
-        <object label="actuator: cold start 30 to 300 s, far slower than a burst develops" proto="proto/lbsim/v1/capacity.proto" rpc="CapacityManager.Provision" kind="rpc" id="e2_cm_re">
+        <object label="actuator: cold start 30 to 300 s, far slower than a burst develops" proto="proto/lbsim/v1/leaf.proto" rpc="ControlAction" kind="rpc" id="e2_cm_re">
           <mxCell style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=9;strokeWidth=2;strokeColor=#C62828;" edge="1" parent="1" source="cm" target="re2"><mxGeometry relative="1" as="geometry" /></mxCell>
         </object>
 

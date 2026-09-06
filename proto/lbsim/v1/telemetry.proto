@@ -28,7 +28,7 @@ message WatchFleetRequest {
   // A consumer may subscribe to one cluster or to all of them. A router that only sees its
   // own cluster cannot make a cross-region decision, which is itself a design choice worth
   // simulating.
-  repeated ClusterId clusters = 1;
+  repeated uint64 cluster_ids = 1;
   uint64 desired_interval_ns = 2;
 }
 
@@ -39,9 +39,9 @@ message WatchFleetRequest {
 // true_speed_multiplier because a degraded replica does not know it is degraded. Those
 // live in Health and Truth and never reach a policy.
 message ReplicaState {
-  ReplicaId replica = 1;
-  ClusterId cluster = 2;
-  PoolId pool = 3;
+  uint64 replica_id = 1;
+  uint64 cluster_id = 2;
+  uint64 pool_id = 3;
 
   // When the replica sampled itself. The consumer's own clock minus this is the staleness
   // the policy is working with, and it must be measurable by the policy so a
@@ -116,6 +116,27 @@ message ReplicaState {
   double warmup_fraction = 52;
 }
 
+// Pool-level state, which was a whole CapacityManager service until it turned out to be
+// redundant: under the three-layer design capacity management *is* Ingress, an autoscaling
+// decision is `Intent.ScalePool` in policy.proto, and its effect is `ControlAction.ReplicaLifecycle`
+// in leaf.proto. What only a pool can report is how much of it exists and whether it can grow.
+message PoolState {
+  uint64 pool_id = 1;
+  uint64 cluster_id = 2;
+  uint32 model_id = 3;
+
+  uint32 ready = 10;
+  uint32 warming = 11;
+  uint32 draining = 12;
+  uint32 warm_idle = 13;   // loaded and held in reserve; the only thing that makes scaling fast
+  uint32 max_replicas = 14;
+
+  // Set when the last attempt to grow was refused: no quota, or no capacity in the zone. Real
+  // clusters hit this, and a policy that assumes scaling always succeeds fails badly when it does
+  // not, so the failure has to be observable rather than implicit in a count that stops rising.
+  bool at_quota = 20;
+}
+
 message FleetSnapshot {
   // The collector's own clock when it assembled this. Individual entries carry their own
   // older sampled_at_ns, so a snapshot is a set of differently-aged observations rather than
@@ -125,5 +146,5 @@ message FleetSnapshot {
   repeated ReplicaState replicas = 2;
   // Replicas the collector has not heard from within its timeout. Absence of data is not
   // evidence of failure, and how a policy treats these entries matters a great deal.
-  repeated ReplicaId silent = 3;
+  repeated uint64 silent_id = 3;
 }

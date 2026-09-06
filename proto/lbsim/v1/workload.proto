@@ -54,8 +54,8 @@ message ArrivalWindow {
 // internally from a LoadShape.
 message Arrival {
   uint64 at_unix_ns = 1;
-  TenantId tenant = 2;
-  SessionId session = 3;
+  uint64 tenant_id = 2;
+  uint64 session_id = 3;
   SloClass slo_class = 4;
   uint32 model_id = 5;
   uint32 prompt_tokens = 6;
@@ -63,9 +63,9 @@ message Arrival {
   // The fact the simulator knows and no policy may see. Kept here, not in the observable
   // request, for the reason given in request.proto.
   uint32 true_output_tokens = 8;
-  PrefixNodeId prefix_node = 9;
+  uint64 prefix_node_id = 9;
   uint32 unshared_suffix_tokens = 10;
-  ClusterId origin_cluster = 11;
+  uint64 origin_cluster_id = 11;
 }
 
 // ---------------------------------------------------------------------------
@@ -86,7 +86,7 @@ message LoadShape {
 }
 
 message TenantShape {
-  TenantId id = 1;
+  uint64 id = 1;
   string name = 2;
   double share_of_requests = 3;
 

@@ -18,16 +18,12 @@ import "lbsim/v1/common.proto";
 // PCIe (64 GB/s) and remote single-rail RDMA (50 GB/s) are within ~20% of each other, while
 // both are ~1000x slower than HBM. Per-host detail would add complexity without changing
 // the dynamics. See docs/ARCHITECTURE.md 7.2.
-service KvTier {
-  // Park a preempted sequence's KV. Consumes shared tier bandwidth for its duration, so
-  // concurrent preemptions contend and the swap-versus-recompute tradeoff can invert.
-  rpc Store(StoreRequest) returns (StoreResponse);
-  rpc Fetch(FetchRequest) returns (FetchResponse);
-  rpc Evict(EvictRequest) returns (EvictResponse);
-}
+// Tier operations are carried on the Ingress-to-Leaf hop as `TierRequest` and `TierGrant` in
+// leaf.proto, because Ingress owns the cluster tiers. There is no separate service: it would be a
+// second name for the same round trip.
 
 message StoreRequest {
-  RequestId request = 1;
+  uint64 request_id = 1;
   uint64 tokens = 2;
   MemoryTier to_tier = 3;
 }
@@ -39,14 +35,14 @@ message StoreResponse {
   uint64 bytes_moved = 4;
 }
 
-message FetchRequest { RequestId request = 1; MemoryTier from_tier = 2; }
+message FetchRequest { uint64 request_id = 1; MemoryTier from_tier = 2; }
 message FetchResponse { bool found = 1; uint64 transfer_ns = 2; uint64 bytes_moved = 3; }
 
-message EvictRequest { RequestId request = 1; }
+message EvictRequest { uint64 request_id = 1; }
 message EvictResponse { uint64 tokens_freed = 1; }
 
 message TierState {
-  ClusterId cluster = 1;
+  uint64 cluster_id = 1;
   MemoryTier tier = 2;
   uint64 tokens_resident = 3;
   uint64 tokens_capacity = 4;
@@ -66,8 +62,8 @@ message TierState {
 // fork creates siblings under a shared parent. Lookup walks ancestors, so it is O(tree
 // depth) and independent of prompt length. See docs/ARCHITECTURE.md 7.3.
 message PrefixNode {
-  PrefixNodeId id = 1;
-  PrefixNodeId parent = 2;   // zero for a root
+  uint64 id = 1;
+  uint64 parent_id = 2;   // zero for a root
   // Tokens contributed by this node alone. The full prefix length is the sum along the path
   // to the root.
   uint32 tokens = 3;
@@ -79,8 +75,8 @@ message PrefixNode {
 // A replica's answer to "how much of this prompt do you already hold?" This is what a
 // router needs; it never needs the content.
 message PrefixResidency {
-  ReplicaId replica = 1;
-  PrefixNodeId node = 2;
+  uint64 replica_id = 1;
+  uint64 node_id = 2;
   uint32 resident_tokens = 3;
   uint64 last_used_unix_ns = 4;
 }

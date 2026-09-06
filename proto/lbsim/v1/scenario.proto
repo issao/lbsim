@@ -117,7 +117,7 @@ message ReplicaSpec {
 // ---------------------------------------------------------------------------
 
 message ClusterSpec {
-  ClusterId id = 1;
+  uint64 id = 1;
   string name = 2;
   // Drives the diurnal phase offset of this cluster's traffic. Multi-geo diurnal patterns
   // are what make global autoscaling interesting: capacity can follow the sun.
@@ -151,7 +151,7 @@ message ClusterSpec {
 }
 
 message PoolSpec {
-  PoolId id = 1;
+  uint64 id = 1;
   string name = 2;
   ReplicaSpec replica = 3;
   uint32 initial_replicas = 4;
@@ -190,11 +190,11 @@ message WorkloadSpec {
 }
 
 message TenantSpec {
-  TenantId id = 1;
+  uint64 id = 1;
   string name = 2;
   uint32 model_id = 3;
   SloClass slo_class = 4;
-  repeated ClusterId origin_clusters = 5;
+  repeated uint64 origin_cluster_ids = 5;
 
   ArrivalSpec arrival = 10;
   ShapeSpec shape = 11;
@@ -383,8 +383,8 @@ message FailureEvent {
     KIND_CAPACITY_UNAVAILABLE = 8;  // autoscaling requests start failing
   }
   Kind kind = 2;
-  repeated ReplicaId replicas = 3;
-  ClusterId cluster = 4;
+  repeated uint64 replica_ids = 3;
+  uint64 cluster_id = 4;
   double fraction = 5;
   uint64 duration_ns = 6;
   double magnitude = 7;
@@ -415,7 +415,7 @@ message FidelitySpec {
   // outside the focus of an experiment, so they still create realistic cross-region pressure
   // at ~1% of the cost. Never for the cluster under study: aggregation averages away the
   // heterogeneity that causes hotspots and tail latency.
-  repeated ClusterId fluid_clusters = 20;
+  repeated uint64 fluid_cluster_ids = 20;
 
   // Speculative decoding acceptance is resampled every N steps rather than every step, which
   // keeps the closed-form epoch advance intact. Understates variance below that timescale.

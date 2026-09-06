@@ -102,10 +102,10 @@ message Target {
   Scope scope = 1;
   // Required for every scope except SCOPE_FLEET.
   oneof id {
-    ClusterId cluster = 10;
-    PoolId pool = 11;
-    TenantId tenant = 12;
-    ReplicaId replica = 13;
+    uint64 cluster_id = 10;
+    uint64 pool_id = 11;
+    uint64 tenant_id = 12;
+    uint64 replica_id = 13;
     SloClass slo_class = 14;
   }
 }
@@ -208,4 +208,20 @@ message Distribution {
   repeated double percentile = 5;
   repeated double value = 6;
   bool from_merged_histogram = 7;
+
+  // Present instead of percentiles on the Leaf-to-Ingress hop when the target spans shards, so
+  // Ingress can merge before computing. Never present on the Frontend hop.
+  Histogram histogram = 10;
+}
+
+// Log-linear bucketed histogram, HDR style. Bounded memory, mergeable by bucket-wise addition,
+// and accurate enough in the tail to trust p99.9. Mergeability is the whole point: percentiles are
+// not mergeable, so this is what crosses a shard boundary.
+message Histogram {
+  uint32 significant_digits = 1;
+  uint64 lowest_discernible = 2;
+  uint64 highest_trackable = 3;
+  // Sparse: only non-empty buckets, since most of the range is empty in practice.
+  repeated uint32 bucket_index = 10;
+  repeated uint64 bucket_count = 11;
 }
