@@ -1,6 +1,6 @@
 # TASKS — things that need Issao
 
-Last updated: 2026-09-06 16:00 PDT by Claude.
+Last updated: 2026-09-06 16:05 PDT by Claude.
 
 Stack ranked, most blocking first. Every item says what Claude does if you say nothing, so nothing
 here stalls the work. What is finished and live is in `STATUS.md`.
@@ -33,46 +33,23 @@ consequences that belong to the tech lead; verbatim, from `TASKS.md` before the 
 
 ---
 
-## 1. Domain: delegation fixed, verification can proceed now
+## 1. Domain: all three steps done by you; the certificate is Google's to issue now
 
-The service is live and public at <https://lbsim-irpwc2yaoa-uc.a.run.app>. The domain is only a nicer
-address for it, so do this when convenient.
+Checked at 16:07: the mapping for `lbsim.ai` exists in `lbsim-gcp` (created 15:58), Google's resolvers
+return the four Cloud Run `A` records (`216.239.32.21` and three more), `http://lbsim.ai` already
+redirects to `https://`, and the mapping reports `CertificatePending`: *"Certificate issuance
+pending."* Nothing to do but wait; Google retries every five minutes, and it usually takes fifteen
+minutes to a few hours. Claude will re-check and move this to the answered log when `https://lbsim.ai`
+serves.
 
-You repointed the registrar and it has already taken: at 15:37 both Google (`8.8.8.8`) and Cloudflare
-(`1.1.1.1`) resolve `lbsim.ai` through `*.ns.porkbun.com` and return your TXT record. If your own
-machine still shows the Google nameservers, that is its cache; Search Console asks Google, and Google
-sees it now. The history, kept because it explains the earlier failure:
+One optional gap: no `AAAA` records are served. The mapping printed four; without them IPv6-only
+clients cannot reach the domain, and everyone else can. Add them in Porkbun when convenient, Host
+empty, one record per address.
 
-```
-$ dig +short NS lbsim.ai
-ns-cloud-d1.googledomains.com. ns-cloud-d2.googledomains.com. ns-cloud-d3.googledomains.com. ns-cloud-d4.googledomains.com.
-$ dig TXT lbsim.ai @ns-cloud-d1.googledomains.com | grep status
-;; ->>HEADER<<- opcode: QUERY, status: REFUSED
-```
+- [ ] Add the four `AAAA` records, optional.
 
-The registrar still delegates `lbsim.ai` to Google Cloud DNS, and the zone that lived there was in
-`lbsim-prod`, which you removed. Those nameservers now refuse every query, so `lbsim.ai` resolves to
-nothing at all. Earlier today it pointed at Firebase Hosting for `lbsim-prod`; that is gone too. This is
-also why the Porkbun TXT record did not work: Porkbun's DNS was not authoritative for the domain.
-
-- [x] **Step 0, fix the delegation.** Done by you, and live at 15:37:
-      `dig +short NS lbsim.ai @8.8.8.8` → `fortaleza.ns.porkbun.com.` and three more;
-      `dig +short TXT lbsim.ai @8.8.8.8` → `"google-site-verification=8sYf…"`.
-- [x] **Step 1, verification.** Go to Search Console now and press Verify on the `lbsim.ai` Domain
-      property. The TXT it wants is already served.
-- [x] **Step 2, the mapping.** Domain ownership is per account, and the deploy account is not an owner.
-      Either add `lbsim-deployer@lbsim-gcp.iam.gserviceaccount.com` as an Owner of the `lbsim.ai`
-      property in Search Console, after which Claude does the rest, or run it yourself once:
-      `gcloud beta run domain-mappings create --service=lbsim --domain=lbsim.ai --region=us-central1`
-- [x] **Step 3, the apex records.** The command prints four `A` and four `AAAA` records. Add them in
-      Porkbun with the Host field empty, and delete Porkbun's two parking `A` records on the bare host
-      first (`207.207.210.107` and `.229`, present at 15:37).
-      The certificate follows on its own, in fifteen minutes to a few hours.
-
-Why a domain mapping and not a load balancer: the mapping and its certificate are free, and a load
-balancer costs about $18 a month in forwarding rules before serving a byte. Estimate, not measured.
-
-**If you do nothing:** `lbsim.ai` shows Porkbun's parking page and the service stays on its `run.app` URL.
+**If you do nothing:** `lbsim.ai` serves over IPv4 once the certificate lands; IPv6 clients get the
+`run.app` URL only.
 
 ## 2. One arena rule change still open
 
@@ -115,6 +92,9 @@ until you grant the role, and the results bucket keeps everything it is ever giv
 ---
 
 ## Answered, kept for the record
+
+- 16:03, domain: registrar repointed to Porkbun, Search Console verified, mapping created, apex `A`
+  records added, all by you. Certificate pending at 16:07, item 1.
 
 - 15:56, *"for the dashboard, add alink to the reports from the homepage."* Done by the tech lead,
   cf12e33, on `master` at 15:59; live after the next `./deploy.sh`.
