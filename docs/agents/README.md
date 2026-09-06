@@ -9,7 +9,8 @@ file's contents as the prompt:
 |---|---|---|---|---|
 | 1 | Monitor and housekeeping | `housekeeping.md` | `TASKS.md`, `STATUS.md` | default |
 | 2 | Tech lead | `tech-lead.md` | `docs/execution-graph.md` | Fable (`model: fable`), high effort |
+| 3 | Productivity | `productivity.md` | `docs/iteration-profile.md`, `docs/agents/brief-template.md` | default |
 | as needed | Cloud | `cloud.md` | `docs/deploy.md` | default; only when a deploy or cloud change is needed |
 
 The main session's own memory is `CLAUDE.md`, this directory, and `docs/dashboard-plan.md`. Its first
-actions after a restart: `tools/sync.sh`, read `STATUS.md`, re-spawn 1 and 2, re-arm the commit watcher.
+actions after a restart: `tools/sync.sh`, read `STATUS.md`, re-spawn 1, 2 and 3, re-arm the commit watcher.

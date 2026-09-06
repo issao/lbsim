@@ -138,14 +138,18 @@ never the right mechanism.
 
 ## Current state
 
-Building. The simulator runs, six dynamics reproduce, the workspace test suite passes, and the stand-in dashboard builds. Counts live in `STATUS.md`, not here, because a number in this file goes stale within the hour.
+Building toward one goal, set by Issao on 2026-09-06: *"keep going until we get to the point that all
+selected dynamics are live demoable in the dashboard and in the showcase page."* A dynamic counts when it
+runs live through the Ingress endpoint in the dashboard and has a showcase walkthrough; `docs/execution-graph.md`'s
+status line carries the count. The simulator runs, ten dynamics reproduce as reports, the workspace test suite passes, and the stand-in dashboard builds. Counts live in `STATUS.md`, not here, because a number in this file goes stale within the hour.
 See `STATUS.md`. Work is delegated across long-running agents with strict file ownership:
 
 | Agent | Owns | Must not touch |
 |---|---|---|
 | Tech lead, and the subagents it spawns | `crates/`, `src/`, `tests/`, `scenarios/`, `bench/golden-fingerprints.txt`, `tools/build.sh`, `tools/integrate.sh`, `web/`, `docs/execution-graph.md` | other docs, `TASKS.md`, `STATUS.md`, cloud files |
 | Cloud (finished 16:00; its handover is `docs/deploy.md`) | `Dockerfile`, `deploy.sh`, `cloudbuild.yaml`, `.dockerignore`, `docs/deploy.md` | everything else |
-| Monitor and housekeeping | `TASKS.md`, `STATUS.md`, `README.md`, `docs/*.md` except deploy | code, cloud files, this file |
+| Monitor and housekeeping | `TASKS.md`, `STATUS.md`, `README.md`, `docs/*.md` except deploy, the execution graph and the iteration profile | code, cloud files, this file |
+| Productivity | `docs/iteration-profile.md`, `docs/agents/brief-template.md` | everything else; proposes script and process changes to the tech lead with measurements |
 
 **The execution graph lives in `docs/execution-graph.md`**, per Issao: *"keep an instruction graph of
 everything that we need to in an md file, with sections below of what each task entails."* The tech lead
