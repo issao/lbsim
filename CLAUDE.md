@@ -139,16 +139,26 @@ never the right mechanism.
 ## Current state
 
 Building. The simulator runs, six dynamics reproduce, the workspace test suite passes, and the stand-in dashboard builds. Counts live in `STATUS.md`, not here, because a number in this file goes stale within the hour.
-See `STATUS.md`. Work is delegated across three long-running agents with strict file ownership:
+See `STATUS.md`. Work is delegated across long-running agents with strict file ownership:
 
 | Agent | Owns | Must not touch |
 |---|---|---|
-| Tech lead | `src/`, `tests/`, `scenarios/`, `web/src/lib/` | docs, `TASKS.md`, `STATUS.md`, cloud files |
-| Cloud | `Dockerfile`, `deploy.sh`, `cloudbuild.yaml`, `.dockerignore`, `docs/deploy.md` | everything else |
+| Tech lead, and the subagents it spawns | `crates/`, `src/`, `tests/`, `scenarios/`, `bench/golden-fingerprints.txt`, `tools/build.sh`, `web/` | docs, `TASKS.md`, `STATUS.md`, cloud files |
+| Cloud (finished 16:00; its handover is `docs/deploy.md`) | `Dockerfile`, `deploy.sh`, `cloudbuild.yaml`, `.dockerignore`, `docs/deploy.md` | everything else |
 | Monitor and housekeeping | `TASKS.md`, `STATUS.md`, `README.md`, `docs/*.md` except deploy | code, cloud files, this file |
 
-The main agent coordinates, owns this file and `proto/`, and stays out of the areas above. Any agent that
-needs a file it does not own stops and says so rather than editing it. `git add` is always by explicit
+The main agent coordinates, owns this file, `proto/` and `docs/dashboard-plan.md`, runs `./deploy.sh` on
+request now that the cloud agent has finished, and stays out of the areas above. Any agent that
+needs a file it does not own stops and says so rather than editing it. An Issao marker that lands in
+one agent's file but asks for another agent's work is *routed*: the owner records it in `TASKS.md` under
+"Routed to", the actor does the work and resolves the marker, quoting it in the commit. A finding or a
+landed unit that belongs in a document goes to the housekeeping agent as a message, with the commit
+hash, since the agents that produce results do not own the documents that report them.
+
+**Subagents never merge or push `master`.** A subagent works on `claude/tl-<unit>` in its own worktree,
+owns exactly the files its brief lists, pushes its branch, and reports; the tech lead integrates,
+rebases onto `master`, merges `--no-ff` and pushes. A brief lists the owned files by path and says
+what to do when another file is needed: stop and report. `git add` is always by explicit
 path, never `-A`, because that is how one agent's in-flight files ended up in another's commit today.
 
 That rule turned out to be insufficient. **Commit with an explicit pathspec too: `git commit -m "..." -- <paths>`, message first, then the
@@ -179,11 +189,35 @@ simplify, because the temptation in that kind of pass is to keep going. A change
 crate boundary is a decision rather than a cleanup and is reported, not made.
 
 **Each agent works in its own git worktree**, not the shared checkout. A shared checkout means one
-agent's dirty files make `tools/sync.sh` refuse for everyone. The housekeeping agent already works in
-`/home/agents/repo/lbsim-docs`; the tech lead is moving its subagents to worktrees. Memory is safe
-because `.cargo/config.toml` points every worktree at one absolute target directory, so cargo's file
-lock serializes builds. `tools/sync.sh` keeps its state files under `git rev-parse --git-dir`, which is
-per-worktree.
+agent's dirty files make `tools/sync.sh` refuse for everyone. Worktrees live beside the repo
+(`/home/agents/repo/lbsim-<name>`), and `git worktree remove` deletes the worktree's target directory
+with it. `tools/sync.sh` keeps its state files under `git rev-parse --git-dir`, which is per-worktree.
+
+**Every cargo invocation goes through `tools/build.sh`**, scripts included. Each worktree has its own
+target directory, because a shared one handed one branch another branch's rlibs (the reason is in
+`.cargo/config.toml`), and that removed the file lock that used to bound memory. `tools/build.sh` puts
+the bound back: at most two cargo processes machine-wide, `jobs = 4` each. The machine has 32 GB and
+Issao's ceiling for everything Claude runs is **24 GB**; a runaway simulation once took the whole
+machine into swap, which is why `Sim::validate()` and the `MAX_*` tripwires exist and why a scenario that
+trips them fails rather than growing.
+
+**"No behaviour change" is proven, not claimed.** `./check-fingerprints.sh` runs every demo, the held-out
+suite and a live-probe run and compares the determinism fingerprint, event count, every reported metric
+and every rendered report against `bench/golden-fingerprints.txt`. A refactor, a simplification pass or a
+crate move is done when it prints `PASS`. A deliberate behaviour change updates the baseline with
+`--update` **in the same commit**, and the message says why each number moved. A commit that moves the
+baseline without saying why is reverted.
+
+**Timestamps are read from the clock, never guessed.** Every "last updated" line and every time quoted
+in `TASKS.md`, `STATUS.md` or a document comes from `date '+%Y-%m-%d %H:%M %Z'` or from the commit that
+carried the event. The sandbox clock is Pacific time and matches Issao's commits. On 2026-09-06 an agent
+advanced stamps by estimation and drifted two and a half hours ahead; Issao read those stamps as facts.
+
+**The Frontend-to-Ingress wire is `crates/sim-ingress/WIRE.md`** until `prost`/`tonic` land: JSON over
+HTTP/1.1, server-sent events for subscriptions, proto field names verbatim, every `uint64` a decimal
+string, enums by name. The protos stay the contract; `WIRE.md` is their mapping, and a test in
+`sim-ingress` holds every emitted field name to the proto. A shape needed by two agents at once is
+fixed in that file first, in prose, so both can build against it before either has code.
 
 `TASKS.md` tracks what is waiting on the user, stack ranked. `STATUS.md` tracks what is done
 and live. Keep both current.
@@ -192,6 +226,11 @@ and live. Keep both current.
 
 - React to a push, and check every invariant: `tools/sync.sh`
 - Check the inbox only: `python3 tools/inbox.py`
+- Build or test, under the machine-wide bound: `tools/build.sh test --workspace`
+- Prove a change is behaviour-neutral: `./check-fingerprints.sh` (`--update` only with a reason in the commit)
+- Regenerate the six demo reports into `out/`: `./run-demos.sh`; check policy ordering is robust: `./check-sensitivity.sh`
+- Build the dashboard: `cd web && npm ci && npm run build` (Node 22, as in the `Dockerfile`)
+- Deploy `master` to Cloud Run, idempotent, about 2.5 minutes: `./deploy.sh`; confirm idle instances reach zero: `./deploy.sh --check-idle`
 - Validate interfaces: `protoc --proto_path=proto --descriptor_set_out=/dev/null $(find proto -name "*.proto")`
 - Validate the diagram against the protos: `python3 tools/check_diagram.py`
 - Toolchain setup, if `$HOME` was wiped: see `docs/toolchain.md`
