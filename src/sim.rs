@@ -112,7 +112,28 @@ impl RunResult {
             .sum();
         toks as f64 / self.measured_s()
     }
+    /// Fraction of **all** measured requests that received acceptable service.
+    ///
+    /// The denominator is every request, not every *successful* request. Dividing by successes was a
+    /// real defect, caught by the arena harness: a policy that shed nine requests in ten and served
+    /// the tenth well would have reported perfect attainment. That is exactly the trade the SLO gate
+    /// exists to forbid, and the metric was blind to it.
+    ///
+    /// A shed request is a request that did not get service. Whether shedding it early was the right
+    /// call is a separate question, answered by comparing goodput, and `served_attainment` below keeps
+    /// the old view for when the question really is "of what we served, how much was good".
     pub fn slo_attainment(&self) -> f64 {
+        if self.records.is_empty() {
+            return f64::NAN;
+        }
+        let ok = self.records.iter().filter(|r| r.outcome == Outcome::Ok).count();
+        ok as f64 / self.records.len() as f64
+    }
+
+    /// Of the requests that completed, the fraction within SLO. Diagnostic rather than a score:
+    /// it cannot distinguish good service from aggressive shedding, which is why it is not the
+    /// headline.
+    pub fn served_attainment(&self) -> f64 {
         let n = self.records.iter().filter(|r| r.outcome.is_success()).count();
         if n == 0 {
             return f64::NAN;

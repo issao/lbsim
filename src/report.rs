@@ -748,14 +748,15 @@ decision, and anything proportional to fleet size does not hold at scale.</p>"##
 
 fn slo_table(h: &mut String, runs: &[RunResult]) {
     let _ = write!(h, "<h3>Service level</h3>");
-    let _ = write!(h, "<table><tr><th>scenario</th><th>attainment</th><th>ttft within SLO</th><th>worst-gap within SLO</th><th>retries</th></tr>");
+    let _ = write!(h, "<table><tr><th>scenario</th><th>attainment<br><small>all requests</small></th><th>of those served</th><th>ttft within SLO</th><th>worst-gap within SLO</th><th>retries</th></tr>");
     for r in runs {
         let sc = &r.scenario;
         let _ = write!(
             h,
-            "<tr><td>{}</td><td>{:.2}%</td><td>{:.2}%</td><td>{:.2}%</td><td>{}</td></tr>",
+            "<tr><td>{}</td><td>{:.2}%</td><td>{:.2}%</td><td>{:.2}%</td><td>{:.2}%</td><td>{}</td></tr>",
             esc(&sc.name),
             r.slo_attainment() * 100.0,
+            r.served_attainment() * 100.0,
             r.ttft.fraction_below((sc.ttft_slo_ms * 1e6) as u64) * 100.0,
             r.itl_max.fraction_below((sc.itl_slo_ms * 1e6) as u64) * 100.0,
             r.retries
