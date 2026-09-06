@@ -72,101 +72,91 @@ This is a larger issue than the access-token question below, and it points the s
 pattern is that you run mutating commands and Claude prepares everything else.
 // Issao: For now, I would like claude to be able to make mutating commands to the deployment as we iterate.
 
-## 1. HARD BLOCKER — four things only you can do, for the cloud deployment
+## 1. Give Claude deploy powers without billing powers — four commands
 
-Everything else is unblocked. These four are not, and one of them cannot be delegated at all.
+You asked for this specifically. It is achievable as a **hard boundary** rather than a promise, and
+the trick is that Claude currently has *too much* access, so the fix is to take some away.
 
-`gcloud` and `gsutil` are already installed here and can reach Google APIs, so the tooling side is
-ready. Docker is absent and does not matter, because Cloud Build builds remotely.
+### Verified state, checked read-only
 
-**Simpler architecture than the plan sketched.** One Cloud Run service serving both the static
-frontend and the API, mapped straight to your domain. No Firebase, no load balancer, no second
-component. Two reasons at this budget: a global load balancer costs about $18 a month in forwarding
-rules before any traffic, a fifth of the budget for nothing; and a hosting rewrite in front of Cloud
-Run risks buffering server-streamed responses, which would break the live charts in a way that looks
-like the simulation hanging. A direct domain mapping avoids both and the certificate is free.
+| | |
+|---|---|
+| Fully provisioned project | **`lbsim-gcp`** — has the `lbsim` registry, the `lbsim-gcp-runs` bucket, Cloud Run enabled, and the deploy account |
+| `lbsim-prod` | registry and Cloud Run enabled, but **no** deploy account and no results bucket. Probably redundant |
+| `lbsim-deployer@lbsim-gcp` roles | `run.admin`, `artifactregistry.writer`, `cloudbuild.builds.editor`, `iam.serviceAccountUser`, `monitoring.viewer` |
+| Billing roles on that account | **none**, on either project. Confirmed by filtering the IAM policy |
 
-- [ ] **Create the project and link billing.** Then tell Claude the project id.
-- [ ] **Verify domain ownership.** Google requires a signed-in human for this; it cannot be
-      delegated. About five minutes in Search Console.
-- [ ] **Add the DNS records** the domain mapping returns, at your registrar. Four A and four AAAA for
-      the apex.
-- [ ] **Create the budget.** Budgets live on the billing account, and granting billing access to save
-      two minutes is a bad trade.
+So the account you want already exists and already cannot touch billing. What is missing is that this
+sandbox is authenticated as *you*, which overrides all of it.
+
+### The four commands
+
+Run each with a leading `!` so it executes here and the key is written straight to disk. **The key must
+never pass through this conversation**; a transcript is stored, and a credential in one is disclosed
+rather than transient.
 
 ```bash
-gcloud projects create lbsim-prod --name=lbsim
-gcloud billing projects link lbsim-prod --billing-account=YOUR_BILLING_ID
-gcloud services enable run.googleapis.com artifactregistry.googleapis.com \
-    cloudbuild.googleapis.com storage.googleapis.com --project=lbsim-prod
-gcloud domains verify YOUR_DOMAIN
-gcloud billing budgets create --billing-account=YOUR_BILLING_ID \
-    --display-name="lbsim" --budget-amount=100USD \
-    --threshold-rule=percent=0.5 --threshold-rule=percent=0.9
+# 1. Let the deploy account write run results. Skip if already granted.
+gcloud storage buckets add-iam-policy-binding gs://lbsim-gcp-runs \
+  --member=serviceAccount:lbsim-deployer@lbsim-gcp.iam.gserviceaccount.com \
+  --role=roles/storage.objectAdmin
+
+# 2. Create the key directly into the sandbox, never via the chat.
+gcloud iam service-accounts keys create /home/agents/.config/gcloud/lbsim-deployer.json \
+  --iam-account=lbsim-deployer@lbsim-gcp.iam.gserviceaccount.com --project=lbsim-gcp
+
+# 3. Switch this sandbox to that identity.
+gcloud auth activate-service-account --key-file=/home/agents/.config/gcloud/lbsim-deployer.json
+gcloud config set project lbsim-gcp
+
+# 4. The step that makes it a boundary rather than a convention.
+gcloud auth revoke issaofujiwara@gmail.com
 ```
 
-Enabling the APIs yourself means Claude never needs the service-usage role, which is one fewer broad
-permission handed over.
+**Step 4 is the one that matters.** Without it, steps 1 to 3 are a preference Claude could undo. With
+it, the sandbox holds only an identity that has no billing role, no project IAM, and no
+`storage.admin`, so touching your budgets becomes impossible rather than merely forbidden.
 
-### Credentials: Claude is not going to ask you for one
+It only removes the credential *in this sandbox*. Your other machines are unaffected. If you ever need
+owner-level access here again, `gcloud auth login`.
 
-**Recommended, and it costs almost nothing: you run the deploy command yourself.** Claude writes the
-Dockerfile, the build config, the deploy script with the flags that matter, the health check and the
-idle-shutdown logic, and commits all of it. You then run one line per deploy. In this session you can
-prefix a command with `!` to run it here and have the output land in the conversation.
+### Blast radius, stated plainly
 
-That is one line of your time per deploy, and no credential ever exists outside your own shell.
+The key is a long-lived secret sitting on disk. What it can do: deploy Cloud Run services and jobs,
+push container images, run Cloud Builds, write to one bucket, and read monitoring. What it cannot do:
+change billing, change IAM, delete buckets, or touch any other project. Worst case is compute burned
+inside the instance caps.
 
-**A note on something a research pass suggested, which should not be done.** It proposed minting a
-short-lived access token and pasting it into this conversation. Do not do that, and Claude will not
-ask for it:
+- [ ] Run the four commands
+- [ ] When today is done, delete the key: `gcloud iam service-accounts keys list --iam-account=...`
+      then `keys delete KEY_ID`
+- [ ] Decide whether to unlink `lbsim-prod` from billing, since it is half-provisioned and duplicating
+      it is a way to be surprised
 
-- A transcript is stored, and may be logged or retained beyond this session. A credential pasted into
-  one is disclosed, not transient, regardless of when it expires.
-- The scope is not small. It carries deploy and storage-write authority on the project.
-- The expiry argument is weaker than it sounds. An hour is ample for anything unwanted, and "treat it
-  as burned after use" is a mitigation applied after the disclosure rather than instead of it.
+## 1b. Where the TXT record goes in Porkbun
 
-**If you do want Claude deploying unattended**, the right mechanism is Workload Identity Federation,
-which issues short-lived credentials against an identity provider with no secret at rest anywhere. It
-is more setup than this project currently justifies. A service account key file placed in the sandbox
-out of band, never through the conversation, is a middle option: still a long-lived secret, but at
-least not in a transcript. Scope it to these six roles and nothing more, and rotate it when this phase
-ends.
+Search Console's **Domain** property needs the TXT at the apex, which is why the host is left empty.
 
-| Role | Why |
+1. Log in to Porkbun, go to **Domain Management**.
+2. Find `lbsim.ai` and click **DNS** on that row. That opens *Edit DNS Records*.
+3. In the **Add a DNS record** form at the top of that page:
+
+| Field | Value |
 |---|---|
-| `roles/run.admin` | deploy services and jobs, set caps, create the domain mapping |
-| `roles/iam.serviceAccountUser` | act as the runtime service account |
-| `roles/artifactregistry.writer` | push images |
-| `roles/cloudbuild.builds.editor` | build them |
-| `roles/storage.objectAdmin` | **on the results bucket only**, which you pre-create |
-| `roles/monitoring.viewer` | read instance-hours, the number that catches a cost bug |
+| **Type** | `TXT` |
+| **Host** | **leave completely empty.** Porkbun shows `.lbsim.ai` beside the box; empty means the apex. Do not type `@` |
+| **Answer** | the whole `google-site-verification=…` string, pasted exactly |
+| **TTL** | leave the default, 600 |
 
-Every billing role, project IAM, and `storage.admin` are deliberately absent. Worst case is compute
-burned inside the instance caps, not an account restructured.
+4. Click **Add**.
+5. Wait a minute, then click **Verify** in Search Console. Porkbun's DNS propagates quickly.
 
-### What $100 a month buys
+**Do not delete existing TXT records** while doing this. Multiple TXT records at the apex are normal and
+expected; anything for mail or domain policy must stay.
 
-About **250 hours of active simulation**, at roughly $0.38 an hour for 4 vCPU and 4 GiB while a run
-is actually running. Domain mapping and certificate are free; the registry is about $0.10 per GB per
-month; Cloud Build has 120 free minutes a day.
-
-The one thing that could blow it is already known and is in the plan: **a live subscription keeps an
-instance alive**, so one forgotten browser tab holds an instance at about $274 a month, threefold over
-budget by itself. Three defences, and Claude will not deploy without all three: zero minimum
-instances, a hard instance cap, and application-level idle shutdown that checkpoints a run so the
-instance can be reaped. Set the first alert at 50%, because at these rates $50 of spend means
-something is wrong rather than busy.
-
-### What Claude will write without waiting
-
-A two-stage Dockerfile producing a distroless image, `cloudbuild.yaml`, a `deploy.sh` carrying only
-the flags that are load-bearing, a health check that does not touch a running simulation, and the
-idle-shutdown logic. None of that needs credentials, so it can exist before any of the above.
-
-One note outside the cloud budget entirely: a `.ai` registration and renewal is not cheap. Worth
-checking what the registrar committed you to.
+The A and AAAA records for the apex are a separate step and only needed once a service exists to point
+at. Claude will confirm the exact addresses against what the domain mapping returns rather than from a
+published list.
 
 ## 2. Reviews — read and tick, no reply needed unless you disagree
 
