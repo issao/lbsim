@@ -1,6 +1,6 @@
 # TASKS — things that need Issao
 
-Last updated: 2026-09-06 16:22 PDT by Claude.
+Last updated: 2026-09-06 16:27 PDT by Claude.
 
 Stack ranked, most blocking first. Every item says what Claude does if you say nothing, so nothing
 here stalls the work. What is finished and live is in `STATUS.md`.
@@ -16,6 +16,18 @@ limit, and the training-versus-serving question.
 **If you say nothing:** it is deleted at the next housekeeping round after 24 hours, 2026-09-07 16:19.
 
 ## Routed to the tech lead
+
+Three from Issao at 16:22, routed by the main agent:
+
+7. *"we could get disable decode basically by setting HBM to infinity, so that should be straight
+   forward."* Scenario key `disable_decode` that zeroes the bandwidth term. First in priority.
+8. *"Load and latency forecasting should be added as potential policies to evaluate (populate an md with
+   all policy ideas we have had so far and instruct the arena policy generator to populate that as well
+   with any that it authors)."* `docs/policy-catalog.md` is being written by a separate agent; the tech
+   lead wires the arena generator to append a row per policy it authors.
+9. *"We should have a way to sample requests to see execution traces and what was busy in each resource
+   as it executed."* Request trace sampling: seeded, stratified by latency bucket, spans with
+   per-resource state, exposed through `GetTraces` and the export.
 
 6. At 16:12, on the arena objective, *"You can remove this, I agreed with this."* The score is now
    the minimum over loads of goodput **as a share of offered work**, not absolute goodput. The code
@@ -76,6 +88,13 @@ until you grant the role, and the results bucket keeps everything it is ever giv
 ---
 
 ## Answered, kept for the record
+
+- 16:22, three decisions, all routed to the tech lead: *"we could get disable decode basically by
+  setting HBM to infinity, so that should be straight forward."*; *"Load and latency forecasting should
+  be added as potential policies to evaluate (populate an md with all policy ideas we have had so far
+  and instruct the arena policy generator to populate that as well with any that it authors)."*; *"We
+  should have a way to sample requests to see execution traces and what was busy in each resource as
+  it executed."*
 
 - 16:16, **<https://lbsim.ai> is live**: certificate issued, serving the dashboard over IPv4 and IPv6.
   Every domain step was yours and every one is done.
