@@ -6,6 +6,7 @@
 //! retired. The split follows the Leaf seam in `docs/ARCHITECTURE.md` section 10.3, so the loop can
 //! later be cut along it without touching the physics.
 
+use sim_leaf_api::{AdvanceRequest, AdvanceResponse, ConfigureShardResponse, Leaf};
 use sim_metrics::{Frame, Histogram, Outcome, ReplicaSample, RequestRecord, Series};
 use sim_policy::{Admission, AdmissionContext, AdmissionPolicy, ReplicaView, RequestView, RouteContext, RoutingPolicy};
 use sim_core::queue::{EventQueue, PRIO_OBSERVE};
@@ -498,6 +499,14 @@ impl Sim {
     pub fn frames(&self) -> &[Frame] {
         &self.frames
     }
+    /// Every record so far, warmup included; the measured selection is `into_result`'s.
+    pub fn records(&self) -> &[RequestRecord] {
+        &self.records
+    }
+    /// The instant of the next pending event, if any. What a barrier loop sizes its window by.
+    pub fn next_event(&self) -> Option<Nanos> {
+        self.q.peek_time()
+    }
     /// Every replica as it is right now, not as the delayed telemetry shows it: live telemetry for a
     /// viewer, never for a policy.
     pub fn latest_views(&self) -> Vec<ReplicaView> {
@@ -777,6 +786,144 @@ impl Sim {
             retries: self.retries,
             first_attempts: self.first_attempts,
         })
+    }
+}
+
+/// The Leaf service, in-process, as one shard that owns every replica.
+///
+/// Wraps `Sim` whole: arrivals, routing and retries still happen inside the loop, so this shard
+/// generates its own work and accepts none from outside. That is deliberate. The point of this type
+/// is that `sim_leaf_api::Leaf` is real, has the proto's shape, and `sim-ingress` can be written
+/// against it now; moving the ingress-side events out of the loop is the split described in
+/// `sim_leaf_api`'s module docs and is its own unit of work. `advance` is `Sim::advance_to` plus
+/// what completed and what was sampled since the previous call.
+#[derive(Default)]
+pub struct LocalLeaf {
+    sim: Option<Sim>,
+    shard_id: u32,
+    /// How much of `Sim::records` and `Sim::frames` earlier windows already reported.
+    records_reported: usize,
+    frames_reported: usize,
+    /// The scenario's telemetry period, for saying whether a publish fell inside a window.
+    tele_iv: Nanos,
+}
+
+impl LocalLeaf {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The run-wide aggregation, for a driver that owns this shard in-process and wants the same
+    /// `RunResult` that `run` produces. A process transport will not have this; it will merge the
+    /// per-window responses instead.
+    pub fn into_result(self) -> Result<RunResult, String> {
+        self.sim.ok_or_else(|| "LocalLeaf was never configured".to_string())?.into_result()
+    }
+
+    fn sim_mut(&mut self) -> Result<&mut Sim, String> {
+        self.sim.as_mut().ok_or_else(|| "LocalLeaf: advance before configure".to_string())
+    }
+}
+
+impl Leaf for LocalLeaf {
+    fn configure(
+        &mut self,
+        shard_id: u32,
+        sc: &Scenario,
+        replica_ids: &[u64],
+        shard_seed: u64,
+    ) -> Result<ConfigureShardResponse, String> {
+        // One shard, every replica, the scenario's own seed: anything else is the sharded server
+        // this type explicitly is not, and saying so beats silently ignoring the arguments.
+        let all: Vec<u64> = (0..sc.replicas as u64).collect();
+        if !replica_ids.is_empty() && replica_ids != all.as_slice() {
+            return Ok(ConfigureShardResponse {
+                accepted: false,
+                rejected_reason: format!(
+                    "LocalLeaf owns every replica of the scenario; asked for {} of {}",
+                    replica_ids.len(),
+                    sc.replicas
+                ),
+                next_event_unix_ns: 0,
+            });
+        }
+        if shard_seed != sc.seed {
+            return Ok(ConfigureShardResponse {
+                accepted: false,
+                rejected_reason: format!(
+                    "LocalLeaf runs on the scenario seed {}; a derived shard seed {} would change the run",
+                    sc.seed, shard_seed
+                ),
+                next_event_unix_ns: 0,
+            });
+        }
+        let sim = match Sim::new(sc) {
+            Ok(sim) => sim,
+            Err(why) => {
+                return Ok(ConfigureShardResponse {
+                    accepted: false,
+                    rejected_reason: why,
+                    next_event_unix_ns: 0,
+                })
+            }
+        };
+        let next = sim.next_event().unwrap_or(0);
+        self.shard_id = shard_id;
+        self.records_reported = 0;
+        self.frames_reported = 0;
+        self.tele_iv = (sc.telemetry_interval_ms * 1e6) as Nanos;
+        self.sim = Some(sim);
+        Ok(ConfigureShardResponse { accepted: true, rejected_reason: String::new(), next_event_unix_ns: next })
+    }
+
+    fn advance(&mut self, req: AdvanceRequest) -> Result<AdvanceResponse, String> {
+        if req.shard_id != self.shard_id {
+            return Err(format!("LocalLeaf is shard {}, asked to advance shard {}", self.shard_id, req.shard_id));
+        }
+        if !req.work.is_empty() || !req.control.is_empty() {
+            return Err(
+                "LocalLeaf generates its own arrivals and timeouts; dispatched work and control \
+                 actions arrive with the ingress/leaf split"
+                    .to_string(),
+            );
+        }
+        let tele_iv = self.tele_iv;
+        let (records_reported, frames_reported) = (self.records_reported, self.frames_reported);
+        let sim = self.sim_mut()?;
+        let from = sim.now();
+        sim.advance_to(req.advance_until_unix_ns)?;
+        let to = sim.now();
+        let completed = sim.records()[records_reported..].to_vec();
+        let metrics = sim.frames()[frames_reported..].to_vec();
+        // A publish instant is a multiple of the period from the start; one fell in (from, to] when
+        // the count of them changed. Replica offsets stagger the publishes inside the period, so
+        // this says a round of them began, which is what Ingress needs to know.
+        let start = EPOCH_BASE;
+        let telemetry_due =
+            tele_iv > 0 && (to.saturating_sub(start)) / tele_iv != (from.saturating_sub(start)) / tele_iv;
+        let out = AdvanceResponse {
+            shard_id: req.shard_id,
+            advanced_to_unix_ns: to,
+            next_event_unix_ns: if sim.finished() { 0 } else { sim.next_event().unwrap_or(0) },
+            completed,
+            // The engine does not yet raise a first-token event apart from the record; the split
+            // adds that hook when Ingress has a client that measures it.
+            first_tokens: Vec::new(),
+            telemetry: sim.latest_views(),
+            telemetry_due,
+            metrics,
+        };
+        self.records_reported = self.sim.as_ref().map_or(0, |s| s.records().len());
+        self.frames_reported = self.sim.as_ref().map_or(0, |s| s.frames().len());
+        Ok(out)
+    }
+
+    fn snapshot(&self, _at: Nanos) -> Result<Vec<u8>, String> {
+        Err("not implemented".to_string())
+    }
+
+    fn restore(&mut self, _at: Nanos, _state: &[u8]) -> Result<(), String> {
+        Err("not implemented".to_string())
     }
 }
 

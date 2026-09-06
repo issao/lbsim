@@ -7,8 +7,9 @@
 
 mod common;
 
+use lbsim::leaf_api::{AdvanceRequest, Leaf};
 use lbsim::scenario::Scenario;
-use lbsim::sim::{self, RunResult, Sim};
+use lbsim::sim::{self, LocalLeaf, RunResult, Sim};
 use lbsim::{Nanos, SECOND};
 
 fn fixture() -> Scenario {
@@ -138,4 +139,73 @@ fn frames_are_available_before_the_run_ends() {
     // Frames already handed out do not change as the run continues.
     let whole = sim::run(&sc).unwrap();
     assert_eq!(&whole.frames[..frames_at_5s], &s.frames()[..frames_at_5s]);
+}
+
+/// The Leaf trait, driven the way Ingress will drive it: configure, then advance in windows. One
+/// window of the whole run and one of many windows must both be the run.
+#[test]
+fn local_leaf_matches_run() {
+    let mut sc = fixture();
+    // No warmup, so every record the leaf reports is one `run` keeps.
+    sc.warmup_s = 0.0;
+    let whole = sim::run(&sc).unwrap();
+    let start = lbsim::EPOCH_BASE;
+    let end = start + (sc.duration_s * 1e9) as Nanos;
+
+    let mut leaf = LocalLeaf::new();
+    let cfg = leaf.configure(0, &sc, &[], sc.seed).unwrap();
+    assert!(cfg.accepted, "{}", cfg.rejected_reason);
+    assert_eq!(cfg.next_event_unix_ns, start, "the first arrival is at the start");
+    let resp = leaf
+        .advance(AdvanceRequest { shard_id: 0, advance_until_unix_ns: end, ..Default::default() })
+        .unwrap();
+    assert_eq!(resp.advanced_to_unix_ns, end);
+    assert_eq!(resp.next_event_unix_ns, 0, "a finished shard has no next event");
+    assert_eq!(resp.completed.len(), whole.records.len());
+    assert_eq!(resp.metrics, whole.frames);
+    assert_eq!(resp.telemetry.len(), sc.replicas);
+    let r = leaf.into_result().unwrap();
+    assert_eq!(r.fingerprint, whole.fingerprint);
+    assert_eq!(r.records.len(), whole.records.len());
+    assert_same(&whole, &r, "one window");
+
+    // Many windows: what each reports adds up to the whole, in order, reported once.
+    let mut leaf = LocalLeaf::new();
+    assert!(leaf.configure(0, &sc, &[0, 1, 2, 3, 4, 5, 6, 7], sc.seed).unwrap().accepted);
+    let mut completed = Vec::new();
+    let mut frames = Vec::new();
+    let tele = (sc.telemetry_interval_ms * 1e6) as Nanos;
+    let mut publishes = 0;
+    let mut t = start;
+    let mut from = start;
+    while t < end {
+        t += 1_300 * lbsim::MILLI;
+        let resp = leaf
+            .advance(AdvanceRequest { shard_id: 0, advance_until_unix_ns: t, ..Default::default() })
+            .unwrap();
+        assert!(resp.advanced_to_unix_ns <= t);
+        assert!(resp.next_event_unix_ns == 0 || resp.next_event_unix_ns > resp.advanced_to_unix_ns);
+        // The flag says a publish instant fell in (from, to]; windows longer than the period hold
+        // more than one and still say so once.
+        let to = resp.advanced_to_unix_ns;
+        let due = (to - start) / tele != (from - start) / tele;
+        assert_eq!(resp.telemetry_due, due, "window ({from}, {to}]");
+        publishes += resp.telemetry_due as u64;
+        from = to;
+        completed.extend(resp.completed);
+        frames.extend(resp.metrics);
+    }
+    assert_eq!(completed.len(), whole.records.len());
+    assert_eq!(format!("{:?}", completed), format!("{:?}", whole.records));
+    assert_eq!(frames, whole.frames);
+    assert!(publishes > 0);
+    let r = leaf.into_result().unwrap();
+    assert_same(&whole, &r, "1.3 s windows through the Leaf trait");
+
+    // What the seam refuses, it refuses loudly.
+    let mut leaf = LocalLeaf::new();
+    assert!(!leaf.configure(0, &sc, &[0, 1], sc.seed).unwrap().accepted);
+    assert!(!leaf.configure(0, &sc, &[], sc.seed + 1).unwrap().accepted);
+    assert!(leaf.advance(AdvanceRequest::default()).is_err(), "advance before configure");
+    assert!(leaf.snapshot(start).is_err());
 }
