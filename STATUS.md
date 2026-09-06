@@ -3,7 +3,7 @@
 What is live on `origin/master`, what each agent is doing now, and the assumptions being acted on.
 For things that need *you*, see `TASKS.md`.
 
-**Last updated:** 2026-09-06 18:00 by Claude.
+**Last updated:** 2026-09-06 18:30 by Claude.
 
 ---
 
@@ -55,8 +55,9 @@ The main agent coordinates and owns `CLAUDE.md` and `proto/`.
   residency hint. Both are design of record, `docs/ARCHITECTURE.md` §14, not yet built.
 - `lbsim.ai` is dark: its DNS zone went with `lbsim-prod`. `TASKS.md` item 1.
 - Deployment scales to zero within a replica budget of ten, public, on the `run.app` URL until the
-  domain steps in `TASKS.md` item 1 are done. Scale-to-zero is measured by `deploy.sh --check-idle`,
-  not assumed.
+  domain steps in `TASKS.md` item 1 are done. Scale-to-zero is measured, not assumed: two revisions
+  reached zero instances within minutes of losing traffic, per `docs/deploy.md` (993c03a), and
+  `deploy.sh --check-idle` re-measures it.
 - Reference hardware is a 70-billion-parameter model on eight H100s.
 - Everything in `docs/ARCHITECTURE.md` section 14 stands as recorded there.
 
