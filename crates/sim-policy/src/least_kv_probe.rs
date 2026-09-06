@@ -1,3 +1,4 @@
+//! lbsim-policy: routing names=least_kv_probe
 //! Power of `d` choices on *live* KV occupancy, paying for every look.
 //!
 //! `p2c` reads the delayed snapshot for free and measures queued tokens. This policy keeps the same

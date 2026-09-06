@@ -7,27 +7,26 @@
 //! dynamics in section 6 are a property of the architecture. The one exception is an explicit probe,
 //! [`RouteContext::probe`], which pays a modelled round trip so the cost of freshness is visible.
 //!
-//! **Adding a policy is one file plus one line.** Write `src/<name>.rs` implementing [`RoutingPolicy`]
-//! or [`AdmissionPolicy`], and add one [`PolicyEntry`] to [`ROUTING`] or [`ADMISSION`]. Nothing in the
-//! engine changes; the engine resolves the scenario's `routing` and `admission` names through
-//! [`make_routing`] and [`make_admission`]. This is also how the arena's generated policies work: a
-//! generated policy is a file and a registry line like any other, and `PolicyEntry::file` is what a
-//! run records the source hash of.
+//! **Adding a policy is one file.** Write `src/<name>.rs` implementing [`RoutingPolicy`] or
+//! [`AdmissionPolicy`], with a first line declaring it:
+//!
+//! ```text
+//! //! lbsim-policy: routing names=<canonical>,<alias>...
+//! ```
+//!
+//! `build.rs` reads that header from every file in `src/` and generates the `mod` lines and the
+//! [`ROUTING`] and [`ADMISSION`] tables, sorted by file name. Nothing in the engine changes; the engine
+//! resolves the scenario's `routing` and `admission` names through [`make_routing`] and
+//! [`make_admission`]. The registry used to be a hand-written table here, and three policy branches
+//! written in parallel conflicted on it in one afternoon; a generated table cannot conflict. This is
+//! also how the arena's generated policies work: a generated policy is a file with that header like any
+//! other, and `PolicyEntry::file` is what a run records the source hash of.
 //!
 //! The measured constraint from section 10.4 applies to all of them: a decision must be O(1) or
 //! O(log N), never a scan of the fleet. `least_requests` and `least_queue_tokens` violate that
 //! deliberately, because they are the baselines whose cost and behaviour are the point, and
 //! [`RoutingPolicy::inspected`] is how the violation is reported rather than hidden.
 
-mod accept_all;
-mod least_kv_probe;
-mod deadline_aware;
-mod fair_share;
-mod least_queue_tokens;
-mod least_requests;
-mod p2c;
-mod random;
-mod round_robin;
 
 pub mod admission;
 pub mod routing;
@@ -45,26 +44,7 @@ pub struct PolicyEntry<T: ?Sized> {
     pub make: fn(&Scenario) -> Box<T>,
 }
 
-/// The routing registry. Order is the order the arena enumerates.
-pub const ROUTING: &[PolicyEntry<dyn RoutingPolicy>] = &[
-    PolicyEntry { names: &["round_robin"], file: "round_robin.rs", make: round_robin::make },
-    PolicyEntry { names: &["random"], file: "random.rs", make: random::make },
-    PolicyEntry { names: &["least_requests"], file: "least_requests.rs", make: least_requests::make },
-    PolicyEntry {
-        names: &["least_queue_tokens"],
-        file: "least_queue_tokens.rs",
-        make: least_queue_tokens::make,
-    },
-    PolicyEntry { names: &["p2c", "power_of_two_choices"], file: "p2c.rs", make: p2c::make },
-    PolicyEntry { names: &["least_kv_probe"], file: "least_kv_probe.rs", make: least_kv_probe::make },
-];
-
-/// The admission registry.
-pub const ADMISSION: &[PolicyEntry<dyn AdmissionPolicy>] = &[
-    PolicyEntry { names: &["accept_all"], file: "accept_all.rs", make: accept_all::make },
-    PolicyEntry { names: &["deadline_aware"], file: "deadline_aware.rs", make: deadline_aware::make },
-    PolicyEntry { names: &["fair_share"], file: "fair_share.rs", make: fair_share::make },
-];
+include!(concat!(env!("OUT_DIR"), "/registry.rs"));
 
 fn lookup<'a, T: ?Sized>(
     table: &'a [PolicyEntry<T>],
