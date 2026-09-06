@@ -140,14 +140,20 @@ message OpenSubscriptionRequest {
 
 message OpenSubscriptionResponse {
   string subscription_id = 1;
-  uint64 lease_expires_at_unix_ns = 2;
+  // Wall clock, deliberately breaking the `_unix_ns` convention used everywhere else in these
+  // interfaces, which denotes a *simulated* instant. A lease governs a real network connection and
+  // has nothing to do with simulated time. A client should not compare this to its own clock either,
+  // since browser and server clocks disagree; it should count down `lease_ns` locally and treat the
+  // renew response's `expired` flag as the only authority. This was previously named `_unix_ns` by an
+  // over-eager rename and was, by the project's own convention, a lie.
+  uint64 lease_expires_at_wall_ns = 2;
   // Set only on a genuine error: an unset target id for a scope that needs one, an unknown id,
   // or a percentile outside (0, 100]. Never used to override the requested rate.
   string rejected_reason = 3;
 }
 
 message RenewSubscriptionRequest { string subscription_id = 1; uint64 lease_ns = 2; }
-message RenewSubscriptionResponse { uint64 lease_expires_at_unix_ns = 1; bool expired = 2; }
+message RenewSubscriptionResponse { uint64 lease_expires_at_wall_ns = 1; bool expired = 2; }
 
 message CloseSubscriptionRequest { string subscription_id = 1; }
 message CloseSubscriptionResponse {}
