@@ -1,0 +1,214 @@
+syntax = "proto3";
+
+package lbsim.v1;
+
+import "lbsim/v1/common.proto";
+
+// The shape of offered load, as a contract rather than as configuration.
+//
+// `WorkloadSpec` in scenario.proto configures the built-in generator. `LoadShape` here is the
+// interface any generator satisfies, which buys three things:
+//
+//   - A recorded trace and a synthetic process are interchangeable downstream, so a scenario
+//     switches between them without touching anything else.
+//   - A generator can live outside this codebase.
+//   - The shape becomes inspectable and reportable in its own right, so a run states what load
+//     was actually offered rather than only what was configured. Those differ whenever the
+//     generator is itself rate-limited, and a run that silently offered less load than asked is
+//     the most insidious way to get a wrong answer.
+//
+// Declarative rather than a callback. At target scale the fleet completes ~56,700 requests per
+// simulated second, so a call into user code per arrival would dominate the simulation, and a
+// description can be recorded, diffed and validated while a callback cannot.
+//
+// Calibration for every field is in docs/calibration.md, which also states which of these
+// nobody publishes.
+
+service WorkloadSource {
+  // Declared once at scenario start. The engine samples from the description.
+  rpc Describe(DescribeRequest) returns (LoadShape);
+
+  // For trace replay: hand back a bounded window of already-determined arrivals. Bounded so
+  // the call stays O(1) however long the trace is.
+  rpc NextWindow(NextWindowRequest) returns (ArrivalWindow);
+}
+
+message DescribeRequest { string run_id = 1; uint64 seed = 2; }
+
+message NextWindowRequest {
+  string run_id = 1;
+  uint64 from_sim_ns = 2;
+  uint64 to_sim_ns = 3;
+  uint32 max_arrivals = 4;
+}
+
+message ArrivalWindow {
+  repeated Arrival arrivals = 1;
+  // True when max_arrivals truncated the window. The engine must then ask again rather than
+  // assume the window was quiet, since assuming quiet would silently reduce offered load.
+  bool truncated = 2;
+  uint64 covered_to_sim_ns = 3;
+}
+
+// One fully determined arrival. Used by trace replay; the synthetic generator produces these
+// internally from a LoadShape.
+message Arrival {
+  uint64 at_ns = 1;
+  TenantId tenant = 2;
+  SessionId session = 3;
+  SloClass slo_class = 4;
+  uint32 model_id = 5;
+  uint32 prompt_tokens = 6;
+  uint32 max_output_tokens = 7;
+  // The fact the simulator knows and no policy may see. Kept here, not in the observable
+  // request, for the reason given in request.proto.
+  uint32 true_output_tokens = 8;
+  PrefixNodeId prefix_node = 9;
+  uint32 unshared_suffix_tokens = 10;
+  ClusterId origin_cluster = 11;
+}
+
+// ---------------------------------------------------------------------------
+// The declarative shape
+// ---------------------------------------------------------------------------
+
+message LoadShape {
+  string name = 1;
+  // Provenance, so a report can say where the numbers came from. Free text on purpose: it
+  // should carry a citation, e.g. "Azure LLM 2024 conv, arrivals; Mooncake toolagent, lengths".
+  string provenance = 2;
+  // True when this shape is a stitched composite of several sources. A conclusion drawn from a
+  // stitched workload deserves a louder caveat than one from a single trace, and the report
+  // should say so rather than leaving the reader to check.
+  bool composite = 3;
+
+  repeated TenantShape tenants = 10;
+}
+
+message TenantShape {
+  TenantId id = 1;
+  string name = 2;
+  double share_of_requests = 3;
+
+  ArrivalShape arrival = 10;
+  LengthShape lengths = 11;
+  SessionShape sessions = 12;
+  PrefixTopology prefix = 13;
+}
+
+message ArrivalShape {
+  enum Family {
+    FAMILY_UNSPECIFIED = 0;
+    FAMILY_POISSON = 1;
+    FAMILY_LOGNORMAL = 2;
+    FAMILY_MARKOV_MODULATED = 3;
+    FAMILY_TRACE_REPLAY = 4;
+  }
+  Family family = 1;
+  double base_rps = 2;
+
+  // Burstiness is timescale-dependent, and this is the field most often got wrong. Real traces
+  // show an index of dispersion near 1.5-2 measured over one-second bins but 7-20 over
+  // one-minute bins, so a single CV cannot describe them. Declaring the measurement window
+  // alongside the value is what makes the number meaningful.
+  double index_of_dispersion = 10;
+  uint64 dispersion_window_ns = 11;
+
+  double diurnal_amplitude = 20;
+  uint64 diurnal_period_ns = 21;
+  // Phase per cluster, so multi-geo traffic follows the sun.
+  map<uint64, double> cluster_phase_offset_hours = 22;
+
+  double burst_multiplier = 30;
+  uint64 mean_burst_ns = 31;
+  uint64 mean_quiet_ns = 32;
+}
+
+message LengthShape {
+  // Mixture components. Real traffic is a mixture, and it is the mixture that produces
+  // head-of-line blocking, so a unimodal shape hides the phenomenon under study.
+  repeated LengthMode modes = 1;
+
+  // Input-to-output ratio, stated explicitly because it is the highest-leverage single number
+  // in the whole workload: measured traces span 0.32:1 to 111:1, and per-replica throughput
+  // varies by nearly 40x across that range. Redundant with the modes, and checked against them
+  // at load time, precisely so a mistake in either is caught.
+  double input_output_ratio = 10;
+
+  // Correlation between prompt and output length within a request. Non-zero in real traces and
+  // usually ignored, which biases queueing: if long prompts also generate long outputs, the
+  // expensive requests are more expensive than independent sampling suggests.
+  double prompt_output_correlation = 11;
+
+  // Ratio of the client's requested max_output_tokens to the true output length. Clients
+  // over-ask, admission control charges for the ask, and that gap is where preemption is born.
+  double max_tokens_overask_factor = 12;
+}
+
+message LengthMode {
+  string label = 1;             // "chat", "long_context", "agent_step"
+  double probability = 2;
+  double mean_prompt_tokens = 3;
+  double prompt_cv = 4;
+  double mean_output_tokens = 5;
+  double output_cv = 6;
+  uint32 max_prompt_tokens = 7;
+  uint32 max_output_tokens = 8;
+}
+
+message SessionShape {
+  double continuation_probability = 1;
+  double mean_turns = 2;
+  double turns_cv = 3;
+
+  // Think time between turns. Measured p50 is around two minutes, which sits close to typical
+  // prefix-cache time-to-live, so this parameter decides whether a session's next turn finds a
+  // warm cache at all. Small changes here move hit rate a long way.
+  uint64 median_think_time_ns = 10;
+  double think_time_cv = 11;
+
+  // Tokens the history grows by per turn, which is what makes turn N more expensive than N-1.
+  double context_growth_tokens_per_turn = 20;
+}
+
+// How prefixes are shared. This is the largest unmeasured lever in the whole workload model:
+// almost nobody publishes the topology, so these fields should be swept rather than trusted.
+// See docs/calibration.md section 5.
+message PrefixTopology {
+  // Distinct shared system prompts, and how skewed their popularity is. For API traffic the
+  // shared system prompt dominates outright: one measured business trace has under 0.1%
+  // multi-turn requests yet single-turn requests supply 97% of all cache hits. So this matters
+  // far more than session chains do, which is the opposite of the intuitive ordering.
+  uint32 distinct_roots = 1;
+  double root_popularity_zipf_s = 2;
+  uint32 mean_root_tokens = 3;
+
+  // Agent and tree-search traffic: several requests branching from one shared parent.
+  double fork_probability = 10;
+  uint32 mean_fork_width = 11;
+  uint32 mean_fork_depth = 12;
+
+  // Ceiling on achievable reuse with an infinite cache, if known from the source trace. Worth
+  // carrying because it bounds what any policy can achieve: measured production ceilings are
+  // 0.37 to 0.55, not the 0.9 that benchmark numbers suggest, and a simulator that quietly
+  // exceeds the ceiling is producing a fantasy.
+  double measured_reuse_ceiling = 20;
+}
+
+// ---------------------------------------------------------------------------
+// What was actually offered
+// ---------------------------------------------------------------------------
+
+// Reported alongside results. If this diverges from the LoadShape, the run did not test what it
+// claimed to, and no conclusion from it is safe.
+message OfferedLoadReport {
+  double requested_rps = 1;
+  double actual_rps = 2;
+  double actual_index_of_dispersion = 10;
+  uint64 dispersion_window_ns = 11;
+  double actual_input_output_ratio = 12;
+  double actual_prefix_reuse = 13;
+  // Non-zero means the generator could not keep up and offered less load than specified, which
+  // silently flatters every policy in the run.
+  uint64 arrivals_dropped_by_generator = 20;
+}

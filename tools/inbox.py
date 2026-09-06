@@ -51,7 +51,10 @@ SKIP_SUFFIXES = {
 SKIP_DIRS = {".git", "target", "node_modules", "dist", ".venv", "out", "results"}
 
 # Leading comment syntax to strip so the message text reads cleanly.
-_COMMENT_PREFIX = re.compile(r"^\s*(?://+|#+|/\*+|\*+/?|<!--|--|;+|%+)?\s*")
+# `\*+(?=\s)` matches a doc-comment continuation like " * text" but NOT markdown bold
+# "**text**", which an earlier version stripped, making prose that quoted an instruction look
+# like a new instruction.
+_COMMENT_PREFIX = re.compile(r"^\s*(?://+|\#+|/\*+|\*+/|\*+(?=\s)|<!--|--|;+|%+)?\s*")
 _COMMENT_SUFFIX = re.compile(r"\s*(?:-->|\*/)\s*$")
 
 
