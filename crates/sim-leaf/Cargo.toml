@@ -6,6 +6,7 @@ edition.workspace = true
 [dependencies]
 sim-core = { path = "../sim-core" }
 sim-scenario = { path = "../sim-scenario" }
+sim-physics = { path = "../sim-physics" }
 sim-metrics = { path = "../sim-metrics" }
 sim-workload = { path = "../sim-workload" }
 sim-policy = { path = "../sim-policy" }

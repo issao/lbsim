@@ -356,278 +356,428 @@ impl Window {
     }
 }
 
+/// A run that can stop and continue.
+///
+/// Everything `run` used to keep on its stack lives here, so the loop can be driven a window at a
+/// time: `StepForward`, `SetSpeed` and the Leaf's `Advance` all need an engine that dispatches every
+/// event up to an instant and then hands control back. `run` is `new`, `advance_to(end)` and
+/// `into_result`, and produces the byte-identical output it always did; the golden fingerprints are
+/// the proof.
+pub struct Sim {
+    sc: Scenario,
+    router: Box<dyn RoutingPolicy>,
+    admission: Box<dyn AdmissionPolicy>,
+    tenant_shares: Vec<f64>,
+    route_rng: Rng,
+    workload: Workload,
+
+    start: Nanos,
+    end: Nanos,
+    measured_from: Nanos,
+    /// How far the run has been advanced: every event at or before this instant has been dispatched.
+    now: Nanos,
+
+    q: EventQueue<Ev>,
+    replicas: Vec<Replica>,
+    views: Vec<ReplicaView>,
+    placed: HashMap<u64, usize>,
+    done: HashMap<u64, bool>,
+    records: Vec<RequestRecord>,
+
+    cost: sim_physics::CostModel,
+    sample_iv: Nanos,
+    tele_iv: Nanos,
+    tele_delay: Nanos,
+
+    replica_load: Vec<Series>,
+    fleet_queue: Series,
+    fleet_running: Series,
+    fleet_kv: Series,
+    offered: Series,
+
+    outcomes: HashMap<&'static str, u64>,
+    fingerprint: u64,
+    retries: u64,
+    first_attempts: u64,
+    window: Window,
+    frames: Vec<Frame>,
+
+    /// Set by a tripwire; the run is over and `into_result` reports why.
+    tripped: Option<String>,
+    /// Set once the loop would have exited: an event past the end, an empty queue, or a trip.
+    finished: bool,
+}
+
 pub fn run(sc: &Scenario) -> Result<RunResult, String> {
-    validate(sc)?;
-    let mut router = sim_policy::make_routing(sc)?;
-    let mut admission = sim_policy::make_admission(sc)?;
-    let tenant_shares = sc.tenant_shares();
-    let streams = Streams::new(sc.seed);
-    let mut route_rng: Rng = streams.stream("route");
-    let mut workload = Workload::new(&streams);
+    let mut sim = Sim::new(sc)?;
+    let end = sim.end();
+    sim.advance_to(end)?;
+    sim.into_result()
+}
 
-    let start = EPOCH_BASE;
-    let end = start + (sc.duration_s * 1e9) as Nanos;
-    let measured_from = start + (sc.warmup_s * 1e9) as Nanos;
+impl Sim {
+    pub fn new(sc: &Scenario) -> Result<Sim, String> {
+        validate(sc)?;
+        let router = sim_policy::make_routing(sc)?;
+        let admission = sim_policy::make_admission(sc)?;
+        let tenant_shares = sc.tenant_shares();
+        let streams = Streams::new(sc.seed);
+        let route_rng: Rng = streams.stream("route");
+        let workload = Workload::new(&streams);
 
-    let mut q: EventQueue<Ev> = EventQueue::new(start);
-    let mut replicas: Vec<Replica> = (0..sc.replicas).map(|_| Replica::default()).collect();
-    let mut views: Vec<ReplicaView> = vec![ReplicaView::default(); sc.replicas];
-    let mut placed: HashMap<u64, usize> = HashMap::new();
-    let mut done: HashMap<u64, bool> = HashMap::new();
-    let mut records: Vec<RequestRecord> = Vec::new();
+        let start = EPOCH_BASE;
+        let end = start + (sc.duration_s * 1e9) as Nanos;
+        let measured_from = start + (sc.warmup_s * 1e9) as Nanos;
 
-    let cost = sc.cost_model();
-    let sample_iv = (sc.sample_interval_ms * 1e6) as Nanos;
-    let tele_iv = (sc.telemetry_interval_ms * 1e6) as Nanos;
-    let tele_delay = (sc.telemetry_delay_ms * 1e6) as Nanos;
+        let mut q: EventQueue<Ev> = EventQueue::new(start);
+        let replicas: Vec<Replica> = (0..sc.replicas).map(|_| Replica::default()).collect();
+        let views: Vec<ReplicaView> = vec![ReplicaView::default(); sc.replicas];
 
-    let mut replica_load: Vec<Series> = (0..sc.replicas)
-        .map(|i| Series::new(&format!("replica_{}", i)))
-        .collect();
-    let mut fleet_queue = Series::new("fleet_queue");
-    let mut fleet_running = Series::new("fleet_running");
-    let mut fleet_kv = Series::new("fleet_kv_utilization");
-    let mut offered = Series::new("offered_rps");
+        let cost = sc.cost_model();
+        let sample_iv = (sc.sample_interval_ms * 1e6) as Nanos;
+        let tele_iv = (sc.telemetry_interval_ms * 1e6) as Nanos;
+        let tele_delay = (sc.telemetry_delay_ms * 1e6) as Nanos;
 
-    let mut ttft = Histogram::new();
-    let mut itl_max = Histogram::new();
-    let mut e2e = Histogram::new();
-    let mut queue_wait = Histogram::new();
-    let mut outcomes: HashMap<&'static str, u64> = HashMap::new();
-    let mut fingerprint: u64 = 0;
-    let mut retries: u64 = 0;
-    let mut first_attempts: u64 = 0;
-    let mut window = Window::default();
-    let mut frames: Vec<Frame> = Vec::new();
+        let replica_load: Vec<Series> = (0..sc.replicas)
+            .map(|i| Series::new(&format!("replica_{}", i)))
+            .collect();
 
-    q.schedule(start, Ev::Arrival);
-    q.schedule_prio(start + sample_iv, PRIO_OBSERVE, Ev::Sample);
-    for i in 0..sc.replicas {
-        q.schedule(start + (i as Nanos * tele_iv) / sc.replicas.max(1) as Nanos, Ev::TelemetryPublish(i));
+        q.schedule(start, Ev::Arrival);
+        q.schedule_prio(start + sample_iv, PRIO_OBSERVE, Ev::Sample);
+        for i in 0..sc.replicas {
+            q.schedule(start + (i as Nanos * tele_iv) / sc.replicas.max(1) as Nanos, Ev::TelemetryPublish(i));
+        }
+
+        Ok(Sim {
+            sc: sc.clone(),
+            router,
+            admission,
+            tenant_shares,
+            route_rng,
+            workload,
+            start,
+            end,
+            measured_from,
+            now: start,
+            q,
+            replicas,
+            views,
+            placed: HashMap::new(),
+            done: HashMap::new(),
+            records: Vec::new(),
+            cost,
+            sample_iv,
+            tele_iv,
+            tele_delay,
+            replica_load,
+            fleet_queue: Series::new("fleet_queue"),
+            fleet_running: Series::new("fleet_running"),
+            fleet_kv: Series::new("fleet_kv_utilization"),
+            offered: Series::new("offered_rps"),
+            outcomes: HashMap::new(),
+            fingerprint: 0,
+            retries: 0,
+            first_attempts: 0,
+            window: Window::default(),
+            frames: Vec::new(),
+            tripped: None,
+            finished: false,
+        })
     }
 
-    // Tripwires. Each one names what to look at, because the failure mode being guarded against is
-    // exponential growth in scheduled work, which looks like a hang and then an out-of-memory kill.
-    let mut tripped: Option<String> = None;
-    while let Some((now, ev)) = q.pop() {
-        if now > end {
-            break;
-        }
-        if q.dispatched > MAX_EVENTS {
-            tripped = Some(format!(
-                "event ceiling: {} events dispatched with {:.0}% of the run remaining. Something is \
-                 scheduling work faster than it retires; suspect a feedback loop in the arrival or \
-                 retry path",
-                q.dispatched,
-                100.0 * (end.saturating_sub(now)) as f64 / (end - start).max(1) as f64
-            ));
-            break;
-        }
-        if records.len() > MAX_RECORDS || placed.len() > MAX_IN_FLIGHT {
-            tripped = Some(format!(
-                "state ceiling: {} records and {} tracked requests. Offered load is far above what \
-                 this fleet retires, or requests are never completing",
-                records.len(),
-                placed.len()
-            ));
-            break;
-        }
-        if q.len() > MAX_QUEUE_LEN {
-            tripped = Some(format!(
-                "queue ceiling: {} pending events. Almost always a self-scheduling event that never \
-                 terminates",
-                q.len()
-            ));
-            break;
-        }
-        match ev {
-            Ev::Arrival => {
-                let elapsed = (now - start) as f64 / 1e9;
-                let req = workload.make(sc, now);
-                first_attempts += 1;
-                let d = dispatch(
-                    &mut *router, &mut *admission, &views, &replicas, &tenant_shares, &mut route_rng,
-                    sc, now, &req,
-                );
-                place(&mut q, &mut records, &mut outcomes, &mut done, &mut window, d, req, now);
-                let gap = workload.next_gap_ns(sc, elapsed);
-                q.schedule(now + gap.max(1), Ev::Arrival);
-            }
+    pub fn now(&self) -> Nanos {
+        self.now
+    }
+    pub fn end(&self) -> Nanos {
+        self.end
+    }
+    pub fn finished(&self) -> bool {
+        self.finished
+    }
+    /// The frames closed so far. Available while the run is in progress, which is the point.
+    pub fn frames(&self) -> &[Frame] {
+        &self.frames
+    }
+    /// Every replica as it is right now, not as the delayed telemetry shows it: live telemetry for a
+    /// viewer, never for a policy.
+    pub fn latest_views(&self) -> Vec<ReplicaView> {
+        self.replicas.iter().map(|r| view_of(r, self.now)).collect()
+    }
 
-            Ev::Admit(target, req) => {
-                let r = &mut replicas[target];
-                let (id, deadline) = (req.id, req.deadline);
-                if let Err(req) = r.enqueue(req, sc.max_queue) {
-                    // Shed before consuming device time: the cheap failure, and deliberately
-                    // distinct in the outcome from one that fails after burning work.
-                    finish(
-                        &mut records, &mut outcomes, &mut done, &mut window, Outcome::Rejected,
-                        &req, now, target, 0, 0, 0, 0,
+    /// Dispatch every event at or before `t`, in the order the run always dispatched them, and stop.
+    ///
+    /// An event beyond `t` is left in the queue untouched, so `now()` never passes `t`. The one
+    /// exception is the end of the run: the first event past `end` is popped and discarded, as the
+    /// loop always did, because the dispatched count that the report prints includes it.
+    pub fn advance_to(&mut self, t: Nanos) -> Result<(), String> {
+        let sc = &self.sc;
+        let start = self.start;
+        let end = self.end;
+        // Tripwires. Each one names what to look at, because the failure mode being guarded against is
+        // exponential growth in scheduled work, which looks like a hang and then an out-of-memory kill.
+        while !self.finished {
+            let Some(at) = self.q.peek_time() else {
+                self.finished = true;
+                break;
+            };
+            if at > t && at <= end {
+                break;
+            }
+            let Some((now, ev)) = self.q.pop() else { break };
+            if now > end {
+                self.finished = true;
+                break;
+            }
+            if self.q.dispatched > MAX_EVENTS {
+                self.tripped = Some(format!(
+                    "event ceiling: {} events dispatched with {:.0}% of the run remaining. Something is \
+                     scheduling work faster than it retires; suspect a feedback loop in the arrival or \
+                     retry path",
+                    self.q.dispatched,
+                    100.0 * (end.saturating_sub(now)) as f64 / (end - start).max(1) as f64
+                ));
+                self.finished = true;
+                break;
+            }
+            if self.records.len() > MAX_RECORDS || self.placed.len() > MAX_IN_FLIGHT {
+                self.tripped = Some(format!(
+                    "state ceiling: {} records and {} tracked requests. Offered load is far above what \
+                     this fleet retires, or requests are never completing",
+                    self.records.len(),
+                    self.placed.len()
+                ));
+                self.finished = true;
+                break;
+            }
+            if self.q.len() > MAX_QUEUE_LEN {
+                self.tripped = Some(format!(
+                    "queue ceiling: {} pending events. Almost always a self-scheduling event that never \
+                     terminates",
+                    self.q.len()
+                ));
+                self.finished = true;
+                break;
+            }
+            self.now = now;
+            match ev {
+                Ev::Arrival => {
+                    let elapsed = (now - start) as f64 / 1e9;
+                    let req = self.workload.make(sc, now);
+                    self.first_attempts += 1;
+                    let d = dispatch(
+                        &mut *self.router, &mut *self.admission, &self.views, &self.replicas,
+                        &self.tenant_shares, &mut self.route_rng, sc, now, &req,
                     );
-                    continue;
-                }
-                window.admitted += 1;
-                placed.insert(id, target);
-                q.schedule(deadline, Ev::Timeout(id));
-                if r.wake(now) {
-                    q.schedule(now, Ev::Step(target));
-                }
-            }
-
-            Ev::Step(i) => {
-                let Some(out) = replicas[i].step(sc, &cost, now) else { continue };
-                let token_at = out.token_at;
-                for s in out.finished {
-                    let within = s.first_token_at - s.req.arrived_at
-                        <= (sc.ttft_slo_ms * 1e6) as Nanos
-                        && s.max_itl <= (sc.itl_slo_ms * 1e6) as Nanos
-                        && token_at - s.req.arrived_at <= (sc.e2e_slo_s * 1e9) as Nanos;
-                    let outcome = if within { Outcome::Ok } else { Outcome::OkSloViolated };
-                    admission.on_complete(s.req.tenant, s.req.output, token_at);
-                    finish(
-                        &mut records, &mut outcomes, &mut done, &mut window, outcome, &s.req,
-                        token_at, i, s.admitted_at, s.first_token_at, s.max_itl, s.mean_itl,
+                    place(
+                        &mut self.q, &mut self.records, &mut self.outcomes, &mut self.done,
+                        &mut self.window, d, req, now,
                     );
+                    let gap = self.workload.next_gap_ns(sc, elapsed);
+                    self.q.schedule(now + gap.max(1), Ev::Arrival);
                 }
 
-                if !out.idle {
-                    q.schedule(token_at, Ev::Step(i));
-                }
-                fingerprint = fingerprint
-                    .wrapping_mul(0x100_0000_01b3)
-                    .wrapping_add(out.step_ns ^ (i as u64));
-            }
-
-            Ev::TelemetryPublish(i) => {
-                let view = view_of(&replicas[i], now);
-                // Delayed delivery. This one line is the whole staleness mechanism: a policy cannot
-                // see the fleet as it is, only as it was.
-                q.schedule(now + tele_delay, Ev::TelemetryDeliver(i, view));
-                q.schedule(now + tele_iv, Ev::TelemetryPublish(i));
-            }
-
-            Ev::TelemetryDeliver(i, view) => {
-                views[i] = view;
-            }
-
-            Ev::Timeout(id) => {
-                if done.contains_key(&id) {
-                    continue;
-                }
-                let Some(&i) = placed.get(&id) else { continue };
-                if let Some((req, was_running)) = replicas[i].remove(id) {
-                    let outcome = if was_running {
-                        Outcome::TimeoutRunning
-                    } else {
-                        Outcome::TimeoutQueued
-                    };
-                    finish(
-                        &mut records, &mut outcomes, &mut done, &mut window, outcome, &req, now,
-                        i, 0, 0, 0, 0,
-                    );
-                    // Retry, under a budget. Retries are what turn a slowdown into a collapse, and
-                    // they cost far more here than in a stateless service because a timeout after
-                    // thirty seconds has already burned thirty seconds of device work.
-                    let budget_ok = retries as f64
-                        <= sc.retry_budget_fraction * first_attempts.max(1) as f64;
-                    if req.attempts < sc.max_attempts && budget_ok {
-                        retries += 1;
-                        let mut again = req.clone();
-                        again.attempts += 1;
-                        again.attempt_at = now + (sc.retry_backoff_s * 1e9) as Nanos;
-                        // The deadline runs from *this* attempt, since a client that retries gives
-                        // itself a fresh timeout. Latency, however, is still measured from the
-                        // original arrival below: from the user's point of view the wait started when
-                        // they first asked.
-                        again.deadline = again.attempt_at + (sc.client_timeout_s * 1e9) as Nanos;
-                        again.id = 1_000_000_000 + again.id * 8 + again.attempts as u64;
-                        again.arrived_at = req.arrived_at;
-                        let at = again.attempt_at;
-                        // Re-routed rather than pinned, so a retry does not land on the same
-                        // struggling replica by construction.
-                        let d = dispatch(
-                            &mut *router, &mut *admission, &views, &replicas, &tenant_shares,
-                            &mut route_rng, sc, at, &again,
+                Ev::Admit(target, req) => {
+                    let r = &mut self.replicas[target];
+                    let (id, deadline) = (req.id, req.deadline);
+                    if let Err(req) = r.enqueue(req, sc.max_queue) {
+                        // Shed before consuming device time: the cheap failure, and deliberately
+                        // distinct in the outcome from one that fails after burning work.
+                        finish(
+                            &mut self.records, &mut self.outcomes, &mut self.done, &mut self.window,
+                            Outcome::Rejected, &req, now, target, 0, 0, 0, 0,
                         );
-                        place(&mut q, &mut records, &mut outcomes, &mut done, &mut window, d, again, at);
+                        continue;
+                    }
+                    self.window.admitted += 1;
+                    self.placed.insert(id, target);
+                    self.q.schedule(deadline, Ev::Timeout(id));
+                    if r.wake(now) {
+                        self.q.schedule(now, Ev::Step(target));
                     }
                 }
-            }
 
-            Ev::Sample => {
-                let mut tq = 0.0;
-                let mut tr = 0.0;
-                let mut tkv = 0.0;
-                for (i, r) in replicas.iter().enumerate() {
-                    let load = r.load() as f64;
-                    replica_load[i].push(now, load);
-                    tq += r.queued() as f64;
-                    tr += r.running() as f64;
-                    tkv += r.kv_tokens() as f64 / sc.kv_capacity_tokens;
+                Ev::Step(i) => {
+                    let Some(out) = self.replicas[i].step(sc, &self.cost, now) else { continue };
+                    let token_at = out.token_at;
+                    for s in out.finished {
+                        let within = s.first_token_at - s.req.arrived_at
+                            <= (sc.ttft_slo_ms * 1e6) as Nanos
+                            && s.max_itl <= (sc.itl_slo_ms * 1e6) as Nanos
+                            && token_at - s.req.arrived_at <= (sc.e2e_slo_s * 1e9) as Nanos;
+                        let outcome = if within { Outcome::Ok } else { Outcome::OkSloViolated };
+                        self.admission.on_complete(s.req.tenant, s.req.output, token_at);
+                        finish(
+                            &mut self.records, &mut self.outcomes, &mut self.done, &mut self.window,
+                            outcome, &s.req, token_at, i, s.admitted_at, s.first_token_at, s.max_itl,
+                            s.mean_itl,
+                        );
+                    }
+
+                    if !out.idle {
+                        self.q.schedule(token_at, Ev::Step(i));
+                    }
+                    self.fingerprint = self
+                        .fingerprint
+                        .wrapping_mul(0x100_0000_01b3)
+                        .wrapping_add(out.step_ns ^ (i as u64));
                 }
-                fleet_queue.push(now, tq);
-                fleet_running.push(now, tr);
-                fleet_kv.push(now, 100.0 * tkv / sc.replicas as f64);
-                let rate = Workload::rate_at(sc, (now - start) as f64 / 1e9);
-                offered.push(now, rate);
-                frames.push(window.close(now, rate, &replicas));
-                q.schedule_prio(now + sample_iv, PRIO_OBSERVE, Ev::Sample);
+
+                Ev::TelemetryPublish(i) => {
+                    let view = view_of(&self.replicas[i], now);
+                    // Delayed delivery. This one line is the whole staleness mechanism: a policy cannot
+                    // see the fleet as it is, only as it was.
+                    self.q.schedule(now + self.tele_delay, Ev::TelemetryDeliver(i, view));
+                    self.q.schedule(now + self.tele_iv, Ev::TelemetryPublish(i));
+                }
+
+                Ev::TelemetryDeliver(i, view) => {
+                    self.views[i] = view;
+                }
+
+                Ev::Timeout(id) => {
+                    if self.done.contains_key(&id) {
+                        continue;
+                    }
+                    let Some(&i) = self.placed.get(&id) else { continue };
+                    if let Some((req, was_running)) = self.replicas[i].remove(id) {
+                        let outcome = if was_running {
+                            Outcome::TimeoutRunning
+                        } else {
+                            Outcome::TimeoutQueued
+                        };
+                        finish(
+                            &mut self.records, &mut self.outcomes, &mut self.done, &mut self.window,
+                            outcome, &req, now, i, 0, 0, 0, 0,
+                        );
+                        // Retry, under a budget. Retries are what turn a slowdown into a collapse, and
+                        // they cost far more here than in a stateless service because a timeout after
+                        // thirty seconds has already burned thirty seconds of device work.
+                        let budget_ok = self.retries as f64
+                            <= sc.retry_budget_fraction * self.first_attempts.max(1) as f64;
+                        if req.attempts < sc.max_attempts && budget_ok {
+                            self.retries += 1;
+                            let mut again = req.clone();
+                            again.attempts += 1;
+                            again.attempt_at = now + (sc.retry_backoff_s * 1e9) as Nanos;
+                            // The deadline runs from *this* attempt, since a client that retries gives
+                            // itself a fresh timeout. Latency, however, is still measured from the
+                            // original arrival below: from the user's point of view the wait started when
+                            // they first asked.
+                            again.deadline = again.attempt_at + (sc.client_timeout_s * 1e9) as Nanos;
+                            again.id = 1_000_000_000 + again.id * 8 + again.attempts as u64;
+                            again.arrived_at = req.arrived_at;
+                            let at = again.attempt_at;
+                            // Re-routed rather than pinned, so a retry does not land on the same
+                            // struggling replica by construction.
+                            let d = dispatch(
+                                &mut *self.router, &mut *self.admission, &self.views, &self.replicas,
+                                &self.tenant_shares, &mut self.route_rng, sc, at, &again,
+                            );
+                            place(
+                                &mut self.q, &mut self.records, &mut self.outcomes, &mut self.done,
+                                &mut self.window, d, again, at,
+                            );
+                        }
+                    }
+                }
+
+                Ev::Sample => {
+                    let mut tq = 0.0;
+                    let mut tr = 0.0;
+                    let mut tkv = 0.0;
+                    for (i, r) in self.replicas.iter().enumerate() {
+                        let load = r.load() as f64;
+                        self.replica_load[i].push(now, load);
+                        tq += r.queued() as f64;
+                        tr += r.running() as f64;
+                        tkv += r.kv_tokens() as f64 / sc.kv_capacity_tokens;
+                    }
+                    self.fleet_queue.push(now, tq);
+                    self.fleet_running.push(now, tr);
+                    self.fleet_kv.push(now, 100.0 * tkv / sc.replicas as f64);
+                    let rate = Workload::rate_at(sc, (now - start) as f64 / 1e9);
+                    self.offered.push(now, rate);
+                    self.frames.push(self.window.close(now, rate, &self.replicas));
+                    self.q.schedule_prio(now + self.sample_iv, PRIO_OBSERVE, Ev::Sample);
+                }
             }
         }
+        // Everything at or before the target has run, so time stands at the target; at the run's
+        // end it stands at the end whatever was asked for.
+        self.now = self.now.max(t.min(end));
+        if self.finished {
+            self.now = end;
+        }
+        if let Some(why) = &self.tripped {
+            return Err(format!("run {:?} aborted, {}", sc.name, why));
+        }
+        Ok(())
     }
 
-    if let Some(why) = tripped {
-        return Err(format!("run {:?} aborted, {}", sc.name, why));
-    }
+    /// The post-run aggregation. Callable before `end` for a partial result, which is the same
+    /// computation over the records so far.
+    pub fn into_result(self) -> Result<RunResult, String> {
+        let sc = &self.sc;
+        let measured_from = self.measured_from;
+        if let Some(why) = self.tripped {
+            return Err(format!("run {:?} aborted, {}", sc.name, why));
+        }
 
-    // Statistics come from the measured window only, so a run measures steady state rather than the
-    // transient of an empty fleet filling up.
-    for rec in records.iter().filter(|r| r.arrived_at >= measured_from) {
-        if let Some(t) = rec.ttft() {
-            ttft.record(t);
-        }
-        if rec.max_itl > 0 {
-            itl_max.record(rec.max_itl);
-        }
-        if let Some(t) = rec.e2e() {
-            e2e.record(t);
-        }
-        queue_wait.record(rec.queue_wait());
-    }
-    let measured: Vec<RequestRecord> = records
-        .into_iter()
-        .filter(|r| r.arrived_at >= measured_from)
-        .collect();
-    let mut measured_outcomes: HashMap<&'static str, u64> = HashMap::new();
-    for r in &measured {
-        *measured_outcomes.entry(r.outcome.label()).or_insert(0) += 1;
-    }
-    let _ = outcomes;
+        let mut ttft = Histogram::new();
+        let mut itl_max = Histogram::new();
+        let mut e2e = Histogram::new();
+        let mut queue_wait = Histogram::new();
 
-    Ok(RunResult {
-        scenario: sc.clone(),
-        routing_label: router.label(),
-        records: measured,
-        ttft,
-        itl_max,
-        e2e,
-        queue_wait,
-        replica_load,
-        fleet_queue,
-        fleet_running,
-        fleet_kv_utilization: fleet_kv,
-        offered_rps: offered,
-        frames,
-        outcomes: measured_outcomes,
-        events: q.dispatched,
-        fingerprint,
-        measured_from,
-        measured_to: end,
-        rated_rps: sc.rated_rps(),
-        replicas_inspected_per_decision: router.inspected(sc.replicas),
-        retries,
-        first_attempts,
-    })
+        // Statistics come from the measured window only, so a run measures steady state rather than the
+        // transient of an empty fleet filling up.
+        for rec in self.records.iter().filter(|r| r.arrived_at >= measured_from) {
+            if let Some(t) = rec.ttft() {
+                ttft.record(t);
+            }
+            if rec.max_itl > 0 {
+                itl_max.record(rec.max_itl);
+            }
+            if let Some(t) = rec.e2e() {
+                e2e.record(t);
+            }
+            queue_wait.record(rec.queue_wait());
+        }
+        let measured: Vec<RequestRecord> = self
+            .records
+            .into_iter()
+            .filter(|r| r.arrived_at >= measured_from)
+            .collect();
+        let mut measured_outcomes: HashMap<&'static str, u64> = HashMap::new();
+        for r in &measured {
+            *measured_outcomes.entry(r.outcome.label()).or_insert(0) += 1;
+        }
+        let _ = self.outcomes;
+
+        Ok(RunResult {
+            scenario: sc.clone(),
+            routing_label: self.router.label(),
+            records: measured,
+            ttft,
+            itl_max,
+            e2e,
+            queue_wait,
+            replica_load: self.replica_load,
+            fleet_queue: self.fleet_queue,
+            fleet_running: self.fleet_running,
+            fleet_kv_utilization: self.fleet_kv,
+            offered_rps: self.offered,
+            frames: self.frames,
+            outcomes: measured_outcomes,
+            events: self.q.dispatched,
+            fingerprint: self.fingerprint,
+            measured_from,
+            measured_to: self.end,
+            rated_rps: sc.rated_rps(),
+            replicas_inspected_per_decision: self.router.inspected(sc.replicas),
+            retries: self.retries,
+            first_attempts: self.first_attempts,
+        })
+    }
 }
 
 /// What a replica reports about itself, as a policy will see it after the telemetry delay, or right
