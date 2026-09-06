@@ -1,0 +1,245 @@
+//! The wire encoder and the static export, held to WIRE.md.
+//!
+//! The documents under `runs/` are what the dashboard reads before a live server exists, and what
+//! the live server will send once it does. Three things are worth proving rather than trusting: the
+//! field names are the proto's, a re-export is byte-identical, and the windowed rows add up to the
+//! scorecard, so a chart of the run and the headline number cannot disagree.
+
+mod common;
+
+use lbsim::sim::{self, RunResult};
+use sim_ingress::{export, wire};
+use std::collections::BTreeSet;
+use std::fs;
+use std::path::{Path, PathBuf};
+
+fn workspace() -> &'static Path {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+}
+
+/// A fresh directory per test, so tests can run in parallel and a stale index cannot leak between
+/// them.
+fn fresh_dir(name: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("lbsim-wire-export-{}-{name}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+fn small_run() -> RunResult {
+    let mut sc = common::at_load(0.9);
+    // A name with characters that must be escaped and slugged.
+    sc.name = "wire \"export\" / small".into();
+    sim::run(&sc).expect("small scenario runs")
+}
+
+fn read(path: &Path) -> String {
+    fs::read_to_string(path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+}
+
+/// Every `"key":` in a JSON document. Keys are the only strings immediately followed by a colon,
+/// and the documents here never contain a colon inside a string value that is followed by a quote
+/// and colon, so a scan is enough.
+fn json_keys(text: &str) -> BTreeSet<String> {
+    let mut keys = BTreeSet::new();
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'"' {
+            let start = i + 1;
+            let mut j = start;
+            while j < bytes.len() && bytes[j] != b'"' {
+                if bytes[j] == b'\\' {
+                    j += 1;
+                }
+                j += 1;
+            }
+            if j + 1 < bytes.len() && bytes[j + 1] == b':' {
+                keys.insert(text[start..j].to_string());
+            }
+            i = j + 1;
+        } else {
+            i += 1;
+        }
+    }
+    keys
+}
+
+/// Field names declared in a proto file: the identifier before `=` on every `... name = N;` line.
+fn proto_field_names(file: &str) -> BTreeSet<String> {
+    let text = read(&workspace().join("proto/lbsim/v1").join(file));
+    text.lines()
+        .filter_map(|l| {
+            let l = l.split("//").next()?.trim();
+            let (decl, _) = l.split_once('=')?;
+            let name = decl.split_whitespace().last()?;
+            Some(name.to_string())
+        })
+        .collect()
+}
+
+#[test]
+fn emitted_field_names_exist_in_the_protos() {
+    let dir = fresh_dir("names");
+    let r = small_run();
+    let run_dir = export::export_run_from(&r, "names", None, &dir).unwrap();
+
+    // `result.json` is `GetResult`'s `RunResult`, whose message lives in metrics.proto, which
+    // ingress.proto imports for exactly that RPC.
+    let mut allowed = proto_field_names("ingress.proto");
+    allowed.extend(proto_field_names("subscription.proto"));
+    allowed.extend(proto_field_names("metrics.proto"));
+
+    let mut offenders = Vec::new();
+    for doc in ["status.json", "result.json", "fleet.jsonl"] {
+        for key in json_keys(&read(&run_dir.join(doc))) {
+            // Enum-keyed maps use the enum number as the key; WIRE.md rule 4.
+            if key.chars().all(|c| c.is_ascii_digit()) {
+                continue;
+            }
+            if !allowed.contains(&key) {
+                offenders.push(format!("{doc}: {key}"));
+            }
+        }
+    }
+    assert!(offenders.is_empty(), "field names not in any proto:\n  {}", offenders.join("\n  "));
+
+    // The one deviation, and it is exactly the documented one.
+    let index_keys = json_keys(&read(&dir.join("runs/index.json")));
+    let expected: BTreeSet<String> = [
+        "run_id", "name", "routing", "sim_start_unix_ns", "sim_end_unix_ns", "sample_interval_ms", "replicas",
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect();
+    assert_eq!(index_keys, expected);
+}
+
+#[test]
+fn export_is_byte_identical_on_rerun() {
+    let a = fresh_dir("rerun-a");
+    let b = fresh_dir("rerun-b");
+    let r = small_run();
+    export::export_run(&r, "x/y", &a).unwrap();
+    export::export_run(&small_run(), "x/y", &b).unwrap();
+    // Exporting into the directory a second time must leave it unchanged too: that exercises the
+    // index merge, which replaces rather than appends.
+    export::export_run(&r, "x/y", &a).unwrap();
+
+    for name in ["index.json", "x/y/status.json", "x/y/scenario.txt", "x/y/result.json", "x/y/fleet.jsonl"] {
+        let pa = a.join("runs").join(name);
+        let pb = b.join("runs").join(name);
+        assert_eq!(fs::read(&pa).unwrap(), fs::read(&pb).unwrap(), "{name} differs between exports");
+    }
+}
+
+#[test]
+fn fleet_rows_have_one_line_per_sample_and_a_final_flag() {
+    let dir = fresh_dir("rows");
+    let r = small_run();
+    let run_dir = export::export_run_from(&r, "rows", None, &dir).unwrap();
+    let text = read(&run_dir.join("fleet.jsonl"));
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines.len(), r.fleet_queue.t.len(), "one line per sample instant");
+    assert!(lines.len() > 50, "the small scenario samples more than this");
+
+    for (i, line) in lines.iter().enumerate() {
+        let last = i + 1 == lines.len();
+        assert!(line.ends_with(if last { r#","final":true}"# } else { r#","final":false}"# }), "line {i}: {line}");
+        assert!(line.starts_with(r#"{"subscription_id":"export","sim_time_unix_ns":""#));
+        // WIRE.md rule 2: the instant is the engine's own, as a decimal string.
+        assert!(line.contains(&format!(r#""sim_time_unix_ns":"{}""#, r.fleet_queue.t[i])), "line {i}");
+        assert!(line.contains(r#""target":{"scope":"SCOPE_FLEET"}"#));
+        assert!(!line.contains("NaN") && !line.contains("inf"), "non-finite number on the wire: {line}");
+    }
+    // Replica scope waits for per-replica frames; the seam is empty by design today.
+    assert!(export::replica_rows(&r, 0).is_empty());
+
+    let status = read(&run_dir.join("status.json"));
+    assert!(status.contains(r#""state":"STATE_COMPLETE""#));
+    assert!(status.contains(&format!(r#""sim_end_unix_ns":"{}""#, r.measured_to)));
+    assert_eq!(read(&run_dir.join("scenario.txt")), r.scenario.to_text());
+}
+
+#[test]
+fn window_counts_sum_to_the_scorecard() {
+    let r = small_run();
+    let rows = export::fleet_rows(&r);
+    let iv_s = r.scenario.sample_interval_ms / 1000.0;
+    let measured_s = (r.measured_to - r.measured_from) as f64 / 1e9;
+
+    let mut e2e_count = 0u64;
+    let mut queue_wait_count = 0u64;
+    let mut completed = 0.0;
+    let mut goodput_tokens = 0.0;
+    let mut output_tokens = 0.0;
+    for u in &rows {
+        for (m, d) in &u.row.distributions {
+            if *m == wire::METRIC_E2E {
+                e2e_count += d.count;
+            }
+            if *m == wire::METRIC_QUEUE_WAIT {
+                queue_wait_count += d.count;
+            }
+        }
+        for (m, v) in &u.row.values {
+            match *m {
+                wire::METRIC_COMPLETED_RPS => completed += v * iv_s,
+                wire::METRIC_GOODPUT_TOKENS_PER_S => goodput_tokens += v * iv_s,
+                wire::METRIC_OUTPUT_TOKENS_PER_S => output_tokens += v * iv_s,
+                _ => {}
+            }
+        }
+    }
+    assert!(r.completed() > 100, "the scenario must complete something to be worth checking");
+    // The windows partition the measured records, so the sums are exact, not approximate.
+    assert_eq!(e2e_count, r.completed());
+    assert_eq!(queue_wait_count, r.records.len() as u64);
+    assert!((completed - r.completed() as f64).abs() < 1e-6, "{completed} vs {}", r.completed());
+    assert!(
+        (goodput_tokens - r.goodput_tokens_s() * measured_s).abs() < 1e-3,
+        "{goodput_tokens} vs {}",
+        r.goodput_tokens_s() * measured_s
+    );
+    assert!((output_tokens - r.throughput_tokens_s() * measured_s).abs() < 1e-3);
+
+    // And the scorecard document carries the same totals.
+    let card = export::result(&r, "sum");
+    let outcome_total: u64 = card.overall.outcome_counts.iter().map(|(_, n)| n).sum();
+    assert_eq!(outcome_total, r.records.len() as u64);
+    assert_eq!(card.state_checksum, r.fingerprint);
+    assert_eq!(card.event_count, r.events);
+}
+
+#[test]
+fn demos_export_writes_the_six_groups() {
+    let dir = fresh_dir("demos");
+    let overrides = vec![("duration_s".to_string(), "20".to_string()), ("warmup_s".to_string(), "5".to_string())];
+    let ids = export::export_demos(&workspace().join("scenarios"), &dir, &overrides).unwrap();
+
+    let count = |prefix: &str| ids.iter().filter(|id| id.starts_with(prefix)).count();
+    assert_eq!(count("1-routing/"), 4);
+    assert_eq!(count("2-staleness/telemetry_interval_ms="), 6);
+    assert_eq!(count("3-chunking/step_token_budget="), 6);
+    assert_eq!(count("4-load-curve/arrival_rps="), 6);
+    assert_eq!(count("5-long-context/long_probability="), 5);
+    assert_eq!(count("6-retry/"), 3);
+    assert_eq!(ids.len(), 30);
+    assert!(ids.contains(&"1-routing/round-robin".to_string()), "{ids:?}");
+    assert!(ids.contains(&"2-staleness/telemetry_interval_ms=250".to_string()));
+
+    for id in &ids {
+        let run_dir = dir.join("runs").join(id);
+        for doc in ["status.json", "scenario.txt", "result.json", "fleet.jsonl"] {
+            assert!(run_dir.join(doc).is_file(), "{id}/{doc} missing");
+        }
+        // The override reached the run, and the sweep's own key won over it where they met.
+        let scenario = read(&run_dir.join("scenario.txt"));
+        assert!(scenario.contains("duration_s = 20\n"), "{id}");
+        assert!(scenario.contains("warmup_s = 5\n"), "{id}");
+    }
+    let index = read(&dir.join("runs/index.json"));
+    assert_eq!(index.lines().filter(|l| l.starts_with('{')).count(), 30);
+    assert!(index.contains(r#""scenario_file":""#));
+    assert!(read(&dir.join("runs/3-chunking/step_token_budget=4096/scenario.txt")).contains("step_token_budget = 4096\n"));
+}

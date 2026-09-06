@@ -9,8 +9,10 @@
 //! Deliberately not general purpose. No TLS, since Cloud Run terminates it. No caching, no ranges, no
 //! compression. It serves a directory over HTTP/1.1 and nothing else.
 
+pub mod export;
 pub mod idle;
 pub mod lease;
+pub mod wire;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Component, Path, PathBuf};
