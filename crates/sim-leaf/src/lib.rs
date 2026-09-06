@@ -6,7 +6,7 @@
 //! retired. The split follows the Leaf seam in `docs/ARCHITECTURE.md` section 10.3, so the loop can
 //! later be cut along it without touching the physics.
 
-use sim_metrics::{Histogram, Outcome, RequestRecord, Series};
+use sim_metrics::{Frame, Histogram, Outcome, ReplicaSample, RequestRecord, Series};
 use sim_policy::{Admission, AdmissionContext, AdmissionPolicy, ReplicaView, RequestView, RouteContext, RoutingPolicy};
 use sim_core::queue::{EventQueue, PRIO_OBSERVE};
 use sim_core::rng::{Rng, Streams};
@@ -44,6 +44,9 @@ pub struct RunResult {
     pub fleet_running: Series,
     pub fleet_kv_utilization: Series,
     pub offered_rps: Series,
+    /// One per sample: the counts, distributions and per-replica state of that interval. The series
+    /// above are the run-wide view; these are the live one.
+    pub frames: Vec<Frame>,
     pub outcomes: HashMap<&'static str, u64>,
     pub events: u64,
     pub fingerprint: u64,
@@ -277,6 +280,82 @@ fn validate(sc: &Scenario) -> Result<(), String> {
     }
 }
 
+/// The frame under construction: what has happened since the last sample.
+///
+/// Fed by `finish` and by the admit path, closed into a `Frame` at every sample and reset. The
+/// histograms are dense while accumulating, because recording into a dense histogram is one index
+/// and one add, and sparse only once frozen.
+#[derive(Default)]
+struct Window {
+    admitted: u64,
+    completed: u64,
+    rejected: u64,
+    timed_out: u64,
+    within_slo: u64,
+    output_tokens: u64,
+    goodput_tokens: u64,
+    ttft: Histogram,
+    itl_max: Histogram,
+    e2e: Histogram,
+    queue_wait: Histogram,
+}
+
+impl Window {
+    fn record(&mut self, rec: &RequestRecord) {
+        match rec.outcome {
+            Outcome::Ok | Outcome::OkSloViolated => {
+                self.completed += 1;
+                self.output_tokens += rec.output_tokens as u64;
+                if rec.outcome == Outcome::Ok {
+                    self.within_slo += 1;
+                    self.goodput_tokens += rec.output_tokens as u64;
+                }
+                if let Some(t) = rec.ttft() {
+                    self.ttft.record(t);
+                }
+                if rec.max_itl > 0 {
+                    self.itl_max.record(rec.max_itl);
+                }
+                if let Some(t) = rec.e2e() {
+                    self.e2e.record(t);
+                }
+                self.queue_wait.record(rec.queue_wait());
+            }
+            Outcome::Rejected => self.rejected += 1,
+            Outcome::TimeoutQueued | Outcome::TimeoutRunning => self.timed_out += 1,
+        }
+    }
+
+    /// Freeze the window into a frame at `t` and start the next one.
+    fn close(&mut self, t: Nanos, offered_rps: f64, replicas: &[Replica]) -> Frame {
+        let w = std::mem::take(self);
+        Frame {
+            t,
+            offered_rps,
+            admitted: w.admitted,
+            completed: w.completed,
+            rejected: w.rejected,
+            timed_out: w.timed_out,
+            within_slo: w.within_slo,
+            output_tokens: w.output_tokens,
+            goodput_tokens: w.goodput_tokens,
+            ttft: w.ttft.to_sparse(),
+            itl_max: w.itl_max.to_sparse(),
+            e2e: w.e2e.to_sparse(),
+            queue_wait: w.queue_wait.to_sparse(),
+            replicas: replicas
+                .iter()
+                .map(|r| ReplicaSample {
+                    queued: r.queued() as u32,
+                    running: r.running() as u32,
+                    kv_tokens: r.kv_tokens(),
+                    last_step_ns: r.last_step_ns(),
+                })
+                .collect(),
+        }
+    }
+}
+
 pub fn run(sc: &Scenario) -> Result<RunResult, String> {
     validate(sc)?;
     let mut router = sim_policy::make_routing(sc)?;
@@ -318,6 +397,8 @@ pub fn run(sc: &Scenario) -> Result<RunResult, String> {
     let mut fingerprint: u64 = 0;
     let mut retries: u64 = 0;
     let mut first_attempts: u64 = 0;
+    let mut window = Window::default();
+    let mut frames: Vec<Frame> = Vec::new();
 
     q.schedule(start, Ev::Arrival);
     q.schedule_prio(start + sample_iv, PRIO_OBSERVE, Ev::Sample);
@@ -368,7 +449,7 @@ pub fn run(sc: &Scenario) -> Result<RunResult, String> {
                     &mut *router, &mut *admission, &views, &replicas, &tenant_shares, &mut route_rng,
                     sc, now, &req,
                 );
-                place(&mut q, &mut records, &mut outcomes, &mut done, d, req, now);
+                place(&mut q, &mut records, &mut outcomes, &mut done, &mut window, d, req, now);
                 let gap = workload.next_gap_ns(sc, elapsed);
                 q.schedule(now + gap.max(1), Ev::Arrival);
             }
@@ -380,11 +461,12 @@ pub fn run(sc: &Scenario) -> Result<RunResult, String> {
                     // Shed before consuming device time: the cheap failure, and deliberately
                     // distinct in the outcome from one that fails after burning work.
                     finish(
-                        &mut records, &mut outcomes, &mut done, Outcome::Rejected, &req, now,
-                        target, 0, 0, 0, 0,
+                        &mut records, &mut outcomes, &mut done, &mut window, Outcome::Rejected,
+                        &req, now, target, 0, 0, 0, 0,
                     );
                     continue;
                 }
+                window.admitted += 1;
                 placed.insert(id, target);
                 q.schedule(deadline, Ev::Timeout(id));
                 if r.wake(now) {
@@ -403,8 +485,8 @@ pub fn run(sc: &Scenario) -> Result<RunResult, String> {
                     let outcome = if within { Outcome::Ok } else { Outcome::OkSloViolated };
                     admission.on_complete(s.req.tenant, s.req.output, token_at);
                     finish(
-                        &mut records, &mut outcomes, &mut done, outcome, &s.req, token_at, i,
-                        s.admitted_at, s.first_token_at, s.max_itl, s.mean_itl,
+                        &mut records, &mut outcomes, &mut done, &mut window, outcome, &s.req,
+                        token_at, i, s.admitted_at, s.first_token_at, s.max_itl, s.mean_itl,
                     );
                 }
 
@@ -440,7 +522,8 @@ pub fn run(sc: &Scenario) -> Result<RunResult, String> {
                         Outcome::TimeoutQueued
                     };
                     finish(
-                        &mut records, &mut outcomes, &mut done, outcome, &req, now, i, 0, 0, 0, 0,
+                        &mut records, &mut outcomes, &mut done, &mut window, outcome, &req, now,
+                        i, 0, 0, 0, 0,
                     );
                     // Retry, under a budget. Retries are what turn a slowdown into a collapse, and
                     // they cost far more here than in a stateless service because a timeout after
@@ -466,7 +549,7 @@ pub fn run(sc: &Scenario) -> Result<RunResult, String> {
                             &mut *router, &mut *admission, &views, &replicas, &tenant_shares,
                             &mut route_rng, sc, at, &again,
                         );
-                        place(&mut q, &mut records, &mut outcomes, &mut done, d, again, at);
+                        place(&mut q, &mut records, &mut outcomes, &mut done, &mut window, d, again, at);
                     }
                 }
             }
@@ -485,7 +568,9 @@ pub fn run(sc: &Scenario) -> Result<RunResult, String> {
                 fleet_queue.push(now, tq);
                 fleet_running.push(now, tr);
                 fleet_kv.push(now, 100.0 * tkv / sc.replicas as f64);
-                offered.push(now, Workload::rate_at(sc, (now - start) as f64 / 1e9));
+                let rate = Workload::rate_at(sc, (now - start) as f64 / 1e9);
+                offered.push(now, rate);
+                frames.push(window.close(now, rate, &replicas));
                 q.schedule_prio(now + sample_iv, PRIO_OBSERVE, Ev::Sample);
             }
         }
@@ -532,6 +617,7 @@ pub fn run(sc: &Scenario) -> Result<RunResult, String> {
         fleet_running,
         fleet_kv_utilization: fleet_kv,
         offered_rps: offered,
+        frames,
         outcomes: measured_outcomes,
         events: q.dispatched,
         fingerprint,
@@ -611,15 +697,16 @@ fn place(
     records: &mut Vec<RequestRecord>,
     outcomes: &mut HashMap<&'static str, u64>,
     done: &mut HashMap<u64, bool>,
+    window: &mut Window,
     d: Dispatch,
     req: Request,
     now: Nanos,
 ) {
     match d {
         Dispatch::Route { target, delay } => q.schedule(now + delay, Ev::Admit(target, req)),
-        Dispatch::Rejected => {
-            finish(records, outcomes, done, Outcome::Rejected, &req, now, NO_REPLICA, 0, 0, 0, 0)
-        }
+        Dispatch::Rejected => finish(
+            records, outcomes, done, window, Outcome::Rejected, &req, now, NO_REPLICA, 0, 0, 0, 0,
+        ),
         Dispatch::Dropped => {}
     }
 }
@@ -632,6 +719,7 @@ fn finish(
     records: &mut Vec<RequestRecord>,
     outcomes: &mut HashMap<&'static str, u64>,
     done: &mut HashMap<u64, bool>,
+    window: &mut Window,
     outcome: Outcome,
     req: &Request,
     now: Nanos,
@@ -643,7 +731,7 @@ fn finish(
 ) {
     done.insert(req.id, true);
     *outcomes.entry(outcome.label()).or_insert(0) += 1;
-    records.push(RequestRecord {
+    let rec = RequestRecord {
         id: req.id,
         arrived_at: req.arrived_at,
         admitted_at: if admitted_at == 0 { now } else { admitted_at },
@@ -656,5 +744,7 @@ fn finish(
         outcome,
         max_itl,
         mean_itl,
-    });
+    };
+    window.record(&rec);
+    records.push(rec);
 }
