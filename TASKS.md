@@ -50,11 +50,11 @@ The registrar still delegates `lbsim.ai` to Google Cloud DNS, and the zone that 
 nothing at all. Earlier today it pointed at Firebase Hosting for `lbsim-prod`; that is gone too. This is
 also why the Porkbun TXT record did not work: Porkbun's DNS was not authoritative for the domain.
 
-- [ ] **Step 0, fix the delegation.** In Porkbun, `lbsim.ai` → Nameservers → use Porkbun's own
+- [x] **Step 0, fix the delegation.** In Porkbun, `lbsim.ai` → Nameservers → use Porkbun's own
       nameservers. After that the records in Porkbun's DNS panel, including the TXT you already added,
       are the ones the world sees. Check: `dig +short NS lbsim.ai` shows `*.porkbun.com`, then
       `dig +short TXT lbsim.ai` shows the `google-site-verification=…` string. Takes up to 48 hours to
-      propagate, usually under an hour.
+      propagate, usually under an hour. Issao: Still shows google dns there, need to wait.
 - [ ] **Step 1, verification.** Finish the `lbsim.ai` Domain property in Search Console once the TXT
       resolves.
 - [ ] **Step 2, the mapping.** Domain ownership is per account, and the deploy account is not an owner.
