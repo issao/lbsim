@@ -6,10 +6,17 @@ import "lbsim/v1/common.proto";
 import "lbsim/v1/metrics.proto";
 import "lbsim/v1/scenario.proto";
 
-// The simulator's own service, served for real over gRPC and grpc-web to the React
-// dashboard. Unlike everything in serving.proto, these are actual RPCs.
+// The Frontend-to-Ingress API: the simulator's own service, served for real over gRPC and
+// grpc-web to the React dashboard. Unlike everything in serving.proto, these are actual RPCs.
+//
+// Issao's constraint, docs/ARCHITECTURE.md section 10.2: every call here must be O(1) in
+// payload, meaning independent of the number of machines, the number of requests, and the ratio
+// of simulated to real seconds. Metric flow is bounded by an explicit wall-clock budget, see
+// subscription.proto. Step and rewind take bounded arguments for the same reason.
 
-service SimControl {
+import "lbsim/v1/subscription.proto";
+
+service Ingress {
   // -- running ----------------------------------------------------------
 
   rpc StartRun(StartRunRequest) returns (StartRunResponse);
@@ -17,20 +24,35 @@ service SimControl {
   rpc GetRun(GetRunRequest) returns (RunStatus);
   rpc ListRuns(ListRunsRequest) returns (ListRunsResponse);
 
-  // Live metrics while a run proceeds. The interactive playground needs to see a dynamic
-  // unfold, not only its summary.
-  rpc StreamRun(StreamRunRequest) returns (stream RunUpdate);
+  // -- observation ------------------------------------------------------
+  //
+  // Budgeted, leased and paginated; see subscription.proto. Replaces an earlier unbounded
+  // StreamRun, which would have scaled with fleet size and simulation speed.
+
+  rpc OpenSubscription(OpenSubscriptionRequest) returns (stream SubscriptionUpdate);
+  rpc RenewSubscription(RenewSubscriptionRequest) returns (RenewSubscriptionResponse);
+  rpc CloseSubscription(CloseSubscriptionRequest) returns (CloseSubscriptionResponse);
 
   // -- interactive control ---------------------------------------------
+
+  // Pace the run at a fixed number of simulated seconds per wall-clock second, so a dynamic can
+  // be watched unfolding. Also re-derives every subscription's sampling interval, since the
+  // budget is expressed in wall-clock terms.
+  rpc SetSpeed(SetSpeedRequest) returns (SetSpeedResponse);
+
+  // Advance a bounded amount and pause. Bounded so the request stays O(1) however much
+  // simulated time is asked for: a large request returns after its cap and is repeated.
+  rpc StepForward(StepForwardRequest) returns (StepForwardResponse);
 
   // Change parameters mid-run: the playground's core interaction. Anything that alters
   // physics forces re-simulation from the last snapshot; anything that only alters the view
   // does not. The response says which happened, so the UI can tell the user honestly.
   rpc Apply(ApplyRequest) returns (ApplyResponse);
 
-  // Scrub. Reads the recorded event log, so it needs no re-simulation and is fast enough for
-  // a slider. See docs/ARCHITECTURE.md 8.2.
-  rpc Seek(SeekRequest) returns (SeekResponse);
+  // Scrub. Cheap when only the view changed, since it reads the recorded observability log and
+  // needs no re-simulation. Expensive when a physics parameter changed, since it restores a
+  // snapshot and re-simulates. The response says which happened; see docs/ARCHITECTURE.md 10.7.
+  rpc Rewind(RewindRequest) returns (RewindResponse);
 
   // -- results ---------------------------------------------------------
 
@@ -88,22 +110,30 @@ message RunStatus {
 message ListRunsRequest { uint32 limit = 1; string cursor = 2; }
 message ListRunsResponse { repeated RunStatus runs = 1; string next_cursor = 2; }
 
-message StreamRunRequest {
+message SetSpeedRequest {
   string run_id = 1;
-  uint64 update_interval_ns = 2;
-  // Restrict to the series the client is actually displaying. At 6,250 replicas, streaming
-  // everything would swamp the browser.
-  repeated string series_names = 3;
-  repeated ClusterId clusters = 4;
+  // Simulated seconds per wall-clock second. Zero or absent means as fast as possible.
+  double realtime_factor = 2;
+  bool paused = 3;
+}
+message SetSpeedResponse {
+  double realtime_factor = 1;
+  // Subscriptions are re-derived when speed changes, so the client is told to expect new
+  // intervals rather than inferring a stall from wider gaps.
+  bool subscriptions_reintervalled = 2;
 }
 
-message RunUpdate {
+message StepForwardRequest {
+  string run_id = 1;
+  // Exactly one. Both are capped server-side so the call remains bounded.
+  uint64 sim_duration_ns = 2;
+  uint32 barrier_windows = 3;
+}
+message StepForwardResponse {
   uint64 sim_time_ns = 1;
-  repeated Series series_delta = 2;
-  Scorecard running_scorecard = 3;
-  // Notable moments for the narration timeline: a failure fired, preemption began, the fleet
-  // collapsed, autoscaling triggered.
-  repeated Annotation annotations = 4;
+  // True when the server capped the step; repeat the call to continue.
+  bool capped = 2;
+  bool run_complete = 3;
 }
 
 message Annotation {
@@ -129,8 +159,15 @@ message ApplyResponse {
   string rejected_reason = 4;
 }
 
-message SeekRequest { string run_id = 1; uint64 to_sim_time_ns = 2; }
-message SeekResponse { uint64 sim_time_ns = 1; bool from_log = 2; }
+message RewindRequest { string run_id = 1; uint64 to_sim_time_ns = 2; }
+message RewindResponse {
+  uint64 sim_time_ns = 1;
+  // True when served from the observability log with no re-simulation. False means a snapshot
+  // was restored and time was re-simulated, which is slower and, if a physics parameter changed
+  // since, produces a different future than the one already shown.
+  bool from_log = 2;
+  uint64 restored_from_snapshot_ns = 3;
+}
 
 message GetResultRequest { string run_id = 1; }
 

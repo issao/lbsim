@@ -1,0 +1,152 @@
+syntax = "proto3";
+
+package lbsim.v1;
+
+import "lbsim/v1/common.proto";
+import "lbsim/v1/metrics.proto";
+
+// Metric subscriptions. Shared by both observability hops, Frontend-to-Ingress and
+// Ingress-to-Leaf, deliberately: Issao specified the same mechanics for both, and sharing the
+// types means the O(1) bound is enforced once rather than twice.
+//
+// The requirement, from docs/ARCHITECTURE.md section 10.2: this flow must not scale with the
+// number of machines, the number of requests, or the ratio of simulated to real seconds.
+//
+// Naming a simulated sampling interval is not sufficient to achieve that, because raising the
+// simulation speed then raises the wire rate proportionally. So a subscription declares a
+// **wall-clock budget** and the server derives the sampling interval to fit it, decimating
+// further whenever the run speeds up. The client says what it can consume; the server never
+// exceeds it.
+
+// ---------------------------------------------------------------------------
+// What to observe
+// ---------------------------------------------------------------------------
+
+// Aggregation level. Coarser levels are cheap and bounded; REPLICA is the only one whose row
+// count grows with the fleet, which is why it requires a page.
+enum Scope {
+  SCOPE_UNSPECIFIED = 0;
+  SCOPE_FLEET = 1;
+  SCOPE_CLUSTER = 2;
+  SCOPE_POOL = 3;
+  SCOPE_TENANT = 4;
+  SCOPE_SLO_CLASS = 5;
+  SCOPE_REPLICA = 6;
+}
+
+message MetricSelector {
+  // Series or histogram names, e.g. "kv_utilization", "ttft", "queue_depth". Empty means the
+  // scenario's default panel set.
+  repeated string names = 1;
+  Scope scope = 2;
+
+  // Narrow the selection. Empty means all at that scope.
+  repeated ClusterId clusters = 10;
+  repeated PoolId pools = 11;
+  repeated TenantId tenants = 12;
+
+  // Required when scope is SCOPE_REPLICA. Without a page, a 62,500-replica fleet would make
+  // the payload width scale with the fleet, which is the thing this interface exists to prevent.
+  Page page = 20;
+}
+
+// Cursor-based rather than offset-based, because the sort key is live data: rows reorder
+// between updates, and an offset would silently skip or duplicate replicas.
+message Page {
+  // Sort key, e.g. "kv_utilization", "queue_depth", "replica_id". Ties break on replica id so
+  // the order is total and the page is stable.
+  string sort_by = 1;
+  bool descending = 2;
+  uint32 page_size = 3;
+  // Opaque, from a previous SubscriptionUpdate. Empty starts at the first page.
+  bytes cursor = 4;
+}
+
+// ---------------------------------------------------------------------------
+// How much to send
+// ---------------------------------------------------------------------------
+
+// The O(1) contract. Every field is a hard cap the server honours; none is advisory.
+message Budget {
+  // Hard cap on emission rate in *wall-clock* seconds. The server derives the simulated
+  // sampling interval as max(desired_sim_interval_ns, realtime_factor / this) and re-derives it
+  // whenever the speed changes.
+  double max_updates_per_wall_second = 1;
+
+  // Hard cap on payload width. With SCOPE_REPLICA this bounds the page size actually served,
+  // which may be smaller than the page requested.
+  uint32 max_rows_per_update = 2;
+
+  // The client's preference, honoured only where it fits the caps above.
+  uint64 desired_sim_interval_ns = 3;
+
+  // Wall-clock lease. The server drops the subscription when it expires, so a closed browser
+  // tab cannot leave Ingress and every Leaf shipping data forever. Renew what is still on
+  // screen.
+  uint64 lease_ns = 4;
+}
+
+message OpenSubscriptionRequest {
+  string run_id = 1;
+  MetricSelector selector = 2;
+  Budget budget = 3;
+}
+
+message OpenSubscriptionResponse {
+  string subscription_id = 1;
+  // What the server actually granted, which may be coarser than requested. Shown to the user so
+  // a chart is never silently sampled differently from what its axis claims.
+  uint64 granted_sim_interval_ns = 2;
+  uint32 granted_rows_per_update = 3;
+  uint64 lease_expires_at_wall_ns = 4;
+  string rejected_reason = 5;
+}
+
+message RenewSubscriptionRequest { string subscription_id = 1; uint64 lease_ns = 2; }
+message RenewSubscriptionResponse { uint64 lease_expires_at_wall_ns = 1; bool expired = 2; }
+
+message CloseSubscriptionRequest { string subscription_id = 1; }
+message CloseSubscriptionResponse {}
+
+// ---------------------------------------------------------------------------
+// What comes back
+// ---------------------------------------------------------------------------
+
+message SubscriptionUpdate {
+  string subscription_id = 1;
+  // Simulated time this update describes.
+  uint64 sim_time_ns = 2;
+  // Realtime factor at the moment of emission, so a client can tell why the interval changed.
+  double realtime_factor = 3;
+
+  repeated MetricRow rows = 10;
+
+  // Non-zero when the server decimated to stay inside the budget. Surfacing it keeps the client
+  // honest about what it is drawing rather than letting gaps look like quiet periods.
+  uint32 updates_skipped = 20;
+
+  // For the next page request. Absent when this is the last page.
+  bytes next_cursor = 21;
+
+  // Set on the final update of a run. Issao's preference for interface symmetry: the terminal
+  // values arrive on the channel the client is already reading, rather than as a separate
+  // result message.
+  bool final = 30;
+  Scorecard final_scorecard = 31;
+}
+
+message MetricRow {
+  Scope scope = 1;
+  // Identity at that scope; exactly one is meaningful.
+  ClusterId cluster = 2;
+  PoolId pool = 3;
+  TenantId tenant = 4;
+  ReplicaId replica = 5;
+  SloClass slo_class = 6;
+
+  // Point values, keyed by metric name.
+  map<string, double> values = 10;
+  // Distributions, keyed by metric name. Mergeable, so Ingress can combine shards exactly.
+  // Percentiles are computed after merging: they cannot be recovered from per-shard percentiles.
+  map<string, Histogram> histograms = 11;
+}
