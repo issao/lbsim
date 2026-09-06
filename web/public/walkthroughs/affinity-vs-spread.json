@@ -10,7 +10,7 @@
     "routing.kind": "prefix_affinity",
     "routing.maxLoadRatio": 1.05,
     "routing.fallbackChoices": 2,
-    "workload.arrivalRps": 140,
+    "workload.arrivalRps": 95,
     "workload.promptMean": 2400
   },
   "steps": [
