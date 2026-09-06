@@ -26,7 +26,7 @@ pub struct CostModel {
     pub step_per_kv_ktoken_ms: f64,
     /// Prefill is compute-bound, so it is a token rate rather than a per-sequence cost.
     pub prefill_tokens_per_s: f64,
-    /// Issao: "we could get disable decode basically by setting HBM to infinity." True zeroes the
+    /// Per Issao: "we could get disable decode basically by setting HBM to infinity." True zeroes the
     /// bandwidth term, so a decode step costs only the fixed and per-sequence parts and traffic looks
     /// like stateless serving. KV accounting is untouched: capacity still binds in tokens.
     pub disable_decode: bool,

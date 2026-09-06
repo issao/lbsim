@@ -21,7 +21,7 @@ step_per_kv_ktoken_ms = 0.0175
 prefill_tokens_per_s = 28286
 step_token_budget = 1024
 max_queue = 400
-# Issao: "we could get disable decode basically by setting HBM to infinity." The bandwidth term is
+# Per Issao: "we could get disable decode basically by setting HBM to infinity." The bandwidth term is
 # zeroed; KV accounting is unchanged, so capacity still binds in tokens.
 disable_decode = true
 
