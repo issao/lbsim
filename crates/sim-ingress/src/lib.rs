@@ -77,10 +77,8 @@ fn handle(mut stream: TcpStream, root: &Path) -> std::io::Result<()> {
         return respond(stream, 405, "text/plain", b"method not allowed");
     }
 
-    // Health check, answered without touching the filesystem or any run state. Cloud Run polls this,
-    // and a check that did real work would mark a busy instance unhealthy and kill it mid-simulation.
     let path_only = target.split(['?', '#']).next().unwrap_or("/");
-    if path_only == "/healthz" {
+    if is_health_path(path_only) {
         return respond(stream, 200, "text/plain", b"ok");
     }
 
@@ -99,6 +97,17 @@ fn handle(mut stream: TcpStream, root: &Path) -> std::io::Result<()> {
         body.clear();
     }
     respond(stream, 200, ctype, &body)
+}
+
+/// Health check, answered without touching the filesystem or any run state. Cloud Run polls this, and
+/// a check that did real work would mark a busy instance unhealthy and kill it mid-simulation.
+///
+/// Two paths, because on `*.run.app` Google's front end answers `GET /healthz` itself with a 404 and
+/// never forwards it to the container, verified with curl: no `x-cloud-trace-context` on that path,
+/// present on every other. `/healthz` stays for Cloud Run's own startup probe, which talks to the
+/// container port directly and bypasses the front end; `/health` is what reaches us from outside.
+pub fn is_health_path(path: &str) -> bool {
+    path == "/healthz" || path == "/health"
 }
 
 /// Map a URL path to a file inside `root`, refusing anything that escapes it.
@@ -183,4 +192,25 @@ fn respond(mut stream: TcpStream, code: u16, ctype: &str, body: &[u8]) -> std::i
     stream.write_all(head.as_bytes())?;
     stream.write_all(body)?;
     stream.flush()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn both_health_paths_are_recognised_and_nothing_else_is() {
+        assert!(is_health_path("/healthz"));
+        assert!(is_health_path("/health"));
+        assert!(!is_health_path("/"));
+        assert!(!is_health_path("/healthz/"));
+        assert!(!is_health_path("/health.html"));
+    }
+
+    #[test]
+    fn traversal_cannot_escape_the_root() {
+        let root = std::env::temp_dir();
+        assert!(resolve(&root, "/../../etc/passwd").is_none());
+        assert!(resolve(&root, "/%2e%2e/%2e%2e/etc/passwd").is_none());
+    }
 }

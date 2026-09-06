@@ -11,13 +11,13 @@
 //! including the compute branch and speculation. Stepping here is the simple thing that is correct
 //! at today's scale, and the epoch advance lands with the KV model.
 
-use crate::metrics::{Histogram, Outcome, RequestRecord, Series};
-use crate::policy::{ReplicaView, Routing};
-use crate::queue::{EventQueue, PRIO_OBSERVE};
-use crate::rng::{Rng, Streams};
-use crate::scenario::Scenario;
-use crate::workload::{Request, Workload};
-use crate::{Nanos, EPOCH_BASE, MILLI};
+use sim_metrics::{Histogram, Outcome, RequestRecord, Series};
+use sim_policy::{ReplicaView, Routing};
+use sim_core::queue::{EventQueue, PRIO_OBSERVE};
+use sim_core::rng::{Rng, Streams};
+use sim_scenario::Scenario;
+use sim_workload::{Request, Workload};
+use sim_core::{Nanos, EPOCH_BASE, MILLI};
 use std::collections::{HashMap, VecDeque};
 
 /// A modelled router-to-replica round trip, paid when a policy probes for fresh state instead of
@@ -327,7 +327,7 @@ pub fn run(sc: &Scenario) -> Result<RunResult, String> {
     let mut rr_cursor = 0usize;
 
     let step_budget = sc.step_token_budget;
-    let prefill_rate = sc.prefill_tokens_per_s;
+    let cost = sc.cost_model();
     let sample_iv = (sc.sample_interval_ms * 1e6) as Nanos;
     let tele_iv = (sc.telemetry_interval_ms * 1e6) as Nanos;
     let tele_delay = (sc.telemetry_delay_ms * 1e6) as Nanos;
@@ -484,19 +484,10 @@ pub fn run(sc: &Scenario) -> Result<RunResult, String> {
                 }
                 let decoding = r.running.iter().filter(|s| s.prefill_left == 0).count();
 
-                // Step time: fixed overhead, a marginal cost per decoding sequence, and the prefill
-                // work done this step. Prefill and decode contend for one device, which is why the
-                // terms add and why a big prefill shows up in everyone's inter-token latency.
-                //
-                // The bandwidth term is why step time grows as contexts lengthen rather than only as
-                // the batch widens: the engine re-reads every resident key-value token every step.
-                // At batch 256 and 4,000 tokens of context it is the dominant term, larger than the
-                // weight read.
-                let step_ns = (sc.step_base_ms * 1e6) as Nanos
-                    + (sc.step_per_seq_ms * 1e6) as Nanos * decoding as Nanos
-                    + ((sc.step_per_kv_ktoken_ms * r.kv_tokens as f64 / 1000.0) * 1e6) as Nanos
-                    + ((prefill_tokens as f64 / prefill_rate) * 1e9) as Nanos;
-                let step_ns = step_ns.max(1);
+                // Step time comes from the cost model in sim-physics, the one place that formula
+                // lives. Prefill and decode contend for one device, which is why a big prefill shows
+                // up in everyone's inter-token latency.
+                let step_ns = cost.step_ns(decoding, r.kv_tokens, prefill_tokens);
                 let token_at = now + step_ns;
                 r.last_step_ns = step_ns;
 

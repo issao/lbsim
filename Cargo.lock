@@ -5,3 +5,107 @@ version = 4
 [[package]]
 name = "lbsim"
 version = "0.1.0"
+dependencies = [
+ "sim-arena",
+ "sim-core",
+ "sim-ingress",
+ "sim-leaf",
+ "sim-metrics",
+ "sim-physics",
+ "sim-policy",
+ "sim-report",
+ "sim-scenario",
+ "sim-workload",
+]
+
+[[package]]
+name = "sim-arena"
+version = "0.1.0"
+dependencies = [
+ "sim-leaf",
+ "sim-metrics",
+ "sim-scenario",
+ "sim-workload",
+]
+
+[[package]]
+name = "sim-core"
+version = "0.1.0"
+
+[[package]]
+name = "sim-ingress"
+version = "0.1.0"
+dependencies = [
+ "sim-core",
+ "sim-leaf",
+ "sim-metrics",
+ "sim-scenario",
+]
+
+[[package]]
+name = "sim-leaf"
+version = "0.1.0"
+dependencies = [
+ "sim-core",
+ "sim-metrics",
+ "sim-policy",
+ "sim-scenario",
+ "sim-workload",
+]
+
+[[package]]
+name = "sim-metrics"
+version = "0.1.0"
+dependencies = [
+ "sim-core",
+]
+
+[[package]]
+name = "sim-physics"
+version = "0.1.0"
+dependencies = [
+ "sim-core",
+]
+
+[[package]]
+name = "sim-policy"
+version = "0.1.0"
+dependencies = [
+ "sim-core",
+]
+
+[[package]]
+name = "sim-report"
+version = "0.1.0"
+dependencies = [
+ "sim-core",
+ "sim-leaf",
+ "sim-metrics",
+ "sim-scenario",
+]
+
+[[package]]
+name = "sim-run"
+version = "0.1.0"
+dependencies = [
+ "sim-arena",
+ "sim-ingress",
+ "sim-leaf",
+ "sim-report",
+ "sim-scenario",
+]
+
+[[package]]
+name = "sim-scenario"
+version = "0.1.0"
+dependencies = [
+ "sim-physics",
+]
+
+[[package]]
+name = "sim-workload"
+version = "0.1.0"
+dependencies = [
+ "sim-core",
+ "sim-scenario",
+]

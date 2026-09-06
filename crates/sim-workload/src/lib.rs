@@ -1,8 +1,8 @@
 //! Arrival process and request shapes.
 
-use crate::rng::Rng;
-use crate::scenario::Scenario;
-use crate::Nanos;
+use sim_core::rng::Rng;
+use sim_scenario::Scenario;
+use sim_core::Nanos;
 
 #[derive(Clone, Debug)]
 pub struct Request {
@@ -27,7 +27,7 @@ pub struct Workload {
 }
 
 impl Workload {
-    pub fn new(seed_streams: &crate::rng::Streams) -> Self {
+    pub fn new(seed_streams: &sim_core::rng::Streams) -> Self {
         Workload {
             next_id: 0,
             arrivals: seed_streams.stream("arrival"),
