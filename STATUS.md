@@ -22,43 +22,46 @@ pushing each step so you can read the diff on your return.
 
 ## What runs right now
 
+```bash
+./run-demos.sh          # five experiments, five self-contained HTML reports in out/
+./check-sensitivity.sh  # asserts the policy ordering survives 30% cost-model error
 ```
-cargo build --release                                     # about one second, zero dependencies
-./target/release/sim-run compare scenarios/route_round_robin.txt \
-    scenarios/route_p2c.txt scenarios/route_least_requests.txt --out out/routing.html
-```
 
-First result, three policies at identical load and seed, 32 replicas, 40 requests/s offered against
-a rated 143:
+**Five dynamics reproduce.** Full write-up with tables in `docs/findings.md`. In one line each, all at
+30% of rated capacity so none is an overload artefact:
 
-| policy | time-to-first-token p99 | per-replica load CV |
-|---|---|---|
-| round robin | 4,094 ms | 0.86 |
-| power of two choices | 2,617 ms | 0.76 |
-| least requests | 9,261 ms | 1.90 |
+1. **Reading the whole fleet is 2.6x worse than sampling two of it.** Least-requests routing on a
+   1.2-second-stale snapshot reaches 39% attainment against 97% for power-of-two-choices, and is worse
+   than round robin, which ignores load entirely. Throughput barely moves across all four.
+2. **Herding is a steep function of staleness.** Scrape interval from 100 ms to 4 s takes goodput from
+   14,912 to 1,264. Almost nothing between 100 and 250 ms, then a cliff: staleness has a threshold set
+   by how fast queues change.
+3. **Prefill and decode contend, and no setting wins both.** Chunk budget from 512 to 16,384 tokens
+   takes the worst gap between tokens from 33 ms to 587 while first-token latency improves. Throughput
+   is flat at ~18,700 while goodput falls eightfold, because the gap crosses an 80 ms target. The fleet
+   does identical work and delivers a tenth of the value.
+4. **Past the knee, offering more load delivers less.** Goodput peaks at 150 requests/s, throughput at
+   190. Offering 53% more than the goodput optimum yields 45% less goodput.
+5. **A load-balancer metric improves while service collapses.** Raising the long-context share to 32%
+   halves goodput and makes tail latency 34x worse *while load spread falls*, because a few enormous
+   requests saturate every replica uniformly. The clearest argument for denominating everything in
+   tokens rather than requests.
 
-Round-robin against power-of-two-choices is the expected direction. The interesting one is
-**least-requests, more than twice as bad as round-robin**: it routes on a snapshot up to a second
-stale, so every router sees the same apparently-idle replica and stampedes it. That is the herding
-failure the primer predicts, and it appeared without being engineered.
+**The orderings are checked, not asserted.** `check-sensitivity.sh` perturbs the bandwidth and prefill
+constants by 30% in each direction, seven cases; the ranking is identical in all of them. Magnitudes
+move, orderings do not, so the orderings are the conclusions.
 
-**Known gap, stated honestly:** service-level attainment is 60 to 80% in every run, so all three sit
-above the knee and the goodput ordering is not yet clean. That is scenario tuning, not a modelling
-problem, and it is first in the queue below.
+## Three efforts running in parallel
 
-## Queued work, in order
+Each on its own branch, file-disjoint, so none can collide with the engine:
 
-1. **Tune the reference scenario** so a balanced policy meets its SLOs and round-robin does not. That
-   is what makes the rolling hotspot a *demonstration* rather than a table of numbers.
-2. **Tests**: determinism, so the same scenario and seed give identical fingerprints; and a
-   monotonicity check that latency rises with offered load.
-3. **Stale-telemetry oscillation**, by sweeping the telemetry interval and measuring the ringing
-   frequency the report already computes.
-4. **Two-phase timing panel**: time-to-first-token and inter-token latency as separate distributions,
-   already recorded and needing the chart.
-5. **Retry storm and recovery**, a pair of runs, one collapsing and one with a retry budget that does
-   not.
-6. **A written summary of what each run shows**, so the report reads as findings rather than output.
+- **`claude/web-standin`** — the stand-in dashboard against mock data, per `docs/ui-spec.md`.
+- **`claude/tests`** — determinism, stream independence, monotonicity, histogram and queue unit tests.
+- **`claude/arena`** — the mechanical scoring function, realism envelope, and the fixed held-out suite
+  from `docs/arena.md`.
+
+Nothing touching the cost model or step loop is forked, because that is coupled through one function
+and parallel work on it produces plausible-looking integration failures rather than obvious ones.
 
 ## Live on `origin/master`
 
