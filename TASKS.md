@@ -5,47 +5,59 @@ right now. Claude keeps this file current; anything Claude can do alone is not h
 
 Each item says what happens if you do not answer, so nothing stalls indefinitely.
 
-Last updated: 2026-09-06 12:12 by Claude.
+Last updated: 2026-09-06 12:50 by Claude.
 
 ---
 
-## 1. BLOCKING — review the interfaces in `proto/`
+## 1. Review `docs/agent-architecture.md`
 
-Now the only blocking gate. The architecture decisions are answered; see below.
+You asked for a proposed agent structure. Written up, with a recommendation you may not like:
+**staff two agents now, not seven.** Architect and Verifier. Fan-out before the protos are blessed
+produces incompatible designs, and this project has already shown why in miniature.
 
-Twelve files, all compiling. Two are new since your feedback, and they are the ones worth your
-attention first because they encode your three-layer sketch:
+Beyond the Architect and TL you named, I argue for four more, in priority order. The one I would
+hire before any implementer is a **Verifier**, because my own architecture document was wrong twice
+in one session in ways that propagated: I proposed a queue mitigation that measurement showed was
+slower than the standard library, and I quoted a decode-only throughput figure as a fleet budget
+input, which you caught rather than I did. Its standing mandate would be that every quantitative
+claim must be reproducible by a script in `bench/` or marked as an estimate.
 
-1. `leaf.proto` — Ingress to Leaf. `Leaf.Advance` is the synchronisation barrier and carries
-   work, tier grants, control actions, completions, control telemetry, metrics and tier requests
-   in one round trip. One message per shard per window is what makes it affordable.
-2. `subscription.proto` — the O(1) observability contract, shared by both hops. **One deliberate
-   departure from your sketch, please check it:** you specified that the frontend requests a time
-   sampling factor based on intended simulation speed. That alone does not hold the bound, because
-   raising the speed then raises the wire rate proportionally. So a subscription declares a
-   wall-clock budget, updates per second and rows per update, and the server derives the simulated
-   interval to fit and re-derives it whenever speed changes. Your preference is kept as
-   `desired_sim_interval_ns`, honoured where it fits.
-3. `ingress.proto` — Frontend to Ingress. Was `control.proto`. `StreamRun` is gone, replaced by
-   the budgeted subscription; `SetSpeed`, `StepForward` and `Rewind` added.
-4. `policy.proto` — the engine/policy seam and the referee. Decides whether the agent arena can
-   be trusted.
-5. `telemetry.proto` — the staleness boundary. Decides whether the control-theory dynamics are
-   reachable.
-6. `scenario.proto` — the whole configuration surface, and the largest file. The one you will
-   live in.
-7. `common.proto`, `request.proto` — vocabulary. Note `Truth`: it holds what the simulator knows
-   and no policy may ever see.
-8. `serving.proto`, `kv.proto`, `capacity.proto`, `metrics.proto` — the modelled data plane and
-   results.
+The other three are a Physics owner for the cost model and the differential oracle, a Calibration
+owner for trace work and sensitivity sweeps, and a Frontend owner against frozen interfaces.
 
-Leave corrections as marker lines directly in the files. That worked well; the watcher caught
-your last batch within a minute of the push.
+One recommendation to push back on if you disagree: **the comment watcher should stay a script, not
+an agent.** A missed instruction is the worst failure this project has, and today four of seven
+instructions in one proto file were invisible to the scanner until I fixed it. That was a mechanical
+bug with a regression test. An agent might have caught them, or might not, and there would be no
+way to know which.
 
-**If you say nothing:** Claude treats the interfaces as accepted and starts generating code from
-them.
+**If you say nothing:** Claude proceeds as Architect plus an ad-hoc Verifier pass on each unit of
+work, and does not fan out.
 
-## 2. Five smaller decisions, all with a default so none of them blocks
+## 2. BLOCKING — the interfaces in `proto/`
+
+Thirteen files. Your subscription and telemetry feedback is folded in and the markers are removed;
+see `STATUS.md` for what changed. Still unreviewed: `policy.proto`, `leaf.proto`, `scenario.proto`,
+`workload.proto`, `ingress.proto`, `metrics.proto`, `common.proto`, `request.proto`,
+`serving.proto`, `kv.proto`, `capacity.proto`.
+
+Suggested order by consequence: `policy.proto` first, since it decides whether the agent arena can
+be trusted; then `leaf.proto`, which carries your three-layer sketch; then `scenario.proto`, the
+largest and the one you will live in; then `workload.proto`, which is the load-shape interface you
+asked for.
+
+Two notes on things I changed beyond what you flagged. Absolute epoch time is applied to all
+thirteen files rather than only `telemetry.proto`, and it turns out to *remove* an option:
+float64 resolves only about 200 ns at 1.79e18, so no simulated timestamp may pass through a float.
+And on percentiles at the leaf, I did not do quite what you suggested, because percentiles do not
+merge; the engine computes them at the Leaf when one shard owns the target and merges histograms
+otherwise, with a flag saying which.
+
+Leave corrections as comments in the files, prefixed or not. Both are caught now.
+
+**If you say nothing:** Claude treats the interfaces as accepted and starts generating code.
+
+## 3. Five smaller decisions, all with a default so none of them blocks
 
 From `docs/ARCHITECTURE.md` section 14. Each has a stated default being taken.
 
@@ -64,7 +76,7 @@ From `docs/ARCHITECTURE.md` section 14. Each has a stated default being taken.
    Faithful, since reaching a pooled tier genuinely is a network operation, and it keeps shards
    free of shared mutable state. Default: yes.
 
-## 3. Should Claude build the cargo workspace skeleton while gated?
+## 4. Should Claude build the cargo workspace skeleton while gated?
 
 Two of the three groundwork items are **done**, and both were worth doing:
 
@@ -80,17 +92,22 @@ logic, so that blessing unblocks work immediately instead of after setup.
 **Waiting on you**, because it presumes the crate structure in `docs/ARCHITECTURE.md`
 section 10.5, which you have not blessed. Say the word and it is thirty minutes.
 
-## 4. Do you have real traces for calibration, even aggregated?
+## 5. Real traces for calibration: partly answered already
 
-**This is now the top technical risk**, since the queue risk is closed. Workload realism is the
-weakest link in the design and the least glamorous thing to get right. Arrival burstiness,
-prompt and output length distributions, and session continuation rates are what determine
-whether any conclusion transfers to reality. Published numbers exist but are thin.
+`docs/calibration.md` now exists: 2,000 lines, every number carrying a provenance tag, and the
+strongest ones computed directly from the primary datasets rather than quoted. Four traces are
+replayable. Azure LLM 2024 and BurstGPT give multi-day fleet arrivals with no sharing structure,
+Mooncake is the only one with prefix structure but covers one hour, TraceLab gives real agentic
+session structure with only 43 users.
 
-**If you say nothing:** Claude calibrates against published vLLM and SGLang benchmark figures
-and documents the resulting uncertainty as a named risk.
+Still worth asking: **do you have anything internal, even aggregated?** The largest unmeasured lever
+is prefix-sharing topology, meaning how many distinct system-prompt roots exist and how skewed their
+popularity is. Nothing public reveals it, and it moves achievable cache hit rate a long way.
 
-## 5. Confirm the reference hardware and model for calibration
+**If you say nothing:** Claude sweeps that parameter rather than fixing it, and reports conclusions
+as ranges.
+
+## 6. Confirm the reference hardware and model for calibration
 
 `docs/llm-serving-primer.md` section 10.7 assumes a 70-billion-parameter model on eight H100s.
 Every number in the analysis follows from that pair, and the validated cost model reproduces
@@ -98,7 +115,7 @@ the published step-time table for it to within 0.1 ms.
 
 **If you say nothing:** that pair stays the default.
 
-## 6. What should the agent arena optimise?
+## 7. What should the agent arena optimise?
 
 Goodput alone is gameable: an agent can starve batch traffic to raise interactive goodput.
 It likely needs a fairness or SLO-attainment constraint alongside it.
@@ -106,7 +123,7 @@ It likely needs a fairness or SLO-attainment constraint alongside it.
 **If you say nothing:** Claude proposes a specific objective when the arena is built, rather
 than guessing now.
 
-## 7. Is the dashboard a separate workstream?
+## 8. Is the dashboard a separate workstream?
 
 `VISION.md` section 6 describes a substantial product. Sharing a backlog with the engine will
 let it expand without limit. See `docs/ARCHITECTURE.md` open risk 7.

@@ -3,7 +3,7 @@
 What is finished, what is live, what Claude is doing now. Updated by Claude at every unit of
 work. For things that need *you*, see `TASKS.md`.
 
-**Last updated:** 2026-09-06 12:12 by Claude.
+**Last updated:** 2026-09-06 12:50 by Claude.
 
 ---
 
@@ -20,7 +20,10 @@ is the interface review, `TASKS.md` item 1.
 | Vision | `VISION.md` | yours, sections 1-8 complete; section 9 points at the architecture |
 | Domain primer | `docs/llm-serving-primer.md` | complete, 585 lines, includes hardware reference numbers |
 | Architecture and fidelity analysis | `docs/ARCHITECTURE.md` | **reviewed**; decisions in section 14, your three-layer deployment in section 10 |
-| Interfaces | `proto/lbsim/v1/*.proto` | eleven files, all compile, **awaiting your review** |
+| Interfaces | `proto/lbsim/v1/*.proto` | thirteen files, all compile; subscription and telemetry feedback folded in |
+| Calibration reference | `docs/calibration.md` | complete; four replayable traces identified, seven primer corrections |
+| Agent architecture | `docs/agent-architecture.md` | proposal, **awaiting your review** |
+| Reference cost model | `bench/validate_epochs.py` | four properties pass, including the compute branch and speculation |
 | Architecture diagram | `docs/diagrams/system.drawio` | three pages, uncompressed, verified against the protos |
 | Reaction tooling | `tools/sync.sh`, `tools/inbox.py` | end-to-end verified against a real push |
 | Diagram checker | `tools/check_diagram.py` | passing, zero problems |
@@ -98,10 +101,35 @@ Three things came out of working through your sketch that need your eye, all in 
    microseconds per barrier against a 0.2 to 1 millisecond lookahead, which breaks the target;
    threads cost 1 to 5 microseconds. The proto boundary is preserved either way.
 
+## Since your last look
+
+**Your 13 architecture instructions and 8 proto instructions are all folded in**, markers removed,
+each quoted in a commit message. Two were real errors in my model:
+
+- **The 9,000 output tokens per second figure was decode-only at full batch**, as you suspected.
+  With prefill included it is 4,533 at a chat-like mix and 889 at a prompt-heavy one, a span of 39x.
+  The fleet budget is redone at 56,700 requests per second rather than 112,500, which also means
+  the fleet is prefill-limited rather than KV-limited at that mix, so adding KV capacity buys
+  nothing.
+- **The cost model was bandwidth-only.** It now takes the worse of bandwidth and compute. The
+  closed form survives, because two lines cross at most once. Bandwidth-only would have
+  systematically overstated speculative decoding and quantization, which are exactly the policies
+  under study.
+
+Your speculative-decoding design works and is better than what it replaced: verification multiplies
+compute while leaving weight reads alone, so the erosion of speedup at large batch is emergent
+rather than coded. It also removed an incorrect claim of mine that acceptance rate falls with batch
+size.
+
+**Two tooling failures worth knowing about, both fixed.** Four of your seven proto instructions were
+invisible to the scanner because they trailed code as comments; it anchored only to line starts.
+And one instruction carried no name prefix at all, so `sync.sh` now diffs upstream commits and
+surfaces every comment line they add. A missed instruction is the worst failure mode here, so both
+have regression tests.
+
 ## Doing now
 
-Nothing blocking. Calibration research is running in the background and will land in
-`docs/calibration.md`.
+Nothing blocking. Awaiting review of `docs/agent-architecture.md` and the remaining interfaces.
 
 ## Assumptions Claude is running on
 
@@ -113,6 +141,7 @@ consequence of silence.
 - Prefix caching is in scope for phase 2.
 - The memory tier is pooled per cluster, not per host.
 - Leaf shards are threads within one process per run, not separate processes.
+- Simulated time is absolute Unix epoch nanoseconds in a uint64; no timestamp passes through a float.
 - Routing policies must be O(1) or O(log N); a full fleet scan per request is banned.
 - Reference calibration pair is a 70-billion-parameter model on eight H100s.
 
