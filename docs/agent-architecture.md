@@ -1,10 +1,36 @@
 # Agent architecture
 
-Proposal, awaiting Issao. How to staff this project with Claude instances, who owns what, and
-the rules that keep parallel work from colliding.
+How to staff this project with Claude instances, who owns what, and the rules that keep parallel
+work from colliding. Reviewed by Issao. Sections 0, 6 and 7 are the proposal as written at design
+time, kept because the reasoning is what the decisions were made against; what runs now is below.
 
 Every recommendation here is grounded in something that actually happened in the first session
 rather than in general principle, and each says which.
+
+---
+
+## What runs now, since 15:00
+
+Issao overrode the two-agent recommendation once the build stalled on cloud work: *"delegate all
+cloud deployment to a separate agent. delgate development progress to a TL ... Delegate to a
+separate agent to mointor for my prs and comments to you, as well as do housekeeping/simplify/remove
+stale content of the md files meant to interact with me."*
+
+So three long-lived agents run, with the file ownership table in `CLAUDE.md`: a tech lead on
+`src/`, `tests/`, `scenarios/` and `web/src/lib/`; a cloud agent on the container and deploy files;
+and a monitor and housekeeping agent on `TASKS.md`, `STATUS.md`, `README.md` and `docs/`. The main
+agent coordinates and owns `CLAUDE.md` and `proto/`.
+
+Three departures from the proposal, stated so nobody mistakes the document for the practice:
+
+- The tech lead writes code as well as specifications. Section 1.2's five-field work unit is still
+  the bar for anything it fans out.
+- The inbox is an agent running the scripts on a ninety-second loop, not a script alone. Section 3
+  still holds: `tools/inbox.py` and `tools/sync.sh` find every instruction, the agent only acts.
+  PR comment ingestion, section 8 item 1, is done by that loop by hand and is still not a script.
+- Rule 3 of section 4, one worktree per agent, is only partly kept. The housekeeping agent works in
+  its own worktree; the other two share `/home/agents/repo/lbsim`, and one agent's in-flight files
+  did reach another's commit before `git add` by explicit path became the rule.
 
 ---
 
@@ -232,7 +258,7 @@ Ordered by how much damage ignoring them causes.
 
 | Phase | Agents | Notes |
 |---|---|---|
-| **Now: design under review** | Architect, Verifier | Nothing to fan out. The Verifier's first task is auditing the numbers already in `docs/ARCHITECTURE.md` against `bench/`. |
+| **Design under review**, the morning | Architect, Verifier | Nothing to fan out. The Verifier's first task is auditing the numbers already in `docs/ARCHITECTURE.md` against `bench/`. |
 | Protos blessed, skeleton | Architect, TL, Physics | TL builds the workspace and CI; Physics builds the cost model and the differential oracle. Still no fan-out. |
 | Core engine | + 1-2 implementers | Event queue, replica model, metrics. Coupled, so sequential with review between. |
 | Workload and policies | + 2-3 implementers, Calibration | First real fan-out: one policy per unit against a frozen trait. |
@@ -276,8 +302,8 @@ that nobody with an interest in the scores can touch it.
 
 ## 7. Anti-patterns, each one a mistake available today
 
-- **Spawning implementers before the protos are blessed.** That is exactly where the project stands
-  right now, and it is why the recommendation is two agents rather than seven.
+- **Spawning implementers before the protos are blessed.** That was where the project stood at
+  design time, and it is why the recommendation was two agents rather than seven.
 - **Two agents owning the cost model.** Guarantees divergence in the one place divergence is
   invisible.
 - **An implementer changing a proto** to unblock itself. Silently breaks every parallel unit.
