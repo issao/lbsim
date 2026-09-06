@@ -3,7 +3,7 @@
 What is live on `origin/master`, what each agent is doing now, and the assumptions being acted on.
 For things that need *you*, see `TASKS.md`.
 
-**Last updated:** 2026-09-06 15:58 PDT by Claude.
+**Last updated:** 2026-09-06 16:00 PDT by Claude.
 
 ---
 
@@ -39,9 +39,9 @@ difference between a bad minute and an outage. Numbers in `docs/findings.md`.
 
 | Agent | Owns | Now |
 |---|---|---|
-| Tech lead | `src/`, `tests/`, `scenarios/`, `web/src/lib/` | worktrees `lbsim-wt-tl`, `lbsim-tlweb`. Merged: the section 10.8 crate workspace (163995c), golden fingerprints and the wire contract (0efb8bd), the policy trait with a one-file-per-policy registry, the lease registry and the idle-shutdown guard (d688f8f). The `docs/scope-today.md` dynamics fan-out has started: physics oracle first, then preemption, speculative decoding, prefix caching, tiering, autoscaling. In hand: the browser-side transport client from `claude/tl-web-transport`, now built against `WIRE.md`. Next, from Issao at 15:50: *"continue making more progress on the scope-today.md dynamics we talked about when it is possible to do so in parallel"*, with the cut table in `docs/scope-today.md` §3 as the list; the policy registry behind `GeneratedPolicy`; a simplification pass every four merges, per `CLAUDE.md` |
+| Tech lead | `src/`, `tests/`, `scenarios/`, `web/src/lib/` | worktrees `lbsim-wt-tl`, `lbsim-tlweb`. Merged: the section 10.8 crate workspace (163995c), golden fingerprints and the wire contract (0efb8bd), the policy trait with a one-file-per-policy registry, the lease registry and the idle-shutdown guard (d688f8f), the homepage report links Issao asked for and a bounded cargo wrapper (cf12e33). The `docs/scope-today.md` dynamics fan-out has started: physics oracle first, then preemption, speculative decoding, prefix caching, tiering, autoscaling. In hand: the browser-side transport client from `claude/tl-web-transport`, now built against `WIRE.md`. Next, from Issao at 15:50: *"continue making more progress on the scope-today.md dynamics we talked about when it is possible to do so in parallel"*, with the cut table in `docs/scope-today.md` §3 as the list; the policy registry behind `GeneratedPolicy`; a simplification pass every four merges, per `CLAUDE.md` |
 | Cloud | `Dockerfile`, `deploy.sh`, `cloudbuild.yaml`, `docs/deploy.md` | **finished.** First deploy at 15:22 (72dfb16); scale-to-zero verified twice (993c03a); `docs/deploy.md` is its handover. No further grant was needed, the pending `legacyBucketReader` request is withdrawn: the blocker was two bucket permissions, worked around in `cloudbuild.yaml` |
-| Monitor and housekeeping | `TASKS.md`, `STATUS.md`, `README.md`, `docs/*.md` | inbox and PR loop every 90 s; documents tidied; keeping them aligned to each merge. Routed to the tech lead at 15:57: the homepage link to the reports, Issao's marker in this file |
+| Monitor and housekeeping | `TASKS.md`, `STATUS.md`, `README.md`, `docs/*.md` | inbox and PR loop every 90 s; documents tidied; keeping them aligned to each merge. The homepage-link instruction routed at 15:57 was done by the tech lead at 15:59 |
 
 The main agent coordinates and owns `CLAUDE.md` and `proto/`.
 
@@ -67,7 +67,9 @@ One row per milestone in `docs/execution-plan.md` §1, read from `master` at 604
 
 Today the six demos are live as real-data HTML reports at
 <https://lbsim-irpwc2yaoa-uc.a.run.app/reports/1-routing.html> through `6-retry.html`. The React
-dashboard at `/` shows mock data and says so on every panel.
+dashboard at `/` shows mock data and says so on every panel. The homepage links to the six reports
+since cf12e33, which is on `master` but not yet deployed: the live revision is from 15:44, so the links
+appear after the next `./deploy.sh`.
 
 Three things stand between it and real data: an Ingress endpoint that runs a scenario and streams
 metrics over the JSON/SSE wire in `crates/sim-ingress/WIRE.md`; the browser transport client, in the
