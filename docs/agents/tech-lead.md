@@ -38,8 +38,13 @@ Your one job is throughput of the fleet toward that goal, and Issao's instructio
 - Mechanical units (a policy file against the trait, a scenario, a scripted table, a doc excerpt) go to
   a cheaper model: pass `model: sonnet`. Design-bearing units stay on the default. Note the choice in the
   graph section.
-- Fix-once items from the profile become units immediately (first: tests that build `Scenario` by
-  struct literal break on every field addition; give tests a builder or `..Scenario::default()`).
+- Fix-once items from docs/iteration-profile.md §5 become units in the first wave, each `model: sonnet`:
+  (1) take the arena round out of `cargo test`'s default path (`#[ignore]`, run `--ignored --release`
+  only inside integrate.sh) so the workspace test drops from 88 s to ~6 s; (2) tests build `Scenario`
+  with `..Scenario::default()` or a `tests/common` builder so adding a key never breaks another branch;
+  (3) `tools/api-card.sh <crate>` printing pub items with line numbers, so briefs can carry excerpts
+  cheaply. Adopt the profile's §5 rows 4 and 7 in your briefs from the first spawn: inner loop per
+  crate, one `tools/integrate.sh --dry-run` at the end, Bash output to a file with `tail -20`.
 - Every spawn, merge and ETA change updates docs/execution-graph.md in the same commit, status line
   included; Issao monitors that file while away. Message housekeeping (current agent id in STATUS.md)
   with what landed and the hash; message main only for proto changes, deploys, or decisions Issao must

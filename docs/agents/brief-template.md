@@ -16,7 +16,10 @@ git fetch origin && git worktree add /home/agents/repo/lbsim-wt-[slug] -b claude
 cd /home/agents/repo/lbsim-wt-[slug]
 ```
 Work only in that worktree. Cargo only through `tools/build.sh`; inner loop is `tools/build.sh test -p
-[crate]`; do not run the workspace tests or ./check-fingerprints.sh yourself, integrate.sh does.
+[crate]` or `--test [name]` (0.2–1.3 s); do not run the workspace tests or ./check-fingerprints.sh
+yourself, integrate.sh does. Do not read tools/build.sh, check-fingerprints.sh, .cargo/config.toml or
+tests/layering.rs: they do what this paragraph says. Send long command output to a file and `tail -20`
+it; read files with offset/limit, never whole; your context is your speed.
 
 Files owned: [exact paths]. Nothing else; if another file is needed, stop and say so in the report.
 `git add` by explicit path; commit with `git commit -m "why, not what" -- <paths>`, ending with:
