@@ -9,7 +9,11 @@ recommends one. This file remains the plan for the whole project.
 the divergences are recorded here rather than rewritten out of the plan:
 
 - One crate, `lbsim`, with no dependencies, rather than the workspace of `docs/ARCHITECTURE.md`
-  section 10.8. `prost` and `tonic` are not wired; nothing speaks the protos over a wire yet.
+  section 10.8, and since 163995c the workspace itself. `prost` and `tonic` are still not wired;
+  the Frontend-to-Ingress hop speaks a JSON mapping of the protos over HTTP/1.1 with server-sent
+  events, per `crates/sim-ingress/WIRE.md`, until they are.
+- Golden scenarios, section 4 item 4, exist as `bench/golden-fingerprints.txt` checked by
+  `./check-fingerprints.sh`: fingerprint, event count and a hash of every reported metric per run.
 - Scenarios are `key = value` text files in `scenarios/`, not prototxt. Section 0's argument for
   prototxt still holds once the proto codegen exists; until then the text format costs nothing.
 - M1's target was reached and passed: six dynamics reproduce, in `docs/findings.md`. M0.5 is done
