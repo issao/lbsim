@@ -1,0 +1,51 @@
+# Build the lbsim container without staging source through a Cloud Build bucket.
+#
+# Why this exists at all, rather than `gcloud builds submit --tag`:
+#
+# The deploy account holds `storage.objectAdmin` on gs://lbsim-gcp-runs and nothing else on GCS. It
+# can read and write objects but it cannot read *bucket metadata* (`storage.buckets.get`), and it
+# cannot create a bucket. `gcloud builds submit` needs both, in two separate places:
+#
+#   1. the source staging bucket   -> gcloud calls buckets.get before uploading the tarball
+#   2. the build *logs* bucket     -> Cloud Build defaults to gs://PROJECT_cloudbuild/logs
+#
+# Both surface as the same misleading error naming `serviceusage.services.use`. Neither is really
+# about Service Usage. Rather than widen the role to make them work, this file removes the need:
+#
+#   * `logging: CLOUD_LOGGING_ONLY` removes (2). Logs go to Cloud Logging, no bucket involved.
+#   * `--no-source` on the submit removes (1). Nothing is staged; step `source` fetches a tarball
+#     that deploy.sh has already uploaded as a plain object, which objectAdmin permits.
+#
+# The net effect is a deploy that needs no permission the account did not already have. Do not
+# "simplify" this back to `builds submit --tag` without first re-checking those two permissions.
+timeout: 1200s
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+
+substitutions:
+  _TAG: ''   # fully qualified Artifact Registry image, set by deploy.sh
+  _SRC: ''   # gs:// URL of the source tarball, set by deploy.sh
+
+steps:
+  # Unpack the source that deploy.sh uploaded. Reading it needs only objects.get, which the Cloud
+  # Build service account has via roles/cloudbuild.builds.builder.
+  - id: source
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    entrypoint: bash
+    args:
+      - -euc
+      - |
+        gcloud storage cp "${_SRC}" /workspace/source.tgz
+        tar xzf /workspace/source.tgz -C /workspace
+        rm -f /workspace/source.tgz
+
+  - id: build
+    name: gcr.io/cloud-builders/docker
+    args: ['build', '--tag', '${_TAG}', '.']
+
+  # Pushed explicitly rather than via the top-level `images:` key, so a registry permission failure
+  # shows up as a failed step with a log line instead of a build that says SUCCESS and pushes nothing.
+  - id: push
+    name: gcr.io/cloud-builders/docker
+    args: ['push', '${_TAG}']
