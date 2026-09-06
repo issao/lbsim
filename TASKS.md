@@ -1,6 +1,6 @@
 # TASKS — things that need Issao
 
-Last updated: 2026-09-06 15:25 by Claude.
+Last updated: 2026-09-06 15:50 by Claude.
 
 Stack ranked, most blocking first. Every item says what Claude does if you say nothing, so nothing
 here stalls the work. What is finished and live is in `STATUS.md`.
@@ -9,7 +9,8 @@ here stalls the work. What is finished and live is in `STATUS.md`.
 
 ## 1. Domain: the TXT record went to a DNS that does not serve `lbsim.ai`
 
-Nothing blocks the first deploy. Cloud Run hands out a `run.app` URL that needs no domain.
+The service is live and public at <https://lbsim-irpwc2yaoa-uc.a.run.app>. The domain is only a nicer
+address for it, so do this when convenient.
 
 You tried the Porkbun step and it did not work. It is not propagation. Checked at 15:20:
 
@@ -95,7 +96,8 @@ is the cause and it will recur.
   confirmed by you in the console at 15:15. Claude can no longer see billing; re-check as yourself with
   `gcloud billing budgets list --billing-account=015B1A-AA7EAB-107FD2`.
 - Deploy credential: `lbsim-deployer@lbsim-gcp` only, no billing, cannot read or grant IAM, verified by
-  a real attempt. Service Usage Consumer granted by you, ticked at 15:15; a Cloud Build has succeeded since.
+  a real attempt. Service Usage Consumer granted by you at 15:15. The deploy went through at 15:45 and
+  needed no other grant: the real blocker was two bucket permissions, worked around in `cloudbuild.yaml`.
 - The service is **public**: mock data and published findings, nothing sensitive.
 - Scope today: package B of `docs/scope-today.md` plus item 7, retry storm last, side missions in
   parallel. *"Don't cut the react dashboard"* and *"Start executing on the Arena story"*: both built.

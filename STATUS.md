@@ -3,7 +3,7 @@
 What is live on `origin/master`, what each agent is doing now, and the assumptions being acted on.
 For things that need *you*, see `TASKS.md`.
 
-**Last updated:** 2026-09-06 15:35 by Claude.
+**Last updated:** 2026-09-06 15:50 by Claude.
 
 ---
 
@@ -21,7 +21,7 @@ Scope is `docs/scope-today.md` package B plus item 7, and both side missions Iss
 | Policy ordering survives ±30% cost-model error | `check-sensitivity.sh` | run it; exits non-zero on a flip |
 | Arena, mechanical half, eight-scenario held-out suite | `src/arena.rs`, `scenarios/holdout/` | `cargo test --release --lib -- --nocapture` |
 | Stand-in dashboard, three surfaces, mock data | `web/` | `cd web && npm run build` |
-| Container, static server, deploy script | `Dockerfile`, `deploy.sh` | see cloud below |
+| **Deployed, public**: <https://lbsim-irpwc2yaoa-uc.a.run.app>, dashboard at `/`, reports at `/reports/1-routing.html` to `6-retry.html` | `Dockerfile`, `cloudbuild.yaml`, `deploy.sh` | `curl -sI` on the URL returns 200; `./deploy.sh --check-idle` reads the instance count from Cloud Monitoring |
 | Reference cost model, exact against a naive oracle | `bench/validate_epochs.py` | `tools/sync.sh` runs it |
 | Interfaces, twelve files, reviewed | `proto/lbsim/v1/` | `tools/sync.sh` compiles them |
 | Findings, one section per dynamic | `docs/findings.md` | every table from `./run-demos.sh` |
@@ -37,7 +37,7 @@ difference between a bad minute and an outage. Numbers in `docs/findings.md`.
 | Agent | Owns | Now |
 |---|---|---|
 | Tech lead | `src/`, `tests/`, `scenarios/`, `web/src/lib/` | branch `claude/tl-ingress`; nothing merged beyond the above yet |
-| Cloud | `Dockerfile`, `deploy.sh`, `cloudbuild.yaml`, `docs/deploy.md` | first deploy in flight: the IAM grant landed at 15:15, a Cloud Build was running at 15:19, no Cloud Run service listed yet. Service will be **public** |
+| Cloud | `Dockerfile`, `deploy.sh`, `cloudbuild.yaml`, `docs/deploy.md` | first deploy done at 15:45, merged as 72dfb16. No further IAM grant was needed: the blocker was two bucket permissions, worked around in `cloudbuild.yaml`. `docs/deploy.md` not written yet |
 | Monitor and housekeeping | `TASKS.md`, `STATUS.md`, `README.md`, `docs/*.md` | inbox and PR loop every 90 s; tidying the documents; next `README.md`, then `docs/` contradictions |
 
 The main agent coordinates and owns `CLAUDE.md` and `proto/`.
@@ -50,7 +50,8 @@ The main agent coordinates and owns `CLAUDE.md` and `proto/`.
   Issao rules on `TASKS.md` item 2.
 - Prefix-sharing topology is swept, not fixed; affected conclusions are ranges.
 - Deployment scales to zero within a replica budget of ten, public, on the `run.app` URL until the
-  domain steps in `TASKS.md` item 1 are done.
+  domain steps in `TASKS.md` item 1 are done. Scale-to-zero is measured by `deploy.sh --check-idle`,
+  not assumed.
 - Reference hardware is a 70-billion-parameter model on eight H100s.
 - Everything in `docs/ARCHITECTURE.md` section 14 stands as recorded there.
 
