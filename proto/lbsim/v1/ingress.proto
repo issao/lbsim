@@ -64,7 +64,7 @@ message StartRunRequest {
   // Cap on simulated seconds per wall-clock second. Unset means as fast as possible.
   double max_realtime_factor = 2;
   bool record_traces = 3;
-}
+} // Issao: I would have expected the configuration of load generation and policies to be here? Where are they?
 message StartRunResponse { string run_id = 1; }
 
 message RunStatus {
