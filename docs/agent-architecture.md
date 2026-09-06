@@ -28,9 +28,10 @@ Three departures from the proposal, stated so nobody mistakes the document for t
 - The inbox is an agent running the scripts on a ninety-second loop, not a script alone. Section 3
   still holds: `tools/inbox.py` and `tools/sync.sh` find every instruction, the agent only acts.
   PR comment ingestion, section 8 item 1, is done by that loop by hand and is still not a script.
-- Rule 3 of section 4, one worktree per agent, is only partly kept. The housekeeping agent works in
-  its own worktree; the other two share `/home/agents/repo/lbsim`, and one agent's in-flight files
-  did reach another's commit before `git add` by explicit path became the rule.
+- Rule 3 of section 4, one worktree per agent, was only partly kept at first: two agents shared
+  `/home/agents/repo/lbsim`, and one agent's in-flight files reached another's commit. Since 15:40
+  every agent, subagents included, works in its own worktree with the commands in section 4.3, and
+  `CLAUDE.md` records the rule.
 
 ---
 
