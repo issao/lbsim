@@ -158,6 +158,15 @@ if [ -f tools/check_diagram.py ]; then
   fi
 fi
 
+if [ -f tools/inbox.py ]; then
+  if python3 tools/inbox.py --selftest >/dev/null 2>&1; then
+    say "inbox scanner: regression cases pass"
+  else
+    say "inbox scanner: SELFTEST FAILING — instructions may be going unread"
+    attention=1
+  fi
+fi
+
 if [ -f bench/validate_epochs.py ]; then
   if python3 bench/validate_epochs.py >/dev/null 2>&1; then
     say "epoch math: still exact"
