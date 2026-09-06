@@ -23,6 +23,8 @@ pub struct ReplicaView {
     /// Queued work in tokens rather than requests. One long-context request costs what many chat
     /// turns cost, so a policy counting requests is measuring the wrong quantity.
     pub queued_tokens: u64,
+    /// Resident key-value tokens. The load signal that is actually in the right unit.
+    pub kv_tokens: u64,
     pub last_step_ns: Nanos,
     pub ejected: bool,
 }

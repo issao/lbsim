@@ -21,9 +21,23 @@ pub struct Scenario {
     /// batch-1 decode is well above the roofline because of it. Calibrated to 2.75 ms in
     /// `bench/validate_epochs.py` against a published measurement.
     pub step_base_ms: f64,
-    /// Marginal step cost per decoding sequence. Stands in for the bandwidth term; the full model
-    /// makes this grow with resident KV, which today's scope excludes.
+    /// Marginal step cost per decoding sequence: sampling and bookkeeping. Small, and distinct from
+    /// the bandwidth term below.
     pub step_per_seq_ms: f64,
+    /// Step cost per thousand resident key-value tokens.
+    ///
+    /// This is the memory-bandwidth term, and it is what makes step time grow as contexts lengthen
+    /// rather than only as the batch widens. For a 70B model on 8xH100 it is
+    /// `kv_bytes_per_token / (tp * hbm_bandwidth * mbu)`, which works out at about 0.0175 ms per
+    /// thousand tokens. With `step_base_ms` covering the weight read plus fixed overhead, the pair
+    /// reproduces `bench/validate_epochs.py` to within 0.05 ms at every batch size in its table.
+    pub step_per_kv_ktoken_ms: f64,
+    /// Key-value cache capacity per replica, in tokens. **The real capacity constraint.**
+    ///
+    /// Capacity is a token budget, not a request count: one 24,000-token context costs what eight
+    /// 3,000-token chat turns cost. A replica admits only while resident tokens allow, so a long
+    /// prompt can block admission that a request count would have permitted.
+    pub kv_capacity_tokens: f64,
     /// Prefill is compute-bound, so it is a token rate rather than a per-sequence cost.
     pub prefill_tokens_per_s: f64,
     /// Chunked prefill budget. Bounds the stall a long prompt inflicts on everyone already decoding.
@@ -83,9 +97,13 @@ impl Default for Scenario {
             warmup_s: 5.0,
             replicas: 32,
             max_batch: 32,
-            step_base_ms: 2.75,
-            step_per_seq_ms: 0.25,
-            prefill_tokens_per_s: 25_000.0,
+            // Weight read for a 70B model on 8xH100 at 70% bandwidth utilization, 7.46 ms, plus
+            // 2.75 ms of fixed overhead calibrated against a published batch-1 measurement.
+            step_base_ms: 10.2,
+            step_per_seq_ms: 0.0,
+            step_per_kv_ktoken_ms: 0.0175,
+            kv_capacity_tokens: 1_370_000.0,
+            prefill_tokens_per_s: 28_286.0,
             step_token_budget: 2048,
             max_queue: 64,
             arrival_rps: 40.0,
@@ -145,6 +163,8 @@ impl Scenario {
                 "max_batch" => s.max_batch = f("max_batch") as usize,
                 "step_base_ms" => s.step_base_ms = f("step_base_ms"),
                 "step_per_seq_ms" => s.step_per_seq_ms = f("step_per_seq_ms"),
+                "step_per_kv_ktoken_ms" => s.step_per_kv_ktoken_ms = f("step_per_kv_ktoken_ms"),
+                "kv_capacity_tokens" => s.kv_capacity_tokens = f("kv_capacity_tokens"),
                 "prefill_tokens_per_s" => s.prefill_tokens_per_s = f("prefill_tokens_per_s"),
                 "step_token_budget" => s.step_token_budget = f("step_token_budget") as u32,
                 "max_queue" => s.max_queue = f("max_queue") as usize,
@@ -191,16 +211,36 @@ impl Scenario {
             + self.long_prompt_mean * self.long_probability;
         let o_mean = self.output_mean * (1.0 - self.long_probability)
             + self.long_output_mean * self.long_probability;
-        let step_s = (self.step_base_ms + self.step_per_seq_ms * self.max_batch as f64) / 1000.0;
+        // Mean resident context over a request's life: the prompt plus half its output.
+        let ctx_mean = p_mean + o_mean / 2.0;
+        // Whichever binds first: the sequence-count cap or the token budget.
+        let batch = (self.kv_capacity_tokens / ctx_mean).min(self.max_batch as f64).max(1.0);
+        let step_s = (self.step_base_ms
+            + self.step_per_seq_ms * batch
+            + self.step_per_kv_ktoken_ms * batch * ctx_mean / 1000.0)
+            / 1000.0;
         let prefill_s = p_mean / self.prefill_tokens_per_s;
-        let decode_s = o_mean * step_s / self.max_batch as f64;
+        let decode_s = o_mean * step_s / batch;
         self.replicas as f64 / (prefill_s + decode_s)
+
+    }
+
+    /// Effective batch limit: the sequence cap, or the token budget, whichever binds first. Reported
+    /// so it is visible which one actually constrains a scenario.
+    pub fn effective_batch(&self) -> f64 {
+        let p_mean = self.prompt_mean * (1.0 - self.long_probability)
+            + self.long_prompt_mean * self.long_probability;
+        let o_mean = self.output_mean * (1.0 - self.long_probability)
+            + self.long_output_mean * self.long_probability;
+        let ctx_mean = p_mean + o_mean / 2.0;
+        (self.kv_capacity_tokens / ctx_mean).min(self.max_batch as f64).max(1.0)
     }
 
     pub fn to_text(&self) -> String {
         format!(
             "name = {}\nseed = {}\nduration_s = {}\nwarmup_s = {}\nreplicas = {}\nmax_batch = {}\n\
-             step_base_ms = {}\nstep_per_seq_ms = {}\nprefill_tokens_per_s = {}\n\
+             step_base_ms = {}\nstep_per_seq_ms = {}\nstep_per_kv_ktoken_ms = {}\n\
+             kv_capacity_tokens = {}\nprefill_tokens_per_s = {}\n\
              step_token_budget = {}\nmax_queue = {}\narrival_rps = {}\nprompt_mean = {}\n\
              prompt_cv = {}\noutput_mean = {}\noutput_cv = {}\nlong_probability = {}\n\
              long_prompt_mean = {}\nlong_output_mean = {}\nload_step_at_s = {}\n\
@@ -210,7 +250,8 @@ impl Scenario {
              retry_backoff_s = {}\nttft_slo_ms = {}\nitl_slo_ms = {}\ne2e_slo_s = {}\n\
              sample_interval_ms = {}\n",
             self.name, self.seed, self.duration_s, self.warmup_s, self.replicas, self.max_batch,
-            self.step_base_ms, self.step_per_seq_ms, self.prefill_tokens_per_s,
+            self.step_base_ms, self.step_per_seq_ms, self.step_per_kv_ktoken_ms,
+            self.kv_capacity_tokens, self.prefill_tokens_per_s,
             self.step_token_budget, self.max_queue, self.arrival_rps, self.prompt_mean,
             self.prompt_cv, self.output_mean, self.output_cv, self.long_probability,
             self.long_prompt_mean, self.long_output_mean, self.load_step_at_s,
