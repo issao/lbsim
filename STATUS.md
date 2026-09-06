@@ -3,7 +3,7 @@
 What is finished, what is live, what Claude is doing now. Updated by Claude at every unit of
 work. For things that need *you*, see `TASKS.md`.
 
-**Last updated:** 2026-09-06 13:15 by Claude.
+**Last updated:** 2026-09-06 13:30 by Claude.
 
 ---
 
@@ -24,6 +24,8 @@ is the interface review, `TASKS.md` item 1.
 | Execution plan | `docs/execution-plan.md` | proposal, **awaiting your review**; deployment reworked for scale-to-zero |
 | Calibration reference | `docs/calibration.md` | complete; four replayable traces identified, seven primer corrections |
 | Agent architecture | `docs/agent-architecture.md` | proposal, **awaiting your review** |
+| Arena design | `docs/arena.md` | your specification designed out, **awaiting your review** |
+| Dashboard spec | `docs/ui-spec.md` | your specification, moved out of the plan, **awaiting your review** |
 | Reference cost model | `bench/validate_epochs.py` | four properties pass, including the compute branch and speculation |
 | Architecture diagram | `docs/diagrams/system.drawio` | three pages, uncompressed, verified against the protos |
 | Reaction tooling | `tools/sync.sh`, `tools/inbox.py` | end-to-end verified against a real push |
@@ -146,10 +148,15 @@ You asked for it and it found real bloat, some of it mine:
 
 Result: twelve files and 991 declaration lines, from thirteen and 1,185.
 
+## Nothing is blocked on you
+
+All twenty-five instructions are folded in and every remaining decision has a default. Claude can
+start M0, the workspace and CI, and M0.5, the stand-in dashboard you asked for, immediately. See
+`TASKS.md`.
+
 ## Doing now
 
-Nothing. Awaiting review of `docs/execution-plan.md` and `docs/agent-architecture.md`. No code
-until then.
+Waiting for a go. No code until then, except that M0 and M0.5 are unblocked whenever you say so.
 
 ## Assumptions Claude is running on
 

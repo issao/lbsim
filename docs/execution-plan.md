@@ -23,12 +23,20 @@ one-second feedback loop. A dashboard is a thirty-second one, and it cannot be b
 until the engine produces data worth displaying. The first five milestones have no frontend at
 all.
 
-// Issao: STart building a stand in dashboard for now just so that I can observe progress. I will inline here the spec of the dashbaord, move it to a separate file with UI spec;
-//  - Homepage (list of interaction surfaces)
-//  - load test dashboard.
-//    - panels: Observation suite on right, control panel on left. Observation suite should have a tab to select various views (cluster health, service quality, machine level view [paginated], utilization). Control panel is also tabbed and should have surfaces to control: Loading pre-set scenarios, selecting load generation with live tunable parameters, policies and live tunable parameters.
-//.   - also have an alternative, side-by-size view that has the same load, two different policies to observe A/B comparisons.
-//  - showcase. Several cards highlighting each of the most interesting dynamics and when we click on each of them, we can a scripted walk through of the dashboard with execution pausing in critical moments with a small popup describing what is interesting and a button to resume.
+Issao asked for a stand-in dashboard early, so he can observe progress: *"STart building a stand in
+dashboard for now just so that I can observe progress."* His full dashboard specification is now
+`docs/ui-spec.md`.
+
+That reprioritisation is folded into the milestones below as **M0.5**, and it is a better idea than
+the original ordering. The stand-in runs against mock data generated in the browser, so it is
+buildable before any engine exists, and it front-loads exactly the mistakes that are expensive to
+find late: a wrong tab structure, a layout that does not fit the panels, a pagination story that does
+not survive contact with the wire protocol. Every panel carries a visible "mock data" marker until it
+is wired to a real run, because a dashboard that looks real while showing invented numbers is how
+someone ends up trusting a chart that was never connected.
+
+The original argument for putting the dashboard last still holds for the *real* dashboard, which
+still lands at M8. What moves early is the shell, not the wiring.
 
 **Scenarios in protobuf text format, not TOML.** `Scenario` is already a proto message, and
 prototxt is human-readable, comment-friendly, and needs no converter or second schema. An
@@ -53,6 +61,18 @@ codegen wired up, no logic. CI runs `cargo test --workspace`, `cargo clippy -- -
 **Done:** a green CI run on an empty workspace, and a dependency test asserting that
 `sim-ingress` cannot reach `sim-model` or `sim-physics`. That last one matters: if Ingress can
 compute replica physics, eventually it will, and the layer boundary erodes.
+
+### M0.5. Stand-in dashboard — one day, in parallel
+
+The shell of the load-test dashboard from `docs/ui-spec.md` section 5, against mock data generated
+in the browser. Homepage, both panels with all tabs, the A/B view, and the showcase with one real
+walkthrough script so the format gets exercised.
+
+Runs in parallel with M0 and M1 because it shares no files with them, which makes it the one piece
+of genuinely safe early fan-out.
+
+**Done:** Issao can open it, click through every tab, and say what is wrong with the layout before
+any of it is wired to a server. Every panel visibly marked as mock.
 
 ### M1. Walking skeleton — the first real milestone
 

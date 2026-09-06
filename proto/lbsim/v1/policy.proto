@@ -117,6 +117,7 @@ message Intent {
     EjectReplica eject_replica = 9;
     ScheduleRetry schedule_retry = 10;
     RequestProbe request_probe = 11;
+    DeclareRatedCapacity declare_rated_capacity = 12;
   }
 
   // Send a request to a replica. Takes effect after the modelled RPC delay, not instantly.
@@ -161,6 +162,17 @@ message Intent {
   // Client-side retry. Retries are what turn a slowdown into a collapse, so the retry
   // decision is a policy with a budget, not an automatic behaviour.
   message ScheduleRetry { uint64 request_id = 1; uint64 delay_ns = 2; }
+
+  // The policy's own claim about what it can serve while meeting SLOs. Declared during warm-up and
+  // updatable until the measured phase begins; see docs/arena.md section 3.
+  //
+  // Above this, shedding costs no SLO penalty. Below it, the SLA gate applies. That makes the claim
+  // a two-sided commitment and honesty the highest-scoring strategy: claim too low and goodput
+  // falls, claim too high and the gate scores zero. No judgement is required anywhere.
+  message DeclareRatedCapacity {
+    double requests_per_second = 1;
+    double tokens_per_second = 2;
+  }
 
   // Ask a replica for fresh state instead of waiting for the next snapshot. Costs a modelled
   // RPC, so the price of freshness is visible rather than free. This is what makes
