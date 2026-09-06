@@ -8,9 +8,17 @@ done, so there is no notion of an "answered" marker.
 Also fetches from origin and reports commits not reachable from HEAD, since the user's own
 edits arrive that way.
 
+Scans two places, because an instruction can arrive either way:
+
+  - the working tree, for instructions already merged;
+  - every remote ref holding commits not reachable from HEAD, so an instruction pushed to the
+    user's own branch is seen *before* it is merged. Without this, a marker on their branch
+    stays invisible until someone thinks to merge, which defeats the point.
+
 Usage:
     python3 tools/inbox.py                      # fetch, then report
     python3 tools/inbox.py --no-fetch           # report only, offline
+    python3 tools/inbox.py --local              # working tree only, skip remote refs
     python3 tools/inbox.py --resolve FILE:LINE  # delete a marker block after acting on it
 
 Exit codes: 0 nothing pending, 1 something pending. Non-zero is informational, not a failure;
@@ -170,6 +178,47 @@ def resolve(spec: str) -> int:
     return 0
 
 
+def unmerged_refs() -> list[str]:
+    """Remote refs that hold at least one commit not reachable from HEAD."""
+    refs = git("for-each-ref", "--format=%(refname:short)", "refs/remotes").splitlines()
+    out = []
+    for ref in refs:
+        ref = ref.strip()
+        if not ref or ref.endswith("/HEAD"):
+            continue
+        if git("rev-list", "--count", "--max-count=1", f"{ref}", "--not", "HEAD").strip() not in ("", "0"):
+            out.append(ref)
+    return out
+
+
+def scan_ref(ref: str) -> list[tuple[str, int, str]]:
+    """Find markers in a remote ref without checking it out.
+
+    Returns (path, line, text). `git grep` on a ref reads the object store directly, so this
+    costs nothing and touches no files.
+    """
+    # Anchored the same way as marker_at: start of line, after optional comment syntax.
+    pattern = r"^[[:space:]]*([/#*;%]|<!--|--)*[[:space:]]*" + MARKER
+    raw = git("grep", "-n", "-I", "-E", pattern, ref, "--")
+    found = []
+    for line in raw.splitlines():
+        # Format: <ref>:<path>:<lineno>:<content>
+        rest = line[len(ref) + 1:] if line.startswith(ref + ":") else line
+        parts = rest.split(":", 2)
+        if len(parts) < 3:
+            continue
+        path, lineno, content = parts
+        try:
+            n = int(lineno)
+        except ValueError:
+            continue
+        text = marker_at(content)
+        if text is None:
+            continue
+        found.append((path, n, text or "(empty)"))
+    return found
+
+
 def new_commits(no_fetch: bool) -> list[str]:
     if not no_fetch:
         git("fetch", "--all", "--prune", "--quiet")
@@ -181,6 +230,8 @@ def new_commits(no_fetch: bool) -> list[str]:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--no-fetch", action="store_true", help="skip git fetch")
+    ap.add_argument("--local", action="store_true",
+                    help="scan the working tree only, skipping unmerged remote refs")
     ap.add_argument("--resolve", metavar="FILE:LINE",
                     help="delete the marker block there, after acting on it")
     args = ap.parse_args()
@@ -202,9 +253,15 @@ def main() -> int:
     else:
         print("COMMITS: none pending; HEAD has everything from origin")
 
+    remote_hits: list[tuple[str, str, int, str]] = []
+    if not args.local:
+        for ref in unmerged_refs():
+            for path, line, text in scan_ref(ref):
+                remote_hits.append((ref, path, line, text))
+
     print("-" * 72)
     if messages:
-        print(f"PENDING INSTRUCTIONS ({len(messages)}):")
+        print(f"PENDING INSTRUCTIONS in the working tree ({len(messages)}):")
         for m in messages:
             print(f"  {m.render()}")
         print()
@@ -212,10 +269,18 @@ def main() -> int:
         print("     python3 tools/inbox.py --resolve <file>:<line>")
         print("     and quote the instruction in the commit message.")
     else:
-        print("PENDING INSTRUCTIONS: none")
+        print("PENDING INSTRUCTIONS in the working tree: none")
+
+    if remote_hits:
+        print()
+        print(f"INSTRUCTIONS IN UNMERGED COMMITS ({len(remote_hits)}):")
+        for ref, path, line, text in remote_hits:
+            print(f"  {ref}:{path}:{line}\n    {text}")
+        print()
+        print("  -> merge that ref first, then act on them in the working tree.")
     print("=" * 72)
 
-    return 1 if (commits or messages) else 0
+    return 1 if (commits or messages or remote_hits) else 0
 
 
 if __name__ == "__main__":
