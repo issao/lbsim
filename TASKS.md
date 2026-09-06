@@ -1,6 +1,6 @@
 # TASKS — things that need Issao
 
-Last updated: 2026-09-06 16:40 by Claude.
+Last updated: 2026-09-06 17:10 by Claude.
 
 Stack ranked, most blocking first. Every item says what Claude does if you say nothing, so nothing
 here stalls the work. What is finished and live is in `STATUS.md`.
@@ -33,11 +33,15 @@ consequences that belong to the tech lead; verbatim, from `TASKS.md` before the 
 
 ---
 
-## 1. Domain: `lbsim.ai` is dark since `lbsim-prod` was removed
+## 1. Domain: delegation fixed, verification can proceed now
 
 The service is live and public at <https://lbsim-irpwc2yaoa-uc.a.run.app>. The domain is only a nicer
-address for it, so do this when convenient. But the state changed at 16:05, and one step is now urgent
-if anything else ever used `lbsim.ai`:
+address for it, so do this when convenient.
+
+You repointed the registrar and it has already taken: at 17:08 both Google (`8.8.8.8`) and Cloudflare
+(`1.1.1.1`) resolve `lbsim.ai` through `*.ns.porkbun.com` and return your TXT record. If your own
+machine still shows the Google nameservers, that is its cache; Search Console asks Google, and Google
+sees it now. The history, kept because it explains the earlier failure:
 
 ```
 $ dig +short NS lbsim.ai
@@ -51,25 +55,24 @@ The registrar still delegates `lbsim.ai` to Google Cloud DNS, and the zone that 
 nothing at all. Earlier today it pointed at Firebase Hosting for `lbsim-prod`; that is gone too. This is
 also why the Porkbun TXT record did not work: Porkbun's DNS was not authoritative for the domain.
 
-- [x] **Step 0, fix the delegation.** In Porkbun, `lbsim.ai` → Nameservers → use Porkbun's own
-      nameservers. After that the records in Porkbun's DNS panel, including the TXT you already added,
-      are the ones the world sees. Check: `dig +short NS lbsim.ai` shows `*.porkbun.com`, then
-      `dig +short TXT lbsim.ai` shows the `google-site-verification=…` string. Takes up to 48 hours to
-      propagate, usually under an hour. Issao: Still shows google dns there, need to wait.
-- [ ] **Step 1, verification.** Finish the `lbsim.ai` Domain property in Search Console once the TXT
-      resolves.
+- [x] **Step 0, fix the delegation.** Done by you, and live at 17:08:
+      `dig +short NS lbsim.ai @8.8.8.8` → `fortaleza.ns.porkbun.com.` and three more;
+      `dig +short TXT lbsim.ai @8.8.8.8` → `"google-site-verification=8sYf…"`.
+- [ ] **Step 1, verification.** Go to Search Console now and press Verify on the `lbsim.ai` Domain
+      property. The TXT it wants is already served.
 - [ ] **Step 2, the mapping.** Domain ownership is per account, and the deploy account is not an owner.
       Either add `lbsim-deployer@lbsim-gcp.iam.gserviceaccount.com` as an Owner of the `lbsim.ai`
       property in Search Console, after which Claude does the rest, or run it yourself once:
       `gcloud beta run domain-mappings create --service=lbsim --domain=lbsim.ai --region=us-central1`
 - [ ] **Step 3, the apex records.** The command prints four `A` and four `AAAA` records. Add them in
-      Porkbun with the Host field empty, and delete Porkbun's parking record on the bare host first.
+      Porkbun with the Host field empty, and delete Porkbun's two parking `A` records on the bare host
+      first (`207.207.210.107` and `.229`, present at 17:08).
       The certificate follows on its own, in fifteen minutes to a few hours.
 
 Why a domain mapping and not a load balancer: the mapping and its certificate are free, and a load
 balancer costs about $18 a month in forwarding rules before serving a byte. Estimate, not measured.
 
-**If you do nothing:** `lbsim.ai` stays dark and the service stays on its `run.app` URL.
+**If you do nothing:** `lbsim.ai` shows Porkbun's parking page and the service stays on its `run.app` URL.
 
 ## 2. One arena rule change still open
 
@@ -79,10 +82,10 @@ balancer costs about $18 a month in forwarding rules before serving a byte. Esti
 |---|---|---|
 | Score the minimum of goodput as a **share of offered work**, not absolute goodput | the minimum is otherwise always set by the lightest load, so a load generator would win by proposing trivial loads | raw objective kept; the share is reported beside it |
 
-The SLA cap is answered: 0.95 for now, and doing better is routed above.
+The SLA cap is answered twice over, 0.95 for now with the aim of improving the SLO target later; the
+design task for a better target is routed to the tech lead above.
 
 **If you do nothing:** the default stands, and every score records the rule set it was earned under.
-Issao: That is ok for now, but we should aim to improve SLO target later.
 
 ## 3. Decisions with a default
 
@@ -95,7 +98,12 @@ Issao: That is ok for now, but we should aim to improve SLO target later.
 
 - [ ] Delete the deploy key. `gcloud iam service-accounts keys list --iam-account=lbsim-deployer@lbsim-gcp.iam.gserviceaccount.com`
       shows the id, which starts `94afd556`; then `keys delete KEY_ID --iam-account=...`.
-**If you do nothing:** the key stays until you delete it.
+- [ ] Grant `roles/logging.viewer` to the deploy account **only when a container fails on startup**.
+      Today it cannot read container or request logs; nothing has needed them yet, and `docs/deploy.md`
+      records the gap. Not worth granting pre-emptively.
+
+**If you do nothing:** the key stays until you delete it, and the first startup crash is undiagnosable
+until you grant the role.
 
 ---
 
