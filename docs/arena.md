@@ -219,7 +219,7 @@ Under a 0.95 cap the ranking is power-of-two-choices, then round robin, then ran
 global least-loaded policies scoring zero. Under 0.99 or 0.999 every policy scores zero, which is a
 useless tournament rather than a demanding one.
 
-Issao, 16:05: *"SLA 0.95 ok for now, but we need to figure out how to do better."* So 0.95 is the
+Issao, 15:26: *"SLA 0.95 ok for now, but we need to figure out how to do better."* So 0.95 is the
 rule of record, and the open design task is a target that a 0.99 cap can be held against: a
 first-token budget that scales with prompt length, or per-class budgets. Either makes the gate
 measure policy rather than prompt-length arithmetic.
@@ -233,7 +233,7 @@ before the arena does.
    gives each slot a typed configuration, so a generator can propose a policy choice and every one
    of its parameters as data, and the schema states exactly what is tunable. What it cannot do is
    propose a new policy *structure*: that would need a small interpreted decision language.
-   Issao overrode that limitation, 16:05: *"Arena policy generator should actually have full power
+   Issao overrode that limitation, 15:26: *"Arena policy generator should actually have full power
    to write code to write new policies, as well as tuning parameters on existing policies."* So a
    candidate is either a `PolicySpec` with new parameters or a new implementation of the policy
    trait, written by the generator as code. The referee's strict mode and the `Observation`/`Intent`
