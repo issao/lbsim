@@ -5,6 +5,7 @@ package lbsim.v1;
 import "lbsim/v1/common.proto";
 import "lbsim/v1/metrics.proto";
 import "lbsim/v1/scenario.proto";
+import "lbsim/v1/workload.proto";
 import "lbsim/v1/subscription.proto";
 
 // The Frontend-to-Ingress API. Served for real over gRPC and grpc-web; everything in
@@ -43,9 +44,19 @@ service Ingress {
   // continuity that does not exist.
   rpc Rewind(RewindRequest) returns (RewindResponse);
 
-  // Change parameters mid-run. Anything altering physics forces re-simulation from the last
-  // snapshot; anything altering only the view does not.
-  rpc Apply(ApplyRequest) returns (ApplyResponse);
+  // Change load or policy mid-run: the two live-tunable control-panel tabs in docs/ui-spec.md.
+  //
+  // Typed rather than a map of dotted paths. Issao asked where load and policy configuration lived,
+  // which was a fair question: they were one level down inside Scenario, and an untyped
+  // `map<string,string>` of paths was the only way to change them on a running simulation. A UI
+  // cannot build controls from that, and a typo in a path is a runtime surprise instead of a
+  // compile error.
+  //
+  // Fleet shape has no equivalent call on purpose. Changing cluster or pool topology mid-run
+  // invalidates every replica's state, so it is a new run rather than an update, and saying so is
+  // more honest than a call that silently restarts everything.
+  rpc UpdateWorkload(UpdateWorkloadRequest) returns (UpdateResponse);
+  rpc UpdatePolicies(UpdatePoliciesRequest) returns (UpdateResponse);
 
   // -- observation --------------------------------------------------------
   rpc OpenSubscription(OpenSubscriptionRequest) returns (stream SubscriptionUpdate);
@@ -60,12 +71,13 @@ service Ingress {
 message RunRef { string run_id = 1; }
 
 message StartRunRequest {
+  // Everything a run needs, including `workload` as a LoadShape from workload.proto and `policies`
+  // as a PolicySpec. Both live inside Scenario rather than beside it, so one message fully
+  // determines a run and can be recorded with its results and replayed.
   Scenario scenario = 1;
   // Cap on simulated seconds per wall-clock second. Unset means as fast as possible.
   double max_realtime_factor = 2;
   bool record_traces = 3;
-}
-message StartRunResponse { string run_id = 1; }
 
 message RunStatus {
   string run_id = 1;
@@ -112,16 +124,25 @@ message RewindResponse {
   uint64 restored_from_snapshot_unix_ns = 3;
 }
 
-message ApplyRequest {
+message UpdateWorkloadRequest {
   string run_id = 1;
-  // Dotted paths into Scenario, e.g. "policies.routing.name". A path/value map rather than a whole
-  // Scenario so the server can tell whether physics changed.
-  map<string, string> set = 2;
+  // The complete replacement shape. Whole rather than a patch, because a partial workload update
+  // has no well-defined meaning: arrival rate, length distribution and prefix topology interact,
+  // and applying half of a change would produce a load nobody asked for.
+  LoadShape workload = 2;
 }
-message ApplyResponse {
+
+message UpdatePoliciesRequest {
+  string run_id = 1;
+  PolicySpec policies = 2;
+}
+
+message UpdateResponse {
   bool accepted = 1;
-  // True when the change altered physics and the run was rewound and re-simulated. The UI must say
-  // so rather than implying a continuity that does not exist.
+  // True when the change altered physics, so the run was rewound to a snapshot and re-simulated.
+  // The UI must show this rather than implying a continuity that does not exist: a chart that
+  // silently recomputed its own history while claiming to be live is worse than one that pauses to
+  // say so.
   bool required_resimulation = 2;
   uint64 rewound_to_unix_ns = 3;
   string rejected_reason = 4;

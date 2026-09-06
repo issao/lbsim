@@ -18,6 +18,11 @@ message Scorecard {
   map<int32, Distribution> distributions = 2;    // keyed by Metric
   map<int32, uint64> outcome_counts = 3;         // keyed by Outcome
 
+  // What the policy claimed it could serve, from Intent.DeclareRatedCapacity. Recorded next to what
+  // it actually achieved, because the gap between claim and outcome is the arena's whole score.
+  double declared_rated_capacity_rps = 4;
+  double declared_rated_capacity_tokens_per_s = 5;
+
   // Judgements, not quantities. Did the fleet fail to recover after offered load returned to
   // normal? That is the definition of a metastable collapse, and it matters more than any
   // percentile because it is the difference between a bad hour and an outage.

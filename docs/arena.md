@@ -1,0 +1,196 @@
+# The policy arena
+
+Design, from Issao's specification. Not built. It comes last in `docs/execution-plan.md` because
+it needs a credible simulator underneath it, but the rules belong on paper now, because two of
+them constrain earlier milestones.
+
+---
+
+## 1. The objective, as specified
+
+> Achieve maximum goodput while keeping out-of-SLO sessions under an SLA cap (say 99.9%). That
+> should remain the case as long as the load is under a rated load capacity, even for an
+> adversarial load generator.
+
+Unpacked into something scoreable:
+
+```
+score(policy) = min over all load shapes L in the load archive of:
+                  goodput(policy, L)   if slo_attainment(policy, L) >= SLA_CAP
+                  0                    otherwise
+                where offered_load(L) <= rated_capacity(policy)
+```
+
+Three properties of that definition are worth stating, because they are what make the game work
+rather than incidental:
+
+**It is a minimum, not a mean.** The requirement is that the guarantee hold *even for an
+adversarial load generator*, so a policy is scored by its worst case across the load archive. A
+policy that is excellent on average and collapses on one realistic shape has not met the
+specification.
+
+**The SLA cap is a gate, not a term.** Breaching it scores zero rather than costing points. That
+prevents the obvious trade of a little quality for a lot of throughput, which is the whole failure
+mode the objective exists to rule out.
+
+**Rated capacity is declared by the policy, and that is the anti-gaming mechanism.** See section 3.
+
+---
+
+## 2. The three agents
+
+### 2.1 Policy generator
+
+Reviews the previous round's outcome, including every metric, and proposes changes to policy.
+Maintains an archive of its **top ten candidates**.
+
+What it may see: everything in the run result. Scorecards, time series, sampled traces, referee
+counters. It is reasoning about its own past behaviour, which is legitimate and is the point.
+
+What it may not do: anything the physics referee in `docs/ARCHITECTURE.md` section 5.2 forbids.
+That is enforced structurally rather than judged, because an `Observation` contains no fresh state
+and no `Truth`, and an `Intent` cannot express a physics violation. In the arena the referee runs
+in **strict** mode, so a violation aborts the run and the candidate scores nothing.
+
+### 2.2 Load generator
+
+Reviews the previous round and tries to stress the policies. Maintains its own archive of **top
+ten candidates**.
+
+Per Issao's instruction it must **always include vanilla shapes**: every batch contains some
+average, unremarkable load so the policy gets calibration signal rather than only adversarial
+signal. Without that, co-evolution drifts into a corner where both sides are excellent at a game
+nobody plays. Section 5 argues this is necessary but not sufficient.
+
+Its adversarial freedom is bounded by realism, and bounded **mechanically**: every load it
+proposes is a `LoadShape` from `workload.proto`, and every parameter must fall inside the envelope
+measured in `docs/calibration.md`. A load of a million-token prompts at ten thousand requests per
+second is not a clever attack, it is an invalid submission, and the referee should reject it
+without needing judgement.
+
+### 2.3 Referee
+
+Defines the rules of the game, tallies results, and checks whether either generator is violating
+the spirit of it: *identify difficult but realistic workloads, and build policies that serve good
+service quality at maximum goodput.* When it looks like someone is gaming, the referee makes new
+rules.
+
+**Split the referee in two, and keep the mechanical half much larger than the judging half.** This
+is the one place I would extend Issao's design, because a judge that is itself an agent is a judge
+that can be argued with, drift, or be gamed in turn.
+
+| Mechanical referee, in code | Judging referee, an agent |
+|---|---|
+| physics invariants, strict mode | is this load realistic in a way the envelope misses? |
+| realism envelope on every load parameter | is this policy exploiting a simulator artefact? |
+| rated-capacity honesty, section 3 | has the game degenerated into a narrow niche? |
+| SLA gate and worst-case scoring | should a new rule be added, and what? |
+| reproducibility: config plus seed recorded | |
+| determinism: identical fingerprint on replay | |
+
+Everything that can be a check should be a check. The agent handles only the residual, and its
+output is a **proposed rule change** that a human accepts, not an immediate score adjustment.
+
+**Rule changes apply forward, never backward.** A new rule invalidates old scores, so the archive
+records which rule set each score was earned under, and a round is only ever compared within one
+rule set. Without that, "the referee makes new rules" quietly destroys the ability to tell whether
+anything is improving.
+
+---
+
+## 3. Rated capacity: the mechanism that makes honesty pay
+
+Issao's design, and the cleverest part of it:
+
+> The policy is allowed to spill traffic above its rated capacity without SLO cost. The policy can
+> dynamically update its rated capacity at warm up for the initial phase of simulation, the referee
+> is measuring the metrics after that initial phase.
+
+So the policy declares a number. Above it, shedding is free. Below it, the SLA gate applies.
+
+That makes the declaration a genuine commitment with a two-sided cost:
+
+| The policy declares | What happens |
+|---|---|
+| too low | it sheds traffic it could have served, so goodput and therefore score fall |
+| too high | it must meet the SLA gate on load it cannot handle, breaches, and scores zero |
+| honestly | maximum score |
+
+No judgement required. The incentive does the work, which is exactly what an anti-gaming rule
+should look like.
+
+**One consequence worth designing for.** Because capacity is declared during warm-up, a policy
+could inspect the warm-up load and declare a number tuned to it. Issao's design already handles
+this, though it is worth making explicit: **the load generator is free to change the load after
+warm-up**, so an over-claim tuned to an easy warm-up is punished in the measured phase. That
+tension is the core adversarial dynamic of the whole game, and the load generator should be
+explicitly told to exploit it.
+
+**A second consequence.** Warm-up must be long enough for the fleet to reach steady state, or a
+policy is declaring capacity from a transient. `docs/ARCHITECTURE.md` section 8 already excludes
+warm-up from statistics; the arena additionally requires that autoscaling have settled, which
+means warm-up longer than a cold start, so at least several minutes of simulated time.
+
+---
+
+## 4. A round
+
+```
+for each round:
+  1. Referee assembles the load slate: every candidate in the load archive, plus the mandatory
+     vanilla shapes, plus the fixed held-out suite from section 5.
+  2. Referee assigns seeds. The same seeds for every policy, so a comparison is a comparison.
+  3. For each (policy candidate, load) pair: run, with the physics referee in strict mode.
+     Embarrassingly parallel; this is what Cloud Run Jobs are for.
+  4. Mechanical checks: physics violations, realism envelope, determinism replay on a sample.
+  5. Score each policy as the worst case over loads, gated on the SLA cap.
+  6. Score each load by how much it degrades the *best* policy, so a load that defeats a weak
+     policy and not a strong one is worth little.
+  7. Update both archives, keeping ten each.
+  8. Judging referee reviews the round and may propose a rule change, for a human to accept.
+  9. Both generators read the full results and propose their next candidates.
+```
+
+Same seeds across policies is not a detail. Named independent RNG streams, already in the design,
+mean the workload a policy faces does not shift because the policy changed, so a difference in
+score is a difference in policy.
+
+---
+
+## 5. The failure mode Issao's design does not yet cover
+
+Co-evolutionary systems fail in a characteristic way: both sides get very good at each other and
+lose all generality. The mandatory vanilla shapes help, but they are a floor rather than a
+yardstick, because the generators are free to treat them as a tax and optimise around them.
+
+**Add a fixed held-out benchmark suite that never changes.** A dozen scenarios, frozen before the
+arena starts, drawn from `docs/ARCHITECTURE.md` section 12's phase-1 dynamics: the rolling hotspot,
+the preemption cascade, the retry storm, the prefix-affinity tension, a diurnal multi-region run.
+Never added to, never tuned, and no generator may propose changes to it.
+
+Its only job is to answer one question that the arena cannot answer about itself: **is the current
+best policy actually better than the one from ten rounds ago, or has the game merely moved?** If
+held-out performance is flat while arena scores climb, the arena is measuring its own drift.
+
+That check is cheap, it is mechanical, and without it there is no way to distinguish progress from
+co-evolutionary noise.
+
+---
+
+## 6. What this requires from earlier milestones
+
+Two things that are cheap now and expensive to retrofit, which is the reason this document exists
+before the arena does.
+
+1. **A policy must be expressible as data, not only as code.** `PolicyRef` in `scenario.proto` is a
+   name plus a parameter map, and the arena needs a generator to propose new *structures*, not only
+   new parameter values. Either the policy trait is implemented once as a small interpreted
+   decision language, or the arena is limited to tuning parameters of hand-written policies.
+   **Tuning parameters is the right scope for a first arena**, and it works with what exists today.
+   Note the limitation rather than building the language now.
+2. **Rated capacity needs a home in the interfaces.** A policy must be able to declare and update
+   it, and the referee must be able to read it. It is one field on the policy configuration plus
+   one intent, and adding it later means a proto change during a live experiment.
+
+Everything else the arena needs, the strict referee, per-decision cost measurement, determinism
+fingerprints, stratified traces, is already required by earlier milestones for its own reasons.
