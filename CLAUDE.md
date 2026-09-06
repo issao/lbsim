@@ -112,8 +112,11 @@ time."*
   budget was lost: a filter meant for one name matched two.
 - **Every `gcloud` call takes `--quiet`.** It offers to enable APIs interactively, and unattended that
   prompt hangs a deploy rather than failing it. A hang is harder to diagnose than an error.
-- **Do not delegate mutating cloud work to a subagent.** A subagent inherits this credential and cannot
-  be supervised mid-action, which is how the budget incident happened.
+- **Delegating cloud work to a subagent is now acceptable, and only because the credential is scoped.**
+  The earlier rule forbade it, and the reason was that a subagent inherited the user's full account and
+  deleted a budget. That harm is now impossible: the only credential here has no billing role and cannot
+  read IAM. The user has since asked for cloud work to be delegated entirely. The rule that remains is
+  the one above about deletes and exact-match filters.
 - **Watch instance-hours, not the bill.** Non-zero while nobody is using the dashboard means the idle
   shutdown is broken. That is the real cost control; the budget is only the tripwire behind it.
 
@@ -135,9 +138,18 @@ never the right mechanism.
 
 ## Current state
 
-Design phase. **Nothing is built.** The user must bless `docs/ARCHITECTURE.md` and the
-interfaces in `proto/` before any implementation starts. Do not write simulator code
-until then.
+Building. The simulator runs, six dynamics reproduce, 45 tests pass, and the stand-in dashboard builds.
+See `STATUS.md`. Work is delegated across three long-running agents with strict file ownership:
+
+| Agent | Owns | Must not touch |
+|---|---|---|
+| Tech lead | `src/`, `tests/`, `scenarios/`, `web/src/lib/` | docs, `TASKS.md`, `STATUS.md`, cloud files |
+| Cloud | `Dockerfile`, `deploy.sh`, `cloudbuild.yaml`, `.dockerignore`, `docs/deploy.md` | everything else |
+| Monitor and housekeeping | `TASKS.md`, `STATUS.md`, `README.md`, `docs/*.md` except deploy | code, cloud files, this file |
+
+The main agent coordinates, owns this file and `proto/`, and stays out of the areas above. Any agent that
+needs a file it does not own stops and says so rather than editing it. `git add` is always by explicit
+path, never `-A`, because that is how one agent's in-flight files ended up in another's commit today.
 
 `TASKS.md` tracks what is waiting on the user, stack ranked. `STATUS.md` tracks what is done
 and live. Keep both current.
