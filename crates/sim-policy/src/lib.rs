@@ -20,6 +20,7 @@
 //! [`RoutingPolicy::inspected`] is how the violation is reported rather than hidden.
 
 mod accept_all;
+mod least_kv_probe;
 mod least_queue_tokens;
 mod least_requests;
 mod p2c;
@@ -53,6 +54,7 @@ pub const ROUTING: &[PolicyEntry<dyn RoutingPolicy>] = &[
         make: least_queue_tokens::make,
     },
     PolicyEntry { names: &["p2c", "power_of_two_choices"], file: "p2c.rs", make: p2c::make },
+    PolicyEntry { names: &["least_kv_probe"], file: "least_kv_probe.rs", make: least_kv_probe::make },
 ];
 
 /// The admission registry.
