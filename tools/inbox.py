@@ -302,19 +302,21 @@ def new_commits(no_fetch: bool) -> list[str]:
 # left to review.
 # ---------------------------------------------------------------------------
 
+# Built from MARKER rather than written literally, so this file does not report its own test
+# fixtures as instructions. It did, which is the same "cries wolf" failure as an earlier bug.
+_M = MARKER
 _CASES = [
     # (label, text, expected marker texts in order)
-    ("plain line", "Issao: one\n", ["one"]),
-    ("own-line comment", "// Issao: two\n", ["two"]),
-    ("trailing after code", "uint32 x = 1;  // Issao: three\n", ["three"]),
-    ("trailing after a brace", "}  // Issao: four\nmessage B {}\n", ["four"]),
-    ("markdown bold is prose", "**Issao: five** is a quote\n", []),
-    ("mid-sentence is prose", "The convention is `Issao:` here\n", []),
-    ("doc-comment continuation", " * Issao: six\n", ["six"]),
-    ("multi-line continuation",
-     "Issao: seven\nand more of seven\n\nunrelated\n", ["seven and more of seven"]),
-    ("continuation stops at a quote",
-     "Issao: eight\n**Issao: nine** quoted\n", ["eight"]),
+    ("plain line", f"{_M} one\n", ["one"]),
+    ("own-line comment", f"// {_M} two\n", ["two"]),
+    ("trailing after code", f"uint32 x = 1;  // {_M} three\n", ["three"]),
+    ("trailing after a brace", f"}}  // {_M} four\nmessage B {{}}\n", ["four"]),
+    ("markdown bold is prose", f"**{_M} five** is a quote\n", []),
+    ("mid-sentence is prose", f"The convention is `{_M}` here\n", []),
+    ("doc-comment continuation", f" * {_M} six\n", ["six"]),
+    ("multi-line continuation", f"{_M} seven\nand more of seven\n\nunrelated\n",
+     ["seven and more of seven"]),
+    ("continuation stops at a quote", f"{_M} eight\n**{_M} nine** quoted\n", ["eight"]),
 ]
 
 
@@ -334,7 +336,7 @@ def selftest() -> int:
 
     # Resolve must never remove code that shares a line with a marker.
     with tempfile.NamedTemporaryFile("w", suffix=".proto", delete=False) as fh:
-        fh.write("message A {\n  uint32 x = 1;\n}  // Issao: trailing\nmessage B { uint32 y = 1; }\n")
+        fh.write(f"message A {{\n  uint32 x = 1;\n}}  // {_M} trailing\nmessage B {{ uint32 y = 1; }}\n")
         name = fh.name
     rc = resolve(f"{name}:3")
     after = Path(name).read_text()

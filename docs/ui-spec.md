@@ -28,7 +28,7 @@ The fully customisable playground. Two panels:
 |---|---|
 | Scenarios | preset scenarios, loaded with one click |
 | Load | load-generation parameters, live tunable |
-| Policies | policy selection and parameters, live tunable |
+| Policies | policy selection and parameters, live tunable. Controls are generated from `PolicySpec`, which is now fully typed, so the panel cannot drift from what the engine accepts |
 | Cluster | fleet shape: clusters, pools, replicas per pool, accelerator |
 | Run | speed, pause, step, rewind, and the current simulated time |
 
