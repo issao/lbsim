@@ -72,14 +72,31 @@ gcloud billing budgets create --billing-account=YOUR_BILLING_ID \
 Enabling the APIs yourself means Claude never needs the service-usage role, which is one fewer broad
 permission handed over.
 
-### The credential, and its blast radius
+### Credentials: Claude is not going to ask you for one
 
-**A choice, and the second option is genuinely fine.** Either a service account key, or you run one
-command per deploy yourself with the `!` prefix while Claude prepares everything else. A long-lived
-key in a sandbox is a real secret; if you would rather not, the one-line-per-deploy path costs almost
-nothing.
+**Recommended, and it costs almost nothing: you run the deploy command yourself.** Claude writes the
+Dockerfile, the build config, the deploy script with the flags that matter, the health check and the
+idle-shutdown logic, and commits all of it. You then run one line per deploy. In this session you can
+prefix a command with `!` to run it here and have the output land in the conversation.
 
-If you do issue a key, these roles and no others:
+That is one line of your time per deploy, and no credential ever exists outside your own shell.
+
+**A note on something a research pass suggested, which should not be done.** It proposed minting a
+short-lived access token and pasting it into this conversation. Do not do that, and Claude will not
+ask for it:
+
+- A transcript is stored, and may be logged or retained beyond this session. A credential pasted into
+  one is disclosed, not transient, regardless of when it expires.
+- The scope is not small. It carries deploy and storage-write authority on the project.
+- The expiry argument is weaker than it sounds. An hour is ample for anything unwanted, and "treat it
+  as burned after use" is a mitigation applied after the disclosure rather than instead of it.
+
+**If you do want Claude deploying unattended**, the right mechanism is Workload Identity Federation,
+which issues short-lived credentials against an identity provider with no secret at rest anywhere. It
+is more setup than this project currently justifies. A service account key file placed in the sandbox
+out of band, never through the conversation, is a middle option: still a long-lived secret, but at
+least not in a transcript. Scope it to these six roles and nothing more, and rotate it when this phase
+ends.
 
 | Role | Why |
 |---|---|
@@ -90,9 +107,8 @@ If you do issue a key, these roles and no others:
 | `roles/storage.objectAdmin` | **on the results bucket only**, which you pre-create |
 | `roles/monitoring.viewer` | read instance-hours, the number that catches a cost bug |
 
-Deliberately absent: every billing role, project IAM, and `storage.admin`. Worst case if the key
-leaks is compute burned inside the instance caps, not an account restructured. Rotate it when this
-phase ends.
+Every billing role, project IAM, and `storage.admin` are deliberately absent. Worst case is compute
+burned inside the instance caps, not an account restructured.
 
 ### What $100 a month buys
 
