@@ -5,46 +5,64 @@ right now. Claude keeps this file current; anything Claude can do alone is not h
 
 Each item says what happens if you do not answer, so nothing stalls indefinitely.
 
-Last updated: 2026-09-06 11:50 by Claude.
+Last updated: 2026-09-06 12:12 by Claude.
 
 ---
 
-## 1. BLOCKING — bless the architecture, or veto parts of it
+## 1. BLOCKING — review the interfaces in `proto/`
 
-Everything downstream depends on this. Read `docs/ARCHITECTURE.md`, section 13 lists six
-decisions. Fastest path: read section 0, the five findings, then section 13, then say yes or
-name what you disagree with. Fifteen minutes.
+Now the only blocking gate. The architecture decisions are answered; see below.
 
-Decision 1, analytic epoch advancement, is **now backed by proof rather than argument**:
-`bench/validate_epochs.py` shows the closed form is exactly equivalent to per-step iteration,
-in rational arithmetic, with 82x fewer iterations. Section 3.5 has the detail. That should make
-decision 1 easy to accept.
+Twelve files, all compiling. Two are new since your feedback, and they are the ones worth your
+attention first because they encode your three-layer sketch:
 
-**If you say nothing:** Claude proceeds on the assumption that all six are accepted, and says
-so loudly in `STATUS.md`. Reversing later costs rework proportional to how much got built.
+1. `leaf.proto` — Ingress to Leaf. `Leaf.Advance` is the synchronisation barrier and carries
+   work, tier grants, control actions, completions, control telemetry, metrics and tier requests
+   in one round trip. One message per shard per window is what makes it affordable.
+2. `subscription.proto` — the O(1) observability contract, shared by both hops. **One deliberate
+   departure from your sketch, please check it:** you specified that the frontend requests a time
+   sampling factor based on intended simulation speed. That alone does not hold the bound, because
+   raising the speed then raises the wire rate proportionally. So a subscription declares a
+   wall-clock budget, updates per second and rows per update, and the server derives the simulated
+   interval to fit and re-derives it whenever speed changes. Your preference is kept as
+   `desired_sim_interval_ns`, honoured where it fits.
+3. `ingress.proto` — Frontend to Ingress. Was `control.proto`. `StreamRun` is gone, replaced by
+   the budgeted subscription; `SetSpeed`, `StepForward` and `Rewind` added.
+4. `policy.proto` — the engine/policy seam and the referee. Decides whether the agent arena can
+   be trusted.
+5. `telemetry.proto` — the staleness boundary. Decides whether the control-theory dynamics are
+   reachable.
+6. `scenario.proto` — the whole configuration surface, and the largest file. The one you will
+   live in.
+7. `common.proto`, `request.proto` — vocabulary. Note `Truth`: it holds what the simulator knows
+   and no policy may ever see.
+8. `serving.proto`, `kv.proto`, `capacity.proto`, `metrics.proto` — the modelled data plane and
+   results.
 
-## 2. BLOCKING — review the interfaces in `proto/`
+Leave corrections as marker lines directly in the files. That worked well; the watcher caught
+your last batch within a minute of the push.
 
-You asked to review every interface. Nine files. Order by consequence:
+**If you say nothing:** Claude treats the interfaces as accepted and starts generating code from
+them.
 
-1. `policy.proto` — the engine/policy seam and the referee. Decides whether the agent arena
-   can be trusted, because it is what makes a cheating policy unrepresentable rather than
-   merely forbidden.
-2. `telemetry.proto` — the staleness boundary. Decides whether the control-theory dynamics
-   you care about are reachable at all.
-3. `scenario.proto` — the whole configuration surface, and the largest file. This is the one
-   you will live in.
-4. `common.proto` and `request.proto` — vocabulary. Note `Truth`: it holds what the simulator
-   knows and no policy may ever see.
-5. `serving.proto`, `kv.proto`, `capacity.proto` — the modelled data plane, one method per
-   diagram arrow.
-6. `metrics.proto`, `control.proto` — results and the dashboard API.
+## 2. Five smaller decisions, all with a default so none of them blocks
 
-Leave corrections as `Issao:` lines directly in the proto files. Claude will act on each and
-delete the line.
+From `docs/ARCHITECTURE.md` section 14. Each has a stated default being taken.
 
-**If you say nothing:** Claude treats the interfaces as accepted and starts generating code
-from them. Interface changes after that are cheap for messages and expensive for services.
+1. **Phase 1 cut.** Section 12 proposes phase 1 in full plus prefix affinity as v1.
+2. **Leaf shards as threads, not processes.** Measured: a process boundary costs 50 to 100
+   microseconds per barrier against a 0.5 ms lookahead, which breaks the 20x target. Threads cost
+   1 to 5 microseconds. The proto boundary is preserved either way, so cross-process remains
+   possible later at a lower realtime factor. Default: threads.
+3. **Ban O(N) routing policies.** A full fleet scan per request costs 14 cores at target scale, so
+   routing must be O(1) or O(log N) and "least loaded" must be an incrementally maintained index
+   rather than a scan. Default: the harness *fails* a run whose policy would not hold at target
+   scale, rather than warning.
+4. **Cap the prefix-affinity index at Ingress** to a bounded top-K, which is what real routers
+   use. Default: capped.
+5. **Cluster tiers owned by Ingress**, with a tier operation as a modelled network round trip.
+   Faithful, since reaching a pooled tier genuinely is a network operation, and it keeps shards
+   free of shared mutable state. Default: yes.
 
 ## 3. Should Claude build the cargo workspace skeleton while gated?
 
@@ -98,7 +116,23 @@ interface, and does not start it until the engine reproduces at least one dynami
 
 ---
 
+## Heads up: something outside this session is moving the working tree
+
+A VS Code Git extension appears to be attached to `/home/agents/repo/lbsim`. At 11:59 it stashed
+uncommitted work and switched branches, which silently reverted a large edit to
+`docs/ARCHITECTURE.md`. The work was recovered from the stash, nothing is lost, and everything
+described above is committed.
+
+Nothing needed from you unless you are pointing an editor at this sandbox, in which case that is
+the cause and it will recur. `tools/sync.sh` now warns on an unexpected stash and on HEAD moving
+between runs, so a repeat is visible immediately rather than discovered later.
+
 ## Done
+
+- [x] **Architecture reviewed.** Findings 1, 3 and 4 accepted; finding 2 parked with a trigger
+      and a knob design; the three-layer deployment supplied and now written up as
+      `docs/ARCHITECTURE.md` section 10, with `leaf.proto` and `subscription.proto` to match.
+      Your earlier recommendation against intra-cluster parallelism is withdrawn.
 
 - [x] Write `VISION.md` sections 1-8.
 - [x] Publish the repository to GitHub.

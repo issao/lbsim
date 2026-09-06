@@ -154,7 +154,7 @@
         <object label="sim-run CLI&#10;batch scenario sweeps" component="sim-run" id="run">
           <mxCell style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F3E5F5;strokeColor=#6A1B9A;fontSize=10;" vertex="1" parent="1"><mxGeometry x="80" y="590" width="170" height="65" as="geometry" /></mxCell>
         </object>
-        <object label="sim-server&#10;SimControl service" component="sim-server" id="srv">
+        <object label="sim-ingress&#10;Ingress service" component="sim-ingress" id="srv">
           <mxCell style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F3E5F5;strokeColor=#6A1B9A;fontSize=10;" vertex="1" parent="1"><mxGeometry x="330" y="590" width="180" height="65" as="geometry" /></mxCell>
         </object>
         <object label="React dashboard&#10;playground and showcase" component="web" id="web">
@@ -195,11 +195,84 @@
         <object label="RunResult" proto="proto/lbsim/v1/metrics.proto" rpc="RunResult" kind="internal" id="e2_met_run">
           <mxCell style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=9;strokeColor=#6A1B9A;" edge="1" parent="1" source="met" target="run"><mxGeometry relative="1" as="geometry" /></mxCell>
         </object>
-        <object label="StartRun / Apply / Seek and StreamRun" proto="proto/lbsim/v1/control.proto" rpc="SimControl.StreamRun" kind="stream" id="e2_web_srv">
+        <object label="StartRun / SetSpeed / StepForward / Rewind, and OpenSubscription" proto="proto/lbsim/v1/ingress.proto" rpc="Ingress.OpenSubscription" kind="stream" id="e2_web_srv">
           <mxCell style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=9;strokeWidth=2;startArrow=block;startFill=1;strokeColor=#6A1B9A;" edge="1" parent="1" source="srv" target="web"><mxGeometry relative="1" as="geometry" /></mxCell>
         </object>
-        <object label="ExportReport" proto="proto/lbsim/v1/control.proto" rpc="SimControl.ExportReport" kind="rpc" id="e2_srv_rpt">
+        <object label="ExportReport" proto="proto/lbsim/v1/ingress.proto" rpc="Ingress.ExportReport" kind="rpc" id="e2_srv_rpt">
           <mxCell style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=9;strokeColor=#6A1B9A;" edge="1" parent="1" source="web" target="rpt"><mxGeometry relative="1" as="geometry" /></mxCell>
+        </object>
+      </root>
+    </mxGraphModel>
+  </diagram>
+
+  <diagram id="deployment" name="3. Deployment: Frontend / Ingress / Leaf">
+    <mxGraphModel dx="1400" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1200" pageHeight="760" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <mxCell id="g3_note" value="Plan of record from Issao, 2026-09-06. Every interface is O(1) in payload except control telemetry, which must scale with machine count because that cost and staleness is under study. See docs/ARCHITECTURE.md section 10." style="text;html=1;whiteSpace=wrap;align=left;verticalAlign=top;fontSize=11;fontColor=#616161;" vertex="1" parent="1"><mxGeometry x="40" y="10" width="1120" height="46" as="geometry" /></mxCell>
+
+        <mxCell id="g3_fe" value="FRONTEND — browser, Node + React. Holds no simulation state." style="rounded=0;whiteSpace=wrap;html=1;fillColor=none;strokeColor=#9E9E9E;dashed=1;verticalAlign=top;align=left;spacingLeft=8;spacingTop=4;fontSize=11;fontStyle=1;fontColor=#616161;" vertex="1" parent="1"><mxGeometry x="40" y="66" width="1120" height="105" as="geometry" /></mxCell>
+        <mxCell id="g3_in" value="INGRESS — Rust, not sharded initially. All global and cluster-wide policy." style="rounded=0;whiteSpace=wrap;html=1;fillColor=none;strokeColor=#9E9E9E;dashed=1;verticalAlign=top;align=left;spacingLeft=8;spacingTop=4;fontSize=11;fontStyle=1;fontColor=#616161;" vertex="1" parent="1"><mxGeometry x="40" y="300" width="1120" height="150" as="geometry" /></mxCell>
+        <mxCell id="g3_leaf" value="LEAF — Rust, sharded in the machine dimension, whole nodes per shard. Bulk of the work. Threads in one process per run; see section 10.5." style="rounded=0;whiteSpace=wrap;html=1;fillColor=none;strokeColor=#9E9E9E;dashed=1;verticalAlign=top;align=left;spacingLeft=8;spacingTop=4;fontSize=11;fontStyle=1;fontColor=#616161;" vertex="1" parent="1"><mxGeometry x="40" y="580" width="1120" height="160" as="geometry" /></mxCell>
+
+        <object label="React dashboard&#10;playground, showcase, reports" component="web" id="d_fe">
+          <mxCell style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F3E5F5;strokeColor=#6A1B9A;fontSize=10;" vertex="1" parent="1"><mxGeometry x="420" y="100" width="360" height="55" as="geometry" /></mxCell>
+        </object>
+
+        <object label="Run lifecycle&#10;start, speed, step, rewind" component="sim-ingress::lifecycle" id="d_life">
+          <mxCell style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF8E1;strokeColor=#F9A825;fontSize=10;" vertex="1" parent="1"><mxGeometry x="70" y="340" width="180" height="60" as="geometry" /></mxCell>
+        </object>
+        <object label="Global and cluster policy&#10;routing, admission, autoscale, detection" component="sim-policy" id="d_pol">
+          <mxCell style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF8E1;strokeColor=#F9A825;fontSize=10;" vertex="1" parent="1"><mxGeometry x="275" y="340" width="215" height="60" as="geometry" /></mxCell>
+        </object>
+        <object label="Per-replica control view&#10;0.8 MB at 6,250 replicas" component="sim-ingress::fleet" id="d_fleet">
+          <mxCell style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E3F2FD;strokeColor=#1565C0;fontSize=10;" vertex="1" parent="1"><mxGeometry x="515" y="340" width="185" height="60" as="geometry" /></mxCell>
+        </object>
+        <object label="Cluster DRAM and SSD tiers&#10;the only cross-shard state" component="sim-ingress::tiers" id="d_tier">
+          <mxCell style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E3F2FD;strokeColor=#1565C0;fontSize=10;" vertex="1" parent="1"><mxGeometry x="725" y="340" width="195" height="60" as="geometry" /></mxCell>
+        </object>
+        <object label="Metric merge&#10;merges, never computes" component="sim-metrics::merge" id="d_merge">
+          <mxCell style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F5E9;strokeColor=#2E7D32;fontSize=10;" vertex="1" parent="1"><mxGeometry x="945" y="340" width="170" height="60" as="geometry" /></mxCell>
+        </object>
+
+        <object label="Leaf shard 0&#10;replicas, epochs, KV, prefix tree, per-shard stats" component="sim-leaf" id="d_l0">
+          <mxCell style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F5E9;strokeColor=#2E7D32;fontSize=10;" vertex="1" parent="1"><mxGeometry x="90" y="625" width="245" height="70" as="geometry" /></mxCell>
+        </object>
+        <object label="Leaf shard 1" component="sim-leaf" id="d_l1">
+          <mxCell style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F5E9;strokeColor=#2E7D32;fontSize=10;" vertex="1" parent="1"><mxGeometry x="425" y="625" width="200" height="70" as="geometry" /></mxCell>
+        </object>
+        <object label="Leaf shard N&#10;whole nodes only, never split" component="sim-leaf" id="d_ln">
+          <mxCell style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E8F5E9;strokeColor=#2E7D32;fontSize=10;" vertex="1" parent="1"><mxGeometry x="715" y="625" width="245" height="70" as="geometry" /></mxCell>
+        </object>
+        <mxCell id="d_dots" value="..." style="text;html=1;align=center;fontSize=18;fontColor=#616161;" vertex="1" parent="1"><mxGeometry x="640" y="645" width="60" height="30" as="geometry" /></mxCell>
+
+        <object label="StartRun, SetSpeed, StepForward, Rewind — bounded arguments, so O(1) in payload" proto="proto/lbsim/v1/ingress.proto" rpc="Ingress.StepForward" kind="rpc" id="d_e_fe_cmd">
+          <mxCell style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=9;strokeColor=#6A1B9A;exitX=0.25;exitY=1;exitDx=0;exitDy=0;" edge="1" parent="1" source="d_fe" target="d_life"><mxGeometry relative="1" as="geometry" /></mxCell>
+        </object>
+        <object label="OpenSubscription — wall-clock budget, time-leased, paginated; bytes/s independent of fleet size and simulation speed" proto="proto/lbsim/v1/subscription.proto" rpc="OpenSubscriptionRequest" kind="stream" id="d_e_fe_sub">
+          <mxCell style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=9;strokeWidth=2;startArrow=block;startFill=1;strokeColor=#6A1B9A;exitX=0.85;exitY=1;exitDx=0;exitDy=0;" edge="1" parent="1" source="d_fe" target="d_merge"><mxGeometry relative="1" as="geometry" /></mxCell>
+        </object>
+
+        <object label="Advance — the barrier. Carries dispatched work, tier grants and control actions. One message per shard per window." proto="proto/lbsim/v1/leaf.proto" rpc="Leaf.Advance" kind="rpc" id="d_e_in_l0">
+          <mxCell style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=9;strokeWidth=2;strokeColor=#1565C0;" edge="1" parent="1" source="d_life" target="d_l0"><mxGeometry relative="1" as="geometry" /></mxCell>
+        </object>
+        <object label="Leaf.Advance" proto="proto/lbsim/v1/leaf.proto" rpc="Leaf.Advance" kind="rpc" id="d_e_in_l1">
+          <mxCell style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=9;strokeColor=#1565C0;" edge="1" parent="1" source="d_pol" target="d_l1"><mxGeometry relative="1" as="geometry" /></mxCell>
+        </object>
+        <object label="Leaf.Configure at start; Snapshot and Restore for rewind" proto="proto/lbsim/v1/leaf.proto" rpc="Leaf.Configure" kind="rpc" id="d_e_in_ln">
+          <mxCell style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=9;dashed=1;strokeColor=#1565C0;" edge="1" parent="1" source="d_fleet" target="d_ln"><mxGeometry relative="1" as="geometry" /></mxCell>
+        </object>
+
+        <object label="control telemetry — batched per shard: O(shards) messages, O(machines) bytes. Used for control, and scaling with machine count is the point." proto="proto/lbsim/v1/telemetry.proto" rpc="ReplicaState" kind="event" id="d_e_l0_in">
+          <mxCell style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=9;strokeWidth=2;strokeColor=#C62828;exitX=0.75;exitY=0;exitDx=0;exitDy=0;" edge="1" parent="1" source="d_l0" target="d_fleet"><mxGeometry relative="1" as="geometry" /></mxCell>
+        </object>
+        <object label="observability metrics — fixed size per shard per subscription. Statistics computed here. Observation only, never control." proto="proto/lbsim/v1/subscription.proto" rpc="SubscriptionUpdate" kind="event" id="d_e_ln_merge">
+          <mxCell style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=9;strokeColor=#2E7D32;" edge="1" parent="1" source="d_ln" target="d_merge"><mxGeometry relative="1" as="geometry" /></mxCell>
+        </object>
+        <object label="TierRequest up, TierGrant down. The modelled round trip exceeds the lookahead, so a shard never blocks on one." proto="proto/lbsim/v1/leaf.proto" rpc="TierRequest" kind="rpc" id="d_e_l1_tier">
+          <mxCell style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=9;startArrow=block;startFill=1;strokeColor=#1565C0;dashed=1;" edge="1" parent="1" source="d_l1" target="d_tier"><mxGeometry relative="1" as="geometry" /></mxCell>
         </object>
       </root>
     </mxGraphModel>
