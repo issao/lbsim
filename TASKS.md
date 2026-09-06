@@ -5,47 +5,59 @@ right now. Claude keeps this file current; anything Claude can do alone is not h
 
 Each item says what happens if you do not answer, so nothing stalls indefinitely.
 
-Last updated: 2026-09-06 12:12 by Claude.
+Last updated: 2026-09-06 13:00 by Claude.
 
 ---
 
-## 1. BLOCKING — review the interfaces in `proto/`
+## 1. Review `docs/execution-plan.md`
 
-Now the only blocking gate. The architecture decisions are answered; see below.
+You asked for an execution plan with a GCP deployment goal and a fastest-local-iteration dev plan.
+Ten milestones, each with an observable definition of done. Three things in it worth your
+attention:
 
-Twelve files, all compiling. Two are new since your feedback, and they are the ones worth your
-attention first because they encode your three-layer sketch:
+**M1 is a walking skeleton, not a layer.** It targets the round-robin rolling hotspot end to end,
+with decode disabled so the workload behaves like stateless serving. That produces a genuinely
+useful result in two or three days and exercises every layer, at the cost of the first working
+thing not being LLM-specific yet.
 
-1. `leaf.proto` — Ingress to Leaf. `Leaf.Advance` is the synchronisation barrier and carries
-   work, tier grants, control actions, completions, control telemetry, metrics and tier requests
-   in one round trip. One message per shard per window is what makes it affordable.
-2. `subscription.proto` — the O(1) observability contract, shared by both hops. **One deliberate
-   departure from your sketch, please check it:** you specified that the frontend requests a time
-   sampling factor based on intended simulation speed. That alone does not hold the bound, because
-   raising the speed then raises the wire rate proportionally. So a subscription declares a
-   wall-clock budget, updates per second and rows per update, and the server derives the simulated
-   interval to fit and re-derives it whenever speed changes. Your preference is kept as
-   `desired_sim_interval_ns`, honoured where it fits.
-3. `ingress.proto` — Frontend to Ingress. Was `control.proto`. `StreamRun` is gone, replaced by
-   the budgeted subscription; `SetSpeed`, `StepForward` and `Rewind` added.
-4. `policy.proto` — the engine/policy seam and the referee. Decides whether the agent arena can
-   be trusted.
-5. `telemetry.proto` — the staleness boundary. Decides whether the control-theory dynamics are
-   reachable.
-6. `scenario.proto` — the whole configuration surface, and the largest file. The one you will
-   live in.
-7. `common.proto`, `request.proto` — vocabulary. Note `Truth`: it holds what the simulator knows
-   and no policy may ever see.
-8. `serving.proto`, `kv.proto`, `capacity.proto`, `metrics.proto` — the modelled data plane and
-   results.
+**Cloud Run, not GKE, and possibly forever.** A run is a long-lived stateful thing holding about
+1.3 GB, so it wants one instance for its life. Session affinity plus CPU-always-allocated plus a
+max-instances cap of ten maps directly onto your note about ten backend replicas: ten instances,
+ten concurrent runs. No Kubernetes, and no Envoy either, because `tonic-web` speaks gRPC-web
+natively. Section 3.2 has the five `gcloud` commands.
 
-Leave corrections as marker lines directly in the files. That worked well; the watcher caught
-your last batch within a minute of the push.
+**One reversal of an earlier decision, please sanity-check it.** Scenarios in protobuf text format
+rather than TOML. `Scenario` is already a proto message, so TOML would mean a converter and two
+places for a default to drift. If hand-authoring prototxt turns out to be annoying we add a TOML
+front end then.
 
-**If you say nothing:** Claude treats the interfaces as accepted and starts generating code from
-them.
+Section 3.3 lists four things that must be true in the code for the Cloud Run deployment to work,
+all of which are unpleasant to retrofit. Worth a look even if the rest can wait.
 
-## 2. Five smaller decisions, all with a default so none of them blocks
+**If you say nothing:** Claude starts at M0, the workspace and CI, which is half a day and commits
+to nothing that later milestones cannot change.
+
+## 2. Review `docs/agent-architecture.md`
+
+Proposed structure for staffing this with agents. Headline recommendation you may not like: **two
+agents now, not seven.** Architect and Verifier. Fan-out before interfaces are blessed produces
+incompatible designs.
+
+Beyond the Architect and TL you named I argue for four more. The one I would hire before any
+implementer is a **Verifier**, because my own architecture document was wrong twice in one session
+in ways that propagated: a queue mitigation that measurement showed was slower than the standard
+library, and a decode-only throughput figure quoted as a fleet budget input, which you caught
+rather than I did. Its standing mandate would be that every quantitative claim must be reproducible
+by a script in `bench/` or marked as an estimate.
+
+One recommendation to push back on if you disagree: **the comment watcher stays a script, not an
+agent.** A missed instruction is the worst failure this project has, and four of seven instructions
+in one proto file were invisible until a mechanical fix with a regression test.
+
+**If you say nothing:** Claude works as Architect with an ad-hoc Verifier pass per unit, and does
+not fan out.
+
+## 3. Five smaller decisions, all with a default so none of them blocks
 
 From `docs/ARCHITECTURE.md` section 14. Each has a stated default being taken.
 
@@ -64,7 +76,7 @@ From `docs/ARCHITECTURE.md` section 14. Each has a stated default being taken.
    Faithful, since reaching a pooled tier genuinely is a network operation, and it keeps shards
    free of shared mutable state. Default: yes.
 
-## 3. Should Claude build the cargo workspace skeleton while gated?
+## 4. Should Claude build the cargo workspace skeleton while gated?
 
 Two of the three groundwork items are **done**, and both were worth doing:
 
@@ -80,17 +92,22 @@ logic, so that blessing unblocks work immediately instead of after setup.
 **Waiting on you**, because it presumes the crate structure in `docs/ARCHITECTURE.md`
 section 10.5, which you have not blessed. Say the word and it is thirty minutes.
 
-## 4. Do you have real traces for calibration, even aggregated?
+## 5. Real traces for calibration: partly answered already
 
-**This is now the top technical risk**, since the queue risk is closed. Workload realism is the
-weakest link in the design and the least glamorous thing to get right. Arrival burstiness,
-prompt and output length distributions, and session continuation rates are what determine
-whether any conclusion transfers to reality. Published numbers exist but are thin.
+`docs/calibration.md` now exists: 2,000 lines, every number carrying a provenance tag, and the
+strongest ones computed directly from the primary datasets rather than quoted. Four traces are
+replayable. Azure LLM 2024 and BurstGPT give multi-day fleet arrivals with no sharing structure,
+Mooncake is the only one with prefix structure but covers one hour, TraceLab gives real agentic
+session structure with only 43 users.
 
-**If you say nothing:** Claude calibrates against published vLLM and SGLang benchmark figures
-and documents the resulting uncertainty as a named risk.
+Still worth asking: **do you have anything internal, even aggregated?** The largest unmeasured lever
+is prefix-sharing topology, meaning how many distinct system-prompt roots exist and how skewed their
+popularity is. Nothing public reveals it, and it moves achievable cache hit rate a long way.
 
-## 5. Confirm the reference hardware and model for calibration
+**If you say nothing:** Claude sweeps that parameter rather than fixing it, and reports conclusions
+as ranges.
+
+## 6. Confirm the reference hardware and model for calibration
 
 `docs/llm-serving-primer.md` section 10.7 assumes a 70-billion-parameter model on eight H100s.
 Every number in the analysis follows from that pair, and the validated cost model reproduces
@@ -98,7 +115,7 @@ the published step-time table for it to within 0.1 ms.
 
 **If you say nothing:** that pair stays the default.
 
-## 6. What should the agent arena optimise?
+## 7. What should the agent arena optimise?
 
 Goodput alone is gameable: an agent can starve batch traffic to raise interactive goodput.
 It likely needs a fairness or SLO-attainment constraint alongside it.
@@ -106,7 +123,7 @@ It likely needs a fairness or SLO-attainment constraint alongside it.
 **If you say nothing:** Claude proposes a specific objective when the arena is built, rather
 than guessing now.
 
-## 7. Is the dashboard a separate workstream?
+## 8. Is the dashboard a separate workstream?
 
 `VISION.md` section 6 describes a substantial product. Sharing a backlog with the engine will
 let it expand without limit. See `docs/ARCHITECTURE.md` open risk 7.

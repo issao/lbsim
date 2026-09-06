@@ -5,90 +5,67 @@ package lbsim.v1;
 import "lbsim/v1/common.proto";
 import "lbsim/v1/metrics.proto";
 import "lbsim/v1/scenario.proto";
-
-// The Frontend-to-Ingress API: the simulator's own service, served for real over gRPC and
-// grpc-web to the React dashboard. Unlike everything in serving.proto, these are actual RPCs.
-//
-// Issao's constraint, docs/ARCHITECTURE.md section 10.2: every call here must be O(1) in
-// payload, meaning independent of the number of machines, the number of requests, and the ratio
-// of simulated to real seconds. Metric flow is bounded by an explicit wall-clock budget, see
-// subscription.proto. Step and rewind take bounded arguments for the same reason.
-
 import "lbsim/v1/subscription.proto";
 
-service Ingress {
-  // -- running ----------------------------------------------------------
+// The Frontend-to-Ingress API. Served for real over gRPC and grpc-web; everything in
+// serving.proto is modelled instead.
+//
+// Every call is O(1) in payload: run lifecycle, speed, a bounded step, rewind, and subscription
+// management. Metric flow is bounded because a subscription names exactly one entity; see
+// subscription.proto.
+//
+// Trimmed on review. Deliberately absent, each recoverable without a schema change: comparing two
+// runs, which a client does by fetching both results; report export, which the CLI does; the
+// showcase scenario catalogue and its narration steps, which are content rather than interface;
+// and a policy-descriptor endpoint for building UI controls from the server, which is a
+// convenience the dashboard can live without until it exists.
 
+service Ingress {
+  // -- lifecycle ----------------------------------------------------------
   rpc StartRun(StartRunRequest) returns (StartRunResponse);
-  rpc StopRun(StopRunRequest) returns (StopRunResponse);
-  rpc GetRun(GetRunRequest) returns (RunStatus);
+  rpc StopRun(RunRef) returns (RunStatus);
+  rpc GetRun(RunRef) returns (RunStatus);
   rpc ListRuns(ListRunsRequest) returns (ListRunsResponse);
 
-  // -- observation ------------------------------------------------------
-  //
-  // Budgeted, leased and paginated; see subscription.proto. Replaces an earlier unbounded
-  // StreamRun, which would have scaled with fleet size and simulation speed.
+  // -- interactive control ------------------------------------------------
 
+  // Pace the run at a fixed number of simulated seconds per wall-clock second, so a dynamic can be
+  // watched unfolding, or pause it.
+  rpc SetSpeed(SetSpeedRequest) returns (RunStatus);
+
+  // Advance a bounded amount and pause. Bounded so the request stays O(1) however much simulated
+  // time it asks for: a large request returns after its cap and is repeated.
+  rpc StepForward(StepForwardRequest) returns (RunStatus);
+
+  // Scrub. Cheap when only the view changed, since it reads the recorded observability log and
+  // needs no re-simulation. Expensive when a physics parameter changed, since it restores a
+  // snapshot and re-simulates. The response says which, so the interface never implies a
+  // continuity that does not exist.
+  rpc Rewind(RewindRequest) returns (RewindResponse);
+
+  // Change parameters mid-run. Anything altering physics forces re-simulation from the last
+  // snapshot; anything altering only the view does not.
+  rpc Apply(ApplyRequest) returns (ApplyResponse);
+
+  // -- observation --------------------------------------------------------
   rpc OpenSubscription(OpenSubscriptionRequest) returns (stream SubscriptionUpdate);
   rpc RenewSubscription(RenewSubscriptionRequest) returns (RenewSubscriptionResponse);
   rpc CloseSubscription(CloseSubscriptionRequest) returns (CloseSubscriptionResponse);
 
-  // -- interactive control ---------------------------------------------
-
-  // Pace the run at a fixed number of simulated seconds per wall-clock second, so a dynamic can
-  // be watched unfolding. Also re-derives every subscription's sampling interval, since the
-  // budget is expressed in wall-clock terms.
-  rpc SetSpeed(SetSpeedRequest) returns (SetSpeedResponse);
-
-  // Advance a bounded amount and pause. Bounded so the request stays O(1) however much
-  // simulated time is asked for: a large request returns after its cap and is repeated.
-  rpc StepForward(StepForwardRequest) returns (StepForwardResponse);
-
-  // Change parameters mid-run: the playground's core interaction. Anything that alters
-  // physics forces re-simulation from the last snapshot; anything that only alters the view
-  // does not. The response says which happened, so the UI can tell the user honestly.
-  rpc Apply(ApplyRequest) returns (ApplyResponse);
-
-  // Scrub. Cheap when only the view changed, since it reads the recorded observability log and
-  // needs no re-simulation. Expensive when a physics parameter changed, since it restores a
-  // snapshot and re-simulates. The response says which happened; see docs/ARCHITECTURE.md 10.7.
-  rpc Rewind(RewindRequest) returns (RewindResponse);
-
-  // -- results ---------------------------------------------------------
-
-  rpc GetResult(GetResultRequest) returns (RunResult);
+  // -- results ------------------------------------------------------------
+  rpc GetResult(RunRef) returns (RunResult);
   rpc GetTraces(GetTracesRequest) returns (GetTracesResponse);
-  // A/B: two runs whose seeds match, so the difference is the policy and not the workload.
-  // The server rejects a comparison across differing seeds or workloads rather than letting
-  // a user draw a conclusion from two unlike runs.
-  rpc Compare(CompareRequest) returns (CompareResponse);
-  // Self-contained static HTML, per VISION section 8, with links back into a live instance
-  // for replay.
-  rpc ExportReport(ExportReportRequest) returns (ExportReportResponse);
-
-  // -- catalogue -------------------------------------------------------
-
-  // Preloaded scenario cards for the showcase, each with its narration steps.
-  rpc ListScenarios(ListScenariosRequest) returns (ListScenariosResponse);
-  rpc GetScenario(GetScenarioRequest) returns (GetScenarioResponse);
-  // Names and parameter schemas of available policies, so the UI builds its controls from
-  // the server rather than hardcoding them.
-  rpc ListPolicies(ListPoliciesRequest) returns (ListPoliciesResponse);
 }
+
+message RunRef { string run_id = 1; }
 
 message StartRunRequest {
   Scenario scenario = 1;
-  // Cap on simulated seconds per wall-clock second. Slow it down to watch a dynamic unfold,
-  // or leave unset to run as fast as possible.
+  // Cap on simulated seconds per wall-clock second. Unset means as fast as possible.
   double max_realtime_factor = 2;
   bool record_traces = 3;
 }
 message StartRunResponse { string run_id = 1; }
-
-message StopRunRequest { string run_id = 1; }
-message StopRunResponse { bool stopped = 1; }
-
-message GetRunRequest { string run_id = 1; }
 
 message RunStatus {
   string run_id = 1;
@@ -101,8 +78,8 @@ message RunStatus {
     STATE_FAILED = 5;
   }
   State state = 2;
-  uint64 sim_time_ns = 3;
-  uint64 sim_duration_ns = 4;
+  uint64 sim_time_unix_ns = 3;
+  uint64 sim_end_unix_ns = 4;
   double realtime_factor = 5;
   string error = 6;
 }
@@ -112,130 +89,50 @@ message ListRunsResponse { repeated RunStatus runs = 1; string next_cursor = 2; 
 
 message SetSpeedRequest {
   string run_id = 1;
-  // Simulated seconds per wall-clock second. Zero or absent means as fast as possible.
+  // Simulated seconds per wall-clock second. Zero or unset means as fast as possible.
   double realtime_factor = 2;
   bool paused = 3;
-}
-message SetSpeedResponse {
-  double realtime_factor = 1;
-  // Subscriptions are re-derived when speed changes, so the client is told to expect new
-  // intervals rather than inferring a stall from wider gaps.
-  bool subscriptions_reintervalled = 2;
 }
 
 message StepForwardRequest {
   string run_id = 1;
-  // Exactly one. Both are capped server-side so the call remains bounded.
+  // Exactly one. Both are capped server-side so the call stays bounded; RunStatus shows where it
+  // stopped, and the client repeats to continue.
   uint64 sim_duration_ns = 2;
   uint32 barrier_windows = 3;
 }
-message StepForwardResponse {
-  uint64 sim_time_ns = 1;
-  // True when the server capped the step; repeat the call to continue.
-  bool capped = 2;
-  bool run_complete = 3;
-}
 
-message Annotation {
-  uint64 at_ns = 1;
-  string kind = 2;
-  string message = 3;
-  ClusterId cluster = 4;
-  ReplicaId replica = 5;
+message RewindRequest { string run_id = 1; uint64 to_sim_time_unix_ns = 2; }
+message RewindResponse {
+  uint64 sim_time_unix_ns = 1;
+  // True when served from the recorded log with no re-simulation. False means a snapshot was
+  // restored and time re-simulated, which is slower and, if a physics parameter changed since,
+  // produces a different future than the one already shown.
+  bool from_log = 2;
+  uint64 restored_from_snapshot_unix_ns = 3;
 }
 
 message ApplyRequest {
   string run_id = 1;
-  // Dotted paths into Scenario, e.g. "policies.routing.name". Kept as a path/value map rather
-  // than a whole Scenario so the server can tell whether physics changed.
+  // Dotted paths into Scenario, e.g. "policies.routing.name". A path/value map rather than a whole
+  // Scenario so the server can tell whether physics changed.
   map<string, string> set = 2;
 }
 message ApplyResponse {
   bool accepted = 1;
-  // True when the change altered physics and the run was rewound to a snapshot and
-  // re-simulated. The UI must say so rather than implying continuity that does not exist.
+  // True when the change altered physics and the run was rewound and re-simulated. The UI must say
+  // so rather than implying a continuity that does not exist.
   bool required_resimulation = 2;
-  uint64 rewound_to_ns = 3;
+  uint64 rewound_to_unix_ns = 3;
   string rejected_reason = 4;
 }
 
-message RewindRequest { string run_id = 1; uint64 to_sim_time_ns = 2; }
-message RewindResponse {
-  uint64 sim_time_ns = 1;
-  // True when served from the observability log with no re-simulation. False means a snapshot
-  // was restored and time was re-simulated, which is slower and, if a physics parameter changed
-  // since, produces a different future than the one already shown.
-  bool from_log = 2;
-  uint64 restored_from_snapshot_ns = 3;
-}
-
-message GetResultRequest { string run_id = 1; }
-
 message GetTracesRequest {
   string run_id = 1;
-  // Filters, so a user can ask for exactly the interesting tail.
+  // Filters, so a client can ask for exactly the interesting tail rather than sampling again.
   Outcome outcome = 2;
   uint64 min_e2e_ns = 3;
-  TenantId tenant = 4;
+  uint64 tenant_id = 4;
   uint32 limit = 5;
 }
 message GetTracesResponse { repeated RequestTrace traces = 1; }
-
-message CompareRequest { repeated string run_ids = 1; }
-message CompareResponse {
-  repeated RunResult results = 1;
-  // Set when the runs are not comparable, for example different seeds or workloads. Better to
-  // refuse than to let someone attribute a workload difference to a policy.
-  string incomparable_reason = 2;
-}
-
-message ExportReportRequest { repeated string run_ids = 1; bool embed_traces = 2; }
-message ExportReportResponse { bytes html = 1; string filename = 2; }
-
-message ListScenariosRequest { string tag = 1; }
-message ListScenariosResponse { repeated ScenarioCard cards = 1; }
-
-// A showcase entry: the scenario plus the story it tells.
-message ScenarioCard {
-  string id = 1;
-  string title = 2;
-  string summary = 3;
-  repeated string tags = 4;
-  // The step-by-step narration for the walkthrough popup in VISION section 6.
-  repeated NarrationStep steps = 5;
-  // The companion run to compare against, so the card demonstrates a contrast rather than
-  // just a behaviour.
-  string baseline_scenario_id = 6;
-}
-
-message NarrationStep {
-  string text = 1;
-  uint64 at_sim_time_ns = 2;
-  // Panels to highlight while this step is showing.
-  repeated string focus_series = 3;
-  string focus_component = 4;
-}
-
-message GetScenarioRequest { string id = 1; }
-message GetScenarioResponse { Scenario scenario = 1; ScenarioCard card = 2; }
-
-message ListPoliciesRequest { string slot = 1; }
-message ListPoliciesResponse { repeated PolicyDescriptor policies = 1; }
-
-// Lets the dashboard build its controls from the server, so adding a policy needs no
-// frontend change. Also what the agent arena reads to discover what it may vary.
-message PolicyDescriptor {
-  string name = 1;
-  string slot = 2;
-  string description = 3;
-  repeated ParamDescriptor params = 4;
-}
-
-message ParamDescriptor {
-  string name = 1;
-  string description = 2;
-  double default_value = 3;
-  double min_value = 4;
-  double max_value = 5;
-  bool is_integer = 6;
-}

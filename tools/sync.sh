@@ -100,6 +100,30 @@ else
   rule
 fi
 
+# --- comments the user added, prefixed or not ------------------------------
+# Marker scanning finds lines that name him. It does not find an instruction written as a plain
+# comment, and he writes those too: one arrived as a bare trailing comment on a proto field and
+# would have gone unread. So diff his commits and show every comment line they added.
+seen_file=".git/lbsim-last-remote"
+remote_now=$(git rev-parse --verify --quiet origin/master || echo "")
+if [ -n "$remote_now" ] && [ -f "$seen_file" ]; then
+  remote_prev=$(cat "$seen_file")
+  if [ "$remote_prev" != "$remote_now" ] && git cat-file -e "$remote_prev" 2>/dev/null; then
+    added=$(git diff "$remote_prev".."$remote_now" -- '*.proto' '*.md' '*.rs' '*.toml' 2>/dev/null \
+      | grep -E '^\+' | grep -vE '^\+\+\+' \
+      | grep -E '(//|#|<!--|/\*)' \
+      | grep -vE 'Co-Authored-By|Claude-Session' | head -40)
+    if [ -n "$added" ]; then
+      attention=1
+      say "COMMENTS ADDED upstream since the last sync (${remote_prev:0:8}..${remote_now:0:8}):"
+      printf '%s\n' "$added" | sed 's/^/    /'
+      say "    -> read these as instructions even when they do not name him"
+      rule
+    fi
+  fi
+fi
+[ -n "$remote_now" ] && echo "$remote_now" > "$seen_file"
+
 # --- their in-file instructions -------------------------------------------
 # Run after merging, since a new commit is exactly where a new instruction arrives.
 

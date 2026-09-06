@@ -5,26 +5,38 @@ package lbsim.v1;
 import "lbsim/v1/common.proto";
 import "lbsim/v1/request.proto";
 
-// The modelled data plane. Each service here is one box in docs/diagrams/system.drawio, and
-// each method one arrow. These are not served over real gRPC inside the simulator; see
-// proto/README.md section A.
+// The modelled data plane. Each service is one box in docs/diagrams/system.drawio and each method
+// one arrow. These are not served over real gRPC inside the simulator; see proto/README.md
+// section A.
+//
+// Issao asked whether the per-token streaming here was needed or just illustrative. It was
+// illustrative, and it was also wrong: a stream of per-token messages implies per-token events,
+// which is exactly the cost the analytic epoch design exists to avoid. Replaced with completion
+// summaries. Inter-token latency is a *derived distribution* over step times, never a sequence of
+// token events, so the two numbers that matter are the mean and the worst gap.
 
 // ---------------------------------------------------------------------------
 // Client -> Gateway
 // ---------------------------------------------------------------------------
 
 service Gateway {
-  // The public entry point. Streams tokens back, so the client observes time-to-first-token
-  // and inter-token latency separately, which is the whole reason latency is not one number.
-  rpc Generate(InferenceRequest) returns (stream TokenChunk);
+  // The public entry point. Owns rate limiting and the outermost admission decision.
+  rpc Generate(InferenceRequest) returns (GenerateResponse);
 }
 
-message TokenChunk {
-  RequestId request = 1;
-  uint32 tokens = 2;              // usually 1; more with speculative decoding
-  uint64 emitted_at_ns = 3;
-  bool final = 4;
-  Outcome outcome = 5;            // set only when final
+message GenerateResponse {
+  uint64 request_id = 1;
+  Outcome outcome = 2;
+
+  // The two instants a client can actually observe, and the reason latency is not one number.
+  uint64 first_token_at_unix_ns = 10;
+  uint64 finished_at_unix_ns = 11;
+  uint32 output_tokens = 12;
+
+  // Derived from step times over the request's life. `max_itl_ns` is the one that matters: a
+  // single long gap is what a user perceives as a stall, and a mean hides it entirely.
+  uint64 mean_itl_ns = 20;
+  uint64 max_itl_ns = 21;
 }
 
 // ---------------------------------------------------------------------------
@@ -32,30 +44,28 @@ message TokenChunk {
 // ---------------------------------------------------------------------------
 
 service Router {
-  // Choose a replica. Separated from Gateway because the two scale and fail independently,
-  // and because the number of router instances determines how badly stale telemetry herds:
-  // more routers seeing the same stale snapshot means a bigger stampede.
+  // Choose a replica. Separate from Gateway because the two scale and fail independently, and
+  // because the number of router instances determines how badly stale telemetry herds: more
+  // routers reading one stale snapshot means a bigger stampede.
   rpc Route(RouteRequest) returns (RouteResponse);
 }
 
 message RouteRequest {
   InferenceRequest request = 1;
-  // Replicas already tried and failed, so a retry does not land on the same broken one.
-  repeated ReplicaId exclude = 2;
+  // Replicas already tried, so a retry does not land on the same broken one.
+  repeated uint64 exclude_ids = 2;
 }
 
 message RouteResponse {
-  ReplicaId replica = 1;
-  ClusterId cluster = 2;
-  // Set instead of a replica when the router sheds. Cheap failure, deliberately distinct
-  // from an expensive one.
+  uint64 replica_id = 1;
+  uint64 cluster_id = 2;
+  // Set instead of a replica when the router sheds.
   Outcome rejected = 3;
-  // Cached prefix tokens the router *believed* the chosen replica held. Recording the belief
-  // alongside the outcome is how affinity policy error becomes measurable.
-  uint32 predicted_cache_hit_tokens = 4;
-  // Which candidates the policy considered. For power-of-two-choices this is 2. Recorded so
-  // herding is observable rather than inferred.
-  repeated ReplicaId considered = 5;
+
+  // What the router *believed* when it chose. Recording the belief next to the outcome is how
+  // affinity misprediction and herding become measurable rather than inferred.
+  uint32 predicted_cache_hit_tokens = 10;
+  repeated uint64 considered_ids = 11;
 }
 
 // ---------------------------------------------------------------------------
@@ -63,13 +73,12 @@ message RouteResponse {
 // ---------------------------------------------------------------------------
 
 service ReplicaEngine {
-  // Hand a request to a replica's continuous-batching loop. The replica is itself a
-  // scheduler and may queue, admit, preempt or reject: two scheduling layers that can fight
-  // each other. See docs/llm-serving-primer.md section 2.
-  rpc Execute(ExecuteRequest) returns (stream TokenChunk);
+  // Hand a request to a replica's continuous-batching loop. The replica is itself a scheduler and
+  // may queue, admit, preempt or reject: two scheduling layers that can fight each other.
+  rpc Execute(ExecuteRequest) returns (GenerateResponse);
 
-  // Cooperative cancellation. Without it, a client-side timeout leaves the replica
-  // generating tokens nobody will read, which under overload is most of its capacity.
+  // Cooperative cancellation. Without it a client-side timeout leaves the replica generating
+  // tokens nobody will read, which under overload is most of its capacity.
   rpc Cancel(CancelRequest) returns (CancelResponse);
 }
 
@@ -80,5 +89,5 @@ message ExecuteRequest {
   uint32 resume_tokens_already_generated = 3;
 }
 
-message CancelRequest { RequestId request = 1; }
+message CancelRequest { uint64 request_id = 1; }
 message CancelResponse { bool was_running = 1; uint32 tokens_wasted = 2; }

@@ -13,9 +13,9 @@ import "lbsim/v1/common.proto";
 // cheat by reading the future. See docs/ARCHITECTURE.md 5.2.
 
 message InferenceRequest {
-  RequestId id = 1;
-  TenantId tenant = 2;
-  SessionId session = 3;
+  uint64 id = 1;
+  uint64 tenant_id = 2;
+  uint64 session_id = 3;
   SloClass slo_class = 4;
 
   // Known at arrival: the prompt is in hand.
@@ -28,15 +28,15 @@ message InferenceRequest {
   // Shared-prefix identity. `prefix_node` names the deepest shared node; `unshared_suffix_tokens`
   // is this request's own tail. prompt_tokens must equal the summed ancestor tokens plus
   // the suffix, and the referee checks that.
-  PrefixNodeId prefix_node = 7;
+  uint64 prefix_node_id = 7;
   uint32 unshared_suffix_tokens = 8;
 
   // Client-side deadline. A request past its deadline should be shed before it consumes GPU
   // time; systems that check afterwards spend most of their capacity under overload
   // producing tokens nobody will read.
-  uint64 deadline_ns = 9;
+  uint64 deadline_unix_ns = 9;
 
-  uint64 arrived_at_ns = 10;
+  uint64 arrived_at_unix_ns = 10;
 
   // 0 for a first attempt. Retries are what turn a slowdown into a collapse, so the
   // attempt number must be visible to admission control.
@@ -50,7 +50,7 @@ message InferenceRequest {
 // Observation, never visible to a Policy. This separation is enforced by the type system
 // rather than by review.
 message Truth {
-  RequestId id = 1;
+  uint64 id = 1;
 
   // The output length that will actually occur. Drawn by the workload model at arrival.
   // Admission control must guess; the guess being wrong is the origin of preemption.
@@ -65,15 +65,15 @@ message Truth {
 // One row per request, aggregated online. See docs/ARCHITECTURE.md 8.3: at target scale a
 // simulated hour produces ~405M of these, so full rows are kept only for sampled traces.
 message RequestRecord {
-  RequestId id = 1;
-  TenantId tenant = 2;
+  uint64 id = 1;
+  uint64 tenant_id = 2;
   SloClass slo_class = 3;
   Outcome outcome = 4;
 
-  uint64 arrived_at_ns = 10;
-  uint64 admitted_at_ns = 11;
-  uint64 first_token_at_ns = 12;
-  uint64 finished_at_ns = 13;
+  uint64 arrived_at_unix_ns = 10;
+  uint64 admitted_at_unix_ns = 11;
+  uint64 first_token_at_unix_ns = 12;
+  uint64 finished_at_unix_ns = 13;
 
   uint32 prompt_tokens = 20;
   uint32 output_tokens = 21;
@@ -81,11 +81,11 @@ message RequestRecord {
   // this and prompt_tokens is the real prefill work.
   uint32 cached_prefix_tokens = 22;
 
-  ClusterId cluster = 30;
-  ReplicaId replica = 31;
+  uint64 cluster_id = 30;
+  uint64 replica_id = 31;
   // Every replica this request touched, in order. Longer than one entry means it was
   // preempted and resumed elsewhere, or retried.
-  repeated ReplicaId replica_path = 32;
+  repeated uint64 replica_path_id = 32;
 
   uint32 attempts = 40;
   uint32 preemptions = 41;

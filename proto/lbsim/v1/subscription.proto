@@ -3,27 +3,30 @@ syntax = "proto3";
 package lbsim.v1;
 
 import "lbsim/v1/common.proto";
-import "lbsim/v1/metrics.proto";
 
 // Metric subscriptions. Shared by both observability hops, Frontend-to-Ingress and
-// Ingress-to-Leaf, deliberately: Issao specified the same mechanics for both, and sharing the
-// types means the O(1) bound is enforced once rather than twice.
+// Ingress-to-Leaf, because the same mechanics apply to both.
 //
-// The requirement, from docs/ARCHITECTURE.md section 10.2: this flow must not scale with the
-// number of machines, the number of requests, or the ratio of simulated to real seconds.
+// Rewritten on Issao's review. Four things changed, and all four made it simpler:
 //
-// Naming a simulated sampling interval is not sufficient to achieve that, because raising the
-// simulation speed then raises the wire rate proportionally. So a subscription declares a
-// **wall-clock budget** and the server derives the sampling interval to fit it, decimating
-// further whenever the run speeds up. The client says what it can consume; the server never
-// exceeds it.
+//   - Metrics are an enum, not free-text names, so a typo is a compile error.
+//   - A subscription names exactly **one** entity. No pagination, no sort keys, no cursors:
+//     those were UI concerns leaking into a wire contract. A dashboard showing twelve machines
+//     opens twelve subscriptions.
+//   - Cadence is a sample rate in points per simulated second, which is what a chart axis
+//     actually wants.
+//   - The server does what the client asks. It does not derive a coarser rate, cap payload
+//     width, or decimate. Bounding the data is the client's job, and every subscription is
+//     time-leased, so a badly chosen one expires instead of persisting.
+//
+// The O(1) property therefore holds by construction rather than by enforcement: one entity per
+// subscription means payload width cannot grow with the fleet, and the client chooses the rate.
 
 // ---------------------------------------------------------------------------
-// What to observe
+// What can be observed
 // ---------------------------------------------------------------------------
 
-// Aggregation level. Coarser levels are cheap and bounded; REPLICA is the only one whose row
-// count grows with the fleet, which is why it requires a page.
+// Aggregation level. Determines which identifier a Target must carry.
 enum Scope {
   SCOPE_UNSPECIFIED = 0;
   SCOPE_FLEET = 1;
@@ -34,76 +37,117 @@ enum Scope {
   SCOPE_REPLICA = 6;
 }
 
-message MetricSelector {
-  // Series or histogram names, e.g. "kv_utilization", "ttft", "queue_depth". Empty means the
-  // scenario's default panel set.
-  repeated string names = 1;
-  Scope scope = 2;
+// An enum rather than strings, per Issao. A closed set means the client cannot ask for a metric
+// that does not exist, the server cannot silently return nothing, and adding one is a schema
+// change that both sides see.
+//
+// Numbering is grouped so related metrics stay adjacent as the set grows: distributions from 1,
+// gauges from 20, rates from 40, fleet and cost from 60.
+enum Metric {
+  METRIC_UNSPECIFIED = 0;
 
-  // Narrow the selection. Empty means all at that scope.
-  repeated ClusterId clusters = 10;
-  repeated PoolId pools = 11;
-  repeated TenantId tenants = 12;
+  // -- distributions, reported as percentiles -----------------------------
+  METRIC_TTFT = 1;
+  METRIC_ITL = 2;
+  METRIC_E2E = 3;
+  METRIC_QUEUE_WAIT = 4;
+  METRIC_PREEMPTED_TIME = 5;
+  METRIC_PROMPT_TOKENS = 6;
+  METRIC_OUTPUT_TOKENS = 7;
+  METRIC_STEP_TIME = 8;
 
-  // Required when scope is SCOPE_REPLICA. Without a page, a 62,500-replica fleet would make
-  // the payload width scale with the fleet, which is the thing this interface exists to prevent.
-  Page page = 20;
+  // -- gauges, time-weighted ----------------------------------------------
+  METRIC_KV_UTILIZATION = 20;
+  METRIC_KV_TOKENS_RESIDENT = 21;
+  METRIC_RUNNING_SEQS = 22;
+  METRIC_QUEUED_SEQS = 23;
+  METRIC_QUEUED_PREFILL_TOKENS = 24;
+  METRIC_BATCH_SIZE = 25;
+  METRIC_PREFIX_CACHE_TOKENS = 26;
+  METRIC_TIER_UTILIZATION = 27;
+  METRIC_TIER_BANDWIDTH_UTILIZATION = 28;
+  METRIC_TELEMETRY_STALENESS = 29;
+
+  // -- rates ---------------------------------------------------------------
+  METRIC_OFFERED_RPS = 40;
+  METRIC_ADMITTED_RPS = 41;
+  METRIC_COMPLETED_RPS = 42;
+  METRIC_REJECTED_RPS = 43;
+  METRIC_OUTPUT_TOKENS_PER_S = 44;
+  // Tokens per second delivered within SLO. The headline number, because a fleet can have
+  // excellent throughput and near-zero goodput by making everyone slightly too slow.
+  METRIC_GOODPUT_TOKENS_PER_S = 45;
+  METRIC_PREEMPTIONS_PER_S = 46;
+  METRIC_RETRIES_PER_S = 47;
+  METRIC_PREFIX_HIT_RATE = 48;
+
+  // -- fleet and efficiency ------------------------------------------------
+  METRIC_READY_REPLICAS = 60;
+  METRIC_WARMING_REPLICAS = 61;
+  METRIC_DRAINING_REPLICAS = 62;
+  METRIC_WARM_IDLE_REPLICAS = 63;
+  // Coefficient of variation of per-replica load. The direct measure of whether the load
+  // balancer is doing its job.
+  METRIC_LOAD_IMBALANCE_CV = 64;
+  // GPU-seconds spent on tokens never delivered. Invisible in a utilization metric, and under
+  // overload it is most of the fleet's capacity.
+  METRIC_WASTED_GPU_FRACTION = 65;
+  METRIC_SLO_ATTAINMENT = 66;
 }
 
-// Cursor-based rather than offset-based, because the sort key is live data: rows reorder
-// between updates, and an offset would silently skip or duplicate replicas.
-message Page {
-  // Sort key, e.g. "kv_utilization", "queue_depth", "replica_id". Ties break on replica id so
-  // the order is total and the page is stable.
-  string sort_by = 1;
-  bool descending = 2;
-  uint32 page_size = 3;
-  // Opaque, from a previous SubscriptionUpdate. Empty starts at the first page.
-  bytes cursor = 4;
+// Exactly one entity. Per Issao, selecting a single replica and opening one subscription per
+// replica is a better interface than a list plus pagination: the payload cannot grow with the
+// fleet, and the client's mental model matches the panel it is drawing.
+message Target {
+  Scope scope = 1;
+  // Required for every scope except SCOPE_FLEET.
+  oneof id {
+    uint64 cluster_id = 10;
+    uint64 pool_id = 11;
+    uint64 tenant_id = 12;
+    uint64 replica_id = 13;
+    SloClass slo_class = 14;
+  }
 }
 
 // ---------------------------------------------------------------------------
-// How much to send
+// Opening, renewing, closing
 // ---------------------------------------------------------------------------
-
-// The O(1) contract. Every field is a hard cap the server honours; none is advisory.
-message Budget {
-  // Hard cap on emission rate in *wall-clock* seconds. The server derives the simulated
-  // sampling interval as max(desired_sim_interval_ns, realtime_factor / this) and re-derives it
-  // whenever the speed changes.
-  double max_updates_per_wall_second = 1;
-
-  // Hard cap on payload width. With SCOPE_REPLICA this bounds the page size actually served,
-  // which may be smaller than the page requested.
-  uint32 max_rows_per_update = 2;
-
-  // The client's preference, honoured only where it fits the caps above.
-  uint64 desired_sim_interval_ns = 3;
-
-  // Wall-clock lease. The server drops the subscription when it expires, so a closed browser
-  // tab cannot leave Ingress and every Leaf shipping data forever. Renew what is still on
-  // screen.
-  uint64 lease_ns = 4;
-}
 
 message OpenSubscriptionRequest {
   string run_id = 1;
-  MetricSelector selector = 2;
-  Budget budget = 3;
+  Target target = 2;
+  repeated Metric metrics = 3;
+
+  // Points per **simulated** second, per Issao. A chart axis is in simulated time, so this is
+  // the number that decides how the chart looks. Fractional values are allowed: 0.1 means one
+  // point per ten simulated seconds.
+  //
+  // Honoured as asked. The server does not derive a coarser rate if the run speeds up. The
+  // consequence is that a fine rate at a high simulation speed costs Ingress CPU and therefore
+  // wall-clock time; it never affects simulation fidelity, and the lease bounds how long it can
+  // last.
+  double samples_per_sim_second = 4;
+
+  // Percentiles wanted for any distribution metric, e.g. [50, 90, 99, 99.9]. Empty means count,
+  // mean, min and max only.
+  repeated double percentiles = 5;
+
+  // Wall-clock lease. The server drops the subscription when it expires, so a closed browser tab
+  // cannot leave Ingress and every Leaf shipping data forever. Renew what is still on screen.
+  uint64 lease_ns = 6;
 }
 
 message OpenSubscriptionResponse {
   string subscription_id = 1;
-  // What the server actually granted, which may be coarser than requested. Shown to the user so
-  // a chart is never silently sampled differently from what its axis claims.
-  uint64 granted_sim_interval_ns = 2;
-  uint32 granted_rows_per_update = 3;
-  uint64 lease_expires_at_wall_ns = 4;
-  string rejected_reason = 5;
+  uint64 lease_expires_at_unix_ns = 2;
+  // Set only on a genuine error: an unset target id for a scope that needs one, an unknown id,
+  // or a percentile outside (0, 100]. Never used to override the requested rate.
+  string rejected_reason = 3;
 }
 
 message RenewSubscriptionRequest { string subscription_id = 1; uint64 lease_ns = 2; }
-message RenewSubscriptionResponse { uint64 lease_expires_at_wall_ns = 1; bool expired = 2; }
+message RenewSubscriptionResponse { uint64 lease_expires_at_unix_ns = 1; bool expired = 2; }
 
 message CloseSubscriptionRequest { string subscription_id = 1; }
 message CloseSubscriptionResponse {}
@@ -114,39 +158,70 @@ message CloseSubscriptionResponse {}
 
 message SubscriptionUpdate {
   string subscription_id = 1;
-  // Simulated time this update describes.
-  uint64 sim_time_ns = 2;
-  // Realtime factor at the moment of emission, so a client can tell why the interval changed.
+  // Simulated time this update describes, as an absolute Unix epoch value; see common.proto.
+  uint64 sim_time_unix_ns = 2;
+  // Realtime factor at the moment of emission, so a client can relate chart movement to
+  // wall-clock and see when the run was slowed or paused.
   double realtime_factor = 3;
 
-  repeated MetricRow rows = 10;
+  MetricRow row = 10;
 
-  // Non-zero when the server decimated to stay inside the budget. Surfacing it keeps the client
-  // honest about what it is drawing rather than letting gaps look like quiet periods.
-  uint32 updates_skipped = 20;
-
-  // For the next page request. Absent when this is the last page.
-  bytes next_cursor = 21;
-
-  // Set on the final update of a run. Issao's preference for interface symmetry: the terminal
-  // values arrive on the channel the client is already reading, rather than as a separate
-  // result message.
-  bool final = 30;
-  Scorecard final_scorecard = 31;
+  // Set on the final update of a run. Issao's preference for interface symmetry: terminal values
+  // arrive on the channel the client is already reading rather than as a separate result.
+  bool final = 20;
 }
 
 message MetricRow {
-  Scope scope = 1;
-  // Identity at that scope; exactly one is meaningful.
-  ClusterId cluster = 2;
-  PoolId pool = 3;
-  TenantId tenant = 4;
-  ReplicaId replica = 5;
-  SloClass slo_class = 6;
+  Target target = 1;
+  // Gauges and rates, keyed by Metric.
+  map<int32, double> values = 10;
+  // Distribution metrics, keyed by Metric.
+  map<int32, Distribution> distributions = 11;
+}
 
-  // Point values, keyed by metric name.
-  map<string, double> values = 10;
-  // Distributions, keyed by metric name. Mergeable, so Ingress can combine shards exactly.
-  // Percentiles are computed after merging: they cannot be recovered from per-shard percentiles.
-  map<string, Histogram> histograms = 11;
+// Percentiles, not histograms, on the wire.
+//
+// Issao suggested computing percentiles at the Leaf because it is cheaper, and he is right where
+// it is valid. It is not always valid: percentiles are not mergeable, so a target spanning several
+// shards cannot be answered by combining per-shard percentiles. Averaging p99s produces a number
+// that is not any percentile of anything.
+//
+// So the engine does both, and the client never has to care:
+//
+//   - Target owned by one Leaf, which covers every SCOPE_REPLICA subscription and most
+//     SCOPE_POOL ones: the Leaf computes the requested percentiles directly and exactly. Cheap,
+//     and nothing but the requested numbers crosses the wire.
+//   - Target spanning shards: each Leaf ships its mergeable histogram, Ingress merges and then
+//     computes. Correct, at bucket resolution, which for an HDR-style histogram at three
+//     significant digits is a tenth of a percent.
+//
+// `from_merged_histogram` says which happened, because the second case is accurate rather than
+// exact and a reader comparing two runs deserves to know.
+message Distribution {
+  uint64 count = 1;
+  double mean = 2;
+  double min = 3;
+  double max = 4;
+  // Parallel arrays: `percentile[i]` is the requested rank, `value[i]` its value. Parallel
+  // rather than a map because the client asked in a specific order and charts want it back that
+  // way.
+  repeated double percentile = 5;
+  repeated double value = 6;
+  bool from_merged_histogram = 7;
+
+  // Present instead of percentiles on the Leaf-to-Ingress hop when the target spans shards, so
+  // Ingress can merge before computing. Never present on the Frontend hop.
+  Histogram histogram = 10;
+}
+
+// Log-linear bucketed histogram, HDR style. Bounded memory, mergeable by bucket-wise addition,
+// and accurate enough in the tail to trust p99.9. Mergeability is the whole point: percentiles are
+// not mergeable, so this is what crosses a shard boundary.
+message Histogram {
+  uint32 significant_digits = 1;
+  uint64 lowest_discernible = 2;
+  uint64 highest_trackable = 3;
+  // Sparse: only non-empty buckets, since most of the range is empty in practice.
+  repeated uint32 bucket_index = 10;
+  repeated uint64 bucket_count = 11;
 }

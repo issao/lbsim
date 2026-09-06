@@ -66,6 +66,44 @@ All figures derive from `docs/llm-serving-primer.md` section 10. A 70B-class mod
 
 Per replica at batch 256 and 4k average context: ~25-32 ms per step, so ~9,000 output
 tokens/s. Average output 500 tokens, average end-to-end 15 s.
+**Issao asked whether the 9,000 figure was decode-only at full batch. It was, and that made it
+the wrong number for a fleet budget.** It is `batch / step_time`, which assumes the GPU does
+nothing but decode. Prefill competes for the same device, and for most workloads it wins.
+
+GPU-seconds per request are additive: an exclusive prefill, plus that request's share of the
+decode steps it lives through. From `bench/validate_epochs.py`, at batch 256 with a dense 70B on
+8x H100:
+
+| Prompt | Output | Decode-only tok/s | With prefill | Prefill share of GPU |
+|---|---|---|---|---|
+| 500 | 2,000 | 15,130 | **13,345** | 12% |
+| 1,000 | 1,000 | 15,130 | **9,857** | 35% |
+| 2,048 | 2,048 | 10,689 | **7,758** | 27% |
+| 2,000 | 500 | 12,627 | **4,533** | 64% |
+| 8,000 | 300 | 5,487 | **889** | 84% |
+| 32,000 | 500 | 1,555 | **344** | 78% |
+
+The honest answer spans a factor of 39 across plausible workloads, and prefill dominates whenever
+the prompt is long relative to the output. `docs/calibration.md` section 3.2 measures
+input-to-output ratios from 0.32:1 to 111:1 in real traces, so this is not a corner case. It is
+the single highest-leverage workload parameter, and a fleet budget quoted without naming the ratio
+is meaningless.
+
+The budget below uses a 2,000/500 chat-like mix, giving 4,533 output tokens/s per replica.
+
+| Quantity | At target | Note |
+|---|---|---|
+| Per-replica output tokens/s | 4,533 | prefill-inclusive, 2,000/500 mix |
+| Fleet output tokens/s | 28.3 M | 6,250 x 4,533 |
+| Requests completing/s | 56,700 | 28.3M / 500 |
+| Requests in flight | 850 K | 56,700 x 15 s |
+
+Two consequences. The engine cost estimates in 1.3 are roughly **half** what they were, so the
+measured queue headroom in 1.4 grows further. And the KV cross-check changes character: 6,250
+replicas x 256 sequences is 1.6 M concurrent slots against 850 K requests in flight, so at this
+mix the fleet is **prefill-limited rather than KV-limited** and batches sit around half full.
+Worth stating because it inverts the usual intuition: for prompt-heavy traffic, adding KV capacity
+buys nothing and adding compute does.
 
 | Quantity | At target | Note |
 |---|---|---|
@@ -110,6 +148,13 @@ boundaries, plus preemptions. Round to 100.
 
 **Reduction: about 56x.** Per cluster, the stretch case needs roughly 0.4 of a core, so a
 single-threaded simulator per cluster clears 20x realtime with headroom.
+**Issao confirmed analytic epochs on the condition that HBM data locality is still modelled
+well. It is, and the epoch form does not compromise it.** Locality lives in the *state* an epoch
+is computed from, not in the time-stepping: resident KV tokens per replica, which HBM they sit
+in, and what a transfer between tiers costs. Section 7.2 models four HBM-adjacent locations
+separately at his request, and a migration between them is an event, which is a composition
+change, which opens a new epoch. So locality is exact at every point where it changes, and the
+closed form covers only the intervals in which nothing moves.
 
 ### 1.4 The event queue: measured, and the mitigation was wrong
 
@@ -211,6 +256,46 @@ alpha = kv * B / (G * bw * u)                     # step-time growth per step
 beta  = (W + kv * S0) / (G * bw * u) + t_fix      # duration of the first step
 t_step(k) = beta + alpha * k
 ```
+**Issao caught a real omission: this was bandwidth-only, and a step costs the worse of
+bandwidth and compute.** The corrected model, and it stays cheap.
+
+Let `G` be tensor-parallel degree, `bw` HBM bandwidth, `u` memory-bandwidth utilization, `fl`
+peak dense FLOPS, `m` decode model-FLOPS utilization, `kv` bytes of KV per token, `W` total
+weight bytes, `P` parameter count, `S0` resident KV tokens at epoch start, `C` mean context, and
+`t_fix` fixed per-step overhead. With speculative decoding proposing `N` tokens and accepting `M`
+on average, per section 3.4:
+
+```
+# memory-bandwidth line: weights plus resident KV, read once per step whatever N is
+beta_bw  = (W + kv * S0) / (G * bw * u) + t_fix
+alpha_bw = kv * B * M / (G * bw * u)
+
+# compute line: 2 FLOPs per parameter per verified token, plus attention over the context
+attn     = 4 * layers * heads * head_dim         # FLOPs per key position per token
+beta_cp  = (2 * P * B * N + attn * C * B * N) / (G * fl * m) + t_fix
+alpha_cp = (attn * B * M * N) / (G * fl * m)
+
+t_step(k) = max(beta_bw + alpha_bw * k,  beta_cp + alpha_cp * k)
+```
+
+**The closed form survives.** Two lines cross at most once, so `t_step` is piecewise linear with
+at most two pieces. Find the crossover, sum each piece as an arithmetic series, add them. Still
+O(1), and `bench/validate_epochs.py` property P1 verifies exact equality against step-by-step
+summation in rational arithmetic, including cases where the compute branch leads.
+
+Which branch leads, and why it matters:
+
+| Regime | Leading term | Why |
+|---|---|---|
+| Any batch, context above ~1k, no speculation | bandwidth | KV read grows faster than GEMM work |
+| Large batch, short context | compute | little KV to read, many tokens to compute |
+| Speculative decoding | compute, sooner | verification multiplies FLOPs by N, bandwidth unchanged |
+| Quantized weights | compute, sooner | fewer bytes to read, same FLOPs |
+| MoE | compute, sooner | decode MFU is 0.16-0.36, not 0.50 |
+
+Bandwidth-only would have overstated speculative decoding and quantization, both of which trade
+bytes for FLOPs. That is exactly the class of policy this simulator exists to evaluate, so the
+omission would have biased conclusions rather than merely lost accuracy.
 
 Summing an arithmetic series gives the duration of `n` steps in closed form:
 
@@ -233,6 +318,26 @@ n = floor( ( -(beta - alpha/2) + sqrt( (beta - alpha/2)^2 + 2*alpha*d ) ) / alph
 
 Advance the epoch state to step `n`, apply the event, and open a new epoch. Also O(1).
 
+**Per Issao: returning machine status ends an epoch too.** The full list of epoch boundaries,
+which is also the definition of "composition change" used in the cost budget:
+
+| Boundary | Rate per replica per simulated second |
+|---|---|
+| A sequence finishes | ~9 at the 2,000/500 mix |
+| A request is admitted | ~9 |
+| A prefill chunk completes | ~14 |
+| A sequence is preempted or resumed | load-dependent, near 0 under normal load |
+| A KV migration between memory tiers completes | as above |
+| **Telemetry publication, on its interval** | ~1 at a 1 Hz publish rate |
+| **A request completes and reports status** | already counted in the first row |
+| A policy decision, if `decision_interval` is not `on_change` | see 3.4 |
+
+Telemetry must be a boundary rather than a sample interpolated inside an epoch, because an
+interpolated snapshot would report a batch composition that never existed. Control decisions are
+made from these snapshots, so that would be a fabricated input to the control loop, which is
+precisely the thing this simulator is built to study. The cost is negligible: one extra boundary
+per second against roughly thirty.
+
 ### 3.3 What this buys, and what it costs
 
 - Cost becomes O(composition changes), independent of token counts. This is exactly the
@@ -249,14 +354,48 @@ Advance the epoch state to step `n`, apply the event, and open a new epoch. Also
 `ceil(prompt_tokens / chunk_budget)` epoch boundaries. For a 2k prompt at an 8k budget that
 is one; for a 128k prompt it is sixteen. Small constant, and it is physical rather than an
 artifact. Acceptable.
+Issao's caveat about tiny chunks is the right one and worth quantifying. Epoch boundaries per
+prefill are `ceil(prompt / chunk_budget)`, so for a 128k prompt:
 
-**Speculative decoding.** Tokens per step becomes a random variable, which breaks the
-closed form. Three options: sample per step (back to per-token cost), use the expected
-acceptance rate for a whole epoch (cheap, understates variance), or **sample once per
-sub-epoch of N steps** (variance at a configurable timescale, cost multiplied by
-steps/N). Recommend the third with N tunable, and document that burst-level variance below
-the sub-epoch timescale is understated. Note also that acceptance rate falls as batch size
-rises, so the acceptance model must be a function of batch state, not a constant.
+| Chunk budget | Boundaries | Cost vs the 8k default |
+|---|---|---|
+| 8,192 | 16 | 1x |
+| 2,048 | 63 | 3.9x |
+| 512 | 250 | 15.6x |
+| 128 | 1,000 | 62x, approaching per-token cost |
+
+The fidelity dial and the cost dial coincide here, so a scenario setting a very small chunk budget
+is asking for near-token-level cost. Legitimate if someone wants to study fine-grained
+interleaving, but it should be deliberate. The runner should warn when the configured budget
+implies more than a few hundred boundaries for the workload's p99 prompt length.
+
+**Speculative decoding.**
+**Issao rejected the sub-epoch sampling scheme and specified a fluid model instead, which is
+better. Adopted.** Propose `N` draft tokens per step, accept `M` on average. Both are drawn per
+request at Ingress, optionally stochastically, and held constant for the request, so an epoch sees
+a fixed `(N, M)` and the closed form is untouched. Defaults `N = 5`, `M = 3`, both tunable.
+
+He asked whether that works. It does, and it turns out to be better than a fluid approximation
+usually is, because the batch-size interaction becomes **emergent rather than assumed**:
+verification multiplies the compute term by `N` while leaving the weight-read term alone, so as
+batch grows and the compute branch of section 3.1's `max()` takes over, the speedup erodes on its
+own. Nothing anywhere needs a rule about batch size. `bench/validate_epochs.py` property P4
+verifies the closed form under speculation, including cases where the compute branch leads.
+
+Two corrections this also fixes:
+
+- An earlier draft here claimed **acceptance rate falls as batch size rises**. That is wrong.
+  Acceptance is a property of the draft model, the target model and the prompt, and is
+  batch-invariant. What falls is the *speedup*, for the reason above. `docs/calibration.md`
+  section 7.3 assembles the evidence.
+- At long context the bottleneck does not shift to compute at all, so speedup can *improve* with
+  batch size; MagicDec measures up to 2.51x at batches from 32 to 256. The `max()` model
+  reproduces that automatically rather than needing a special case.
+
+The honest limitation, stated plainly: a fixed `M` per request understates step-to-step variance,
+since real acceptance is a random draw per step. That matters only for studying jitter at
+sub-second timescales. Anything about throughput, goodput or capacity is governed by the mean, and
+the mean is exact here.
 
 **Policies that want to act every step.** This is the real cost driver, and it is the honest
 fidelity dial:
@@ -272,6 +411,7 @@ Even `every_step` is only about 1.4x, because 40 steps/s is small next to the ~1
 composition changes/s. **So per-step policy decisions are affordable after all.** The thing
 that is not affordable is per-step *iteration over every sequence*, which is a different
 matter and is what the epoch form eliminates.
+Confirmed by Issao. Property P4 now extends this result to speculative decoding as well.
 
 ### 3.5 Validated numerically
 
@@ -295,6 +435,27 @@ reason someone might prefer per-step iteration.
 The same script reproduces the decode step-time table in `docs/llm-serving-primer.md` section
 10.4 to within 0.1 ms at every row, which is a useful check that the algebra here and the
 hand-computed numbers there describe the same model.
+
+**Issao asked for a naive per-batch implementation as a validation oracle. Agreed, and it is a
+standing requirement rather than a one-off.**
+
+`bench/validate_epochs.py` is that oracle in Python: `run_stepwise` iterates every decode step
+with no algebra, `run_epochs` uses the closed form, and the test asserts identical completion
+times. It found one real bug while being written, in the exact-arithmetic path.
+
+The Rust engine will carry the same pair and the same test:
+
+- `sim-physics` exposes both a `StepwiseAdvance` and an `EpochAdvance` implementing one trait.
+- A differential test runs both over randomised batches and asserts identical completion times,
+  identical KV occupancy at every boundary, and identical event counts.
+- It runs in CI on every change to the cost model, because this is exactly the code where a
+  plausible-looking edit produces plausible-looking wrong numbers.
+- The stepwise version is also selectable in a scenario, so a small run can be cross-checked
+  against the fast path at full fidelity whenever a result looks surprising.
+
+This is the cheapest possible insurance against the failure mode that would destroy the project's
+value: a fast engine that is subtly wrong, producing conclusions nobody can distinguish from
+correct ones.
 
 ---
 
@@ -508,17 +669,67 @@ From the primer's locality table, for a 1.31 GB sequence of KV:
 | GPU to remote host DRAM, 8 rails | 400 GB/s | ~3.3 ms |
 | GPU to local NVMe | 10 GB/s | ~131 ms |
 
+**Issao flagged the NVMe figure. Verified: the number is right but the column heading was
+wrong, and the wrong reading is the one that looks implausible.** 131 ms is *transfer time* for
+1.31 GB, not device latency.
+
+| Quantity for local NVMe | Value | Note |
+|---|---|---|
+| Per-operation read latency | 20-90 us | Gen5 datacenter TLC; ~20 us for low-latency SLC parts |
+| Single-drive sequential bandwidth | 7-14 GB/s | Gen5 x4 |
+| Node bandwidth, 8 drives striped | ~50 GB/s | often NIC- or CPU-limited before drive-limited |
+| **Transfer time, 1.31 GB, one drive at 10 GB/s** | **131 ms** | the figure in the table below |
+| **Transfer time, 1.31 GB, striped at 50 GB/s** | **26 ms** | 5x better, and the right default |
+
+Device latency is three orders of magnitude below the transfer time, so it is irrelevant for a KV
+move and is dropped from the model. Striping is not: it changes the answer by 5x and decides
+whether SSD is a usable KV tier at all. At 26 ms it is comparable to a DRAM round trip; at 131 ms
+it is barely better than recomputing the prefill. The table below and
+`docs/llm-serving-primer.md` section 10.2 now give both, and the scenario config takes an explicit
+aggregate tier bandwidth rather than a per-drive figure.
+
 **Local and remote DRAM are within ~20% of each other, and both are ~1000x slower than
 HBM.** Issao's hypothesis holds, and he confirms the same treatment for SSD: **DRAM and SSD are
 both fully disaggregated at the cluster level.** A replica reaching either tier pays a network
 transfer regardless of which host physically holds the bytes, so per-host placement is not worth
 modelling. Recommendation:
 
-| Tier | Model as | Capacity | Bandwidth |
+**Adopted, per Issao:** keep DRAM and NVMe disaggregated, but model GPU-local HBM, HBM in another
+GPU on the same host, and HBM elsewhere in the cluster separately. It matters more than it first
+appears, because the three HBM locations differ in *cost per byte of capacity* far more than in
+bandwidth.
+
+For a 1.31 GB sequence of KV:
+
+| Location | Path | Bandwidth | Transfer | Capacity economics |
+|---|---|---|---|---|
+| Own GPU HBM | none | n/a | 0 | the only place decode happens |
+| Peer GPU HBM, same host | NVLink | ~450 GB/s | ~2.9 ms | expensive; competes with a live replica |
+| Remote GPU HBM, same cluster | RDMA, 8 rails | ~400 GB/s | ~3.3 ms | expensive; enables KV pooling |
+| Cluster DRAM pool | RDMA or PCIe | 50-400 GB/s | 3.3-26 ms | cheap, plentiful |
+| Cluster SSD pool | RDMA to NVMe | 10-50 GB/s | 26-131 ms | very cheap, slow |
+| Discarded | none | n/a | recompute | ~270 ms of prefill for 4k tokens |
+
+The striking result: **peer-GPU HBM and remote-GPU HBM cost nearly the same to reach**, 2.9 versus
+3.3 ms, because the RDMA fabric aggregate is close to NVLink per-GPU bandwidth. So distance within
+a cluster barely matters for HBM-to-HBM movement, while the *capacity* difference between HBM and
+DRAM is enormous. That reframes the design question: the interesting tradeoff is not near versus
+far, it is expensive-and-fast versus cheap-and-slow. It also means rack-scale KV pooling is
+plausible on today's fabrics rather than needing next-generation interconnect, which is a
+conclusion worth testing in a scenario.
+
+Three HBM locations are still modelled separately because they differ in what they *displace*.
+Parking KV in a peer GPU's HBM steals capacity from a replica that is serving, so it has a victim.
+Remote HBM has a victim too, but a different one, in a different shard. DRAM has none. Any policy
+that pools HBM has to reason about that, and it cannot if the model collapses them.
+
+| Tier | Model as | Capacity | Bandwidth container |
 |---|---|---|---|
-| 0: replica HBM | per replica | tokens | implicit in step cost |
-| 1: cluster DRAM pool | per cluster | tokens | shared bytes/s |
-| 2: cluster SSD pool | per cluster | tokens | shared bytes/s |
+| 0a: own GPU HBM | per replica | tokens | implicit in step cost |
+| 0b: peer GPU HBM, same host | per host | tokens | NVLink domain |
+| 0c: remote GPU HBM, same cluster | per cluster | tokens | RDMA fabric |
+| 1: cluster DRAM pool | per cluster | tokens | RDMA fabric, or PCIe for local |
+| 2: cluster SSD pool | per cluster | tokens | RDMA fabric, then NVMe aggregate |
 | 3: gone | — | — | recompute cost |
 
 A sequence's KV carries a tier tag plus an owner id. Migrations are events that debit shared
@@ -533,6 +744,34 @@ Because the tiers are cluster-wide and the Leaf layer is sharded by machine (sec
 tiers are the one piece of simulated state that crosses a shard boundary. Section 10.6 resolves
 that: a tier operation is a modelled network round trip to the tier owner, which is both
 physically faithful and shard-safe.
+
+
+**Adopted, per Issao:** model each data flow link as a container with a fixed bandwidth capacity,
+shared equally among concurrent readers, with a per-container scheduler left as an open question.
+It fits the epoch machinery exactly.
+
+Each container has a capacity in bytes per second: a GPU's HBM, an NVLink domain, a host's PCIe
+root, a cluster's RDMA fabric aggregate, the DRAM pool, the SSD pool. `k` concurrent transfers on
+one container each progress at `capacity / k`, which is max-min fair when every transfer wants
+everything, and that is the case here since a KV move is always bandwidth-hungry.
+
+Why this is cheap. Between changes in `k`, every transfer's rate is constant, so remaining time is
+a division and the next event is the earliest completion, found in O(log k) from a small heap.
+Rates are recomputed only when a transfer starts or finishes. Transfers happen on preemption,
+resume and migration, which are rare next to tokens, so `k` stays small and the whole mechanism
+costs almost nothing. It is the same epoch idea applied to bandwidth instead of to decode steps:
+integrate analytically between composition changes.
+
+One consequence worth naming: because rates change when a transfer starts, an in-flight transfer's
+completion time moves. It must therefore be a cancellable, rescheduled event rather than a fixed
+one. That is the single most likely place to introduce a determinism bug, so re-derivation must
+happen in a fixed order over containers and transfers, never over a hash map.
+
+**Open, per Issao: a scheduler per memory container.** Not built. Equal sharing is the default and
+is what an unmanaged fabric does. The hook is a `BandwidthScheduler` trait on the container, so
+priority, weighted fair queueing or reservation can be added later without touching the physics.
+Worth having eventually, because "should KV migration yield to weight loading during a scale-up"
+is a real policy question, and today the answer would be that they simply split the pipe.
 
 ### 7.3 Prefix caching: feasible, recommended
 
@@ -573,11 +812,32 @@ Multi-model serving then becomes a cache-replacement problem over weights, which
 tier 1 and 2. MoE expert imbalance needs expert-parallel modeling to be meaningful and is
 deferred. Design the tier machinery so weights can be added without touching it.
 
+Left as a pending item at Issao's direction. Tracked in `TASKS.md` under deferred work: model
+weight residency, multi-model serving and MoE expert imbalance all reuse the tier machinery in 7.2,
+so the requirement on the design today is only that the tier model stay generic over what object it
+holds. Nothing else is owed.
+
 ---
 
 ## 8. Determinism, replay, and observability
 
 ### 8.1 Determinism
+
+**Simulated time is absolute Unix epoch nanoseconds in a `uint64`**, per Issao, with the origin
+derived from the seed. A run stays reproducible while its timestamps format like real ones and a
+diurnal workload lands on real times of day, which also makes a simulated trace directly
+comparable against a recorded one.
+
+That choice removes an option rather than adding one: 2026 is about 1.79e18 nanoseconds since the
+epoch and a float64 resolves only about 200 ns at that magnitude, so **no simulated timestamp may
+pass through a float**. Intermediate arithmetic inside the cost model may use `f64`; anything
+stored or transmitted may not. Naming carries the distinction: `_unix_ns` is an instant, `_ns`
+alone is a duration, and `_offset_ns` in scenario configuration is relative to run start because an
+offset is far easier to author by hand.
+
+Replica clocks are synchronised by default, so staleness is plain subtraction. Deliberate skew is
+available, because real fleets drift and skew corrupts exactly the staleness estimate a
+delay-compensating controller depends on.
 
 One global seed. Named independent streams derived from it, so that changing the arrival
 rate does not perturb prompt lengths, and enabling failure injection does not perturb the
@@ -681,28 +941,31 @@ displayed, and machine views must be paginated.
 step forward a bounded amount, set a fixed simulation speed, open or renew or close a
 subscription.
 
-**How the O(1) guarantee is actually enforced.** A subscription that names a simulated sampling
-interval is *not* sufficient, because raising the simulation speed then raises the wire rate
-proportionally, which is the exact failure Issao named. So a subscription declares a
-**wall-clock budget** and the server adapts to it:
+**How the O(1) guarantee holds.** By construction, not by enforcement. Issao reviewed an earlier
+design in which the server derived a coarser interval from a wall-clock budget, capped payload
+width and decimated, and rejected all three: *"the O(1) data doesn't have to be enforced by the
+interface, that is awkward. put it on the client to not ask for too much data"* and *"Do what the
+client requests, leave it to the client to make a reasonable set of subscriptions. they are time
+leased anyways."*
+
+He is right, and the resulting interface is both simpler and harder to misuse:
 
 | Field | Meaning |
 |---|---|
-| `max_updates_per_wall_second` | hard cap on emission rate |
-| `max_rows_per_update` | hard cap on payload width |
-| `desired_sim_interval_ns` | the client's preference, honoured only when it fits the budget |
+| `target` | **exactly one** entity: the fleet, a cluster, a pool, a tenant, an SLO class, or one machine |
+| `metrics` | an enum, so a typo is a compile error rather than an empty chart |
+| `samples_per_sim_second` | the client's chosen rate, honoured as asked |
+| `percentiles` | which ranks to report for distribution metrics |
 | `lease_ns` | wall-clock lease; the server drops the subscription when it expires |
 
-Ingress knows the current realtime factor, so it derives the effective simulated sampling
-interval as `max(desired_sim_interval_ns, realtime_factor / max_updates_per_wall_second)` and
-decimates further whenever the run speeds up. The client sets a budget it can consume; the
-server never exceeds it. That makes the bound hold under a speed change rather than only at the
-speed the client assumed.
+Payload width cannot grow with the fleet, because one subscription describes one entity and there
+is no "all replicas" selector. A dashboard showing twelve machines opens twelve subscriptions,
+which is what it wants anyway. Pagination, sort keys and cursors are gone: they were UI concerns
+leaking into a wire contract, and Issao called that out directly.
 
-**Pagination.** Any per-machine view names a sort key, a page size and a cursor. Ingress streams
-that page only. Changing page replaces the subscription. Payload width is therefore bounded by
-`max_rows_per_update` regardless of fleet size, which is what keeps a 62,500-replica run as
-cheap to observe as a 100-replica one.
+The residual risk is real and worth naming: a client asking for a very fine rate at a high
+simulation speed costs Ingress CPU and therefore wall-clock time. It never affects simulation
+fidelity, and the lease bounds how long it can last, so the tradeoff is the right one.
 
 **Leases.** A closed browser tab must not leak a subscription that keeps Ingress and every Leaf
 computing and shipping data forever. Leases expire; the Frontend renews what it still displays.
@@ -715,9 +978,22 @@ whether a dashboard is attached or not. Metrics that are genuinely expensive to 
 enabled at *scenario* level, where they become part of the run's identity, not at subscription
 level.
 
-**End of run.** Reported as a final subscription time point rather than a separate result
-message, per Issao's preference for interface symmetry. A client that stays subscribed receives
-the terminal values on the same channel it was already reading.
+**Percentiles, not histograms, on the wire.** Issao suggested computing percentiles at the Leaf
+because it is cheaper. Right where it is valid, and it is not always valid: percentiles do not
+merge, so a target spanning shards cannot be answered by combining per-shard percentiles.
+Averaging p99s yields a number that is not a percentile of anything.
+
+So the engine does both and the client never has to know which. A target owned by one Leaf, which
+covers every per-machine subscription and most per-pool ones, is computed there exactly and only
+the requested numbers cross the wire. A target spanning shards has each Leaf ship its mergeable
+histogram, and Ingress merges before computing, which is correct to bucket resolution: a tenth of
+a percent for an HDR-style histogram at three significant digits. A flag on the result says which
+path was taken, because one is exact and the other is accurate, and a reader comparing two runs
+deserves to know.
+
+**End of run.** Reported as a final subscription time point rather than a separate result message,
+per Issao's preference for interface symmetry. A client that stays subscribed receives the
+terminal values on the same channel it was already reading.
 
 ### 10.3 Ingress to Leaf, and back
 
@@ -905,11 +1181,30 @@ and hides it in a `Truth` record that nothing downstream can see, because a real
 not know how long a generation will run and every hard scheduling problem here follows from
 that ignorance.
 
+**Added, per Issao:** an interface defining the shape of load the generator produces, as
+`proto/lbsim/v1/workload.proto`.
+
+The distinction that makes this worth a separate interface: `WorkloadSpec` in `scenario.proto`
+configures the *built-in* generator, while `LoadShape` in `workload.proto` is the contract any
+generator satisfies. That separation buys three things. A recorded trace can be replayed through
+the same interface as a synthetic process, so a scenario switches between them without touching
+anything downstream. A generator can be written outside this codebase. And the *shape* becomes
+inspectable and reportable in its own right, so a run's output can state what load was actually
+offered rather than only what was configured, which matters because the two differ whenever a
+generator is rate-limited by the simulation itself.
+
+The interface is declarative rather than a callback: a `LoadShape` describes arrival process,
+length distributions, session structure, prefix-sharing topology and per-tenant mix, and the engine
+samples from it. Declarative because a callback into user code every arrival would be 56,700 calls
+per simulated second at target scale, and because a description can be recorded, diffed and
+validated while a callback cannot.
+
 The request enters a **gateway**, which owns rate limiting and the outermost admission
 decision. Rate limits are denominated in tokens, not requests, because a single
 hundred-thousand-token prompt costs what twenty-five chat turns cost. The gateway consults an
 admission policy and may shed immediately, which is the cheap failure, deliberately distinct
 in the outcome enum from shedding after GPU time has been spent.
+
 
 A **router** picks a replica. It sees only a delayed fleet snapshot, so this is where herding
 lives: with many routers reading one stale snapshot, all of them conclude the same replica is

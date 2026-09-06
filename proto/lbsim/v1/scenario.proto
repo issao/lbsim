@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package lbsim.v1;
 
-import "lbsim/v1/common.proto";
+import "lbsim/v1/workload.proto";
 
 // A complete, reproducible experiment definition.
 //
@@ -31,7 +31,9 @@ message Scenario {
   repeated ModelSpec models = 10;
   repeated AcceleratorSpec accelerators = 11;
   repeated ClusterSpec clusters = 12;
-  WorkloadSpec workload = 13;
+  // Defined once, in workload.proto. An earlier draft duplicated the whole workload description
+  // here, which meant two places to change and two chances to disagree.
+  LoadShape workload = 13;
   PolicySpec policies = 14;
   TelemetrySpec telemetry = 15;
   FailureSpec failures = 16;
@@ -117,7 +119,7 @@ message ReplicaSpec {
 // ---------------------------------------------------------------------------
 
 message ClusterSpec {
-  ClusterId id = 1;
+  uint64 id = 1;
   string name = 2;
   // Drives the diurnal phase offset of this cluster's traffic. Multi-geo diurnal patterns
   // are what make global autoscaling interesting: capacity can follow the sun.
@@ -151,7 +153,7 @@ message ClusterSpec {
 }
 
 message PoolSpec {
-  PoolId id = 1;
+  uint64 id = 1;
   string name = 2;
   ReplicaSpec replica = 3;
   uint32 initial_replicas = 4;
@@ -173,142 +175,6 @@ message LatencySpec {
   double cv = 2;             // lognormal spread
   double loss_probability = 3;
   uint64 timeout_ns = 4;
-}
-
-// ---------------------------------------------------------------------------
-// Workload
-// ---------------------------------------------------------------------------
-
-message WorkloadSpec {
-  repeated TenantSpec tenants = 1;
-  // Replay a recorded trace instead of generating traffic. Empty means generate.
-  string trace_path = 2;
-  // Independent perturbation used for control analysis: a step or a sinusoid layered on top
-  // of the baseline load, so gain and phase from offered load to observed queue depth can be
-  // measured and a Bode plot drawn. See docs/ARCHITECTURE.md 6.2.
-  PerturbationSpec perturbation = 3;
-}
-
-message TenantSpec {
-  TenantId id = 1;
-  string name = 2;
-  uint32 model_id = 3;
-  SloClass slo_class = 4;
-  repeated ClusterId origin_clusters = 5;
-
-  ArrivalSpec arrival = 10;
-  ShapeSpec shape = 11;
-  SessionSpec sessions = 12;
-  RetrySpec retry = 13;
-
-  // SLO targets, which define goodput for this tenant. A request that completes late costs
-  // capacity and earns no goodput, which is why throughput alone ranks policies wrongly.
-  uint64 ttft_slo_ns = 20;
-  uint64 itl_slo_ns = 21;
-  uint64 e2e_slo_ns = 22;
-  // Weight for fair queueing, denominated in tokens rather than requests.
-  double fair_share_weight = 23;
-}
-
-message ArrivalSpec {
-  enum Process {
-    PROCESS_UNSPECIFIED = 0;
-    PROCESS_POISSON = 1;
-    // Interarrival CV above 1. Real traffic is burstier than Poisson, and Poisson will
-    // understate queueing.
-    PROCESS_LOGNORMAL = 2;
-    // On/off bursts: the arrival pattern that actually breaks autoscaling.
-    PROCESS_MARKOV_MODULATED = 3;
-    PROCESS_CONSTANT = 4;
-  }
-  Process process = 1;
-  double base_rps = 2;
-  double interarrival_cv = 3;
-
-  // Diurnal envelope, phase-shifted per cluster by its UTC offset.
-  double diurnal_amplitude = 10;      // 0 disables
-  uint64 diurnal_period_ns = 11;      // 86400e9 for a day
-
-  // Markov-modulated burst parameters.
-  double burst_multiplier = 20;
-  uint64 mean_burst_ns = 21;
-  uint64 mean_quiet_ns = 22;
-}
-
-message ShapeSpec {
-  // Prompt and output lengths are strongly right-skewed and often bimodal: interactive chat
-  // and long-document work share a queue, and that mixture is what creates head-of-line
-  // blocking. A unimodal workload hides the problem being studied.
-  double prompt_short_mean_tokens = 1;
-  double prompt_long_mean_tokens = 2;
-  double prompt_long_probability = 3;
-  double prompt_cv = 4;
-  uint32 prompt_max_tokens = 5;
-
-  double output_short_mean_tokens = 10;
-  double output_long_mean_tokens = 11;
-  double output_long_probability = 12;
-  double output_cv = 13;
-  uint32 output_max_tokens = 14;
-
-  // Ratio of max_output_tokens the client requests to the true output length. Clients
-  // over-ask, admission control charges for the ask, and the gap is where preemption is born.
-  double max_tokens_overask_factor = 20;
-}
-
-message SessionSpec {
-  // Fraction of requests that continue an existing session rather than starting one. Session
-  // turns resend the whole history, so this drives prefix-cache hit rate more than anything
-  // else does.
-  double continuation_probability = 1;
-  double mean_turns = 2;
-  uint64 mean_think_time_ns = 3;
-
-  // Shared system prompt across a tenant's traffic: a single hot root in the prefix tree.
-  uint32 system_prompt_tokens = 10;
-  uint32 distinct_system_prompts = 11;
-  // Popularity skew over those prompts. Uniform choice badly understates real hit rates.
-  double system_prompt_zipf_s = 12;
-
-  // Agent and tree-search traffic: several requests branching from one shared parent. The
-  // structure that makes prefix caching valuable and affinity routing tempting.
-  double fork_probability = 20;
-  uint32 mean_fork_width = 21;
-}
-
-message RetrySpec {
-  uint32 max_attempts = 1;
-  uint64 base_backoff_ns = 2;
-  double backoff_multiplier = 3;
-  double jitter = 4;
-  // Cap on the fraction of traffic that may be retries. Without it, a slowdown becomes a
-  // retry storm and then a metastable collapse the fleet does not recover from when load
-  // returns to normal.
-  double retry_budget_fraction = 5;
-  uint64 client_timeout_ns = 6;
-  // Retrying after a 30 s timeout means 30 s of GPU work was already spent, so a retry here
-  // costs far more than in a stateless service. Cancelling first is a policy choice.
-  bool cancel_before_retry = 7;
-}
-
-message PerturbationSpec {
-  enum Kind {
-    KIND_UNSPECIFIED = 0;
-    KIND_NONE = 1;
-    KIND_STEP = 2;
-    KIND_SINUSOID = 3;
-    // Sweep frequency across a range to produce an empirical Bode plot, from which loop gain
-    // and phase margin follow, so oscillation onset can be predicted rather than merely
-    // observed.
-    KIND_FREQUENCY_SWEEP = 4;
-  }
-  Kind kind = 1;
-  double amplitude_fraction = 2;
-  uint64 start_ns = 3;
-  double frequency_hz = 4;
-  double sweep_min_hz = 5;
-  double sweep_max_hz = 6;
-  uint64 sweep_duration_ns = 7;
 }
 
 // ---------------------------------------------------------------------------
@@ -370,7 +236,7 @@ message FailureSpec {
 }
 
 message FailureEvent {
-  uint64 at_ns = 1;
+  uint64 at_offset_ns = 1;
   enum Kind {
     KIND_UNSPECIFIED = 0;
     KIND_REPLICA_CRASH = 1;         // announced, in-flight requests lost
@@ -383,8 +249,8 @@ message FailureEvent {
     KIND_CAPACITY_UNAVAILABLE = 8;  // autoscaling requests start failing
   }
   Kind kind = 2;
-  repeated ReplicaId replicas = 3;
-  ClusterId cluster = 4;
+  repeated uint64 replica_ids = 3;
+  uint64 cluster_id = 4;
   double fraction = 5;
   uint64 duration_ns = 6;
   double magnitude = 7;
@@ -415,27 +281,33 @@ message FidelitySpec {
   // outside the focus of an experiment, so they still create realistic cross-region pressure
   // at ~1% of the cost. Never for the cluster under study: aggregation averages away the
   // heterogeneity that causes hotspots and tail latency.
-  repeated ClusterId fluid_clusters = 20;
+  repeated uint64 fluid_cluster_ids = 20;
 
-  // Speculative decoding acceptance is resampled every N steps rather than every step, which
-  // keeps the closed-form epoch advance intact. Understates variance below that timescale.
-  uint32 spec_decode_resample_steps = 30;
+  // Speculative decoding, modelled as Issao specified: propose N draft tokens per step, accept M on
+  // average, both drawn per request at Ingress and constant for that request so the closed form
+  // holds. Zero draft_tokens disables it.
+  //
+  // The erosion of speedup at large batch is emergent rather than configured: verification
+  // multiplies the compute term by N while leaving weight reads alone, so once the compute branch
+  // of the cost model dominates, the gain disappears on its own.
+  uint32 spec_draft_tokens = 30;          // N, e.g. 5
+  double spec_accepted_tokens = 31;       // M, e.g. 3.0
+  double spec_accepted_cv = 32;           // 0 for a fixed M; above 0 draws per request
 }
 
 message ObservabilitySpec {
-  uint64 series_sample_interval_ns = 1;
-  uint64 histogram_interval_ns = 2;
+  // Live sampling rates are chosen per subscription, not here; see subscription.proto. What a run
+  // must decide up front is what it *records*, since that cannot be reconstructed later.
+  uint64 record_interval_ns = 1;
 
-  // At ~112,500 completions per second, a simulated hour is ~405M requests, so full records
-  // exist only for samples. Uniform sampling of that many requests contains almost no p99.9
-  // examples, which are the ones worth reading, so sampling is stratified by latency bucket
-  // and by outcome as well.
+  // A simulated hour completes hundreds of millions of requests, so full records exist only for
+  // samples. Uniform sampling contains almost no examples above the 99.9th percentile, which are
+  // the ones worth reading, so it is stratified by latency bucket and by outcome.
   double trace_sample_rate = 10;
   uint32 traces_per_latency_bucket = 11;
   uint32 traces_per_outcome = 12;
 
-  // Coarse snapshots bound how much must be re-simulated when a dashboard user changes a
-  // parameter mid-run. Interactive scrubbing reads the event log instead and needs no
-  // re-simulation.
+  // Coarse snapshots bound how much must be re-simulated when a parameter changes mid-run.
+  // Scrubbing reads the recorded log instead and needs none.
   uint64 snapshot_interval_ns = 20;
 }
