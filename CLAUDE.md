@@ -151,6 +151,15 @@ The main agent coordinates, owns this file and `proto/`, and stays out of the ar
 needs a file it does not own stops and says so rather than editing it. `git add` is always by explicit
 path, never `-A`, because that is how one agent's in-flight files ended up in another's commit today.
 
+**A simplification pass runs on a cadence**, per the user: after every wave of merges or every four
+merges, the tech lead spawns one simplification agent, never more than one at a time. Its mandate is
+the `/simplify` skill's: reuse, simplification, efficiency and altitude cleanups, no bug hunting, no
+features, prefer deletion over rewriting. Zero behavior change, proven by every test passing unchanged
+and by `bench/validate_epochs.py`, `check-sensitivity.sh` and the determinism fingerprints producing
+byte-identical output. One crate per pass, own worktree, and it reports what it deliberately did not
+simplify, because the temptation in that kind of pass is to keep going. A change to `proto/` or a
+crate boundary is a decision rather than a cleanup and is reported, not made.
+
 **Each agent works in its own git worktree**, not the shared checkout. A shared checkout means one
 agent's dirty files make `tools/sync.sh` refuse for everyone. The housekeeping agent already works in
 `/home/agents/repo/lbsim-docs`; the tech lead is moving its subagents to worktrees. Memory is safe
