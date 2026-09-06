@@ -43,7 +43,7 @@ The fully customisable playground. Two panels:
 
 **"Live tunable" has a precise meaning here.** Some parameters change only the view and take effect
 immediately. Others change physics, and the server must rewind to a snapshot and re-simulate.
-`ApplyResponse.required_resimulation` says which happened, and **the UI must show it**, because a
+`UpdateResponse.required_resimulation` says which happened, and **the UI must show it**, because a
 chart that silently re-computed its own history while claiming to be live is worse than one that
 pauses to say so.
 
