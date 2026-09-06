@@ -1,6 +1,6 @@
 # TASKS — things that need Issao
 
-Last updated: 2026-09-06 16:31 PDT by Claude.
+Last updated: 2026-09-06 16:41 PDT by Claude.
 
 Stack ranked, most blocking first. Every item says what Claude does if you say nothing, so nothing
 here stalls the work. What is finished and live is in `STATUS.md`.
@@ -16,6 +16,9 @@ limit, and the training-versus-serving question.
 **If you say nothing:** it is deleted at the next housekeeping round after 24 hours, 2026-09-07 16:19.
 
 ## Routed to the tech lead
+
+Each of these is a unit in `docs/execution-graph.md`, the tech lead's graph, which carries its state
+and ETA; this list is the record of what was routed and why.
 
 Three from Issao at 16:22, routed by the main agent:
 
@@ -61,6 +64,10 @@ consequences that belong to the tech lead; verbatim, from `TASKS.md` before the 
 ---
 
 ## 1. Decisions with a default
+
+`docs/execution-graph.md` has a section "Waiting on Issao" listing the units that need a word from
+you, each with the default it takes if you say nothing. Those defaults stand until you say otherwise.
+The design decisions below are the ones outside that graph.
 
 | Decision | Default | Rework if changed later |
 |---|---|---|
