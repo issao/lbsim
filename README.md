@@ -10,7 +10,7 @@ performance, service quality and robustness. Rust engine, React dashboard, proto
 ```bash
 export PATH="$HOME/local/bin:$HOME/.local/bin:$PATH"   # this sandbox; see docs/toolchain.md
 ./run-demos.sh              # six experiments, six self-contained HTML reports in out/
-cargo test --workspace      # 55 tests, 3 ignored as known defects
+cargo test --workspace      # 73 tests, 3 ignored as known defects
 ./check-fingerprints.sh     # every report number byte-identical to bench/golden-fingerprints.txt
 ./check-sensitivity.sh      # the policy ordering must survive 30% cost-model error
 cargo test --release --lib -- --nocapture   # one arena round on the held-out suite
@@ -31,7 +31,7 @@ Every run is deterministic: same scenario and seed, byte-identical output. Scena
 | the design, and every decision taken | `docs/ARCHITECTURE.md`, section 14 for decisions |
 | the whole-project plan | `docs/execution-plan.md` |
 | the policy arena | `docs/arena.md` spec, `docs/arena-implementation.md` measured |
-| the dashboard | `docs/ui-spec.md`, `web/README.md` |
+| the dashboard | `docs/ui-spec.md`, `web/README.md`; when it shows real runs, `docs/dashboard-plan.md` |
 | the wire between browser and server | `crates/sim-ingress/WIRE.md` |
 | where the numbers come from | `docs/calibration.md`, `docs/llm-serving-primer.md` |
 | how the agents are staffed | `docs/agent-architecture.md`, ownership table in `CLAUDE.md` |
