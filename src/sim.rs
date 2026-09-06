@@ -200,7 +200,94 @@ impl RunResult {
     }
 }
 
+/// Ceilings that turn a runaway into an error instead of an out-of-memory kill.
+///
+/// These exist because a real bug did exactly that. The retry path scheduled a fresh arrival
+/// alongside re-dispatching a retry, and since every arrival schedules its own successor, each retry
+/// permanently *forked* the arrival chain. Growth was exponential in the number of retries, and the
+/// process consumed all memory and swap on the machine it was running on before anyone could read an
+/// error message.
+///
+/// The fix for that bug is in. These caps are the second line of defence, because the next bug of
+/// this shape should cost one confusing error message rather than a machine.
+const MAX_EVENTS: u64 = 50_000_000;
+const MAX_IN_FLIGHT: usize = 2_000_000;
+const MAX_RECORDS: usize = 20_000_000;
+const MAX_QUEUE_LEN: usize = 5_000_000;
+
+/// Reject a scenario that cannot be simulated inside the resource ceilings above.
+///
+/// Checked before any work starts, so an implausible parameter is a message rather than an hour of
+/// swapping. The bounds are deliberately generous: the point is to catch a slipped decimal place or a
+/// unit confusion, not to second-guess a legitimate experiment.
+fn validate(sc: &Scenario) -> Result<(), String> {
+    let mut bad: Vec<String> = Vec::new();
+    if !(sc.arrival_rps.is_finite() && sc.arrival_rps > 0.0 && sc.arrival_rps <= 5.0e6) {
+        bad.push(format!("arrival_rps = {} (need 0 < r <= 5e6)", sc.arrival_rps));
+    }
+    if !(sc.duration_s.is_finite() && sc.duration_s > 0.0 && sc.duration_s <= 86_400.0) {
+        bad.push(format!("duration_s = {} (need 0 < d <= 86400)", sc.duration_s));
+    }
+    if sc.warmup_s < 0.0 || sc.warmup_s >= sc.duration_s {
+        bad.push(format!(
+            "warmup_s = {} must be non-negative and less than duration_s = {}",
+            sc.warmup_s, sc.duration_s
+        ));
+    }
+    if sc.replicas == 0 || sc.replicas > 200_000 {
+        bad.push(format!("replicas = {} (need 1..=200000)", sc.replicas));
+    }
+    if sc.max_batch == 0 || sc.max_batch > 100_000 {
+        bad.push(format!("max_batch = {} (need 1..=100000)", sc.max_batch));
+    }
+    if !(sc.prefill_tokens_per_s.is_finite() && sc.prefill_tokens_per_s > 0.0) {
+        bad.push(format!("prefill_tokens_per_s = {} must be positive", sc.prefill_tokens_per_s));
+    }
+    if sc.step_token_budget == 0 {
+        bad.push("step_token_budget must be at least 1".into());
+    }
+    if !(sc.step_base_ms.is_finite() && sc.step_base_ms > 0.0) {
+        bad.push(format!("step_base_ms = {} must be positive", sc.step_base_ms));
+    }
+    if !(sc.sample_interval_ms.is_finite() && sc.sample_interval_ms > 0.0) {
+        bad.push(format!("sample_interval_ms = {} must be positive", sc.sample_interval_ms));
+    }
+    if sc.max_attempts == 0 {
+        bad.push("max_attempts must be at least 1".into());
+    }
+    if !(sc.load_step_factor.is_finite() && sc.load_step_factor >= 0.0 && sc.load_step_factor <= 1000.0) {
+        bad.push(format!("load_step_factor = {} (need 0..=1000)", sc.load_step_factor));
+    }
+
+    // The estimate that would actually have caught the runaway: how much state this run implies.
+    let peak_rps = sc.arrival_rps * sc.load_step_factor.max(1.0);
+    let expected_arrivals = peak_rps * sc.duration_s * sc.max_attempts as f64;
+    if expected_arrivals > MAX_RECORDS as f64 {
+        bad.push(format!(
+            "this scenario implies about {:.0} requests ({:.0} rps x {:.0} s x {} attempts), \
+             above the {} record ceiling. Shorten the run, lower the rate, or raise MAX_RECORDS \
+             deliberately",
+            expected_arrivals, peak_rps, sc.duration_s, sc.max_attempts, MAX_RECORDS
+        ));
+    }
+    let samples = sc.duration_s * 1000.0 / sc.sample_interval_ms * sc.replicas as f64;
+    if samples > 200_000_000.0 {
+        bad.push(format!(
+            "this scenario implies about {:.0} per-replica samples; raise sample_interval_ms or \
+             lower replicas",
+            samples
+        ));
+    }
+
+    if bad.is_empty() {
+        Ok(())
+    } else {
+        Err(format!("scenario {:?} is not runnable:\n  - {}", sc.name, bad.join("\n  - ")))
+    }
+}
+
 pub fn run(sc: &Scenario) -> Result<RunResult, String> {
+    validate(sc)?;
     let routing = Routing::parse(&sc.routing, sc.p2c_choices)?;
     let streams = Streams::new(sc.seed);
     let mut route_rng: Rng = streams.stream("route");
@@ -247,8 +334,38 @@ pub fn run(sc: &Scenario) -> Result<RunResult, String> {
         q.schedule(start + (i as Nanos * tele_iv) / sc.replicas.max(1) as Nanos, Ev::TelemetryPublish(i));
     }
 
+    // Tripwires. Each one names what to look at, because the failure mode being guarded against is
+    // exponential growth in scheduled work, which looks like a hang and then an out-of-memory kill.
+    let mut tripped: Option<String> = None;
     while let Some((now, ev)) = q.pop() {
         if now > end {
+            break;
+        }
+        if q.dispatched > MAX_EVENTS {
+            tripped = Some(format!(
+                "event ceiling: {} events dispatched with {:.0}% of the run remaining. Something is \
+                 scheduling work faster than it retires; suspect a feedback loop in the arrival or \
+                 retry path",
+                q.dispatched,
+                100.0 * (end.saturating_sub(now)) as f64 / (end - start).max(1) as f64
+            ));
+            break;
+        }
+        if records.len() > MAX_RECORDS || placed.len() > MAX_IN_FLIGHT {
+            tripped = Some(format!(
+                "state ceiling: {} records and {} tracked requests. Offered load is far above what \
+                 this fleet retires, or requests are never completing",
+                records.len(),
+                placed.len()
+            ));
+            break;
+        }
+        if q.len() > MAX_QUEUE_LEN {
+            tripped = Some(format!(
+                "queue ceiling: {} pending events. Almost always a self-scheduling event that never \
+                 terminates",
+                q.len()
+            ));
             break;
         }
         match ev {
@@ -506,6 +623,10 @@ pub fn run(sc: &Scenario) -> Result<RunResult, String> {
                 q.schedule_prio(now + sample_iv, PRIO_OBSERVE, Ev::Sample);
             }
         }
+    }
+
+    if let Some(why) = tripped {
+        return Err(format!("run {:?} aborted, {}", sc.name, why));
     }
 
     // Statistics come from the measured window only, so a run measures steady state rather than the
