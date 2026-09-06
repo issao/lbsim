@@ -8,17 +8,24 @@ warmup_s = 15
 # Fleet. A 70B-class model on 8xH100 per replica; step_base_ms is calibrated in
 # bench/validate_epochs.py against a published batch-1 measurement.
 replicas = 32
-max_batch = 32
-step_base_ms = 2.75
-step_per_seq_ms = 0.25
-prefill_tokens_per_s = 25000
-step_token_budget = 2048
-max_queue = 200
+# Sequence cap and token budget both present, because which one binds is the point. At a ~3.2k mean
+# context the token budget allows about 420 sequences, so the count cap binds for ordinary traffic
+# and the token budget binds once long prompts arrive.
+max_batch = 256
+kv_capacity_tokens = 1370000
+# Weight read for a 70B model on 8xH100 at 70% bandwidth utilization, 7.46 ms, plus 2.75 ms of fixed
+# overhead. With the bandwidth term below this reproduces bench/validate_epochs.py to within 0.05 ms.
+step_base_ms = 10.2
+step_per_seq_ms = 0.0
+step_per_kv_ktoken_ms = 0.0175
+prefill_tokens_per_s = 28286
+step_token_budget = 1024
+max_queue = 400
 
 # Workload. A mixture, not a single distribution: interactive chat plus long-document work in the
 # same queue. The mixture is what creates head-of-line blocking, so a unimodal load would hide the
 # phenomenon being studied.
-arrival_rps = 100
+arrival_rps = 70
 prompt_mean = 1200
 prompt_cv = 1.2
 output_mean = 300

@@ -43,10 +43,27 @@ its own additional work.
 
 ## 2. Three packages that fit
 
+**Parallel execution, per Issao:** *"Whenever we can let's fork off side missions to execute in
+parallel and report back but make feedback on them for the main agents and myself lower priority."*
+
+Two side missions are file-disjoint from the engine and run in parallel, which is the only kind of
+fan-out that is safe: the stand-in dashboard under `web/`, and the test suite under `tests/`. Neither
+touches `src/`, so neither can collide with the main line. Their reports come back at lower priority,
+so a side mission finishing does not interrupt the critical path.
+
+What is *not* forked: anything touching the cost model or the step loop. Those are coupled through
+one function, and parallel agents on coupled work produce plausible-looking integration failures
+rather than obvious ones.
+
 ### A. Queueing and control — 3.5 h
 
 Foundation, 1, 2, 4, 5, 6. Four of his named dynamics, all the load-balancing fallacies, and the
 control-theory story.
+
+**Deprioritised by Issao:** *"Lets make 4 lower priority."* The retry storm moves to the end of the
+queue. It is cheap once the rest exists, and it is the least surprising of the four, since retry
+amplification is well understood; the rolling hotspot and the oscillation are the results worth
+having first.
 
 Delivers: round-robin producing a rolling hotspot below rated capacity; power-of-two-choices
 visibly fixing it; oscillation from stale telemetry with a measured frequency; a retry storm that
@@ -55,6 +72,23 @@ fails to recover; traffic shaping at three layers; per-class goodput.
 Cuts: everything LLM-specific. Today's artefact would be a general serving simulator.
 
 ### B. Recognisably LLM — 3.25 h  ← **recommended**
+
+
+**Selected by Issao:** *"Sounds good, let's start here. It seems like 7 might be cheap here too."*
+
+He is right, and my estimate was wrong in a specific way. Item 7 bundled two things that separate
+cleanly:
+
+- **Prefill/decode interference is already done.** The step-time model adds the prefill work done in
+  a step to the decode cost, because both contend for one device, so a long prompt already inflates
+  everyone else's inter-token latency. Chunked prefill with a token budget is already there too. That
+  was never the two hours; it came free with two-phase timing.
+- **What is left is the KV capacity constraint**, which limits batch size by resident tokens rather
+  than by a request count. That is roughly 20 minutes: a token budget per replica, admission that
+  respects it, and a utilization metric. It also sets up item 8, preemption, for very little more.
+
+So item 7 is promoted into today's package at about 0.5 hours rather than 2, and the estimate is
+corrected rather than quietly reused.
 
 Foundation, 1, 2, 3, 4. Same as A minus shaping and SLO classes, plus two-phase timing.
 
@@ -72,7 +106,23 @@ Over budget by an hour. Listed only to be explicit that it does not fit.
 
 ---
 
-## 3. Recommendation, and the honest cost of it
+## 3. Decision: package B, plus item 7
+
+**Chosen by Issao 13:50.** Package B, with item 7 promoted after the estimate was corrected, item 4
+demoted, and two side missions running in parallel. Working order:
+
+| Order | Item | Cost | State |
+|---|---|---|---|
+| 1 | Foundation | 1.0 h | **done** |
+| 2 | Rolling hotspot, 1 | 1.25 h | **done**, tuning left |
+| 3 | Two-phase timing, 3 | 0.75 h | **done**, panel left |
+| 4 | KV capacity, 7 | 0.5 h | next |
+| 5 | Stale-telemetry oscillation, 2 | 0.75 h | queued |
+| 6 | Retry storm, 4 | 0.5 h | demoted, last |
+| — | Tests | parallel | side mission |
+| — | Stand-in dashboard | parallel | side mission |
+
+The reasoning below is kept as written, since it is what the decision was made against.
 
 **Take B.** Four dynamics working end to end beats one dynamic half-built, and the two-phase timing
 keeps the artefact recognisably about inference.
@@ -106,6 +156,10 @@ capacity behaviour.
 | React dashboard | the static HTML report serves the same purpose today at a tenth of the cost |
 | Ingress/Leaf shard split | measurement says one core carries the whole fleet, so this buys nothing today and its determinism test deserves care |
 
+// Issao Don't cut the react dashboard. I want that. start executing on that in parallel, it should not have a lot of dependencies.
+
+// Issao Also, to what extent it doesn't slow down everything else. Start executing on the Arena story, I think that will be fun.
+
 ---
 
 ## 4. What "done at 16:30" means
@@ -126,3 +180,6 @@ Plus: `cargo test` green, including a determinism test asserting identical finge
 and every number in the report reproducible from a committed scenario file.
 
 **If time runs short, items are dropped from the bottom of that list, not the top.**
+
+**Issao:** *"I am ok if we go a little bit over."* Noted. The order stays as written, so going over
+buys items from the bottom rather than risking the top.

@@ -190,14 +190,14 @@ fn ms(v: Nanos) -> String {
 
 fn print_summary(runs: &[RunResult]) {
     println!(
-        "{:<26} {:>9} {:>9} {:>8} {:>8} {:>8} {:>7} {:>8}",
+        "{:<32} {:>9} {:>9} {:>8} {:>8} {:>8} {:>7} {:>8}",
         "scenario", "goodput", "thruput", "ttft99", "itl99", "e2e99", "slo", "imbal"
     );
-    println!("{}", "-".repeat(92));
+    println!("{}", "-".repeat(98));
     for r in runs {
         println!(
-            "{:<26} {:>9.0} {:>9.0} {:>8} {:>8} {:>8} {:>6.1}% {:>8.2}",
-            truncate(&r.scenario.name, 26),
+            "{:<32} {:>9.0} {:>9.0} {:>8} {:>8} {:>8} {:>6.1}% {:>8.2}",
+            truncate(&r.scenario.name, 32),
             r.goodput_tokens_s(),
             r.throughput_tokens_s(),
             ms(r.ttft.percentile(99.0)),
@@ -256,6 +256,7 @@ two-phase request timing. Key-value cache capacity, preemption, prefix caching, 
 autoscaling are deliberately absent; that document says why each was cut.</p>"##
     );
 
+    findings(&mut h, runs);
     summary_table(&mut h, runs);
     slo_table(&mut h, runs);
     latency_table(&mut h, runs);
@@ -268,6 +269,14 @@ the whole result. Sustained ringing at a frequency related to the telemetry peri
 loop oscillating.</p>"##);
     legend(&mut h, runs);
     let _ = write!(h, "{}", multi_line_chart(runs, |r| &r.fleet_queue, 1000, 240));
+
+    let _ = write!(h, "<h2>Key-value cache utilization</h2>");
+    let _ = write!(h, r##"<p class="note">Mean across the fleet, as a percentage of each replica's token budget.
+Capacity here is a token budget rather than a request count, which is the central departure from a
+stateless service: one 24,000-token context consumes what eight chat turns consume, so a queue of long
+prompts blocks admission that a request count would have allowed.</p>"##);
+    legend(&mut h, runs);
+    let _ = write!(h, "{}", multi_line_chart(runs, |r| &r.fleet_kv_utilization, 1000, 170));
 
     let _ = write!(h, "<h2>Offered load</h2>");
     legend(&mut h, runs);
@@ -304,6 +313,103 @@ byte; the fingerprint is an event-count-and-checksum pair asserted by the test s
     h
 }
 
+/// Findings, computed from the run rather than written by hand.
+///
+/// Computed on purpose: prose asserting a ratio goes stale the moment a parameter changes, and a
+/// report whose text contradicts its own tables is worse than one with no text at all.
+fn findings(h: &mut String, runs: &[RunResult]) {
+    if runs.len() < 2 {
+        return;
+    }
+    let _ = write!(h, "<h2>What this run shows</h2>");
+    let _ = write!(h, "<ul style=\"max-width:78ch;color:#333\">");
+
+    let load_frac = runs[0].scenario.arrival_rps / runs[0].rated_rps;
+    let _ = write!(
+        h,
+        "<li>Offered load is <b>{:.0} requests/s against a rated {:.0}</b>, so the fleet is at \
+         <b>{:.0}% of capacity</b>. Everything below happens with capacity to spare, which is the \
+         point: these are not overload results.</li>",
+        runs[0].scenario.arrival_rps, runs[0].rated_rps, load_frac * 100.0
+    );
+
+    let best = runs.iter().max_by(|a, b| a.goodput_tokens_s().partial_cmp(&b.goodput_tokens_s()).unwrap()).unwrap();
+    let worst = runs.iter().min_by(|a, b| a.goodput_tokens_s().partial_cmp(&b.goodput_tokens_s()).unwrap()).unwrap();
+    if worst.goodput_tokens_s() > 0.0 {
+        let _ = write!(
+            h,
+            "<li><b>Goodput spans {:.1}x</b> across these runs, from {:.0} tokens/s under \
+             <i>{}</i> to {:.0} under <i>{}</i>, at identical offered load and seed. Throughput \
+             barely moves ({:.0} to {:.0}), which is exactly why ranking on throughput picks the \
+             wrong policy: the work gets done either way, but under the worse policy it arrives too \
+             late to count.</li>",
+            best.goodput_tokens_s() / worst.goodput_tokens_s(),
+            worst.goodput_tokens_s(), esc(&worst.scenario.name),
+            best.goodput_tokens_s(), esc(&best.scenario.name),
+            worst.throughput_tokens_s(), best.throughput_tokens_s()
+        );
+    }
+
+    let t_best = runs.iter().min_by_key(|r| r.ttft.percentile(99.0)).unwrap();
+    let t_worst = runs.iter().max_by_key(|r| r.ttft.percentile(99.0)).unwrap();
+    if t_best.ttft.percentile(99.0) > 0 {
+        let _ = write!(
+            h,
+            "<li><b>Tail time-to-first-token spans {:.1}x</b>, {} ms under <i>{}</i> against {} ms \
+             under <i>{}</i>. Per-replica load spread moves with it, {:.2} against {:.2}, which is \
+             the mechanism rather than a coincidence: an uneven fleet has deep queues somewhere even \
+             when its average queue is shallow.</li>",
+            t_worst.ttft.percentile(99.0) as f64 / t_best.ttft.percentile(99.0) as f64,
+            ms(t_best.ttft.percentile(99.0)), esc(&t_best.scenario.name),
+            ms(t_worst.ttft.percentile(99.0)), esc(&t_worst.scenario.name),
+            t_best.load_imbalance_cv(), t_worst.load_imbalance_cv()
+        );
+    }
+
+    // The result worth stating loudest, when it is present: a policy that reads a stale global view
+    // does worse than one that samples at random.
+    let stale_loser = runs.iter().find(|r| r.replicas_inspected_per_decision > 4);
+    let sampler = runs.iter().find(|r| r.replicas_inspected_per_decision <= 4);
+    if let (Some(l), Some(s)) = (stale_loser, sampler) {
+        if l.load_imbalance_cv() > s.load_imbalance_cv() {
+            let _ = write!(
+                h,
+                "<li><b>Reading the whole fleet is worse than sampling two of it.</b> <i>{}</i> \
+                 inspects all {} replicas per decision and reaches {:.0}% attainment with a load \
+                 spread of {:.2}; <i>{}</i> inspects {} and reaches {:.0}% with {:.2}. The snapshot \
+                 is up to {:.0} ms old, so every router sees the same apparently idle replica and \
+                 sends to it at once. Sampling bounds that by construction, because only a fraction \
+                 of decisions consider any one replica at a time.</li>",
+                esc(&l.scenario.name), l.replicas_inspected_per_decision,
+                l.slo_attainment() * 100.0, l.load_imbalance_cv(),
+                esc(&s.scenario.name), s.replicas_inspected_per_decision,
+                s.slo_attainment() * 100.0, s.load_imbalance_cv(),
+                l.scenario.telemetry_interval_ms + l.scenario.telemetry_delay_ms
+            );
+        }
+    }
+
+    // A sweep over one key: state the direction rather than leaving the reader to infer it.
+    let itls: Vec<u64> = runs.iter().map(|r| r.itl_max.percentile(99.0)).collect();
+    let spread = *itls.iter().max().unwrap() as f64 / (*itls.iter().min().unwrap()).max(1) as f64;
+    if spread > 2.0 {
+        let a = runs.iter().min_by_key(|r| r.itl_max.percentile(99.0)).unwrap();
+        let b = runs.iter().max_by_key(|r| r.itl_max.percentile(99.0)).unwrap();
+        let _ = write!(
+            h,
+            "<li><b>The worst gap between tokens spans {:.1}x</b>, {} ms against {} ms, while tail \
+             time-to-first-token moves the other way ({} against {} ms). That is prefill and decode \
+             contending for one device: a larger prefill chunk gets the first token out sooner and \
+             inserts a longer stall into every stream already running. There is no setting that \
+             wins both.</li>",
+            spread, ms(a.itl_max.percentile(99.0)), ms(b.itl_max.percentile(99.0)),
+            ms(a.ttft.percentile(99.0)), ms(b.ttft.percentile(99.0))
+        );
+    }
+
+    let _ = write!(h, "</ul>");
+}
+
 fn legend(h: &mut String, runs: &[RunResult]) {
     let _ = write!(h, r##"<div class="legend">"##);
     for (i, r) in runs.iter().enumerate() {
@@ -329,12 +435,12 @@ decision, and anything proportional to fleet size does not hold at scale.</p>"##
         .enumerate()
         .max_by(|a, b| a.1.goodput_tokens_s().partial_cmp(&b.1.goodput_tokens_s()).unwrap())
         .map(|(i, _)| i);
-    let _ = write!(h, "<table><tr><th>scenario</th><th>routing</th><th>offered rps</th><th>rated rps</th><th>completed rps</th><th>goodput tok/s</th><th>throughput tok/s</th><th>imbalance CV</th><th>inspected</th></tr>");
+    let _ = write!(h, "<table><tr><th>scenario</th><th>routing</th><th>offered rps</th><th>rated rps</th><th>completed rps</th><th>goodput tok/s</th><th>throughput tok/s</th><th>imbalance CV</th><th>batch limit</th><th>inspected</th></tr>");
     for (i, r) in runs.iter().enumerate() {
         let cls = if Some(i) == best { " class=\"best\"" } else { "" };
         let _ = write!(
             h,
-            "<tr{}><td>{}</td><td>{}</td><td>{:.0}</td><td>{:.0}</td><td>{:.1}</td><td>{:.0}</td><td>{:.0}</td><td>{:.2}</td><td>{}</td></tr>",
+            "<tr{}><td>{}</td><td>{}</td><td>{:.0}</td><td>{:.0}</td><td>{:.1}</td><td>{:.0}</td><td>{:.0}</td><td>{:.2}</td><td>{:.0}</td><td>{}</td></tr>",
             cls,
             esc(&r.scenario.name),
             esc(&r.routing_label),
@@ -344,6 +450,7 @@ decision, and anything proportional to fleet size does not hold at scale.</p>"##
             r.goodput_tokens_s(),
             r.throughput_tokens_s(),
             r.load_imbalance_cv(),
+            r.scenario.effective_batch(),
             r.replicas_inspected_per_decision
         );
     }
