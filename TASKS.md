@@ -86,10 +86,10 @@ rules before any traffic, a fifth of the budget for nothing; and a hosting rewri
 Run risks buffering server-streamed responses, which would break the live charts in a way that looks
 like the simulation hanging. A direct domain mapping avoids both and the certificate is free.
 
-- [ ] **Create the project and link billing.** Then tell Claude the project id.
-- [ ] **Verify domain ownership.** Google requires a signed-in human for this; it cannot be
+- [x] **Create the project and link billing.** Then tell Claude the project id.
+- [x] **Verify domain ownership.** Google requires a signed-in human for this; it cannot be
       delegated. About five minutes in Search Console.
-- [ ] **Add the DNS records** the domain mapping returns, at your registrar. Four A and four AAAA for
+- [x] **Add the DNS records** the domain mapping returns, at your registrar. Four A and four AAAA for
       the apex.
 - [ ] **Create the budget.** Budgets live on the billing account, and granting billing access to save
       two minutes is a bad trade.
