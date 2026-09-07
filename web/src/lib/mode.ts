@@ -21,9 +21,19 @@ export interface ServerMode {
   source: 'default' | 'env' | 'storage' | 'query';
 }
 
-/** The header marker the stand-in has carried since it was built. Unchanged on purpose. */
-export const MOCK_BANNER = 'mock data, no engine attached';
-export const SERVER_BANNER = 'live data from the Ingress server';
+/**
+ * U70: one vocabulary, the same three words everywhere a data source is named, each carrying its
+ * own one-line gloss so a reader never has to guess what the word means on first encounter.
+ */
+export const DATA_SOURCE_GLOSS = {
+  mock: 'browser-generated, invented numbers',
+  replay: 'a recording of a real engine run',
+  live: 'a simulation running on the server now',
+} as const;
+
+/** The header marker the stand-in has carried since it was built, now carrying its gloss too. */
+export const MOCK_BANNER = `mock — ${DATA_SOURCE_GLOSS.mock}`;
+export const SERVER_BANNER = `live — ${DATA_SOURCE_GLOSS.live}`;
 
 /** The localStorage key. `'1'` means same origin; a URL means that base; `'0'` forces mock. */
 export const STORAGE_KEY = 'lbsim.server';
@@ -99,7 +109,19 @@ export function modeBanner(m: ServerMode = serverMode()): string {
 
 export type DataMode = 'mock' | 'server' | 'replay';
 
-export const REPLAY_BANNER = 'replay of a recorded run';
+export const REPLAY_BANNER = `replay — ${DATA_SOURCE_GLOSS.replay}`;
+
+/** The word each `DataMode` is called in the UI. The internal name `server` stays; its word is `live`. */
+export const DATA_SOURCE_LABEL: Record<DataMode, keyof typeof DATA_SOURCE_GLOSS> = {
+  mock: 'mock',
+  server: 'live',
+  replay: 'replay',
+};
+
+/** The one-line gloss for a data mode, via its word. Non-empty for every mode, always. */
+export function dataSourceGloss(mode: DataMode): string {
+  return DATA_SOURCE_GLOSS[DATA_SOURCE_LABEL[mode]];
+}
 
 /**
  * The `?replay=` parameter, from the query string or a hash route's own query: `false` forces

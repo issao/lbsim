@@ -3,7 +3,7 @@ import type { ScenarioConfig } from '../lib/config';
 import { useDataSource, useReplayRun, useRun, type ReplayRunHandle, type RunHandle } from '../lib/useRun';
 import { useServerRun, type ServerRunHandle } from '../lib/useServerRun';
 import { windowFrames } from '../lib/derive';
-import { setActiveMode } from '../lib/mode';
+import { dataSourceGloss, setActiveMode } from '../lib/mode';
 import { groupRuns, loadRun, runDurationS, type LoadedRun, type RunIndexEntry } from '../lib/replay';
 import { PlaybackBar, UpdateBanner } from '../components/PlaybackBar';
 import { ControlPanel, type ControlTab } from '../panels/ControlPanel';
@@ -79,6 +79,7 @@ function ServerBanner({ run }: { run: ServerRunHandle }) {
     <>
       <div className="banner">
         <span className="tagline">live</span>
+        <span className="note">{dataSourceGloss('server')}</span>
         <span>
           run <code>{run.runId ?? '…'}</code> &middot; stream {run.connection}
           {run.subscriptionId ? <> ({run.subscriptionId})</> : null} &middot; {run.engine.frames.length} samples at{' '}
@@ -217,6 +218,7 @@ function ReplayBanner({ run, picker }: { run: ReplayRunHandle; picker: ReactNode
     <>
       <div className="banner">
         <span className="tagline">replay</span>
+        <span className="note">{dataSourceGloss('replay')}</span>
         {picker}
         <span>
           <code>runs/{e.runId}</code> &middot; routing {e.routing} &middot; {e.replicas} replicas &middot;{' '}

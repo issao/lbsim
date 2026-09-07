@@ -66,7 +66,7 @@ export function Compare() {
           Both runs draw from the same named streams, so the arrival sequence and the prompt and output lengths are
           identical. Only the routing policy differs.
         </span>
-        <MockTag what="two mock runs" />
+        <MockTag what="mock" />
       </div>
 
       <div className="dash-body" style={{ gridTemplateColumns: 'minmax(0, 1fr)' }}>
