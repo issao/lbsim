@@ -251,3 +251,92 @@ compile failure came from another branch's change, which is what U46 (Scenario b
 was for.
 
 Next section at about 17:55, after the three large units finish, with their report→merge.
+
+## 2026-09-06 20:54 PDT — resumed wave: 13 merged in 25 minutes; the golden file is the new bottleneck
+
+The pause (17:31–20:21, Issao's usage limit) is a gap in the data, not idle time; every agent was
+terminated at ~17:36 and the fresh tech lead aa236236 re-spawned from the execution graph's Resume
+paragraphs. It spawned 21 agents in 20:30–20:50 (12 in the first five minutes, 7 more at 20:46–20:50),
+briefs 3.7–6.6 KB from template v3, `sonnet` on 8, default on 13; 85 turns at 137k tokens mean (260k
+max) in 26 minutes, 10 messages, 3 graph updates each carrying its own integration (57–92 s). Thirteen
+units merged by 20:51: 32 per hour against about 20 at 17:35.
+
+| Unit | Model | Kind | Spawn→merge min | Turns | Ctx k | First edit min | Reads before it | integrate.sh (lock wait) |
+|---|---|---|---|---|---|---|---|---|
+| U22 preemption | default | resume, one edit | 3.3 | 31 | 42 | 0.9 | 6 | 37 s |
+| U28 web-live | default | resume | 3.7 | 28 | 76 | 1.6 | 16 | 39 s |
+| U58 showcase-live | default | fresh | 4.2 | 17 | 56 | 2.4 | 10 | 42 s |
+| U57 update-banner | sonnet | fresh | 4.2 | 33 | 59 | 1.3 | 10 | 97 s |
+| U52 mock-tags | sonnet | resume | 4.4 | 35 | 67 | 2.6 | 8 | 39 s |
+| U55 small-fixes | sonnet | fresh | 5.9 | 58 | 58 | 1.1 | 5 | 48 s (10) |
+| U48 walkthroughs | sonnet | resume | 6.8 | 55 | 75 | 1.3 | 8 | 39 s (1) |
+| U49 runner | default | fresh | 7.9 | 20 | 70 | 3.5 | 20 | 101 s (59) |
+| U56 frame-drain | sonnet | fresh | 8.0 | 61 | 63 | 2.1 | 8 | 89 s |
+| U24 trace-engine | default | resume, gate-blocked | 8.7 | 28 | 51 | 5.7 | 11 | 5 calls, 2 refused (4) |
+| U35 trace-workload | default | resume | 10.2 | 35 | 71 | 2.1 | 17 | 3 calls, 2 refused (2), 65 s (24) |
+| U54 hardening | default | fresh | 15.8 | 63 | 86 | 5.0 | 14 | 39 s |
+| U40a forecast-load | sonnet | resume | 15.8 | 82 | 80 | 2.7 | 7 | 3 calls, 2 refused (2), 70 s (68) |
+| **mean / median** | | | **7.6 / 6.8** | 42 | 66 | **2.5 / 2.1** | **10.8** | |
+| U40b forecast-latency | sonnet | resume | 19+ in flight | 80 | 91 | 4.9 | 14 | 2 refused (2) |
+| U59a, U25a, U26, U31a | default | fresh, spawned 20:48–20:50 | 2–4 | 5–10 | 37–47 | none yet | 12–22 | |
+
+**Delta against 17:35.** Throughput 20 → 32 merges per hour with the same pipeline depth. Per-unit
+spawn→merge 5.1 → 7.6 min, first edit 2.0 → 2.5 min, reads before it 10 → 10.8; the wall figure is
+worse for one reason, below, and without the three units it hit the mean is 6.0. The gate itself is
+unchanged: lock held → tests pass 19–22 s, → fingerprints match 30–34 s, on every run. Lock waits
+reached 59 and 68 s at 20:40–20:41 when U49, U55, U40a and the graph-7 update queued together; the
+integrate.sh call as the agent sees it is 37–101 s, the rest being fetch, rebase, push and worktree
+removal outside the lock.
+
+**Resume cost is set by whether the Resume paragraph names the command.** U22 ("add this `Demo`
+entry at ~line 545") merged in 3.3 min from spawn, U28 in 3.7. U24's paragraph said "refresh the 20
+html_md5 values (the fingerprint script's update path)" without the command: the agent read
+`golden-fingerprints.txt` three times, `tools/build.sh` twice and `integrate.sh` three times looking
+for it, reached its first edit at 5.7 min at 39% model share, and was then refused twice at stage 4
+because U22 landed first and moved the same 20 rows again, exactly as the paragraph had predicted.
+`./check-fingerprints.sh --update` is now in the template (v4).
+
+**The repeated failure this wave: `bench/golden-fingerprints.txt` and `check-fingerprints.sh` do not
+rebase.** U40a, U40b and U35 each append a `run` line to the script and rows to the golden file; all
+three were refused at stage 2 ("does not rebase cleanly"), six refusals in all, each resolved by hand
+(`git checkout --ours -- bench/golden-fingerprints.txt` 32 s, `git rebase --continue` 37–53 s, U40a a
+further "renumber golden row" commit because demo directories are numbered). Time from first refusal
+to merge: U40a 10.2 min of its 15.8, U35 4.8 of 10.2, U40b 9+ and still in flight at 20:52. At least
+24 agent-minutes, and 10.7 of them were idle: the template's "do not retry more than once" made each
+agent stop and report, and the tech lead's "one more rebase and integrate, authorised" round trip
+took 1.7, 3.4 and 5.6 min. Two fixes, one per owner:
+
+- Template v4 (this section): a stage-2 refusal whose conflicts are only in those two append-only
+  files is the agent's to resolve, keep both sides, `--update`, rerun once, no authorization.
+- Tech lead: make the two files merge without conflict. `.gitattributes` with
+  `bench/golden-fingerprints.txt merge=union` is one line and safe because stage 4 verifies every
+  row; the `run` list wants to be a data file with the same attribute rather than lines in a shell
+  script. Numbered demo directories force the "renumber" commit; a name-keyed row does not.
+
+**Structural, behind it:** every report embeds `Scenario::to_text`, so any new scenario key moves all
+20 `html_md5` rows. Three units this wave added keys (U22 six, U24 one, U35 two); each refreshed the
+20 rows and whichever landed second refreshed them again. Hashing the report with the scenario block
+excluded, or dropping `html_md5` (fingerprint, events and summary_md5 already guard the numbers),
+removes a serialisation between every pair of key-adding units. Tech lead's decision.
+
+Smaller. U54 hardening ran its own `ingress_http` test 11 times (95 s) with two compile errors and
+two failing tests of its own, then took a second task by message (a WIRE.md paragraph) before
+integrating: 15.8 min for what the sizing paragraph says is two units. Graph updates go through the
+full gate for a docs-only diff: 3 × 57–92 s of tech-lead turn time and ~35 s of lock hold each that
+others queued behind; integrate.sh could skip stages 3–4 when the diff touches only `*.md`.
+Housekeeping's 20 merges went by `merge --no-ff` outside the lock and cost nobody anything. The four
+20:48–20:50 spawns read `sim-leaf/src/lib.rs` in 9–36 `sed -n` ranges over 7–10 commands before any
+edit; their first-edit figure is next section's.
+
+Ranked, at 32 merged units per hour:
+
+| # | Change | Saves | Owner | Status |
+|---|---|---|---|---|
+| 1 | Append-only files merge by union; `run` list as data | ~8 min on each unit that adds a scenario, 3 of 13 this wave | tech lead | proposed 20:54 |
+| 2 | Stage-2 conflict in those files: resolve, `--update`, rerun, no round trip | 1.7–5.6 min idle per occurrence | template | **v4** |
+| 3 | `html_md5` without the scenario text, or dropped | 3–5 min on each key-adding unit, and no second refresh | tech lead | proposed |
+| 4 | Name the fingerprint update command in the template and in Resume paragraphs | ~4 min (U24) | template | **v4** |
+| 5 | integrate.sh skips tests and fingerprints for a `*.md`-only diff | ~1 min of tech-lead time per graph update, ~35 s lock hold | tech lead | proposed |
+
+Next section at about 21:10: the 20:46–20:50 spawns, U40b's landing, and whether the union merge
+landed.
