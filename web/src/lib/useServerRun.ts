@@ -164,7 +164,10 @@ export class ServerRunEngine implements FrameSource {
   }
 
   get speed(): number {
-    return this.status?.realtimeFactor ?? 0;
+    // Before the first status, and for a run an older client started unpaced, the pressed speed
+    // button is the speed this client starts runs at; a factor of 0 would press nothing.
+    const f = this.status?.realtimeFactor ?? 0;
+    return f > 0 ? f : this.lastFactor;
   }
 
   get subscriptionId(): string | null {
@@ -245,14 +248,18 @@ export class ServerRunEngine implements FrameSource {
     let id: string;
     try {
       // The whole config goes as scenario text, per WIRE.md; overrides are for edits on top of a
-      // served file, and this client has no served file to edit. Unset speed means as fast as
-      // possible; a pause is a SetSpeed rather than a cap of zero, so the speed survives unpausing.
+      // served file, and this client has no served file to edit. A pause is a SetSpeed rather
+      // than a cap of zero, so the speed survives unpausing.
       id = await client.startRun({
         scenario: scenarioEnvelope(wire.fields),
-        // A run that starts paused is paced at the last speed, so it cannot race to completion in
-        // the gap before the pause lands; on Cloud Run an unpaced 300 s scenario finished before
-        // the SetSpeed arrived and the pause answered 409. A run that starts playing is unpaced.
-        maxRealtimeFactor: play ? 0 : this.lastFactor,
+        // Every run starts paced at the speed control's value, whether it starts playing or
+        // paused. Playing: an unpaced 120 s scenario finishes on the server in about a second, so
+        // the viewer opens on "stream complete" with the cursor parked at the end, live but not
+        // looking it; paced, the cursor follows the live edge at wall-clock pace and the speed
+        // buttons mean what they say from the first second. Paused: the run cannot race to
+        // completion in the gap before the pause lands; on Cloud Run an unpaced 300 s scenario
+        // finished before the SetSpeed arrived and the pause answered 409.
+        maxRealtimeFactor: this.lastFactor,
         recordTraces: this.opts.recordTraces ?? true,
       });
     } catch (e) {
@@ -559,6 +566,16 @@ export type ServerRunHandle = Omit<RunHandle, 'engine' | 'update' | 'source'> & 
  */
 export type HandleShapesAgree = ServerRunHandle extends RunHandle ? true : false;
 export const HANDLE_SHAPES_AGREE: HandleShapesAgree = true;
+
+/**
+ * The banner's word for the run's pace. A factor of 0 is a run an older client started unpaced;
+ * this client never starts one, so "speed 0×" is never the right thing to print.
+ */
+export function speedLabel(status: RunStatus | null, paused: boolean): string {
+  if (paused) return 'paused';
+  if (status === null) return '…';
+  return status.realtimeFactor > 0 ? `${status.realtimeFactor}×` : 'unpaced';
+}
 
 export interface ServerRunOptions {
   autoplay?: boolean;

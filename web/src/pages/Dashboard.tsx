@@ -1,7 +1,7 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import type { ScenarioConfig } from '../lib/config';
 import { useDataSource, useReplayRun, useRun, type ReplayRunHandle, type RunHandle } from '../lib/useRun';
-import { useServerRun, type ServerRunHandle } from '../lib/useServerRun';
+import { speedLabel, useServerRun, type ServerRunHandle } from '../lib/useServerRun';
 import { windowFrames } from '../lib/derive';
 import { dataSourceGloss, setActiveMode } from '../lib/mode';
 import { groupRuns, loadRun, runDurationS, type LoadedRun, type RunIndexEntry } from '../lib/replay';
@@ -83,7 +83,7 @@ function ServerBanner({ run }: { run: ServerRunHandle }) {
         <span>
           run <code>{run.runId ?? '…'}</code> &middot; stream {run.connection}
           {run.subscriptionId ? <> ({run.subscriptionId})</> : null} &middot; {run.engine.frames.length} samples at{' '}
-          {run.config.samplesPerSimSecond}/sim s &middot; speed {run.status?.realtimeFactor ?? '…'}&times;
+          {run.config.samplesPerSimSecond}/sim s &middot; speed {speedLabel(run.status, run.paused)}
           {run.dropped.length ? <> &middot; inert controls: {run.dropped.join(', ')}</> : null}
           {run.unserved.length ? <> &middot; not served by this server, panels stay mock: {run.unserved.join(', ')}</> : null}
         </span>
