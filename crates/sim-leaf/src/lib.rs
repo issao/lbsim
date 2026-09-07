@@ -14,7 +14,7 @@ use sim_core::queue::{EventQueue, PRIO_OBSERVE};
 use sim_core::rng::{Rng, Streams};
 use sim_model::trace::{ResourceSnapshot, StepEvent};
 use sim_model::Replica;
-use sim_scenario::Scenario;
+use sim_scenario::{OverrideKind, Scenario};
 use sim_workload::{Request, Workload};
 use sim_core::{Nanos, EPOCH_BASE, MILLI};
 use std::cell::RefCell;
@@ -370,6 +370,14 @@ impl Window {
     }
 }
 
+/// What `Sim::apply_overrides` did: the keys whose value changed, and the instant from which the
+/// change holds.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Applied {
+    pub changed: Vec<String>,
+    pub at: Nanos,
+}
+
 /// A run that can stop and continue.
 ///
 /// Everything `run` used to keep on its stack lives here, so the loop can be driven a window at a
@@ -588,6 +596,47 @@ impl Sim {
     /// viewer, never for a policy.
     pub fn latest_views(&self) -> Vec<ReplicaView> {
         self.replicas.iter().map(|r| view_of(r, self.now)).collect()
+    }
+
+    /// Change workload or policy settings in a run that is under way, forward only.
+    ///
+    /// The whole batch is checked before anything moves: an unknown key, a value that does not parse,
+    /// or a structural key (`replicas`, `seed`, `duration_s`, the physics, the telemetry cadence)
+    /// refuses the batch and leaves the run exactly as it was, so a caller never has to undo half an
+    /// update. A workload key takes effect at the next arrival, because the workload reads the
+    /// scenario on every draw. A policy key rebuilds the router and the admission policy through the
+    /// registries, and **a rebuilt policy starts with empty state**: a round-robin cursor returns to
+    /// zero, a probe cache is cold, a fair-share ledger is blank. The random streams are untouched,
+    /// so a run with no overrides is byte-identical to `run`; the golden fingerprints prove it.
+    ///
+    /// `Applied::changed` lists the keys whose value actually changed; a key set to the value it
+    /// already had is accepted and rebuilds nothing.
+    pub fn apply_overrides(&mut self, overrides: &[(&str, &str)]) -> Result<Applied, String> {
+        let mut sc = self.sc.clone();
+        let mut changed = Vec::new();
+        let mut rebuild_policies = false;
+        for &(key, value) in overrides {
+            // The round trip first, so an unknown key is reported as unknown rather than as structural.
+            let next = sc.with_override(key, value)?;
+            let kind = match Scenario::override_kind(key) {
+                OverrideKind::Structural => return Err(format!("`{key}` requires a restart")),
+                kind => kind,
+            };
+            if next.to_text() != sc.to_text() {
+                changed.push(key.to_string());
+                rebuild_policies |= kind == OverrideKind::Policy;
+            }
+            sc = next;
+        }
+        validate(&sc)?;
+        if rebuild_policies {
+            let router = sim_policy::make_routing(&sc)?;
+            let admission = sim_policy::make_admission(&sc)?;
+            self.router = router;
+            self.admission = admission;
+        }
+        self.sc = sc;
+        Ok(Applied { changed, at: self.now })
     }
 
     /// Dispatch every event at or before `t`, in the order the run always dispatched them, and stop.
