@@ -3,6 +3,7 @@ import type { RunHandle } from '../lib/useRun';
 import { SPEEDS, STEP_S } from '../lib/useRun';
 import { SNAPSHOT_S } from '../lib/engine';
 import { fmtTime } from '../lib/format';
+import { updateBannerText } from '../lib/updateBanner';
 import { MockTag } from './ui';
 
 /**
@@ -172,17 +173,14 @@ export function UpdateBanner({ run }: { run: RunHandle }) {
     );
   }
   if (u) {
+    // U57 (found by U28): a rejected update carries `accepted: false` and a `rejectedReason`, and
+    // used to fall through to the `requiredResimulation` wording, which reads as success. `kind`
+    // is checked first so a rejection can never render as either success case.
+    const t = updateBannerText(u);
     return (
-      <div className={`banner${u.requiredResimulation ? ' resim' : ''}`}>
-        <span className="tagline">
-          {u.requiredResimulation ? 'required_resimulation = true' : 'required_resimulation = false'}
-        </span>
-        <span>
-          {u.changed.join(', ')} changed.{' '}
-          {u.requiredResimulation
-            ? `Physics changed, so the run rewound to the ${u.rewoundToS.toFixed(0)} s snapshot and re-simulated from there. History after that point is new.`
-            : 'View only: nothing was re-simulated, the panels re-derived from the recording.'}
-        </span>
+      <div className={`banner${t.kind === 'rejected' ? ' rejected' : t.kind === 'resim' ? ' resim' : ''}`}>
+        <span className="tagline">{t.headline}</span>
+        <span>{t.detail}</span>
         <button className="btn" onClick={run.dismissUpdate}>
           dismiss
         </button>
