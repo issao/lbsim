@@ -12,10 +12,15 @@ dist/
 .vite/
 *.tsbuildinfo
 
-# Simulation outputs
+# Simulation outputs. The csv rules name what sim-report writes under a --telemetry dir (manifest and
+# the per-run summary, requests and series dumps), not every csv, so scenario fixtures such as
+# scenarios/traces/*.csv are tracked without a force-add.
 out/
 results/
-*.csv
+manifest.csv
+*.summary.csv
+*.requests.csv
+*.series.csv
 *.parquet
 
 # draw.io backups
