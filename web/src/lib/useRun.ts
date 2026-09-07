@@ -18,7 +18,8 @@ import type { ScenarioConfig } from './config';
 import { cloneConfig, diffConfig, FIELD_LABEL } from './config';
 import type { RewindResponse, UpdateResponse } from './types';
 import { clamp } from './rng';
-import { type DataMode, MOCK_BANNER, REPLAY_BANNER, replayOverride } from './mode';
+import { type DataMode, type ServerMode, MOCK_BANNER, REPLAY_BANNER, dataModeFrom, probeServer, replayOverride, serverMode } from './mode';
+import { IngressClient } from './api';
 import {
   type LoadedRun,
   REPLAY_DISABLED_REASON,
@@ -79,7 +80,8 @@ export interface RunHandle {
   step: () => void;
   rewindTo: (s: number) => void;
   scrubTo: (s: number) => void;
-  update: (next: ScenarioConfig) => UpdateResponse;
+  /** Null when the answer is decided by a round trip and lands on `lastUpdate` instead. */
+  update: (next: ScenarioConfig) => UpdateResponse | null;
   restart: (next: ScenarioConfig) => void;
   dismissUpdate: () => void;
   /** Optional only so the server handle, which is shaped by `Omit`, keeps compiling unchanged. */
@@ -369,39 +371,52 @@ export function useReplayRun(loaded: LoadedRun, autoplay = true): ReplayRunHandl
 // Which source a dashboard should use
 // ---------------------------------------------------------------------------
 
-export type ReplayCatalogue =
-  | { state: 'probing'; runs: [] }
-  | { state: 'mock'; runs: [] }
-  | { state: 'replay'; runs: RunIndexEntry[] };
+export type DataSource =
+  | { state: 'probing' }
+  | { state: 'mock' }
+  | { state: 'replay'; runs: RunIndexEntry[] }
+  | { state: 'server'; server: ServerMode };
 
 // One probe per page load: the answer does not change while the page lives, and re-probing on
-// every dashboard mount would add a round trip to each navigation.
-let probe: Promise<RunIndexEntry[] | null> | null = null;
+// every dashboard mount would add two round trips to each navigation.
+let probe: Promise<DataSource> | null = null;
 
-function probeOnce(): Promise<RunIndexEntry[] | null> {
-  if (probe === null) {
-    const override = typeof window === 'undefined' ? null : replayOverride(window.location.search, window.location.hash);
-    probe = override === false ? Promise.resolve(null) : probeRunIndex();
-  }
+async function probeAll(): Promise<DataSource> {
+  const override = typeof window === 'undefined' ? null : replayOverride(window.location.search, window.location.hash);
+  const server = serverMode();
+  // Both at once: the server probe has a 1.5 s budget, and a page that waited it out before asking
+  // for the index would feel broken when there is no server, which is the common case.
+  const [reachable, runs] = await Promise.all([
+    probeServer(new IngressClient({ baseUrl: server.baseUrl }), server),
+    override === false ? Promise.resolve(null) : probeRunIndex(),
+  ]);
+  const m = dataModeFrom(server, runs !== null, override, reachable);
+  if (m === 'server') return { state: 'server', server };
+  if (m === 'replay' && runs !== null) return { state: 'replay', runs };
+  return { state: 'mock' };
+}
+
+function probeOnce(): Promise<DataSource> {
+  if (probe === null) probe = probeAll();
   return probe;
 }
 
 /**
- * Replay when `runs/index.json` is served and non-empty, mock otherwise. `enabled = false` skips
- * the probe and answers mock at once, for a surface that is mock by design (the walkthroughs).
+ * Server when `ListRuns` answers, replay when `runs/index.json` is served and non-empty, mock
+ * otherwise. `enabled = false` skips the probes and answers mock at once, for a surface that is
+ * mock by design (the walkthroughs).
  */
-export function useReplayCatalogue(enabled = true): ReplayCatalogue {
-  const [cat, setCat] = useState<ReplayCatalogue>(enabled ? { state: 'probing', runs: [] } : { state: 'mock', runs: [] });
+export function useDataSource(enabled = true): DataSource {
+  const [src, setSrc] = useState<DataSource>(enabled ? { state: 'probing' } : { state: 'mock' });
   useEffect(() => {
     if (!enabled) return;
     let alive = true;
-    void probeOnce().then((runs) => {
-      if (!alive) return;
-      setCat(runs === null ? { state: 'mock', runs: [] } : { state: 'replay', runs });
+    void probeOnce().then((s) => {
+      if (alive) setSrc(s);
     });
     return () => {
       alive = false;
     };
   }, [enabled]);
-  return cat;
+  return src;
 }

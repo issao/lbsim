@@ -11,6 +11,8 @@
 // makes the choice stick for one browser without editing every link. `VITE_LBSIM_SERVER` at build
 // time is how a deployed container is pointed at its Ingress. See web/README.md, "Server mode".
 
+import type { IngressClient } from './api';
+
 export interface ServerMode {
   enabled: boolean;
   /** Base URL with no trailing slash. Empty means same origin, which is what a relative fetch wants. */
@@ -119,14 +121,43 @@ function queryParam(name: string, search: string, hash: string): string | null {
   return new URLSearchParams(hash.slice(q + 1)).get(name);
 }
 
+/** How long `ListRuns` gets to answer before the dashboard falls back to replay or mock. */
+export const SERVER_PROBE_MS = 1500;
+
 /**
- * Pure precedence: a configured server wins; then replay when the index is reachable and not
- * overridden off; then mock. Reachability is the caller's to establish, because it is a fetch.
+ * Pure precedence: a server that answers wins unless `?replay=` says otherwise; then replay when
+ * the index is reachable and not overridden off; then mock. Reachability is the caller's to
+ * establish, because it is a fetch. `serverReachable` is the probe's answer; a caller with no probe
+ * falls back to the flag alone, which is what the configured-server case meant before the probe
+ * existed.
  */
-export function dataModeFrom(server: ServerMode, indexReachable: boolean, override: boolean | null): DataMode {
-  if (server.enabled) return 'server';
+export function dataModeFrom(server: ServerMode, indexReachable: boolean, override: boolean | null, serverReachable?: boolean): DataMode {
+  if ((serverReachable ?? server.enabled) && override === null) return 'server';
   if (indexReachable && override !== false) return 'replay';
   return 'mock';
+}
+
+/**
+ * Does an Ingress server answer `ListRuns` at this base within the budget? False on any refusal,
+ * any timeout, and any body that is not a `ListRunsResponse`: a dev server answers every POST with
+ * its HTML shell and HTTP 200, and that is mock mode, not a server. Never probed when the mode was
+ * turned off by hand, so `?server=0` still means what it says.
+ */
+export async function probeServer(client: IngressClient, m: ServerMode, timeoutMs = SERVER_PROBE_MS): Promise<boolean> {
+  if (!m.enabled && m.source !== 'default') return false;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const budget = new Promise<false>((r) => {
+    timer = setTimeout(() => r(false), timeoutMs);
+  });
+  const ctl = new AbortController();
+  try {
+    return await Promise.race([client.listRuns({ limit: 1 }, ctl.signal).then(() => true), budget]);
+  } catch {
+    return false;
+  } finally {
+    if (timer !== null) clearTimeout(timer);
+    ctl.abort();
+  }
 }
 
 export function dataModeBanner(mode: DataMode, server: ServerMode = serverMode(), runId?: string): string {
