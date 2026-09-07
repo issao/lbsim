@@ -22,9 +22,12 @@ that redeploys it, why each flag is there, what is deliberately missing, and how
 | Deploy identity | `lbsim-deployer@lbsim-gcp.iam.gserviceaccount.com` |
 | Runtime identity | `1027087334969-compute@developer.gserviceaccount.com` (the project default) |
 
-It serves the stand-in dashboard at `/`, the six generated reports at `/reports/1-routing.html`
-through `/reports/6-retry.html`, and `docs/findings.md` at `/docs/findings.md`. Public deliberately:
-mock data and published findings, nothing sensitive. Cloud Run hands out two hostnames for the same
+It serves the dashboard at `/`, the ten generated reports at `/reports/1-routing.html` through
+`/reports/10-probes.html` (the same commands as `run-demos.sh`, run at image build time), the
+recorded demo runs the dashboard replays at `/runs/index.json` and `/runs/<group>/<run>/…` (see
+web/README.md, "Replay mode"; 30 runs, about 15 MB, also generated at build time by
+`sim-run export --demos`), and `docs/findings.md` at `/docs/findings.md`. Public deliberately: mock
+data, simulated runs and published findings, nothing sensitive. Cloud Run hands out two hostnames for the same
 service and both work; the second is the newer deterministic form.
 
 ## 2. The one command
@@ -149,7 +152,7 @@ gcloud run deploy lbsim \
 | `--min-instances 0` | The entire cost story. No instance exists when nobody is looking, and nothing is billed. |
 | `--max-instances 10` | Replica budget, **on the revision**. |
 | `--min 0` / `--max 10` | The same two caps **on the service**. See the trap below; these are not duplicates. |
-| `--cpu 1 --memory 512Mi` | A static file server. The six reports are 4–7 MB of HTML each and are read off disk, not held in memory. |
+| `--cpu 1 --memory 512Mi` | A static file server. The ten reports are 2–7 MB of HTML each and the recorded runs 15 MB of JSON; all read off disk per request, not held in memory. |
 | `--cpu-throttling` | CPU only while a request is in flight. Correct and cheaper for a file server. |
 | `--no-cpu-boost` | Extra startup CPU, **billed**, and on by default on new services. The container is a static binary that binds its port in milliseconds; there is nothing to accelerate. |
 | `--concurrency 80` | Requests per instance. High, because serving a file is cheap, and it keeps the instance count at one under any load this will see. |
