@@ -177,59 +177,125 @@ and a `sim-leaf` binary, per Issao's separate-process decision. Four commits, ea
 Load `runs/index.json` and `runs/<id>/{status.json,fleet.jsonl,result.json}` from the served directory
 when no Ingress answers; map SubscriptionUpdate rows to the panels' `Frame`; play/pause/speed/step/scrub
 local; rewind and update disabled with a visible reason. Files: `web/src/lib/replay.ts`, `adapter.ts`,
-`useRun.ts` replay branch, `mode.ts`. Upstream U09, U13 (both done). Stand-in that broke the wait on
-U09 earlier: WIRE.md prose with local types; no longer needed since U09 merged first. Downstream U28.
-Agent on `claude/tl-replay`. ETA ~17:45. Done: `npm run build`; the six demo runs play in the
-dashboard from static files with the load, throughput, latency, imbalance and KV panels real and every
-other panel still marked mock; deployed by the main agent.
+`useRun.ts` replay branch, `mode.ts`, minimal edits to Dashboard/Showcase/Compare/StatusBar to pick a
+run and show the mode. Upstream U09, U13 (done). Downstream U28, U23. Agent on `claude/tl-replay`,
+worktree `/home/agents/repo/lbsim-wt-replay`. Done: `npm run build` green; the six demo runs play in
+the dashboard from static files with the load, throughput, latency, imbalance and KV panels real and
+every other panel still marked mock; never commit exported runs (place an export under
+`web/public/runs/` for local dev); deployed by the main agent.
 
-**Resume (checkpoint):** branch at origin/master 8cc21f2, `npm ci` done, an export built at
-`/tmp/lbsim-export` (rebuild with `tools/build.sh run --release --quiet --bin sim-run -- export --demos
---dir /tmp/lbsim-export`); no source written yet. Design settled: `adapter.ts` builds `hist.ts`
+**Resume (checkpoint):** WIP pushed at 33af5f1 on origin/claude/tl-replay: `npm run build` green, tsc
+clean, `replay.selftest.ts` 15/15, `api.selftest.ts` 33/33. Design: `adapter.ts` builds `hist.ts`
 Histograms from the wire percentiles via a piecewise-linear CDF and keeps the exact wire p-values on the
 frame, empty windows stay count 0 / NaN; a `ReplayEngine` implements the panels' FrameSource subset so
 `RunHandle` stays drop-in; physics updates and restart refused with a reason, view-only SLO and
-sample-rate changes still applied. Next: write `adapter.ts`, `replay.ts`, `replay.selftest.ts` (pure, run
-with `node --experimental-strip-types`), commit, then the `useRun.ts` branch and the Dashboard run picker.
-Brief essentials: files owned are `web/src/lib/{replay,adapter}.ts`, the replay branch of `useRun.ts`,
-`mode.ts` (replay when no server is configured and `runs/index.json` is reachable; mock stays the
-fallback), minimal edits to Dashboard/Showcase/Compare/StatusBar to pick a run and show the mode; never
-commit exported runs; document placing an export under `web/public/runs/` for local dev; `npm run build`
-and the self-test are the gate.
+sample-rate changes still applied. Not yet: the README "Replay mode" section (written locally,
+uncommitted), a browser render check against an export under `web/public/runs` (dev server serves it),
+per-replica rows and the heatmap (that is U23). Next: finish the render check, commit the README and any
+fix it surfaces, push, report branch, hash and open choices.
 
 ### U18 live ingress server
 `POST /v1/ingress/*` and the SSE `OpenSubscription` per WIRE.md, on the existing HTTP server, driving
 `Sim` on a run thread paced by realtime_factor, leases from U05, idle guard wired to checkpoint-and-stop,
-GetTraces returning U19's encoding when present. Files: `crates/sim-ingress/src/{server.rs,run.rs,
-routes.rs}`, `lib.rs` serve entry. Upstream U05, U13, U15 (all done). Stand-in that was prepared: run
-to completion and serve `export::fleet_rows` until `Sim` landed; not needed, U15 merged first.
-Downstream U28. Agent on `claude/tl-ingress-server`. ETA ~19:30. Done: a curl script in the crate's tests
-starts a run, subscribes, renews, closes, sees idle shutdown fire; `/health` untouched by run state.
+GetTraces returning U19's encoding when present. Files: `crates/sim-ingress/src/{server.rs,run.rs}`,
+`lib.rs` route hook (keep `serve(dir, port)` and `is_health_path`), `tests/ingress_http.rs`. Upstream
+U05, U13, U15 (done). Downstream U28. Agent on `claude/tl-ingress-server`, worktree
+`/home/agents/repo/lbsim-wt-server`. ETA ~19:30 before the checkpoint. Done: the HTTP test starts a
+run, subscribes, renews, closes, sees idle shutdown fire; `/health` untouched by run state.
+
+**Resume (checkpoint):** branch at origin/master 8cc21f2, nothing written; the design read-through is
+done and these decisions are fixed: the run thread owns `Sim` (created in-thread, StartRun waits on a
+channel for `Sim::new`'s verdict); `Mutex<RunState>` plus `Condvar` per run; subscriptions keyed `s-<n>`
+with the client's `subscription_id` query parameter honoured on reconnect (api.ts already sends it); a
+paced running run with no lease counts as idle, an unpaced running run counts busy; the frames' sparse
+histograms give `from_merged_histogram: true`. Next: `run.rs` (registry, drive loop, frame → MetricRow),
+then `server.rs` (JSON parser, `/v1/ingress` routing, SSE), then the `lib.rs` hook and
+`tests/ingress_http.rs`; first commit "lifecycle" as soon as StartRun/GetRun/GetResult pass over TCP.
+Brief essentials, three commits: (1) lifecycle: StartRun (scenario text + overrides via the export's
+`override_key` round-trip), GetRun, ListRuns, StopRun, SetSpeed, StepForward capped at 60 simulated
+seconds, GetResult via `wire::run_result`; (2) subscriptions: SSE `event: open` then `event: update` per
+sample at the client's rate from `Sim::frames()`, `id:` sequence, Last-Event-ID replay from a 256-row
+ring or 410, leases from `lease.rs`, renew/close; (3) idle: `IdleGuard` polled on the run thread, on
+Shutdown write frames-so-far under `runs/<run_id>/`, STATE_PAUSED, `resume()` on a new subscription;
+`/health` never touches run state (assert the frame count unchanged across 20 calls). Determinism test:
+two starts of the same scenario give the same fingerprint.
 
 ### U19 trace wire and export
 metrics.proto RequestTrace/TraceSpan as JSON per WIRE.md rules, `GetTraces` filters, traces in the export
 under `runs/<id>/traces.jsonl` within the telemetry budget. Files: `crates/sim-metrics/src/trace.rs`
 (the struct, a stand-in with fixtures until U24 fills it), `crates/sim-ingress/src/trace_wire.rs`,
-`export.rs` additions. Upstream U13 (done); edge from U24 broken by the struct stand-in. Downstream U18,
-U24, the dashboard trace panel. Agent on `claude/tl-trace-wire`. Done: field-name test against
+`export.rs` additions, `tests/trace_wire.rs`. Upstream U13 (done); the edge from U24 is broken by the
+struct stand-in. Downstream U18 (GetTraces route), U24, the dashboard trace panel. Agent on
+`claude/tl-trace-wire`, worktree `/home/agents/repo/lbsim-wt-trace-wire`. Done: field-name test against
 metrics.proto; export writes traces for a fixture run.
 
+**Resume (checkpoint):** `crates/sim-metrics/src/trace.rs` is written and pushed at f94f284 (RequestTrace,
+TraceSpan, SpanKind, ResourceState, TraceBucket, TraceSampler with windowed quotas,
+`fixtures::sample_traces`, one unit test). Not yet: `crates/sim-ingress/src/trace_wire.rs` (encoder
+emitting only proto TraceSpan and RequestTrace field names; `operation` from SpanKind, `concurrent_seqs`
+= running, `kv_utilization` derived), `get_traces` filters and `parse_get_traces_request`,
+`export.rs::export_traces` stratified like `sim-report`'s requests_csv within the telemetry budget plus
+`export_run_with_traces`, `tests/trace_wire.rs` with the seven named tests
+(trace_field_names_exist_in_metrics_proto, uint64_and_enum_encoding_follows_wire_rules,
+get_traces_filters_by_outcome_min_e2e_tenant_and_limit, sampler_keeps_every_tail_bucket_at_low_rates,
+sampler_is_deterministic_for_a_seed, export_traces_stays_within_budget_and_keeps_all_failures,
+fixture_trace_round_trips_through_the_encoder), and the fingerprint run.
+
 ### U20 arena objective and catalog append
+Per Issao, on the arena objective (TASKS.md entry 6, docs/arena.md 5b): *"You can remove this, I agreed
+with this."* The score becomes the minimum over in-scope loads of goodput as a share of offered output
+tokens, gated by the SLA cap as before; absolute goodput stays beside it as the diagnostic; a rule-set
+version `RULE_SET` ("v2: cap 0.95 default, min over in-scope loads of gated goodput share") is recorded
+in every `RunScore` and printed by `round_text`; `DEFAULT_SLA_CAP` becomes 0.95. Plus
+`sim_arena::catalog::{CatalogRow, append, render_row, HEADER}` writing one row per authored policy to
+`docs/policy-catalog.md` (header, verbatim: `| Name | Family | Idea | Status | Source | Score | Rule set
+| Added |`; append into the matching `## <Family>` table, create the section if absent, idempotent,
+escape pipes; the date comes from the caller), with a test that every table header in the committed
+catalog equals `HEADER`. Also gates the two slow arena unit tests behind `#[ignore]` with a smoke round
+in their place. Files: `crates/sim-arena/src/{lib.rs,catalog.rs}`, `tests/arena_rules.rs`,
+`tests/arena_catalog.rs`. Upstream U16 (done). Downstream U34, U43. Agent on `claude/tl-arena-rules`,
+worktree `/home/agents/repo/lbsim-wt-arena`. Done: `sim-run arena` ranks by share with the rule set
+printed; the catalog tests pass against the committed file; `tools/build.sh test -p sim-arena` no
+longer takes 80 s.
+
+**Resume (checkpoint):** WIP commit 9d05e6d on origin/claude/tl-arena-rules builds: `catalog.rs`,
+`RULE_SET` v2, `DEFAULT_SLA_CAP` 0.95, the share objective, `run_round_on`, `#[ignore]` on the two slow
+arena tests plus `smoke_round_on_shortened_loads`, `tests/arena_rules.rs` and `tests/arena_catalog.rs`
+written. Not yet run: the new tests, the full `tools/build.sh test`, `./check-fingerprints.sh`, the after
+table of `sim-run arena --cap 0.95`. Baseline before: p2c 2652 > round_robin 2632 > random 2546 >
+least_queue_tokens 0 > least_requests 0 (absolute goodput); `tools/build.sh test -p sim-arena` was
+81.7 s warm. Next: run the tests, fix, fingerprints, capture the after ranking, turn the WIP into the
+real commit, push.
 
 ### U21 disable_decode (done, c7f8c6a)
 Per Issao at 16:22: *"we could get disable decode basically by setting HBM to infinity."* Scenario key
-`disable_decode` zeroes the bandwidth term of the step cost (infinite HBM); KV accounting unchanged.
-Scenarios `route_round_robin_no_decode.txt`, `route_p2c_no_decode.txt`, demo 7, golden rows. Also lands
-the U10–U12 scenarios in the demo scripts and the WIRE.md corrections from U13. Done: fingerprints updated
-with every moved number explained; finding to housekeeping if the hotspot ordering changes without decode.
+`disable_decode` zeroes the bandwidth term of the step cost in `CostModel::step_ns` and `rated_rps`; KV
+accounting is unchanged so capacity still binds in tokens. Scenarios `route_round_robin_no_decode.txt`
+and `route_p2c_no_decode.txt`, demo 7; demos 8–10 carry the U10–U12 scenarios; WIRE.md gained the export
+section; 28 golden rows added, no existing number moved. Result: the ordering holds without decode, p2c
+97.0% attainment against round robin 93.7%, ttft99 3.8 s against 7.2 s at identical throughput
+18,986 tok/s. Finding 7 for docs/findings.md is owed to housekeeping (not sent at the checkpoint).
 
 ### U22 preemption and KV eviction (scope 7/8, the head of the dynamics fan-out)
-`PreemptionPolicy` per scenario.proto: never, recompute, swap-to-DRAM, swap-else-recompute, with the
-victim choices; sessions so KV fills at low qps; the death-spiral scenario and its survivor in
-`run-demos.sh`. Files: `crates/sim-model/**`, `crates/sim-physics/src/lib.rs` (CostModel only),
-`sim-scenario` keys, scenarios, tests. Upstream U14, U15, U21. Edge from U15 could not be broken:
-`Replica::step` is one function and both units rewrite it. Downstream U24–U27, U30. Agent on
-`claude/tl-preemption`. Done: the contrast pair in the report, finding 7 to housekeeping, golden updated.
+**Not spawned at the checkpoint; a fresh tech lead spawns it first.** `PreemptionPolicy` per
+scenario.proto: never, recompute, swap-to-DRAM, swap-else-recompute, with the victim choices; sessions so
+KV fills at low qps; the death-spiral scenario and its survivor as demo 11. Upstream U14, U15, U21 (all
+done). The edge from U15 could not be broken: `Replica::step` is one function and both units rewrite it.
+Downstream U24–U27, U30. Branch `claude/tl-preemption`, worktree `/home/agents/repo/lbsim-wt-preemption`.
+
+Brief essentials: scenario keys `preemption` (never | recompute | swap_to_dram | swap_else_recompute),
+`preemption_victim` (newest | largest_kv | lowest_slo_class | latest_deadline), `session_turns_mean`,
+`session_think_s` so parked sessions hold KV between turns at low qps; swap about 20 ms each way to
+cluster DRAM and recompute re-charges the prefill of the evicted tokens, both through `CostModel`; use
+U14's `EpochModel` where the step becomes an epoch. Scenarios `kv_spiral_never.txt` (collapses) and
+`kv_spiral_swap.txt` (survives). Tests: `preemption_never_changes_a_run_with_no_kv_pressure` (the golden
+file unchanged but for new rows), `eviction_frees_exactly_the_victim_kv`,
+`recompute_charges_prefill_again`, `swap_charges_the_transfer`,
+`the_spiral_collapses_without_preemption_and_recovers_with_it`. Files: `crates/sim-model/**`,
+`crates/sim-physics/src/lib.rs` (CostModel only; `epoch.rs` untouched), `crates/sim-scenario/src/lib.rs`
+keys plus `tests/scenario_parse.rs` KEYS, the two scenarios, `tests/preemption.rs`, `run-demos.sh`,
+`check-fingerprints.sh`, `bench/golden-fingerprints.txt`. Done: the contrast pair in the report, finding 8
+to housekeeping, golden updated with every moved number explained.
 
 ## Queued
 
@@ -292,8 +358,6 @@ Per-class targets for U25: interactive TTFT 2 s / ITL 80 ms, agent 5 s / 150 ms,
 target. Issao, in this file at 16:45: *"That looks good. ideally we would have an average throughput for
 batch averaged at a longer time window, but don't worry about it for now, record it for future work."*
 Accepted; the future work is U44.
-Issao: That looks good. ideally we would have an average throughput for batch averaged at a longer time
-window, but don't worry about it for now, record it for future work.
 
 ### U44 batch-class throughput over a longer window (future work, per Issao)
 The batch SLO class has no inter-token target; its service quality is throughput averaged over a window
