@@ -3,7 +3,11 @@
 What is live on `origin/master`, what each agent is doing now, and the assumptions being acted on.
 For things that need *you*, see `TASKS.md`.
 
-**Last updated:** 2026-09-06 18:16 PDT by Claude.
+**Last updated:** 2026-09-06 17:32 PDT by Claude.
+
+**PAUSED at 17:31 PDT at Issao's request, verbatim: *"can you ask everyone to pause until usage limit
+resets in 2h 50min"*.** Every agent checkpointed to files; resume at 20:21 PDT by a message from main;
+graph checkpoint pending. Housekeeping's watcher is stopped and is re-armed at the resume.
 
 ---
 
@@ -56,7 +60,7 @@ Scope is `docs/scope-today.md` package B plus item 7, and both side missions Iss
 | What | Where | Verified by |
 |---|---|---|
 | Simulator, six dynamics reproducing | `src/`, `scenarios/` | `./run-demos.sh`, six HTML reports in `out/` |
-| Test suite: 159 pass, 5 ignored (3 known defects, 2 slow arena reproductions run only by `tools/integrate.sh`), measured at ede7b1f on 17:55 (143 before U18); `tests/layering.rs` enforces the downward crate dependency direction | `tests/`, `crates/*/` | `tools/build.sh test --workspace` |
+| Test suite: 159 pass, 5 ignored (3 known defects, 2 slow arena reproductions run only by `tools/integrate.sh`), measured at ede7b1f before 17:26 (143 before U18); `tests/layering.rs` enforces the downward crate dependency direction | `tests/`, `crates/*/` | `tools/build.sh test --workspace` |
 | Golden fingerprints: every demo, the held-out suite and a live probe, byte-identical to the baseline | `bench/golden-fingerprints.txt` | `./check-fingerprints.sh` |
 | Frontend-to-Ingress wire: JSON over HTTP/1.1, SSE subscriptions, field names held to the proto by a test | `crates/sim-ingress/WIRE.md` | `cargo test -p sim-ingress` |
 | Policy ordering survives ±30% cost-model error | `check-sensitivity.sh` | run it; exits non-zero on a flip |
@@ -144,7 +148,7 @@ yet; the per-replica table and heatmap fill from `replicas.jsonl` once the image
 (ede7b1f, after the 17:20 deploy); every other panel still carries its `mock` tag until U28 removes
 them panel by panel. The ten demos are also HTML reports at
 <https://lbsim.ai/reports/1-routing.html> through `10-probes.html`. Verified from the public URL by the
-main agent at 17:20 and by housekeeping at 17:47; revision `lbsim-00005-dzk` from image `:6897543`.
+main agent at 17:20 and by housekeeping at 17:22; revision `lbsim-00005-dzk` from image `:6897543`.
 Housekeeping's URL check is one request per round, so the idle measurement stays meaningful.
 
 `docs/dashboard-plan.md` (16c28ac) is the breakdown of why the first dashboard with real runs is
