@@ -48,16 +48,21 @@ export interface ShowcaseIndex {
   cards: ShowcaseCard[];
 }
 
-const BASE_URL = `${import.meta.env.BASE_URL}walkthroughs/`;
+// Computed lazily, not at module scope: the self-test imports this module under plain node
+// (no Vite), where `import.meta.env` does not exist, and it only calls validate()/applyPatch().
+function baseUrl(): string {
+  const env = (import.meta as unknown as { env?: { BASE_URL?: string } }).env;
+  return `${env?.BASE_URL ?? '/'}walkthroughs/`;
+}
 
 export async function loadIndex(): Promise<ShowcaseIndex> {
-  const r = await fetch(`${BASE_URL}index.json`);
+  const r = await fetch(`${baseUrl()}index.json`);
   if (!r.ok) throw new Error(`walkthrough index: ${r.status}`);
   return (await r.json()) as ShowcaseIndex;
 }
 
 export async function loadScript(file: string): Promise<WalkthroughScript> {
-  const r = await fetch(`${BASE_URL}${file}`);
+  const r = await fetch(`${baseUrl()}${file}`);
   if (!r.ok) throw new Error(`walkthrough ${file}: ${r.status}`);
   const s = (await r.json()) as WalkthroughScript;
   validate(s);

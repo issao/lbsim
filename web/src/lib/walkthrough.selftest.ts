@@ -8,15 +8,16 @@
 // runtime loader calls.
 //
 // The allow-list below is the run ids `sim-run export --demos` actually wrote, taken from
-// `runs/index.json` at export time (see docs comment in the brief for the exact command). Demos
-// 7-10 (disable_decode, least_kv_probe, deadline_aware, fair_share) are not in the exporter's
-// DEMOS table yet, so their scripts' `run` fields are scenario file stems rather than exported
-// run ids; PENDING_RUN_IDS lists exactly those four so the strict allow-list check is skipped for
-// them and the gap stays visible instead of silently passing.
+// `runs/index.json` at export time. It covers all ten demo groups, including 7-10
+// (disable_decode, least_kv_probe, deadline_aware, fair_share), whose ids are now confirmed.
 
-import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
-import { dirname, join } from 'node:path';
+import type { WalkthroughScript } from './walkthrough';
+
+// The imports below are dynamic and, for local modules, carry the `.ts` extension the same way
+// api.selftest.ts's do: Node's type stripping resolves the real file name, while the project's
+// tsconfig does not enable `allowImportingTsExtensions` and this file does not own tsconfig. Node
+// builtins go through a variable specifier for the same reason api.selftest.ts's fs import does —
+// there is no @types/node in this project, so a literal `from 'node:fs'` fails to type-check.
 
 const moduleModule = 'node:module';
 const { register } = (await import(moduleModule)) as { register: (specifier: string, parentUrl: string) => void };
@@ -30,13 +31,24 @@ export async function resolve(specifier, context, next) {
 }`;
 register(`data:text/javascript,${encodeURIComponent(hook)}`, import.meta.url);
 
-const walkthrough = (await import('./walkthrough.ts')) as typeof import('./walkthrough');
+async function load<T>(name: string): Promise<T> {
+  return (await import(`./${name}.ts`)) as T;
+}
 
-const HERE = dirname(fileURLToPath(import.meta.url));
-const WALKTHROUGHS_DIR = join(HERE, '..', '..', 'public', 'walkthroughs');
+const walkthrough = await load<typeof import('./walkthrough')>('walkthrough');
+
+const fsModule = 'node:fs';
+const fs = (await import(fsModule)) as { readFileSync: (p: string, enc: 'utf8') => string };
+const urlModule = 'node:url';
+const nodeUrl = (await import(urlModule)) as { fileURLToPath: (u: string | URL) => string };
+const pathModule = 'node:path';
+const path = (await import(pathModule)) as { dirname: (p: string) => string; join: (...parts: string[]) => string };
+
+const HERE = path.dirname(nodeUrl.fileURLToPath(import.meta.url));
+const WALKTHROUGHS_DIR = path.join(HERE, '..', '..', 'public', 'walkthroughs');
 
 function readJson<T>(file: string): T {
-  return JSON.parse(readFileSync(join(WALKTHROUGHS_DIR, file), 'utf8')) as T;
+  return JSON.parse(fs.readFileSync(path.join(WALKTHROUGHS_DIR, file), 'utf8')) as T;
 }
 
 // ---------------------------------------------------------------------------
@@ -105,6 +117,14 @@ const EXPORTED_RUN_IDS = new Set([
   '6-retry/no-retries',
   '6-retry/retry-with-budget',
   '6-retry/retry-storm-no-budget',
+  '7-no-decode/round-robin-no-decode',
+  '7-no-decode/p2c-no-decode',
+  '8-admission/accept-all',
+  '8-admission/deadline-aware',
+  '9-fair-share/tenants-accept-all',
+  '9-fair-share/fair-share',
+  '10-probes/p2c',
+  '10-probes/least-kv-probe',
 ]);
 
 /** U48's ten selected dynamics: every one of these must have a script with a `run` field. */
@@ -120,13 +140,6 @@ const SELECTED_IDS = [
   'deadline-admission',
   'fair-share',
 ];
-
-/**
- * The four scripts whose `run` is a scenario file stem, not an exported run id, because demos
- * 7-10 are not in the exporter's DEMOS table yet. Their `run`/`compare` are exempt from the
- * EXPORTED_RUN_IDS membership check below.
- */
-const PENDING_EXPORT_IDS = new Set(['decode-off', 'least-kv-probe', 'deadline-admission', 'fair-share']);
 
 // ---------------------------------------------------------------------------
 // cases
@@ -146,11 +159,11 @@ check('index.json parses and has cards', () => {
 });
 
 const scripted = index.cards.filter((c) => c.script);
-const scripts = new Map<string, walkthrough.WalkthroughScript>();
+const scripts = new Map<string, WalkthroughScript>();
 
 for (const card of scripted) {
   check(`${card.id}: loads and validates`, () => {
-    const script = readJson<walkthrough.WalkthroughScript>(card.script as string);
+    const script = readJson<WalkthroughScript>(card.script as string);
     walkthrough.validate(script);
     scripts.set(card.id, script);
     return `${script.steps.length} steps`;
@@ -191,12 +204,9 @@ for (const id of SELECTED_IDS) {
     return script.run;
   });
 
-  check(`${id}: run (and compare, if set) is an exported run id, or the gap is marked pending`, () => {
+  check(`${id}: run (and compare, if set) is an exported run id`, () => {
     const script = scripts.get(id);
     if (!script) throw new Error('script did not load');
-    if (PENDING_EXPORT_IDS.has(id)) {
-      return `${script.run} — not yet exported (demos 7-10), marked pending`;
-    }
     if (!script.run || !EXPORTED_RUN_IDS.has(script.run)) {
       throw new Error(`run ${JSON.stringify(script.run)} is not in the exported run id allow-list`);
     }
@@ -215,12 +225,6 @@ check('no two scripts share an id', () => {
     seen.set(script.id, cardId);
   }
   return `${seen.size} distinct script ids`;
-});
-
-check('every selected id awaiting export is accounted for', () => {
-  const pending = SELECTED_IDS.filter((id) => PENDING_EXPORT_IDS.has(id));
-  eq(pending.length, PENDING_EXPORT_IDS.size, 'PENDING_EXPORT_IDS matches selected ids');
-  return `pending: ${pending.join(', ')}`;
 });
 
 // ---------------------------------------------------------------------------
