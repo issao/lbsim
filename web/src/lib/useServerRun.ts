@@ -426,15 +426,23 @@ export class ServerRunEngine implements FrameSource {
     try {
       const rs = await Promise.all(calls);
       const t0 = this.originUnixNs;
+      const accepted = rs.every((r) => r.accepted);
       const resim = rs.some((r) => r.requiredResimulation);
       const rewoundNs = rs.map((r) => r.rewoundToUnixNs).filter((n) => n > 0n).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))[0];
       this.settle({
-        accepted: rs.every((r) => r.accepted),
+        accepted,
         requiredResimulation: resim,
         rewoundToS: rewoundNs !== undefined && t0 !== null ? relSeconds(rewoundNs, t0) : this.cursorS,
         rejectedReason: rs.map((r) => r.rejectedReason).filter(Boolean).join('; '),
         changed,
       });
+      // A refusal from the server means `next` was never applied: leaving it on `config` shows a
+      // value the fleet does not hold, and a second, identical submission would diff to nothing
+      // and never be resent. Restore what the server still holds instead.
+      if (!accepted) {
+        this.config = prev;
+        this.revision++;
+      }
       if (resim && rewoundNs !== undefined) {
         // The history after the rewind point is a different future now, so drop it rather than
         // leaving a chart that mixes two runs.
@@ -445,6 +453,8 @@ export class ServerRunEngine implements FrameSource {
     } catch (e) {
       if (e instanceof IngressError && e.httpStatus === 501) {
         this.settle({ accepted: false, requiredResimulation: false, rewoundToS: this.cursorS, rejectedReason: `${SERVER_NOT_YET}: ${e.message}`, changed });
+        this.config = prev;
+        this.revision++;
       } else {
         this.error = e instanceof Error ? e.message : String(e);
       }
@@ -473,7 +483,12 @@ export class ServerRunEngine implements FrameSource {
     this.config = cloneConfig(next);
     this.revision++;
     this.changed();
+    const gen = this.generation;
     if (old) await this.opts.client.stopRun(old).catch(() => undefined);
+    // Disposed, or superseded by a later start/restart/dispose, while StopRun was in flight: the
+    // run this would start has no owner left to receive it, so starting it would leak a
+    // subscription and a status poll that nothing ever tears down.
+    if (this.disposed || gen !== this.generation) return;
     await this.start(true);
   }
 
