@@ -36,6 +36,7 @@ run 8-admission compare scenarios/admit_accept_all.txt scenarios/admit_deadline_
 run 9-fair-share compare scenarios/admit_tenants_accept_all.txt scenarios/admit_fair_share.txt
 run 10-probes compare scenarios/route_p2c.txt scenarios/route_least_kv_probe.txt
 run 11-preemption compare scenarios/kv_spiral_never.txt scenarios/kv_spiral_swap.txt
+run 12-forecast-load run scenarios/route_forecast_load.txt
 for h in scenarios/holdout/*.txt; do run "h-$(basename "$h" .txt)" run "$h"; done
 
 lines=$( {

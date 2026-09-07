@@ -6,6 +6,7 @@
 10-probes/01-least_kv_probe.summary.csv                      fingerprint=9718064755447683793    events=296830    summary_md5=0d20c2931f49
 11-preemption/00-kv_spiral_never.summary.csv                 fingerprint=5972592742089223014    events=45076     summary_md5=a67ae0f2d958
 11-preemption/01-kv_spiral_swap.summary.csv                  fingerprint=4949261867223813137    events=44596     summary_md5=6553483ddcb5
+12-forecast-load/00-forecast_load.summary.csv                fingerprint=18384209235243162569   events=290377    summary_md5=9e1c0623ce82
 2-staleness/00-telemetry_interval_ms___100.summary.csv       fingerprint=16393865130379415143   events=352465    summary_md5=da7851829984
 2-staleness/01-telemetry_interval_ms___250.summary.csv       fingerprint=16416231017560174181   events=307351    summary_md5=027912a13c69
 2-staleness/02-telemetry_interval_ms___500.summary.csv       fingerprint=11216039682751027244   events=279763    summary_md5=ad1f269d628d
@@ -51,6 +52,7 @@ h-h8-retry-storm/00-h8_retry_storm.summary.csv               fingerprint=4264169
 1-routing.html                                               html_md5=8a6347bc2f74
 10-probes.html                                               html_md5=5a37db7781fc
 11-preemption.html                                           html_md5=dcc0bdda39cd
+12-forecast-load.html                                        html_md5=2dbeb7ff5b25
 2-staleness.html                                             html_md5=dc70c1958a0d
 3-chunking.html                                              html_md5=45f83ee04591
 4-load-curve.html                                            html_md5=7b2a05f02620
