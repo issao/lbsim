@@ -1,6 +1,6 @@
 # Findings
 
-Six results from the simulator as it stands. Every number here is reproducible with
+Seven results from the simulator as it stands. Every number here is reproducible with
 `./run-demos.sh`, which writes a self-contained HTML report per experiment into `out/`.
 
 Reference fleet throughout: 32 replicas of a 70-billion-parameter model on 8x H100, cost model
@@ -160,7 +160,37 @@ different route.
 
 ---
 
-## What these six have in common
+## 7. The routing ordering does not need the decode physics
+
+The same two policies as result 1, round robin and power of two choices, with the scenario key
+`disable_decode = true`, which Issao described as *"basically by setting HBM to infinity"*: the
+bandwidth term of the step cost is zero, so a decode step costs its fixed overhead and nothing per
+resident token. KV accounting is unchanged, so capacity still binds in tokens. Rated capacity rises
+from 235 to 269 requests/s; offered load stays 70. Demo 7, `out/7-no-decode.html`.
+
+| Policy | Goodput tok/s | Throughput | First-token p99 | Inter-token p99 | Attainment | Load spread |
+|---|---|---|---|---|---|---|
+| power of two choices | **18,360** | 18,984 | **3,825 ms** | 46 ms | 97.0% | 0.34 |
+| round robin | 17,784 | 18,986 | 7,181 ms | 46 ms | 93.7% | 0.40 |
+
+**The ordering holds, and by the same margin.** With decode: p2c 97.0% attainment against round
+robin's 93.1%, first-token p99 3.9 s against 8.3 s. Without: 97.0% against 93.7%, 3.8 s against
+7.2 s. Throughput is identical to within two tokens per second, as in result 1, and inter-token
+latency is the same 46 ms for both, because with the bandwidth term gone a decode step costs the same
+whatever is resident.
+
+That is what `VISION.md` §3a predicted: the rolling hotspot is a property of heterogeneous request
+sizes meeting a router that ignores them, not of LLM physics. Round robin is even in request *count*,
+and a queue of a few long prompts behind one short one is what creates the first-token tail. Removing
+the decode cost leaves that mechanism untouched, which is why the first-token gap barely moves while
+everything downstream of it gets cheaper.
+
+The knob's value is as a control: any later dynamic that *disappears* under `disable_decode` is a
+decode-physics effect, and any that survives is a queueing effect. Results 1 and 2 are the second kind.
+
+---
+
+## What these seven have in common
 
 Every one is a case where **the obvious metric moves the wrong way, or not at all**:
 
@@ -170,6 +200,8 @@ Every one is a case where **the obvious metric moves the wrong way, or not at al
 - More offered load produces less delivered work, in result 4.
 - The best-informed policy performs worst, in result 1.
 - The cause of a collapse is gone while the collapse continues, in result 6.
+
+- The same ordering with the device physics switched off, in result 7, so the effect is the queue's.
 
 That is the argument for building this at all. Each of these is discoverable in production only by
 degrading it, and three of the four would be invisible on a conventional dashboard.

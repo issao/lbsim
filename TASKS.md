@@ -1,8 +1,10 @@
 # TASKS — things that need Issao
 
-Last updated: 2026-09-06 16:43 PDT by Claude.
+Last updated: 2026-09-06 17:24 PDT by Claude.
 
-Checkpoint 2026-09-06 16:43 PDT: every agent restarted from files; see `STATUS.md` "Session restart".
+Checkpoint 2026-09-06 16:43 PDT, resumed 17:04: every agent restarted from files; see `STATUS.md`
+"Session restart". While the respawned tech lead has no agent id yet, any instruction of yours whose work
+is code is recorded verbatim under "Routed to the tech lead" below and stays in the tree for it.
 Stack ranked, most blocking first. Every item says what Claude does if you say nothing, so nothing
 here stalls the work. What is finished and live is in `STATUS.md`.
 
@@ -21,22 +23,35 @@ limit, and the training-versus-serving question.
 Each of these is a unit in `docs/execution-graph.md`, the tech lead's graph, which carries its state
 and ETA; this list is the record of what was routed and why.
 
+Nothing new routed since the checkpoint; the tree scans clean (`python3 tools/inbox.py`, 17:04).
+
+Your feedback inside the graph at 16:45 (0b53c59), on the SLO class targets: *"That looks good. ideally
+we would have an average throughput for batch averaged at a longer time window, but don't worry about it
+for now, record it for future work."* Acted on by the tech lead before the checkpoint: U42 accepted, the
+future work recorded as U44 in `docs/execution-graph.md` (a2eef18).
+
 Three from Issao at 16:22, routed by the main agent:
 
-7. *"we could get disable decode basically by setting HBM to infinity, so that should be straight
-   forward."* Scenario key `disable_decode` that zeroes the bandwidth term. First in priority.
-8. *"Load and latency forecasting should be added as potential policies to evaluate (populate an md with
+7. **Done, c7f8c6a.** *"we could get disable decode basically by setting HBM to infinity, so that should
+   be straight forward."* Scenario key `disable_decode` zeroes the bandwidth term; demo 7; finding 7.
+8. **Catalog append done, f6a87a9**; the forecasting families are U40, queued. *"Load and latency forecasting should be added as potential policies to evaluate (populate an md with
    all policy ideas we have had so far and instruct the arena policy generator to populate that as well
    with any that it authors)."* `docs/policy-catalog.md` is being written by a separate agent; the tech
-   lead wires the arena generator to append a row per policy it authors.
-9. *"We should have a way to sample requests to see execution traces and what was busy in each resource
+   lead wired the arena generator's append, `sim_arena::catalog::append`, with a test holding the
+   catalog's header to the code.
+9. **Wire side done, 3a00f92**; the engine side, spans recorded in the step, is U24, queued behind
+   preemption. *"We should have a way to sample requests to see execution traces and what was busy in each resource
    as it executed."* Request trace sampling: seeded, stratified by latency bucket, spans with
-   per-resource state, exposed through `GetTraces` and the export.
+   per-resource state, exposed through `GetTraces` and the export. The struct, sampler, encoder,
+   `GetTraces` filters and `traces.jsonl` in the export exist against fixtures; the proto owner was told
+   `TraceSpan` lacks queued, batch size, step time, KV resident/capacity, the roofline side and the
+   routing candidates (graph U19).
 
-6. At 16:12, on the arena objective, *"You can remove this, I agreed with this."* The score is now
-   the minimum over loads of goodput **as a share of offered work**, not absolute goodput. The code
-   reports that share as a diagnostic beside the raw objective; it becomes the objective, and the rule
-   set version recorded with every score changes. `docs/arena.md` §5b.
+6. **Closed, f6a87a9.** At 16:12, on the arena objective, *"You can remove this, I agreed with this."*
+   The score is the minimum over in-scope loads of goodput **as a share of offered work**; absolute
+   goodput is the diagnostic beside it; every score records rule set v2. Order unchanged (p2c 0.762,
+   round robin 0.732, random 0.705), worst load now the hardest one, `docs/arena-implementation.md` §3.
+   U43 in the graph records that v2 stands unless you say otherwise.
 
 Five design decisions from Issao at 15:26, recorded in the design of record (`docs/ARCHITECTURE.md`
 section 14, `docs/arena.md`, `docs/execution-plan.md`) by the housekeeping agent. Each has code
@@ -47,8 +62,9 @@ consequences that belong to the tech lead; verbatim, from `TASKS.md` before the 
 2. *"Arena policy generator should actually have full power to write code to write new policies, as
    well as tuning parameters on existing policies."* A policy candidate is code against the policy
    trait, not only a `PolicySpec`; `docs/arena.md` §6. The proto side is done: `GeneratedPolicy`
-   variant in every policy slot, 947649b. Left for the tech lead: the policy registry that resolves it
-   by name from one file per policy.
+   variant in every policy slot, 947649b. The registry that resolves a policy by name from one file
+   per policy is done and now generated by `build.rs` (289cb22, 5083b7b); the generator loop itself is
+   U34, queued.
 3. *"Re prefix sharing topology. I don't, assume some reasonable distributions of lengths of session
    and how often they fork off and merge back new agents and create a distribution based on that."*
    The workload model derives the prefix tree from a session process: session length, fork-off rate,

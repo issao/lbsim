@@ -3,11 +3,21 @@
 What is live on `origin/master`, what each agent is doing now, and the assumptions being acted on.
 For things that need *you*, see `TASKS.md`.
 
-**Last updated:** 2026-09-06 16:56 PDT by Claude.
+**Last updated:** 2026-09-06 17:26 PDT by Claude.
 
 ---
 
 ## Session restart
+
+**Resumed 2026-09-06 17:04 PDT.** Housekeeping restarted from this file and `TASKS.md` on
+`claude/docs-round36` from `origin/master` c1373d0, then 907f3a1. Agent ids for this session, from the
+main agent at 17:15: tech lead `a86e5fccbc930bd58` (fresh, on Fable), productivity `a09d10732748a5738`,
+cloud `a4c101059bf0331c5` (temporary, deploying the replay dashboard), main `main`. Everything that
+landed between the checkpoint and the resume was recorded from `git log 35693bc..907f3a1` and the
+main agent's message, not from memory. The
+respawn briefs are `docs/agents/` (ad16d4d, 39ec6d7, 4b7c5d3): `README.md` gives the spawn order,
+`housekeeping.md`, `tech-lead.md`, `productivity.md`, `cloud.md`, and `brief-template.md`, the preamble
+every subagent spawn pastes in.
 
 Checkpoint at 2026-09-06 16:43 PDT. Issao: *"lets commit any state that is critical for any running agent including you
 and then start with fresh context from there."* Every agent was killed and restarted from files at this
@@ -19,15 +29,15 @@ point. Each agent's memory is a file, and a restarted agent resumes from it alon
 | Housekeeping, monitor and inbox | `TASKS.md`, `STATUS.md`, this section | `docs/agents/` |
 | Main agent | `CLAUDE.md`, `docs/agents/` | `docs/agents/` |
 
-**Housekeeping watcher setup, to re-arm identically.** Work in the worktree `/home/agents/repo/lbsim-docs`
-on branches `claude/docs-<topic>`, never in the shared checkout; commit with `git commit -- <paths>`;
-merge `--no-ff` into `master` in the main checkout only when it is on `master`, clean, and at
-`origin/master` (fast-forward it first), then push `master` and the branch. Poll every 90 seconds:
-`git fetch`, `python3 tools/inbox.py --no-fetch`, `gh pr list --state open`, and diff new upstream
-commits for lines naming Issao without a colon, which the scanner cannot see. A 9-minute background
-waiter exits on the first new `origin/master` commit, pending marker or open PR, and is re-armed after
-each. Markers inside `docs/execution-graph.md` are the tech lead's quotes of acted-on instructions, not
-new ones; act on none of them and ask the tech lead to rephrase (asked at 16:41, open at checkpoint).
+**Housekeeping watcher setup, to re-arm identically** (the brief in `docs/agents/housekeeping.md` is
+authoritative). Work in the worktree `/home/agents/repo/lbsim-docs` on branches `claude/docs-<n>`, never
+in the shared checkout; commit with `git commit -- <paths>`; merge `--no-ff` into `master` in the main
+checkout after `merge --ff-only origin/master`, push `master` and the branch, verify with
+`merge-base --is-ancestor`. Poll every 90 seconds: `git fetch origin`, `python3 tools/inbox.py --no-fetch`,
+`gh pr list --state open`, and diff new upstream commits for lines naming Issao without a colon, which
+the scanner cannot see. A background waiter exits on the first new `origin/master` commit, pending
+marker or open PR, and is re-armed after each. Markers inside `docs/execution-graph.md` are the tech lead's quotes of acted-on instructions, not
+new ones; act on none of them; the tech lead rephrased them at cf85752 and the tree scans clean.
 Every stamp comes from `date '+%Y-%m-%d %H:%M %Z'` or the commit that carried the event. A marker in
 `TASKS.md` or `STATUS.md` that asks for code is routed: verbatim under "Routed to the tech lead" in
 `TASKS.md`, marker left for the actor. `docs/vision-progress.md` is deleted at the first housekeeping
@@ -46,7 +56,7 @@ Scope is `docs/scope-today.md` package B plus item 7, and both side missions Iss
 | What | Where | Verified by |
 |---|---|---|
 | Simulator, six dynamics reproducing | `src/`, `scenarios/` | `./run-demos.sh`, six HTML reports in `out/` |
-| Test suite: 73 pass, 3 ignored as known defects; `tests/layering.rs` enforces the downward crate dependency direction | `tests/`, `crates/*/` | `tools/build.sh test --workspace` |
+| Test suite: 143 pass, 5 ignored (3 known defects, 2 slow arena reproductions run only by `tools/integrate.sh`), measured at 907f3a1 on 17:20; `tests/layering.rs` enforces the downward crate dependency direction | `tests/`, `crates/*/` | `tools/build.sh test --workspace` |
 | Golden fingerprints: every demo, the held-out suite and a live probe, byte-identical to the baseline | `bench/golden-fingerprints.txt` | `./check-fingerprints.sh` |
 | Frontend-to-Ingress wire: JSON over HTTP/1.1, SSE subscriptions, field names held to the proto by a test | `crates/sim-ingress/WIRE.md` | `cargo test -p sim-ingress` |
 | Policy ordering survives ±30% cost-model error | `check-sensitivity.sh` | run it; exits non-zero on a flip |
@@ -56,8 +66,21 @@ Scope is `docs/scope-today.md` package B plus item 7, and both side missions Iss
 | Reference cost model, exact against a naive oracle | `bench/validate_epochs.py` | `tools/sync.sh` runs it |
 | Interfaces, twelve files, reviewed; `GeneratedPolicy` slot (947649b), lease expiry renamed `lease_expires_at_wall_ns` because it is wall clock (db390a4) | `proto/lbsim/v1/` | `tools/sync.sh` compiles them |
 | Findings, one section per dynamic | `docs/findings.md` | every table from `./run-demos.sh` |
-| Policy catalog, every policy idea so far, one table per family, including the load and latency forecasting families Issao asked for at 16:22; the arena generator appends a row per policy it authors | `docs/policy-catalog.md` (fc06095) | read it |
+| `disable_decode` scenario key, *"basically by setting HBM to infinity"*: zeroes the bandwidth term, KV still binds in tokens; demo 7 (`route_round_robin_no_decode`, `route_p2c_no_decode`), demos 8-10 for admission, fair share and live probes; 28 golden rows added, no existing number moved | `crates/sim-physics/src/lib.rs`, `scenarios/`, `run-demos.sh` (f6b7283, merged c7f8c6a) | `./check-fingerprints.sh` |
+| Policy registry generated from the policy files by `build.rs`, so parallel policy branches cannot conflict on one table | `crates/sim-policy/build.rs` (5083b7b) | `tools/build.sh test -p sim-policy` |
+| `tools/integrate.sh <branch>`: the merge queue as a script any agent runs at the end of its unit (rebase, workspace test, fingerprints, `--no-ff` merge, push) | `tools/integrate.sh` (dbe5e8e) | `tools/integrate.sh --dry-run` |
+| Restart briefs, one per agent, plus the brief template every subagent spawn pastes in; the goal from Issao at 16:53 recorded verbatim in the tech lead's | `docs/agents/` (ad16d4d, 39ec6d7, 5c8686c, 4b7c5d3) | read them |
+| Iteration profile: a unit is 68% model time; the one 79 s arena test dominates tool time; ranked fixes | `docs/iteration-profile.md` (8280a48) | read it |
+| Execution graph: 22 done, 1 in flight (U18, the live ingress server), 22 queued, 1 waiting on Issao | `docs/execution-graph.md` (edbd04a) | read it |
+| **Dashboard replay source**: with `runs/index.json` served beside the app the load-test dashboard plays exported runs, load, throughput, latency, imbalance and KV real, the rest NaN or still mock and tagged; play/pause/speed/step/scrub local, rewind and policy changes refused with a reason; 15+33 self-test cases; headless Chromium showed the 30 demo runs replaying | `web/src/lib/{replay,adapter,mode}.ts`, `web/README.md` "Replay mode" (4fb1105, merged 5077a34) | `cd web && node --experimental-strip-types src/lib/replay.selftest.ts` |
+| Request traces on the wire: `RequestTrace`/`TraceSpan` per `WIRE.md`, a seeded stratified sampler, `GetTraces` filters, `runs/<id>/traces.jsonl` in the export inside a 5 MiB budget with every failure kept and the slowest request anchored; against a fixture struct until U24 records spans in the step | `crates/sim-metrics/src/trace.rs`, `crates/sim-ingress/src/trace_wire.rs`, `tests/trace_wire.rs` (c766e2f, merged 3a00f92) | `tools/build.sh test --test trace_wire` |
+| Arena rule set v2: the score is the minimum over in-scope loads of goodput as a share of offered output tokens, cap 0.95, recorded in every score; absolute goodput the diagnostic; `catalog::append` writes a row per arena-authored policy into `docs/policy-catalog.md`; the two 80 s arena reproductions `#[ignore]`d behind a smoke round, 81.7 s → under 2 s | `crates/sim-arena/src/{lib,catalog}.rs`, `tests/arena_{rules,catalog}.rs` (14aa4e5, merged f6a87a9) | `tools/build.sh run --release --bin sim-run -- arena --cap 0.95` prints the rule set and p2c 0.762 > round_robin 0.732 > random 0.705 |
+| Policy catalog, every policy idea so far, one table per family, including the load and latency forecasting families Issao asked for at 16:22; the arena generator appends a row per policy it authors | `docs/policy-catalog.md` (fc06095; v2 scores since this round) | `tools/build.sh test --test arena_catalog` holds its headers to the code |
 
+
+Seven dynamics now: the six below plus, since c7f8c6a, that the routing ordering holds with decode
+disabled, p2c 97.0% attainment against round robin 93.7% at identical throughput, which is what
+`VISION.md` §3a predicted: the rolling hotspot does not need LLM physics. Finding 7 in `docs/findings.md`.
 
 The six dynamics, one line each, all measured at 30% of rated capacity unless the sweep is over load:
 reading the whole fleet routes worse than sampling two of it; herding has a staleness threshold, not a
@@ -76,9 +99,10 @@ spend a unit of work, with ranked fixes; its numbers live there, not here.
 
 | Agent | Owns | Now |
 |---|---|---|
-| Tech lead | `src/`, `tests/`, `scenarios/`, `web/src/lib/` | Landed, all byte-identical against `./check-fingerprints.sh`: the eleven-crate workspace (163995c); golden fingerprints and `WIRE.md` (0efb8bd); the policy trait and registry, plus `admission`, `fair_share_burst`, `tenants`, `tenant_weights`, `tenant_demand` in scenarios (289cb22, cfc8f03); leases and the idle guard (d688f8f); Issao's homepage links and `tools/build.sh`, which bounds concurrent cargo builds to two (16daf22); simplification pass 1 on `sim-report`, 884 to 851 lines (4b29810), and pass 2 on `sim-arena`, zero behaviour change (fd81421); the browser transport client against `WIRE.md`, mock still the default (389f41e, 16:14); the `least_kv_probe` routing policy, power-of-d choices on live KV occupancy with the probe paid for (120e62d); `deadline_aware` admission, shedding on expected queue wait before a request costs anything (210b657); `fair_share` admission, weighted fair share over tenants in tokens (072a932); the M2 analytic epoch advance with its exact oracle (dbfc553); the wire encoder and `sim-run export --demos` (41f6435); the engine unit (ac8d1be): `sim-model` holds the replica physics out of the event loop, a `Frame` per sample carries counts, distributions and replica state, `Sim` stops and continues, and the Leaf seam is a trait plus a binary. Nothing reported in flight since; the tech lead's next message updates this. Queued: preemption and KV eviction, SLO classes, the live ingress server, the dashboard replay source, speculative decoding, prefix caching. From Issao at 15:50: *"continue making more progress on the scope-today.md dynamics we talked about when it is possible to do so in parallel"*, which is that queue. From Issao at 16:22, routed: the `disable_decode` knob, *"basically by setting HBM to infinity"*, first in priority; load and latency forecasting as policies to evaluate, with `docs/policy-catalog.md` fed by the arena generator; sampled request traces *"to see execution traces and what was busy in each resource"*, through `GetTraces` and the export |
-| Cloud | `Dockerfile`, `deploy.sh`, `cloudbuild.yaml`, `docs/deploy.md` | **finished.** Redeploys are now run by the main agent on request: `./deploy.sh`, about 2.5 minutes end to end. First deploy at 15:22 (72dfb16); scale-to-zero verified twice (993c03a); `docs/deploy.md` is its handover. No further grant was needed, the pending `legacyBucketReader` request is withdrawn: the blocker was two bucket permissions, worked around in `cloudbuild.yaml` |
-| Monitor and housekeeping | `TASKS.md`, `STATUS.md`, `README.md`, `docs/*.md` | inbox and PR loop every 90 s; documents tidied; keeping them aligned to each merge. The homepage-link instruction routed at 15:57 was done by the tech lead at 15:59 |
+| Tech lead `a86e5fccbc930bd58` | `src/`, `tests/`, `scenarios/`, `web/src/lib/` | **Fresh at 17:15 from `docs/agents/tech-lead.md`, on Fable**; nothing reported to housekeeping yet. The old tech lead's last landings, all in `docs/execution-graph.md` at edbd04a: U17 dashboard replay source (5077a34), U20 arena rule set v2 with catalog append and the fast arena tests (f6a87a9), U19 trace wire and export (3a00f92), U21 `disable_decode` with demos 7-10 (c7f8c6a), the generated policy registry (5083b7b). 22 units done, one in flight: U18 live ingress server on `claude/tl-ingress-server`, design fixed, no code yet. First to spawn per the graph: U22 preemption and KV eviction, the head of the dynamics fan-out. Restart instruction from Issao, verbatim in the brief: *"instructing TL to focus on aggressive delegation and parallelism"*: at least eight units in flight, no code of its own, integration by `tools/integrate.sh` at the end of every unit |
+| Productivity `a09d10732748a5738` | `docs/iteration-profile.md`, `docs/agents/brief-template.md` | resumed 17:05 from `docs/agents/productivity.md`, per Issao: *"farming out a separate agent to focus on instrospecting on overall productivity improvements for the tl and coding agents."* Works in `/home/agents/repo/lbsim-prod` on `claude/prod-<n>`, integrates with `tools/integrate.sh`. Every 20 minutes it parses the subagent transcripts and appends a dated section to the profile; first section, the 17:12 baseline, integrating from `claude/prod-1` at 17:15: three subagents of the old tech lead each lost 10 minutes at 16:53 to a hung `tests/ingress_http.rs` that held a build slot; a `tools/build.sh` proposal went to the tech lead. Next section about 17:40. Nothing needs Issao |
+| Cloud `a4c101059bf0331c5`, temporary | `Dockerfile`, `deploy.sh`, `cloudbuild.yaml`, `docs/deploy.md` | **deploying the replay dashboard** since 17:15: the `Dockerfile` now builds reports 7-10 and runs `sim-run export --demos` into the image so `/runs/index.json` sits beside the app (efea414, merged 6897543, `docs/deploy.md` updated with it); the revision is recorded here when the main agent relays it. Before that the cloud agent had **finished**; redeploys are run on request: `./deploy.sh`, about 2.5 minutes end to end. First deploy at 15:22 (72dfb16); scale-to-zero verified twice (993c03a); `docs/deploy.md` is its handover. No further grant was needed, the pending `legacyBucketReader` request is withdrawn: the blocker was two bucket permissions, worked around in `cloudbuild.yaml` |
+| Monitor and housekeeping | `TASKS.md`, `STATUS.md`, `README.md`, `docs/*.md` except the tech lead's and cloud's | resumed 17:04 on `claude/docs-round36`; inbox and PR loop every 90 s; this round wrote finding 7, the catalog's v2 scores, `docs/arena-implementation.md` §3 under v2, `docs/arena.md` §5b closed, `web/public/runs/` ignored; no open PR on `issao/lbsim`; no pending marker in the tree |
 
 The main agent coordinates and owns `CLAUDE.md` and `proto/`.
 
@@ -93,14 +117,17 @@ temporary, for Issao to review.
 | M0 workspace and CI | done, one gap | the section 10.8 workspace, eleven crates (163995c), `tests/layering.rs` proves `sim-ingress` cannot reach `sim-model` or `sim-physics`; no `prost`/`tonic` codegen |
 | M0.5 stand-in dashboard | done | `web/`, mock data, marked as such |
 | M1 walking skeleton | done and exceeded | six dynamics, `docs/findings.md` |
-| M2 physics | load-bearing half done | the analytic epoch advance in Rust, integer arithmetic, with the naive per-step oracle beside it and equality rather than tolerance: 10,000 random epochs agree exactly, 77x fewer evaluations on the test seed (dbfc553); preemption with swap or recompute and KV eviction queued |
+| M2 physics | load-bearing half done | the analytic epoch advance in Rust, integer arithmetic, with the naive per-step oracle beside it and equality rather than tolerance: 10,000 random epochs agree exactly, 77x fewer evaluations on the test seed (dbfc553); `disable_decode` (c7f8c6a); preemption with swap or recompute and KV eviction is U22, the head of the dynamics fan-out, not yet spawned |
 | M3 three-layer split | seam done, split not | `sim-leaf-api` defines `Leaf` message for message after `leaf.proto`, `LocalLeaf` implements it in-process over a resumable `Sim`, and a Leaf binary exists in the manifest (30e6ef1); the process split Issao decided on and the cross-shard determinism test are still to come |
 | M4 workload and telemetry | partial | arrival heterogeneity and telemetry delay built; no trace replay, no session or prefix model |
-| M5 policies | partial, in flight | six routing policies and two admission controllers, `deadline_aware` and `fair_share`, behind a one-file-per-policy registry (289cb22, 120e62d, 210b657, 072a932); no prefix affinity, no per-decision cost measurement |
+| M5 policies | partial | six routing policies and two admission controllers, `deadline_aware` and `fair_share`, behind a one-file-per-policy registry that `build.rs` now generates from the files (289cb22, 120e62d, 210b657, 072a932, 5083b7b); no prefix affinity, no per-decision cost measurement |
 | M6 failures | done | retry contrast, finding 6 |
 | M7 control analysis | not started | |
-| M8 dashboard and first deploy | in progress | static deploy live, scale-to-zero measured (993c03a); `sim-ingress` has leases and the idle guard (d688f8f) but no run or subscription endpoint, though `Sim` is now resumable (fc910f6) and per-sample frames exist (2c4a7eb), which the endpoint needs; `sim-run export` writes runs as the `WIRE.md` JSON documents the stream will carry (41f6435); browser transport merged (389f41e) with mock still the default; the replay source that joins the two is next; dashboard still mock |
+| M8 dashboard and first deploy | in progress | static deploy live, scale-to-zero measured (993c03a); `sim-ingress` has leases and the idle guard (d688f8f) but no run or subscription endpoint, though `Sim` is now resumable (fc910f6) and per-sample frames exist (2c4a7eb), which the endpoint needs; `sim-run export` writes runs as the `WIRE.md` JSON documents the stream will carry (41f6435); browser transport merged (389f41e) with mock still the default; the replay source that joins the two is on `master` (U17, 5077a34): **the pre-baked dashboard is deployable and the cloud agent is deploying it**, revision to follow; the live server is U18, in flight, not yet written; until the deploy lands the public dashboard is still mock |
 | M9 scale validation | not measured | |
+
+22 of the graph's 46 units are done (edbd04a); the arena's judging half scores under rule set v2 with
+the catalog append wired (f6a87a9), and request traces exist on the wire against a fixture struct (3a00f92).
 
 ## When the dashboard shows real demos
 
@@ -118,15 +145,13 @@ mock engine; and a rebuild and redeploy, measured at
 1m22s. The shortest path, asked of the tech lead by the main agent: pre-baked run output in wire format
 served statically, so every panel shows real data before the live path exists.
 
-**None of this lands before your 16:30 stop.** You will find the state here when you are back. The tech
-lead's ETA, wall clock from 15:55 PDT and conditional on agents landing at today's rate:
-
-| Step | ETA |
-|---|---|
-| Pre-baked path: six demo runs exported by `sim-run` as `WIRE.md` JSON documents, served statically, dashboard loads them when no Ingress answers | about 3 h, roughly 19:00 |
-| Live Ingress endpoint streaming a real run over JSON/SSE; needs the engine to become resumable first | about 5 h, roughly 21:00 |
-| Web app on that transport, mock markers removed only on wired panels | roughly 22:00 |
-| Both on `master`, rebuilt and redeployed | roughly 22:30 |
+From `docs/execution-graph.md` at edbd04a: **U17 is on `master` (5077a34), so the pre-baked dashboard is
+deployable now.** Deploy is `sim-run export --demos --dir <served dir>` then `./deploy.sh`, per
+`web/README.md` "Replay mode"; the temporary cloud agent folded both into the `Dockerfile` (6897543) and its
+revision is recorded here when relayed. After the deploy the load, throughput, latency, imbalance and KV
+panels show the engine's numbers for the 30 demo runs; the per-replica table and heatmap wait for U23,
+the live path is U18 then U28, and the A/B view and the showcase stay mock until then. The 15:55 ETA
+table (19:00 pre-baked, 21:00 live, 22:30 deployed) is superseded: the pre-baked step beat it by two hours.
 
 ## Assumptions being acted on
 

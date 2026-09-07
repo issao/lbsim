@@ -21,16 +21,20 @@ Every table in this file has exactly this header, and code depends on it:
   building it on a `claude/tl-*` branch), `idea` (named in a document or a proto, no code), or
   `arena-authored` (written by the arena's policy generator).
 - **Source** is the file that defines it, or the document section that proposed it.
-- **Score** and **Rule set** are the arena's: the minimum gated goodput in tokens/s over the in-scope
-  held-out loads, and the rule set (SLA cap, scoring rule) it was earned under, because a score is only
-  comparable within one rule set (`docs/arena.md` §2.3). Empty for ideas. Where no arena score exists but
-  a finding measured the policy, the finding's number is quoted in the Idea column instead.
+- **Score** and **Rule set** are the arena's: the score under the rule set named beside it, because a
+  score is only comparable within one rule set (`docs/arena.md` §2.3). Under the current rule set,
+  `RULE_SET` in `crates/sim-arena/src/lib.rs`, *"v2: cap 0.95 default, min over in-scope loads of gated
+  goodput share"*, the score is the minimum over the in-scope held-out loads of goodput as a share of
+  offered output tokens, gated by the SLA cap; under v1 it was absolute gated goodput in tokens/s, and
+  v1 rows are kept only where no v2 score exists. Empty for ideas. Where no arena score exists but a
+  finding measured the policy, the finding's number is quoted in the Idea column instead.
 - **Added** is the date the row was written.
 
 **The arena policy generator appends one row per policy it authors**, with Status `arena-authored`,
 Source the path of the generated file, and Score and Rule set from the round that scored it. The append
-is a function in `crates/sim-arena` with a test that the row it writes matches this header, so the
-catalog and the code cannot silently diverge. Rows are appended to the table of the policy's family;
+is `sim_arena::catalog::append` (f6a87a9), and `tests/arena_catalog.rs` checks every table header in
+this file against `catalog::HEADER`, so the catalog and the code cannot silently diverge; an identical
+row is not appended twice, and pipes in a cell are escaped. Rows are appended to the table of the policy's family;
 a family that does not exist yet gets a new table with the same header.
 
 Every policy is a pure function from a **stale observation** to intents, checked by the referee
@@ -44,11 +48,11 @@ worse than sampling two of it; finding 2: herding has a staleness threshold, not
 
 | Name | Family | Idea | Status | Source | Score | Rule set | Added |
 |---|---|---|---|---|---|---|---|
-| `round_robin` | routing | Ignore load; with heterogeneous request sizes produces the rolling hotspot (dynamic 1). Finding 1: 17,361 tok/s goodput, first-token p99 8.3 s | shipped | `crates/sim-policy/src/round_robin.rs` | 2632 | cap 0.95, min gated goodput, 7 loads | 2026-09-06 |
-| `random` | routing | Uniform random; better than round robin under size heterogeneity because it does not cycle. O(1). Finding 1: 16,961 tok/s | shipped | `crates/sim-policy/src/random.rs` | 2546 | cap 0.95, min gated goodput, 7 loads | 2026-09-06 |
-| `least_requests` | routing | Fewest queued-plus-running requests over a full stale-snapshot scan. Wrong unit (requests, not tokens) and herds. Finding 1: 6,943 tok/s, attainment 39% | shipped | `crates/sim-policy/src/least_requests.rs` | 0 | cap 0.95, min gated goodput, 7 loads | 2026-09-06 |
-| `least_queue_tokens` | routing | Fewest queued tokens over a full stale scan: the right unit, still herds. Finding 2: goodput collapses twelvefold across scrape intervals 100 ms to 4 s | shipped | `crates/sim-policy/src/least_queue_tokens.rs` | 0 | cap 0.95, min gated goodput, 7 loads | 2026-09-06 |
-| `p2c` | routing | Power of two choices on queued tokens from the stale snapshot; only a fraction of routers see any one idle replica, which bounds herding. O(1). Finding 1: 18,127 tok/s, attainment 97% | shipped | `crates/sim-policy/src/p2c.rs` | 2652 | cap 0.95, min gated goodput, 7 loads | 2026-09-06 |
+| `round_robin` | routing | Ignore load; with heterogeneous request sizes produces the rolling hotspot (dynamic 1). Finding 1: 17,361 tok/s goodput, first-token p99 8.3 s | shipped | `crates/sim-policy/src/round_robin.rs` | 0.732 | v2: cap 0.95 default, min over in-scope loads of gated goodput share | 2026-09-06 |
+| `random` | routing | Uniform random; better than round robin under size heterogeneity because it does not cycle. O(1). Finding 1: 16,961 tok/s | shipped | `crates/sim-policy/src/random.rs` | 0.705 | v2: cap 0.95 default, min over in-scope loads of gated goodput share | 2026-09-06 |
+| `least_requests` | routing | Fewest queued-plus-running requests over a full stale-snapshot scan. Wrong unit (requests, not tokens) and herds. Finding 1: 6,943 tok/s, attainment 39% | shipped | `crates/sim-policy/src/least_requests.rs` | 0 | v2: cap 0.95 default, min over in-scope loads of gated goodput share | 2026-09-06 |
+| `least_queue_tokens` | routing | Fewest queued tokens over a full stale scan: the right unit, still herds. Finding 2: goodput collapses twelvefold across scrape intervals 100 ms to 4 s | shipped | `crates/sim-policy/src/least_queue_tokens.rs` | 0 | v2: cap 0.95 default, min over in-scope loads of gated goodput share | 2026-09-06 |
+| `p2c` | routing | Power of two choices on queued tokens from the stale snapshot; only a fraction of routers see any one idle replica, which bounds herding. O(1). Finding 1: 18,127 tok/s, attainment 97% | shipped | `crates/sim-policy/src/p2c.rs` | 0.762 | v2: cap 0.95 default, min over in-scope loads of gated goodput share | 2026-09-06 |
 | `least_kv_probe` | routing | Power of `d` choices on *live* KV occupancy, paying a modelled probe per look, so the cost of freshness is visible rather than free. Head-to-head with `p2c` isolates signal and freshness | shipped | `crates/sim-policy/src/least_kv_probe.rs` | | | 2026-09-06 |
 | `least_kv_tokens` | routing | Fewest resident KV tokens; the capacity unit that finding 5 says matters, over the stale view | idea | `proto/lbsim/v1/scenario.proto` `RoutingPolicy.LeastKvTokens` | | | 2026-09-06 |
 | `prefix_affinity` | routing | Prefer the replica already holding the request's prefix until its load exceeds the fleet mean by `max_load_ratio`, then fall back to sampling `fallback_choices`. The knob between hit rate and hotspots | idea | `proto/lbsim/v1/scenario.proto` `RoutingPolicy.PrefixAffinity`; primer §5 | | | 2026-09-06 |
