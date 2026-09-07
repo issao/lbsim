@@ -37,13 +37,13 @@ pub fn serve(dir: &str, port: u16) -> Result<(), String> {
     let listener = TcpListener::bind(("0.0.0.0", port))
         .map_err(|e| format!("bind 0.0.0.0:{port}: {e}"))?;
     println!("serving {} on 0.0.0.0:{port}", root.display());
-    serve_on(Server::new(root, idle::idle_threshold_ns_from_env()), listener)
+    serve_on(Arc::new(Server::new(root, idle::idle_threshold_ns_from_env())), listener)
 }
 
 /// The accept loop on a listener the caller bound, with the idle threshold injected through the
-/// server rather than read from the environment. What tests use, on an ephemeral port.
-pub fn serve_on(server: Server, listener: TcpListener) -> Result<(), String> {
-    let server = Arc::new(server);
+/// server rather than read from the environment. What tests use, on an ephemeral port, keeping
+/// their own handle on the server to look at run state the wire does not expose.
+pub fn serve_on(server: Arc<Server>, listener: TcpListener) -> Result<(), String> {
     let live = Arc::new(AtomicUsize::new(0));
     for stream in listener.incoming() {
         let Ok(stream) = stream else { continue };
