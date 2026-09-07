@@ -135,9 +135,10 @@ Scopes: `SCOPE_FLEET` and `SCOPE_REPLICA`. Everything else returns `rejected_rea
 | `METRIC_TTFT` 1, `METRIC_ITL` 2, `METRIC_E2E` 3, `METRIC_QUEUE_WAIT` 4 | yes | | window histograms |
 | `METRIC_READY_REPLICAS` 60 | yes | | replica count, until lifecycle exists |
 
-`METRIC_STEP_TIME` at replica scope is a one-sample `Distribution` — the last step's duration, not a
-windowed histogram — and is omitted entirely until that replica has stepped at least once; a client
-should read its absence as "no step yet", not as zero.
+`METRIC_STEP_TIME` at replica scope is a `value`, seconds as a double like every other duration
+gauge and the same on both the live and exported paths — never a `Distribution`, even though it is
+one sample rather than a window — and is omitted entirely until that replica has stepped at least
+once; a client should read its absence as "no step yet", not as zero.
 
 Sample cadence: the server honours `samples_per_sim_second` as asked. The engine records at the
 scenario's `sample_interval_ms`; a subscription rate finer than that gets the nearest recorded sample

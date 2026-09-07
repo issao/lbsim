@@ -561,22 +561,11 @@ pub fn row(f: &Frame, sc: &Scenario, spec: &RowSpec) -> Option<MetricRow> {
             value(wire::METRIC_RUNNING_SEQS, r.running as f64);
             value(wire::METRIC_KV_UTILIZATION, r.kv_tokens as f64 / cap);
             value(METRIC_KV_TOKENS_RESIDENT, r.kv_tokens as f64);
-            // The last step is one observation, carried as the distribution the proto types it
-            // as. Zero means the replica has not stepped yet, and a duration of nothing is a gap.
+            // Seconds as a double, like every other duration gauge and like export.rs's replica
+            // row — not a distribution. Zero means the replica has not stepped yet, and a
+            // duration of nothing is a gap.
             if spec.wants(METRIC_STEP_TIME) && r.last_step_ns > 0 {
-                let v = r.last_step_ns as f64;
-                row.distribution(
-                    METRIC_STEP_TIME,
-                    Distribution {
-                        count: 1,
-                        mean: v,
-                        min: v,
-                        max: v,
-                        percentile: spec.percentiles.clone(),
-                        value: vec![v; spec.percentiles.len()],
-                        from_merged_histogram: false,
-                    },
-                );
+                row.value(METRIC_STEP_TIME, r.last_step_ns as f64 / 1e9);
             }
         }
         Target::Fleet => {
@@ -679,6 +668,35 @@ mod tests {
         assert_eq!((1..=6).map(|k| frame_index(k, 8.0, iv)).collect::<Vec<_>>(), vec![1, 1, 2, 2, 3, 3]);
         assert_eq!(frame_index(1, 1000.0, iv), 1);
         assert_eq!(sample_instant(4, 4.0), EPOCH_BASE + 1_000_000_000);
+    }
+
+    #[test]
+    fn live_replica_step_time_is_a_value_in_seconds() {
+        // U55: the live server used to carry replica STEP_TIME as a one-sample distribution while
+        // export.rs and adapter.ts both treat it as a plain value in seconds, so the live heatmap's
+        // step time read NaN. `row` must match export.rs's replica row.
+        let frame = Frame {
+            t: 0,
+            offered_rps: 0.0,
+            admitted: 0,
+            completed: 0,
+            rejected: 0,
+            timed_out: 0,
+            within_slo: 0,
+            output_tokens: 0,
+            goodput_tokens: 0,
+            ttft: SparseHistogram::default(),
+            itl_max: SparseHistogram::default(),
+            e2e: SparseHistogram::default(),
+            queue_wait: SparseHistogram::default(),
+            preemptions: 0,
+            replicas: vec![sim_metrics::ReplicaSample { last_step_ns: 2_000_000, ..Default::default() }],
+        };
+        let sc = Scenario::default();
+        let spec = RowSpec { target: Target::Replica(0), metrics: Vec::new(), percentiles: Vec::new() };
+        let r = row(&frame, &sc, &spec).expect("replica 0 exists");
+        assert_eq!(r.values.iter().find(|(m, _)| *m == METRIC_STEP_TIME).map(|(_, v)| *v), Some(0.002));
+        assert!(r.distributions.iter().all(|(m, _)| *m != METRIC_STEP_TIME));
     }
 
     #[test]
