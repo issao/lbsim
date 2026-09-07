@@ -59,6 +59,7 @@ worse than sampling two of it; finding 2: herding has a staleness threshold, not
 | `estimated_work` | routing | Score candidates by prompt length as a proxy for prefill cost plus queued tokens, so a 100k-token context is not treated as one chat turn | idea | `docs/llm-serving-primer.md` §6 | | | 2026-09-06 |
 | `geo_routing` | routing | Route across clusters by geography and cluster headroom, with a cost for crossing regions; needed for the multi-geo dynamics | idea | `VISION.md` §3a; `docs/scope-today.md` item 13 | | | 2026-09-06 |
 | `bounded_top_k_affinity` | routing | Ingress keeps a bounded top-K prefix index rather than an exact one, so affinity is O(log N) at 50k replicas | idea | `docs/ARCHITECTURE.md` §10.4; `TASKS.md` §3 default | | | 2026-09-06 |
+| `forecast_load` | routing | The shipped form of `queue_depth_extrapolation`: power of two choices scored on a predicted queue depth, the slope fitted between the last two distinct views per replica and extrapolated over the telemetry delay; candidates drawn in exactly `p2c`'s order so the two see byte-identical candidate sets. Staleness test at 4000 ms: load CV 0.1449 for p2c, 0.1414 for forecast_load (the tech lead, U40a) | shipped | `crates/sim-policy/src/forecast_load.rs` (9b4fc5c, merged 9ee9841); `scenarios/route_forecast_load.txt` | — | v2 | 2026-09-06 |
 
 ## Scheduling
 
