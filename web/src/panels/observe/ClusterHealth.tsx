@@ -1,7 +1,7 @@
 import { useMemo } from 'react';
 import type { Frame } from '../../lib/engine';
 import type { ScenarioConfig } from '../../lib/config';
-import type { MockEngine } from '../../lib/engine';
+import type { FrameSource } from '../../lib/useRun';
 import { healthCounts, series, xs } from '../../lib/derive';
 import { Panel, Tile } from '../../components/ui';
 import { LineChart } from '../../components/charts/LineChart';
@@ -17,7 +17,7 @@ export function ClusterHealth({
   cursorS,
   highlight,
 }: {
-  engine: MockEngine;
+  engine: FrameSource;
   frames: Frame[];
   frame: Frame;
   config: ScenarioConfig;

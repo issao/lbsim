@@ -1,9 +1,10 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useSyncExternalStore } from 'react';
 import { Home } from './pages/Home';
 import { LoadTest } from './pages/LoadTest';
 import { Compare } from './pages/Compare';
 import { Showcase } from './pages/Showcase';
 import { useLeaseLifecycle } from './lib/useSubscriptions';
+import { activeMode, dataModeBanner, subscribeActiveMode } from './lib/mode';
 
 type Route = '/' | '/dashboard' | '/ab' | '/showcase';
 
@@ -23,6 +24,8 @@ function currentRoute(): Route {
 export function App() {
   const [route, setRoute] = useState<Route>(currentRoute);
   useLeaseLifecycle();
+  // The dashboard resolves its source after a probe; the badge follows it, and says mock until then.
+  const mode = useSyncExternalStore(subscribeActiveMode, activeMode, activeMode);
 
   useEffect(() => {
     const onHash = () => setRoute(currentRoute());
@@ -44,8 +47,15 @@ export function App() {
           ))}
         </nav>
         <div className="topbar-right">
-          <span className="mock-global" title="Nothing here is connected to sim-ingress. Every number is generated in this browser.">
-            mock data, no engine attached
+          <span
+            className="mock-global"
+            title={
+              mode.mode === 'replay'
+                ? 'A recorded run served as static files. The load, throughput, latency, imbalance and KV panels show engine numbers; panels still marked mock are not simulated yet.'
+                : 'Nothing here is connected to sim-ingress. Every number is generated in this browser.'
+            }
+          >
+            {dataModeBanner(mode.mode, undefined, mode.runId)}
           </span>
         </div>
       </header>

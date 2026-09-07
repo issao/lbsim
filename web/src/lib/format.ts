@@ -15,6 +15,8 @@ export function fmtNum(x: number, digits = 1): string {
 }
 
 export function fmtPct(x: number, digits = 1): string {
+  // A replayed frame carries NaN for a quantity the engine does not simulate; a dash, like fmtNum.
+  if (!isFinite(x)) return '-';
   return `${(x * 100).toFixed(digits)}%`;
 }
 
