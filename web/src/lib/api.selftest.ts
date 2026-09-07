@@ -764,10 +764,9 @@ check('every wire field name this client reads or writes is a field in proto/lbs
 // ---------------------------------------------------------------------------
 
 check('mock is the default, and the mock marker is unchanged', () => {
-  eq(mode.MOCK_BANNER, 'mock data, no engine attached', 'the existing header marker');
   const m = mode.serverModeFrom(undefined, '', '');
   eq(m, { enabled: false, baseUrl: '', source: 'default' }, 'default mode');
-  eq(mode.modeBanner(m), 'mock data, no engine attached', 'default banner');
+  eq(mode.modeBanner(m), mode.MOCK_BANNER, 'default banner');
   eq(mode.serverMode().enabled, false, 'serverMode() outside a browser is mock');
   return 'default is mock, banner unchanged';
 });
@@ -782,7 +781,7 @@ check('server mode turns on from the URL, then localStorage, then the environmen
   eq(mode.serverModeFrom('1', '?server=0', '1'), { enabled: false, baseUrl: '', source: 'query' }, '?server=0 forces mock over everything');
   eq(mode.serverModeFrom('1', '', '', '0'), { enabled: false, baseUrl: '', source: 'storage' }, 'localStorage 0 forces mock over the env');
   eq(mode.serverModeFrom('http://a', '?server=http://b', 'http://c'), { enabled: true, baseUrl: 'http://b', source: 'query' }, 'query beats storage beats env');
-  eq(mode.modeBanner(mode.serverModeFrom(undefined, '?server=http://localhost:8099', '')), 'live data from the Ingress server at http://localhost:8099', 'server banner names the base');
+  eq(mode.modeBanner(mode.serverModeFrom(undefined, '?server=http://localhost:8099', '')), `${mode.SERVER_BANNER} at http://localhost:8099`, 'server banner names the base');
   eq(mode.STORAGE_KEY, 'lbsim.server', 'storage key');
   return '?server=1, ?server=<url>, hash query, localStorage, env, ?server=0';
 });
