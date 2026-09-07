@@ -384,6 +384,16 @@ export class ServerRunEngine implements FrameSource {
   }
 
   /**
+   * The answer to an update. A rejection is mirrored onto `refused`, because the generic update
+   * banner reads only `requiredResimulation` and would otherwise print "nothing was re-simulated"
+   * over a change the server never applied; the "not applied" banner is the one that prints a reason.
+   */
+  private settle(u: UpdateResponse): void {
+    this.lastUpdate = u;
+    this.refused = u.accepted ? null : `${u.changed.join(', ')}: not applied. ${u.rejectedReason}`;
+  }
+
+  /**
    * UpdateWorkload and UpdatePolicies, the only two live-tunable calls in ingress.proto. The answer
    * lands on `lastUpdate`; a 501 lands there too, named, because the control being wired and the
    * server not yet honouring it are two different facts and the banner should say which.
@@ -396,7 +406,8 @@ export class ServerRunEngine implements FrameSource {
     this.revision++;
     const id = this.runId;
     if (!id || d.paths.length === 0) {
-      this.lastUpdate = d.paths.length ? { accepted: true, requiredResimulation: false, rewoundToS: this.cursorS, rejectedReason: '', changed } : null;
+      if (d.paths.length) this.settle({ accepted: true, requiredResimulation: false, rewoundToS: this.cursorS, rejectedReason: '', changed });
+      else this.lastUpdate = null;
       this.changed();
       return;
     }
@@ -406,7 +417,7 @@ export class ServerRunEngine implements FrameSource {
     if (d.paths.some((p) => p.startsWith('routing.'))) calls.push(client.updatePolicies(id, toOverrides(policiesToWire(next).fields)));
     if (calls.length === 0) {
       // Anything else -- fleet shape, seed, duration -- is a new run by design.
-      this.lastUpdate = { accepted: false, requiredResimulation: false, rewoundToS: this.cursorS, rejectedReason: 'only workload and policy are live-tunable; restart the run for this change', changed };
+      this.settle({ accepted: false, requiredResimulation: false, rewoundToS: this.cursorS, rejectedReason: 'only workload and policy are live-tunable; restart the run for this change', changed });
       this.changed();
       return;
     }
@@ -417,13 +428,13 @@ export class ServerRunEngine implements FrameSource {
       const t0 = this.originUnixNs;
       const resim = rs.some((r) => r.requiredResimulation);
       const rewoundNs = rs.map((r) => r.rewoundToUnixNs).filter((n) => n > 0n).sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))[0];
-      this.lastUpdate = {
+      this.settle({
         accepted: rs.every((r) => r.accepted),
         requiredResimulation: resim,
         rewoundToS: rewoundNs !== undefined && t0 !== null ? relSeconds(rewoundNs, t0) : this.cursorS,
         rejectedReason: rs.map((r) => r.rejectedReason).filter(Boolean).join('; '),
         changed,
-      };
+      });
       if (resim && rewoundNs !== undefined) {
         // The history after the rewind point is a different future now, so drop it rather than
         // leaving a chart that mixes two runs.
@@ -433,7 +444,7 @@ export class ServerRunEngine implements FrameSource {
       }
     } catch (e) {
       if (e instanceof IngressError && e.httpStatus === 501) {
-        this.lastUpdate = { accepted: false, requiredResimulation: false, rewoundToS: this.cursorS, rejectedReason: `${SERVER_NOT_YET}: ${e.message}`, changed };
+        this.settle({ accepted: false, requiredResimulation: false, rewoundToS: this.cursorS, rejectedReason: `${SERVER_NOT_YET}: ${e.message}`, changed });
       } else {
         this.error = e instanceof Error ? e.message : String(e);
       }

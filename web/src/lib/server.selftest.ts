@@ -12,6 +12,7 @@
 // The resolve hook is replay.selftest.ts's: the modules under test import extensionless, which
 // Vite resolves and Node does not.
 
+import type { SseEvent } from './api';
 import type { RunHandle } from './useRun';
 import type { ServerRunHandle } from './useServerRun';
 
@@ -276,6 +277,10 @@ await checkAsync('(e) update sends UpdateWorkload / UpdatePolicies and lastUpdat
   ok((notYet.engine.lastUpdate?.rejectedReason ?? '').startsWith(SERVER_NOT_YET), `named: ${notYet.engine.lastUpdate?.rejectedReason}`);
   ok(notYet.engine.lastUpdate?.changed.includes(label) ?? false, 'the changed field is named');
   eq(notYet.engine.error, null, 'a 501 is not an error toast');
+  // The generic update banner reads only `requiredResimulation`; a refusal must reach the one
+  // banner that prints a reason, or the 501 is swallowed on screen.
+  ok((notYet.engine.refused ?? '').includes(SERVER_NOT_YET), `refused names the 501: ${notYet.engine.refused}`);
+  ok((notYet.engine.refused ?? '').includes(label), 'refused names the field');
   eq(notYet.engine.config.workload.arrivalRps, 90, 'the control keeps its value');
   notYet.engine.dispose();
 
@@ -286,6 +291,7 @@ await checkAsync('(e) update sends UpdateWorkload / UpdatePolicies and lastUpdat
   eq(live.engine.lastUpdate?.accepted, true, 'accepted');
   eq(live.engine.lastUpdate?.requiredResimulation, false, 'no resimulation');
   eq(live.engine.lastUpdate?.rejectedReason, '', 'no reason');
+  eq(live.engine.refused, null, 'an accepted update refuses nothing');
   ok(live.engine.lastUpdate?.changed.includes(label) ?? false, 'the changed field is named');
   eq(live.fake.run('r-1')?.workloadUpdates[0].arrival_rps, '90', 'the server holds the new rate');
   eq(live.engine.resimulating, false, 'not resimulating afterwards');
@@ -301,6 +307,7 @@ await checkAsync('(e) update sends UpdateWorkload / UpdatePolicies and lastUpdat
   reshaped.fleet.replicas += 1;
   await live.engine.update(reshaped);
   eq(live.engine.lastUpdate?.accepted, false, 'a fleet change is not live-tunable');
+  ok((live.engine.refused ?? '').includes('restart the run'), 'and the refusal is visible');
   eq(calls(live.fake, 'UpdatePolicies').length + calls(live.fake, 'UpdateWorkload').length, 2, 'and sends nothing');
   live.engine.dispose();
   return `501 -> lastUpdate "${SERVER_NOT_YET}"; echo -> accepted, changed [${live.engine.lastUpdate?.changed.join(', ')}]`;
@@ -340,7 +347,7 @@ await checkAsync('(g) the fake\'s remaining answers decode: GetResult, 410, 501,
   eq(id, 'r-1', 'run id');
   eq(fake.run(id)?.scenarioText, fx.FLEET_EXCERPT_SCENARIO, 'an empty scenario text means the fixture\'s');
   fake.advance(10);
-  const stale: api.SseEvent[] = [];
+  const stale: SseEvent[] = [];
   let gone: unknown = null;
   try {
     await api.readSseStream(client.openSubscriptionUrl({ runId: id, target: api.fleetTarget(), metrics: ['METRIC_OFFERED_RPS'], samplesPerSimSecond: 4 }), { onEvent: (e) => stale.push(e), lastEventId: '2', fetchImpl: fake });
@@ -350,7 +357,7 @@ await checkAsync('(g) the fake\'s remaining answers decode: GetResult, 410, 501,
   ok(gone instanceof api.IngressError && gone.gone, 'an id older than the ring is 410');
   eq(stale.length, 0, 'and nothing streamed');
   // A stream that has not reached the final row stays open, as it should; the test closes it.
-  const fresh: api.SseEvent[] = [];
+  const fresh: SseEvent[] = [];
   const resumed = api.openStream(client.openSubscriptionUrl({ runId: id, target: api.fleetTarget(), metrics: ['METRIC_OFFERED_RPS'], samplesPerSimSecond: 4 }), { onEvent: (e) => fresh.push(e), lastEventId: '7', fetchImpl: fake });
   await until(() => fresh.length === 4, 'the three rows after id 7');
   resumed.close();
