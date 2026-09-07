@@ -1,6 +1,6 @@
 # TASKS — things that need Issao
 
-Last updated: 2026-09-06 18:06 PDT by Claude.
+Last updated: 2026-09-06 17:32 PDT by Claude.
 
 Checkpoint 2026-09-06 16:43 PDT, resumed 17:04: every agent restarted from files; see `STATUS.md`
 "Session restart". While the respawned tech lead has no agent id yet, any instruction of yours whose work
@@ -136,6 +136,9 @@ until you grant the role, and the results bucket keeps everything it is ever giv
 ---
 
 ## Answered, kept for the record
+
+- 17:31, *"can you ask everyone to pause until usage limit resets in 2h 50min"*: every agent paused and
+  checkpointed to files, resume 20:21 PDT. Nothing new here needs you.
 
 - 16:22, three decisions, all routed to the tech lead: *"we could get disable decode basically by
   setting HBM to infinity, so that should be straight forward."*; *"Load and latency forecasting should
