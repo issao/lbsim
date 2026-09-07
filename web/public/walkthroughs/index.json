@@ -21,7 +21,7 @@
     { "id": "diurnal-autoscale", "dynamic": 12, "phase": 2, "title": "Multi-geo diurnal autoscaling", "summary": "A cold start of 30 to 300 seconds against a burst that develops in tens of seconds.", "requires": "multi-cluster, geo routing, turn-up delay, warm pools, predictive scaling." },
     { "id": "kv-tiering", "dynamic": 13, "phase": 2, "title": "KV memory tiering, DRAM and SSD", "summary": "Swap beats recompute until the shared path saturates, and then it does not.", "requires": "tier pools with shared bandwidth, migration policies." },
     { "id": "pd-disagg", "dynamic": 14, "phase": 3, "title": "Prefill and decode disaggregation", "summary": "Two pools, a modelled fabric between them, and two sizing problems instead of one.", "requires": "separate pools, KV transfer over modelled fabric, dual sizing." },
-    { "id": "spec-decode", "dynamic": 15, "phase": 3, "title": "Speculative decoding value and cost", "summary": "Acceptance rate falls as the batch grows, which is exactly when you wanted the speed-up.", "requires": "sub-epoch acceptance sampling, batch-dependent acceptance rate." },
+    { "id": "spec-decode", "dynamic": 15, "phase": 3, "title": "Speculative decoding value and cost", "summary": "N=4 drafts more than double small-batch throughput, then the verify cost overtakes the win by batch 144 and the fleet's rated capacity barely moves at all.", "requires": "sub-epoch acceptance sampling, batch-dependent acceptance rate, demo 12.", "script": "spec-decode.json" },
     { "id": "weight-locality", "dynamic": 16, "phase": 3, "title": "Model weight locality and MoE", "summary": "Weights as tiered objects, and a cache replacement problem above the KV one.", "requires": "weights as tiered objects, weight cache replacement." }
   ]
 }

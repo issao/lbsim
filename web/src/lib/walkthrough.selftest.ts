@@ -82,7 +82,7 @@ function eq<T>(actual: T, expected: T, what: string): void {
 }
 
 // ---------------------------------------------------------------------------
-// fixtures: the exported run ids, and the ten selected walkthrough ids
+// fixtures: the exported run ids, and the eleven selected walkthrough ids
 // ---------------------------------------------------------------------------
 
 /** Every run id `sim-run export --demos` wrote for the six existing demo groups. */
@@ -127,9 +127,12 @@ const EXPORTED_RUN_IDS = new Set([
   '10-probes/least-kv-probe',
   '11-preemption/kv-spiral-never',
   '11-preemption/kv-spiral-swap',
+  '12-spec-decode/spec-off',
+  '12-spec-decode/spec-n4',
 ]);
 
-/** U48's ten selected dynamics: every one of these must have a script with a `run` field. */
+/** U48's ten selected dynamics, plus spec-decode (U26b): every one of these must have a script
+ * with a `run` field. */
 const SELECTED_IDS = [
   'rolling-hotspot',
   'stale-telemetry',
@@ -141,6 +144,7 @@ const SELECTED_IDS = [
   'least-kv-probe',
   'deadline-admission',
   'fair-share',
+  'spec-decode',
 ];
 
 // ---------------------------------------------------------------------------
@@ -192,7 +196,7 @@ for (const card of scripted) {
 }
 
 for (const id of SELECTED_IDS) {
-  check(`${id}: is one of the ten selected dynamics and has a card with a script`, () => {
+  check(`${id}: is one of the selected dynamics and has a card with a script`, () => {
     const card = index.cards.find((c) => c.id === id);
     if (!card) throw new Error('no card in index.json');
     if (!card.script) throw new Error('card has no script');

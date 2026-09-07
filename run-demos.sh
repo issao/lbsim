@@ -56,5 +56,9 @@ echo; echo "== 11. the KV spiral: parked session context fills the cache, and sw
 $S compare scenarios/kv_spiral_never.txt scenarios/kv_spiral_swap.txt \
            --out out/11-preemption.html
 
+echo; echo "== 12. speculative decoding: a small-batch win at N=4 that shrinks and reverses as batch grows =="
+$S compare scenarios/spec_off.txt scenarios/spec_n4.txt \
+           --out out/12-spec-decode.html
+
 echo; echo "reports in out/"
 echo "for machine-readable telemetry, add: --telemetry out/NAME.tele [--telemetry-budget-mb N]"
