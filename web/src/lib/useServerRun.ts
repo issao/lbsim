@@ -136,6 +136,18 @@ export class ServerRunEngine implements FrameSource {
   private disposed = false;
   /** The speed a pause resumes to, since the wire has no "unpause at the old speed". */
   private lastFactor = 1;
+  /**
+   * Whether the run should be paused, as last asked. A control that lands before StartRun has
+   * answered has no id to send it to; it is remembered here and applied once the id exists, so the
+   * showcase's "speed 2x, play" issued on the first render is not lost to a pause that lands later.
+   */
+  private wantPaused = false;
+  /**
+   * A control arrived while no run id existed. The showcase's walkthrough issues its first step
+   * from a child effect, which React runs before the parent effect that calls `start`, so `start`
+   * must not reset `wantPaused` to its own default when a control already spoke.
+   */
+  private pendingControl = false;
 
   constructor(initial: ScenarioConfig, opts: ServerRunEngineOptions) {
     this.config = cloneConfig(initial);
@@ -241,10 +253,13 @@ export class ServerRunEngine implements FrameSource {
    */
   async start(play = true): Promise<string | null> {
     this.disposed = false;
+    if (!this.pendingControl) this.wantPaused = !play;
+    this.pendingControl = false;
     const gen = ++this.generation;
     const client = this.opts.client;
     const wire = scenarioConfigToWire(this.config);
     this.dropped = wire.dropped;
+    const startedAt = this.lastFactor;
     let id: string;
     try {
       // The whole config goes as scenario text, per WIRE.md; overrides are for edits on top of a
@@ -259,7 +274,7 @@ export class ServerRunEngine implements FrameSource {
         // buttons mean what they say from the first second. Paused: the run cannot race to
         // completion in the gap before the pause lands; on Cloud Run an unpaced 300 s scenario
         // finished before the SetSpeed arrived and the pause answered 409.
-        maxRealtimeFactor: this.lastFactor,
+        maxRealtimeFactor: startedAt,
         recordTraces: this.opts.recordTraces ?? true,
       });
     } catch (e) {
@@ -274,9 +289,11 @@ export class ServerRunEngine implements FrameSource {
     this.runId = id;
     this.error = null;
     this.changed();
-    if (!play) {
+    // The run is already paced at the factor StartRun carried, so a playing run at that factor
+    // needs no call; a pause, or a speed chosen while the request was in flight, needs one.
+    if (this.wantPaused || this.lastFactor !== startedAt) {
       await client
-        .setSpeed(id, this.lastFactor, true)
+        .setSpeed(id, this.lastFactor, this.wantPaused)
         .then((s) => this.setStatus(s))
         // Already finished is not a failure: every sample is recorded and the stream replays it.
         .catch((e) => (String(e).includes('STATE_COMPLETE') ? undefined : this.fail(e)));
@@ -365,15 +382,26 @@ export class ServerRunEngine implements FrameSource {
     this.sub?.close();
     this.sub = null;
     const id = this.runId;
-    if (id) void this.opts.client.stopRun(id).catch(() => undefined);
+    if (!id) return;
+    void this.opts.client.stopRun(id).catch(() => undefined);
+    // On pagehide the browser abandons an ordinary fetch with the page, so the run outlives its
+    // tab until the server's cap of live runs answers 503 to everyone. `keepalive` lets this one
+    // request finish after unload; the client call above stays so a fake still sees the StopRun.
+    if (typeof window !== 'undefined' && typeof fetch !== 'undefined') {
+      void fetch(`${this.opts.client.baseUrl}/v1/ingress/StopRun`, { method: 'POST', body: JSON.stringify({ run_id: id }), keepalive: true }).catch(() => undefined);
+    }
   }
 
   // -- controls -------------------------------------------------------------
 
   setPaused(p: boolean): void {
-    const id = this.runId;
-    if (!id) return;
+    this.wantPaused = p;
     if (!p) this.pinnedS = null;
+    const id = this.runId;
+    if (!id) {
+      this.pendingControl = true;
+      return;
+    }
     void this.opts.client
       .setSpeed(id, this.lastFactor, p)
       .then((s) => this.setStatus(s))
@@ -387,8 +415,12 @@ export class ServerRunEngine implements FrameSource {
       return;
     }
     this.lastFactor = f;
+    this.wantPaused = false;
     const id = this.runId;
-    if (!id) return;
+    if (!id) {
+      this.pendingControl = true;
+      return;
+    }
     void this.opts.client
       .setSpeed(id, f, false)
       .then((s) => this.setStatus(s))
@@ -600,8 +632,14 @@ export function useServerRun(initial: ScenarioConfig, opts: ServerRunOptions = {
   useEffect(() => {
     void engine.start(autoplay);
     // A run the browser started and then navigated away from would keep a simulation going, so the
-    // unmount stops it. The subscription lease covers the case where the tab dies instead.
-    return () => engine.dispose();
+    // unmount stops it. A closed tab never unmounts, so pagehide stops it too; the subscription
+    // lease covers the case where the tab dies without either.
+    const onHide = () => engine.dispose();
+    window.addEventListener('pagehide', onHide);
+    return () => {
+      window.removeEventListener('pagehide', onHide);
+      engine.dispose();
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [engine]);
 

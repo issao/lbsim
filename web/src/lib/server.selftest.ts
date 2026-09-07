@@ -478,6 +478,76 @@ await checkAsync('(j) a_run_starts_paced_at_the_speed_controls_value', async () 
 });
 
 // ---------------------------------------------------------------------------
+// (k) controls issued before StartRun answers are applied once the id exists
+// ---------------------------------------------------------------------------
+
+await checkAsync('(k) controls_before_the_run_id_are_applied_after_StartRun', async () => {
+  // The showcase's walkthrough runner calls setSpeed(2) and play() from the dashboard's first
+  // onRun, while StartRun is still in flight; start(false) then paused the run once the id came
+  // back and nothing ever unpaused it. Every card sat at "0 samples".
+  const { fake, engine } = rig();
+  const starting = engine.start(false);
+  engine.setSpeed(2);
+  engine.setPaused(false);
+  eq(calls(fake, 'SetSpeed').length, 0, 'nothing on the wire before the id exists');
+  eq(await starting, 'r-1', 'the run starts');
+  eq(calls(fake, 'StartRun')[0].body.max_realtime_factor, 1, 'StartRun went out at the factor of the time');
+  eq(calls(fake, 'SetSpeed').length, 1, 'exactly one SetSpeed after StartRun');
+  eq(calls(fake, 'SetSpeed')[0].body.realtime_factor, 2, 'at the factor chosen while in flight');
+  eq(calls(fake, 'SetSpeed')[0].body.paused, false, 'and playing');
+  eq(fake.run('r-1')?.state, 'STATE_RUNNING', 'the fake\'s run plays');
+  eq(fake.run('r-1')?.realtimeFactor, 2, 'at 2x');
+  eq(engine.paused, false, 'the engine agrees');
+  eq(engine.speed, 2, 'and shows 2x');
+  engine.dispose();
+
+  // The real order on the showcase: the runner's step fires from a child effect, before the
+  // parent effect calls start(false) at all. The controls must survive the start.
+  const early = rig();
+  early.engine.setSpeed(2);
+  early.engine.setPaused(false);
+  eq(await early.engine.start(false), 'r-1', 'the run starts');
+  eq(calls(early.fake, 'StartRun')[0].body.max_realtime_factor, 2, 'StartRun carries the factor chosen before it');
+  eq(calls(early.fake, 'SetSpeed').length, 0, 'so no SetSpeed is needed');
+  eq(early.fake.run('r-1')?.state, 'STATE_RUNNING', 'the fake\'s run plays');
+  eq(early.fake.run('r-1')?.realtimeFactor, 2, 'at 2x');
+  // A restart after that has no pending control and plays, as it always did.
+  await early.engine.restart(cloneConfig(BASE));
+  eq(calls(early.fake, 'SetSpeed').length, 0, 'still no SetSpeed');
+  eq(early.fake.run('r-2')?.state, 'STATE_RUNNING', 'the restarted run plays');
+  early.engine.dispose();
+
+  // start(false) with no controls: paused at 1, as before.
+  const quiet = rig();
+  eq(await quiet.engine.start(false), 'r-1', 'the run starts');
+  eq(calls(quiet.fake, 'SetSpeed').length, 1, 'one SetSpeed, the pause');
+  eq(calls(quiet.fake, 'SetSpeed')[0].body.paused, true, 'paused');
+  eq(quiet.fake.run('r-1')?.state, 'STATE_PAUSED', 'the fake\'s run is paused');
+  eq(quiet.fake.run('r-1')?.realtimeFactor, 1, 'at 1x');
+  eq(quiet.engine.paused, true, 'the engine agrees');
+  quiet.engine.dispose();
+
+  // start(true) with no controls needs no SetSpeed: StartRun already paced it.
+  const playing = rig();
+  eq(await playing.engine.start(true), 'r-1', 'the run starts');
+  eq(calls(playing.fake, 'SetSpeed').length, 0, 'no SetSpeed for a playing run at the factor it started with');
+  eq(playing.fake.run('r-1')?.state, 'STATE_RUNNING', 'playing');
+  playing.engine.dispose();
+
+  // A pause issued while start(true) is in flight lands too.
+  const pausing = rig();
+  const p = pausing.engine.start(true);
+  pausing.engine.setPaused(true);
+  eq(await p, 'r-1', 'the run starts');
+  eq(calls(pausing.fake, 'SetSpeed').length, 1, 'one SetSpeed, the pause');
+  eq(pausing.fake.run('r-1')?.state, 'STATE_PAUSED', 'paused as asked');
+  pausing.engine.dispose();
+  await until(() => calls(pausing.fake, 'StopRun').length === 1, 'the StopRun');
+  eq(calls(pausing.fake, 'StopRun')[0].body.run_id, 'r-1', 'dispose stops the run it owns');
+  return 'setSpeed(2)+play before the id: one SetSpeed(2, playing); before start(false): none needed; plain start(false): paused at 1; start(true): no SetSpeed; pause in flight lands';
+});
+
+// ---------------------------------------------------------------------------
 
 console.log(`${cases} cases, ${cases - failures} passed, ${failures} failed`);
 if (failures > 0) throw new Error(`${failures} case(s) failed`);
