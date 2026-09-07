@@ -547,3 +547,83 @@ fn a_reconnect_with_last_event_id_resumes_at_the_right_id() {
     close(addr, &sid);
     post(addr, "StopRun", &format!("{{\"run_id\":\"{run_id}\"}}"));
 }
+
+
+// ---------------------------------------------------------------------------
+// Idle shutdown and health
+// ---------------------------------------------------------------------------
+
+fn frames_of(server: &Server, run_id: &str) -> usize {
+    server.runs.get(run_id).expect("run exists").lock().frames.len()
+}
+
+#[test]
+fn the_idle_guard_checkpoints_a_finished_run_and_stops_an_unwatched_paced_one() {
+    // One second of idleness, injected through the server rather than the environment.
+    let (addr, server, dir) = start_server("idle", S);
+
+    // A finished run with no lease: checkpointed within two wall seconds of finishing.
+    let run_id = start_run(addr, "route_p2c.txt", &[("duration_s", "20")], 0.0);
+    wait_for_state(addr, &run_id, "STATE_COMPLETE", Duration::from_secs(120));
+    let run_dir = dir.join("runs").join(&run_id);
+    let since = Instant::now();
+    while !run_dir.join("result.json").is_file() {
+        assert!(since.elapsed() < Duration::from_secs(2), "no checkpoint under {}", run_dir.display());
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let status = std::fs::read_to_string(run_dir.join("status.json")).unwrap();
+    assert!(status.contains("\"state\":\"STATE_COMPLETE\""), "{status}");
+    assert_proto_keys(&status);
+    let fleet = std::fs::read_to_string(run_dir.join("fleet.jsonl")).unwrap();
+    let lines: Vec<&str> = fleet.lines().collect();
+    assert_eq!(lines.len(), frames_of(&server, &run_id), "one row per frame");
+    assert_eq!(lines.len(), 80, "20 s at 250 ms");
+    assert!(lines[79].contains("\"final\":true") && !lines[78].contains("\"final\":true"));
+    assert_proto_keys(lines[40]);
+    assert_proto_keys(&std::fs::read_to_string(run_dir.join("result.json")).unwrap());
+    assert!(std::fs::read_to_string(run_dir.join("scenario.txt")).unwrap().contains("duration_s = 20"));
+
+    // A paced run nobody is watching: stopped, reported STATE_PAUSED with an empty error, and
+    // resumed by a subscription opening.
+    let run_id = start_run(addr, "route_p2c.txt", &[("duration_s", "100")], 1.0);
+    let paused = wait_for_state(addr, &run_id, "STATE_PAUSED", Duration::from_secs(5));
+    assert_eq!(paused.str("error"), Some(""));
+    assert!(dir.join("runs").join(&run_id).join("fleet.jsonl").is_file());
+    let frames = frames_of(&server, &run_id);
+    std::thread::sleep(Duration::from_millis(600));
+    assert_eq!(frames_of(&server, &run_id), frames, "an idle-stopped run does not advance");
+
+    let (mut sse, open) = subscribe(addr, &format!("run_id={run_id}&scope=SCOPE_FLEET&samples_per_sim_second=4&lease_ns={}", 30 * S));
+    let sid = open.str("subscription_id").unwrap().to_string();
+    wait_for_state(addr, &run_id, "STATE_RUNNING", Duration::from_secs(5));
+    let since = Instant::now();
+    while frames_of(&server, &run_id) == frames {
+        assert!(since.elapsed() < Duration::from_secs(5), "the resumed run does not advance");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(sse.update().id.is_some());
+    close(addr, &sid);
+    post(addr, "StopRun", &format!("{{\"run_id\":\"{run_id}\"}}"));
+}
+
+#[test]
+fn health_answers_without_touching_a_run() {
+    let (addr, server, _dir) = start_server("health", 3600 * S);
+    let run_id = start_run(addr, "route_p2c.txt", &[("duration_s", "100")], 1.0);
+    let stepped = post(addr, "StepForward", &format!("{{\"run_id\":\"{run_id}\",\"barrier_windows\":8}}"));
+    assert_eq!(stepped.status, 200, "{}", stepped.body);
+    let frames = frames_of(&server, &run_id);
+    assert!(frames >= 8);
+    let before = get_run(addr, &run_id);
+    for _ in 0..10 {
+        for path in ["/health", "/healthz"] {
+            let r = request(addr, "GET", path, &[], "");
+            assert_eq!((r.status, r.body.as_str()), (200, "ok"), "{path}");
+        }
+    }
+    assert_eq!(frames_of(&server, &run_id), frames, "twenty health checks moved the run");
+    let after = get_run(addr, &run_id);
+    assert_eq!(after.str("sim_time_unix_ns"), before.str("sim_time_unix_ns"));
+    assert_eq!(after.str("state"), Some("STATE_PAUSED"));
+    post(addr, "StopRun", &format!("{{\"run_id\":\"{run_id}\"}}"));
+}
