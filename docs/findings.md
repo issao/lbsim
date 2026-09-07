@@ -224,10 +224,11 @@ long, here it binds because idle context is never released, at a load twenty tim
 capacity. The metric that misleads is the one a load balancer would watch: the fleet is nearly idle by
 compute while it serves one sequence at a time. The full table is the report's; the numbers here are
 the unit's own, quoted rather than re-run. Goodput in the report, as quoted by demo 11's walkthrough
-script (U60, c16675b): 780 tok/s without eviction, 1,426 with swap. Provisional: review R2 found that
-session turns bypassed admission and that decode-growth eviction must keep the queue head; U62 fixes
-both, may move only the `11-preemption` golden rows, and its report carries the corrected numbers,
-which replace these when it lands.
+script (U60, c16675b): 780 tok/s without eviction, 1,426 with swap. Review R2 found that session turns
+bypassed admission and that decode-growth eviction could swap the queue head's parked context out and
+straight back; U62 (51968a7, merged 2896377) fixed both, and the numbers held: swap late attainment
+0.953, p99 TTFT 84 ms, 2.24 preemptions/s, both spiral runs' step fingerprints unchanged, only the
+events and `first_attempts` summary rows moved, by one gateway event per session turn.
 
 ---
 

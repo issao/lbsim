@@ -1,6 +1,6 @@
 # TASKS — things that need Issao
 
-Last updated: 2026-09-06 21:00 PDT by Claude.
+Last updated: 2026-09-06 21:02 PDT by Claude.
 
 **Stopped 21:00 PDT at your request** (*"we are approaching limit... tie up loose ends... give me a doc
 summarizing the state and most interesting outcomes with deep links and I will review and wrap up
@@ -12,8 +12,7 @@ re-spawning from `docs/agents/` (its `README.md` gives the order).
 ## 0. Read `docs/wrap-up-2026-09-06.md`
 
 The main agent's summary of the day: state, the most interesting outcomes, deep links into the
-findings, the graph, the deployed site and the catalog. Written at the stop; if it is not on `master`
-yet when you read this, the main agent was still writing it when housekeeping stopped.
+findings, the graph, the deployed site and the catalog. On `master` since 5da8a67 (merged cc8a229, 21:01 PDT).
 
 **If you say nothing:** the agents resume tomorrow from their files with the graph's queue as is.
 
