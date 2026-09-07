@@ -42,7 +42,7 @@ const replay = await load<typeof import('./replay')>('replay');
 const mode = await load<typeof import('./mode')>('mode');
 const fx = await load<typeof import('./apiFixtures')>('apiFixtures');
 const { fakeIngress } = await load<typeof import('./fakeIngress')>('fakeIngress');
-const { ServerRunEngine, SERVER_DISABLED_REASON, SERVER_NOT_YET } = await load<typeof import('./useServerRun')>('useServerRun');
+const { ServerRunEngine, SERVER_DISABLED_REASON, SERVER_NOT_YET, speedLabel } = await load<typeof import('./useServerRun')>('useServerRun');
 const { STEP_S } = await load<typeof import('./useRun')>('useRun');
 const { BASE, cloneConfig, FIELD_LABEL } = await load<typeof import('./config')>('config');
 
@@ -437,6 +437,44 @@ await checkAsync('(i) a_refused_update_restores_the_config', async () => {
   ok(engine.revision > revAfterRefusal, 'revision advances again on the resend');
   engine.dispose();
   return `refused update restores arrivalRps to ${before}; resubmitting the same value sends UpdateWorkload again`;
+});
+
+// ---------------------------------------------------------------------------
+// (j) a run starts paced at the speed control's value, on both paths
+// ---------------------------------------------------------------------------
+
+await checkAsync('(j) a_run_starts_paced_at_the_speed_controls_value', async () => {
+  const { fake, engine } = rig();
+  // Before any status: the pressed speed button is the speed the run will start at, never 0.
+  eq(engine.speed, 1, 'speed before any status arrives');
+  eq(speedLabel(engine.status, engine.paused), '…', 'label before any status');
+  await engine.start();
+  const first = calls(fake, 'StartRun')[0].body;
+  eq(first.max_realtime_factor, 1, 'the playing path starts paced at 1x');
+  eq(fake.run('r-1')?.realtimeFactor, 1, 'the fake\'s run holds 1');
+
+  engine.setSpeed(2);
+  await until(() => engine.speed === 2, 'playing at 2x');
+  await engine.restart(cloneConfig(BASE));
+  eq(calls(fake, 'StartRun').length, 2, 'the restart is a second StartRun');
+  eq(calls(fake, 'StartRun')[1].body.max_realtime_factor, 2, 'a restart starts at the speed last chosen');
+  eq(fake.run('r-2')?.realtimeFactor, 2, 'the fake\'s second run holds 2');
+  eq(engine.speed, 2, 'speed after the restart, before its first status, is the chosen one');
+  engine.dispose();
+
+  // The paused path is paced at the same value, so a pause cannot lose the race to completion.
+  const pausedRig = rig();
+  await pausedRig.engine.start(false);
+  eq(calls(pausedRig.fake, 'StartRun')[0].body.max_realtime_factor, 1, 'the paused path starts paced at 1x too');
+  await until(() => pausedRig.engine.paused, 'the pause');
+  eq(speedLabel(pausedRig.engine.status, pausedRig.engine.paused), 'paused', 'label while paused');
+  pausedRig.engine.dispose();
+
+  const running = { state: 'STATE_RUNNING', realtimeFactor: 2 } as NonNullable<typeof engine.status>;
+  eq(speedLabel(running, false), '2×', 'label at a positive factor');
+  eq(speedLabel({ ...running, realtimeFactor: 0 }, false), 'unpaced', 'label for a run an older client started unpaced');
+  eq(speedLabel(null, false), '…', 'label with no status');
+  return 'StartRun max_realtime_factor 1 on both paths, 2 after setSpeed(2) + restart; speed 1 before status; four labels';
 });
 
 // ---------------------------------------------------------------------------
