@@ -126,7 +126,9 @@ export class ServerRunEngine implements FrameSource {
   pinnedS: number | null = null;
 
   private readonly opts: ServerRunEngineOptions;
-  private readonly metrics: MetricName[];
+  private metrics: MetricName[];
+  /** Metrics this server refused for the fleet scope, dropped from the subscription and named in the banner. */
+  unserved: MetricName[] = [];
   private sub: SubscriptionHandle | null = null;
   private poll: ReturnType<typeof setInterval> | null = null;
   /** Bumped by every start and dispose, so a StartRun that lands after either is stopped again. */
@@ -247,7 +249,10 @@ export class ServerRunEngine implements FrameSource {
       // possible; a pause is a SetSpeed rather than a cap of zero, so the speed survives unpausing.
       id = await client.startRun({
         scenario: scenarioEnvelope(wire.fields),
-        maxRealtimeFactor: 0,
+        // A run that starts paused is paced at the last speed, so it cannot race to completion in
+        // the gap before the pause lands; on Cloud Run an unpaced 300 s scenario finished before
+        // the SetSpeed arrived and the pause answered 409. A run that starts playing is unpaced.
+        maxRealtimeFactor: play ? 0 : this.lastFactor,
         recordTraces: this.opts.recordTraces ?? true,
       });
     } catch (e) {
@@ -262,7 +267,13 @@ export class ServerRunEngine implements FrameSource {
     this.runId = id;
     this.error = null;
     this.changed();
-    if (!play) await client.setSpeed(id, this.lastFactor, true).then((s) => this.setStatus(s)).catch((e) => this.fail(e));
+    if (!play) {
+      await client
+        .setSpeed(id, this.lastFactor, true)
+        .then((s) => this.setStatus(s))
+        // Already finished is not a failure: every sample is recorded and the stream replays it.
+        .catch((e) => (String(e).includes('STATE_COMPLETE') ? undefined : this.fail(e)));
+    }
     this.subscribe();
     const every = this.opts.statusPollMs ?? STATUS_POLL_MS;
     if (every > 0) {
@@ -305,7 +316,23 @@ export class ServerRunEngine implements FrameSource {
       now: this.opts.now,
       onPhase: (p, detail) => {
         this.connection = p;
-        if (p === 'failed' && detail) this.error = detail;
+        if (p === 'failed' && detail) {
+          // "METRIC_X is not served for this scope": the server is older or narrower than this
+          // client's wish list. Drop that metric and open again; the panel for it stays mock.
+          // Without this the open answered 200 with a rejected_reason and the dashboard waited
+          // forever for a first sample, which is how the showcase got stuck.
+          const m = /^(METRIC_[A-Z0-9_]+) is not served/.exec(detail);
+          if (m && this.metrics.includes(m[1] as MetricName) && this.runId === id && !this.disposed) {
+            this.unserved.push(m[1] as MetricName);
+            this.metrics = this.metrics.filter((x) => x !== m[1]);
+            this.changed();
+            setTimeout(() => {
+              if (this.runId === id && !this.disposed) this.subscribe();
+            }, 0);
+            return;
+          }
+          this.error = detail;
+        }
         this.changed();
       },
       onUpdate: (u) => {
@@ -518,6 +545,7 @@ export type ServerRunHandle = Omit<RunHandle, 'engine' | 'update' | 'source'> & 
   connection: StreamPhase;
   subscriptionId: string | null;
   dropped: string[];
+  unserved: MetricName[];
   error: string | null;
   /** The reason every refused control gives. Constant; here so a panel need not import this file. */
   disabledReason: string;
@@ -591,6 +619,7 @@ export function useServerRun(initial: ScenarioConfig, opts: ServerRunOptions = {
       connection: engine.connection,
       subscriptionId: engine.subscriptionId,
       dropped: engine.dropped,
+      unserved: engine.unserved,
       error: engine.error,
       disabledReason: SERVER_DISABLED_REASON,
       refused: engine.refused,
