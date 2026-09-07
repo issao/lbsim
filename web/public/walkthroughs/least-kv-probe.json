@@ -1,0 +1,66 @@
+{
+  "id": "least-kv-probe",
+  "dynamic": 20,
+  "title": "Probing live KV instead of trusting stale telemetry",
+  "summary": "A routing policy that asks the replica directly for its resident KV tokens, rather than reading a scrape that may be seconds old.",
+  "scenario": {
+    "name": "showcase: least_kv_probe",
+    "seed": 20260906,
+    "durationS": 120,
+    "routing.kind": "least_kv_probe"
+  },
+  "run": "10-probes/least-kv-probe",
+  "compare": "10-probes/p2c",
+  "steps": [
+    {
+      "at_sim_s": 14,
+      "speed": 2,
+      "control_tab": "policies",
+      "observe_tab": "machine",
+      "highlight": "heatmap",
+      "title": "A live probe instead of a scrape",
+      "body": [
+        "This policy probes a replica's resident KV tokens directly at decision time, rather than routing on a periodic telemetry snapshot that finding 2 showed can be seconds stale.",
+        "The probe costs a modelled round trip per decision. That cost is visible in the routing latency panel rather than hidden."
+      ],
+      "look_for": "The per-decision probe latency tile, and the heatmap under Machine level staying comparatively flat."
+    },
+    {
+      "at_sim_s": 46,
+      "speed": 2,
+      "observe_tab": "machine",
+      "highlight": "heatmap",
+      "title": "Load spread: CV 0.44 under 4 s staleness",
+      "body": [
+        "Under a 4-second telemetry staleness setting, least_kv_probe holds a load-spread coefficient of variation of 0.44, against 0.63 for power-of-two-choices measured under the same staleness.",
+        "The probe sidesteps staleness by construction: it never reads the stale snapshot for the field that matters."
+      ],
+      "look_for": "The imbalance coefficient of variation tile reading noticeably lower than the p2c comparison quoted in the finding."
+    },
+    {
+      "at_sim_s": 80,
+      "speed": 2,
+      "control_tab": "run",
+      "observe_tab": "quality",
+      "highlight": "headline",
+      "title": "What the probe is worth against p2c",
+      "body": [
+        "p2c's 0.63 CV under 4 s staleness is a real number from the same U10 measurement, not a live comparison run in this walkthrough — there is no separate exported recording for p2c under matched staleness yet.",
+        "Use the Policies tab to switch this run's routing to power-of-two-choices live and watch the coefficient of variation move toward that 0.63 figure under the same staleness setting."
+      ],
+      "look_for": "The load-spread tile before and after switching the live policy."
+    },
+    {
+      "at_sim_s": 106,
+      "speed": 1,
+      "observe_tab": "utilization",
+      "highlight": "capacity",
+      "title": "The cost side of the trade",
+      "body": [
+        "A probe per decision is not free: it is a modelled RPC, visible in the routing-cost line rather than folded into general overhead.",
+        "Whether the balance improvement is worth that cost depends on how expensive the probe RPC is on the real system this is standing in for, which is a deployment question, not a simulation one."
+      ],
+      "look_for": "The routing-cost line in the Utilization tab, present here and absent for scrape-based policies."
+    }
+  ]
+}

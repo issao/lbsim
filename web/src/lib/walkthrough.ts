@@ -27,6 +27,10 @@ export interface WalkthroughScript {
   summary: string;
   scenario: Record<string, PatchValue>;
   steps: WalkthroughStep[];
+  /** The exported `sim-run export --demos` run id this walkthrough plays. */
+  run?: string;
+  /** A second exported run id, for the A/B view. Only meaningful alongside `run`. */
+  compare?: string;
 }
 
 export interface ShowcaseCard {
@@ -61,7 +65,7 @@ export async function loadScript(file: string): Promise<WalkthroughScript> {
 }
 
 /** Fail loudly on a malformed script rather than half-running it. */
-function validate(s: WalkthroughScript): void {
+export function validate(s: WalkthroughScript): void {
   if (!Array.isArray(s.steps) || s.steps.length === 0) throw new Error(`${s.id}: no steps`);
   let last = -Infinity;
   for (const [i, st] of s.steps.entries()) {
@@ -69,6 +73,12 @@ function validate(s: WalkthroughScript): void {
     if (st.at_sim_s <= last) throw new Error(`${s.id} step ${i}: at_sim_s must increase`);
     last = st.at_sim_s;
     if (!st.title || !Array.isArray(st.body)) throw new Error(`${s.id} step ${i}: title and body required`);
+  }
+  if (s.run !== undefined && (typeof s.run !== 'string' || !s.run)) {
+    throw new Error(`${s.id}: run must be a non-empty string`);
+  }
+  if (s.compare !== undefined && (typeof s.compare !== 'string' || !s.compare)) {
+    throw new Error(`${s.id}: compare must be a non-empty string`);
   }
 }
 

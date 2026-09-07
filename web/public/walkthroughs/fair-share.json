@@ -1,0 +1,65 @@
+{
+  "id": "fair-share",
+  "dynamic": 22,
+  "title": "Fair share: shedding the tenant that is actually over its share",
+  "summary": "Windowed per-tenant token accounting sheds specifically the tenant using more than its share, and goodput nearly doubles for everyone else.",
+  "scenario": {
+    "name": "showcase: fair_share",
+    "seed": 20260906,
+    "durationS": 120
+  },
+  "run": "9-fair-share/fair-share",
+  "compare": "9-fair-share/tenants-accept-all",
+  "steps": [
+    {
+      "at_sim_s": 14,
+      "speed": 2,
+      "control_tab": "policies",
+      "observe_tab": "quality",
+      "highlight": "goodput",
+      "title": "Windowed per-tenant tokens",
+      "body": [
+        "fair_share tracks each tenant's token consumption over a rolling window and sheds admission from whichever tenant is over its fair share, rather than shedding indiscriminately across all tenants.",
+        "The comparison run accepts all tenants without any fairness accounting, on the same multi-tenant workload."
+      ],
+      "look_for": "A per-tenant breakdown tile, present here, showing distinct shed rates per tenant."
+    },
+    {
+      "at_sim_s": 44,
+      "speed": 2,
+      "observe_tab": "quality",
+      "highlight": "goodput",
+      "title": "100% of what is shed comes from the over-share tenant",
+      "body": [
+        "Every request shed under fair_share belongs to the tenant that was consuming more than its share of tokens. No well-behaved tenant is shed to make room.",
+        "That is the fairness property this policy is built to demonstrate: the cost of overload lands on whoever caused it."
+      ],
+      "look_for": "The per-tenant shed-rate breakdown: one bar non-zero, the rest at zero."
+    },
+    {
+      "at_sim_s": 76,
+      "speed": 2,
+      "control_tab": "run",
+      "observe_tab": "quality",
+      "highlight": "headline",
+      "title": "Goodput: 9,157 to 14,496 tok/s",
+      "body": [
+        "Open the A/B view with A = fair_share (this run) and B = accept-all across tenants. Fleet-wide goodput rises from 9,157 tok/s under accept-all to 14,496 tok/s under fair_share — a 58% increase.",
+        "The gain is not from doing more work overall; it is from directing the fleet's existing capacity away from a tenant whose excess consumption was producing wasted, unattainable requests for everyone."
+      ],
+      "look_for": "The fleet-wide goodput tile in A against B, and the per-tenant tiles for the well-behaved tenants improving in A."
+    },
+    {
+      "at_sim_s": 102,
+      "speed": 1,
+      "observe_tab": "quality",
+      "highlight": "headline",
+      "title": "The relationship to per-class SLOs",
+      "body": [
+        "fair_share operates on tenant identity and a token budget, distinct from the priority-and-deadline mechanism in dynamic 7 (mixed SLO classes), though both are forms of the same idea: not all offered load deserves equal claim on scarce capacity.",
+        "Whether a fleet needs tenant fairness, class-based admission, or both depends on who the traffic actually comes from."
+      ],
+      "look_for": "The per-tenant goodput tiles for the tenants that were not over their share, before and after switching policy."
+    }
+  ]
+}

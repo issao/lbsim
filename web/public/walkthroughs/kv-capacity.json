@@ -1,0 +1,85 @@
+{
+  "id": "kv-capacity",
+  "dynamic": 18,
+  "title": "Capacity is a token budget",
+  "summary": "A load-balancer metric can improve while service collapses, because a token budget and a request count measure different things.",
+  "scenario": {
+    "name": "showcase: long-context sweep",
+    "seed": 20260906,
+    "durationS": 120,
+    "routing.kind": "power_of_two_choices",
+    "workload.arrivalRps": 70,
+    "workload.longProbability": 0.08,
+    "workload.longPromptMean": 24000
+  },
+  "run": "5-long-context/long_probability=0.08",
+  "compare": "5-long-context/long_probability=0.32",
+  "steps": [
+    {
+      "at_sim_s": 12,
+      "speed": 2,
+      "control_tab": "scenarios",
+      "observe_tab": "quality",
+      "highlight": "goodput",
+      "title": "8% long-context share: the usual baseline",
+      "body": [
+        "The long mode averages 24,000 prompt tokens against 1,200 for the short mode. At an 8% long share: goodput 18,127 tok/s, first-token p99 3,859 ms, attainment 97.0%, load spread 0.33.",
+        "This is the same fleet setup used in the routing and chunking findings. Nothing here is broken yet."
+      ],
+      "look_for": "A moderate, steady load spread around 0.33 in the Machine level tab."
+    },
+    {
+      "at_sim_s": 34,
+      "speed": 2,
+      "set": { "workload.longProbability": 0.0 },
+      "observe_tab": "quality",
+      "highlight": "ttft",
+      "title": "0% long: the best case in the sweep",
+      "body": [
+        "With no long-context requests at all: goodput 19,037 tok/s, first-token p99 just 407 ms, attainment 100.0%, load spread 0.38.",
+        "First-token latency is nearly ten times better than at 8% long share. One long request changes the picture far more than its share of the request count suggests."
+      ],
+      "look_for": "First-token p99 dropping to under half a second."
+    },
+    {
+      "at_sim_s": 58,
+      "speed": 2,
+      "set": { "workload.longProbability": 0.16 },
+      "observe_tab": "machine",
+      "highlight": "heatmap",
+      "title": "16% long: load spread is already falling",
+      "body": [
+        "At 16% long share: goodput 16,748 tok/s, first-token p99 5,033 ms, attainment 93.6%, load spread 0.28 — lower than at 8%, even though service is getting worse.",
+        "The balancer looks like it is doing a better job precisely as service starts to fall apart, because a few enormous requests make every replica uniformly saturated."
+      ],
+      "look_for": "The imbalance coefficient of variation reading better than the 8% run despite lower attainment."
+    },
+    {
+      "at_sim_s": 84,
+      "speed": 2,
+      "set": { "workload.longProbability": 0.32 },
+      "control_tab": "run",
+      "observe_tab": "quality",
+      "highlight": "headline",
+      "title": "32% long: load spread keeps improving while goodput halves",
+      "body": [
+        "At 32% long share: load spread falls to 0.24 — the best-looking number in the whole sweep — while goodput drops to 8,515 tok/s (less than half of the 8% baseline) and first-token p99 rises to 13,824 ms, 34 times worse. Attainment is 64.9%.",
+        "One 24,000-token context consumes what eight chat turns consume, so raising the long share consumes admission capacity that a request count would have said was free. Open the A/B view with A = 8% and B = 32% long share."
+      ],
+      "look_for": "A dashboard watching only imbalance would report improvement through this entire step."
+    },
+    {
+      "at_sim_s": 108,
+      "speed": 1,
+      "control_tab": "cluster",
+      "observe_tab": "utilization",
+      "highlight": "capacity",
+      "title": "The token-denomination argument",
+      "body": [
+        "At 32% long share the fleet is at 30% of its rated request rate and still produces a 13.8 second first-token tail. A system that counts requests cannot see this happening.",
+        "This is the clearest case in this project for denominating capacity, rate limits and routing signals in tokens rather than requests."
+      ],
+      "look_for": "The token-based capacity gauge in the Cluster tab against the request-count gauge beside it."
+    }
+  ]
+}

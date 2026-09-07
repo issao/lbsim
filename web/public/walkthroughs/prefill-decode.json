@@ -1,0 +1,80 @@
+{
+  "id": "prefill-decode",
+  "dynamic": 3,
+  "title": "Prefill and decode interference",
+  "summary": "Raising the chunked-prefill step budget buys time-to-first-token and spends inter-token latency for everyone already decoding. No setting wins both.",
+  "scenario": {
+    "name": "showcase: chunking sweep",
+    "seed": 20260906,
+    "durationS": 120,
+    "routing.kind": "power_of_two_choices",
+    "workload.arrivalRps": 70
+  },
+  "run": "3-chunking/step_token_budget=1024",
+  "compare": "3-chunking/step_token_budget=2048",
+  "steps": [
+    {
+      "at_sim_s": 12,
+      "speed": 2,
+      "control_tab": "scenarios",
+      "observe_tab": "quality",
+      "highlight": "ttft",
+      "title": "1,024-token chunks: the best goodput in the sweep",
+      "body": [
+        "This run's chunk budget is 1,024 tokens. Worst inter-token gap p99 is 50 ms, first-token p99 is 3,859 ms, goodput is 18,127 tok/s and attainment is 97.0% — the best of the six budgets measured.",
+        "The inter-token SLO target here is 80 ms. At 1,024 the fleet is comfortably inside it."
+      ],
+      "look_for": "The inter-token latency panel sitting well under the dashed 80 ms line."
+    },
+    {
+      "at_sim_s": 36,
+      "speed": 1,
+      "observe_tab": "quality",
+      "highlight": "ttft",
+      "title": "512 tokens: faster first token, still inside the SLO",
+      "body": [
+        "At the smallest budget in the sweep, 512 tokens, worst gap p99 is 33 ms — the best of the sweep — but first-token p99 rises slightly to 4,631 ms and goodput drops to 17,776 tok/s, attainment 95.8%.",
+        "A smaller chunk gets out of the way of decoding streams faster, but it takes more steps to finish a prompt, which pushes out the first token."
+      ],
+      "look_for": "First-token p99 a little worse than at 1,024, worst-gap p99 a little better."
+    },
+    {
+      "at_sim_s": 62,
+      "speed": 1,
+      "control_tab": "run",
+      "observe_tab": "quality",
+      "highlight": "headline",
+      "title": "2,048 tokens: the SLO breaks",
+      "body": [
+        "Open the A/B view with A = 1,024 and B = 2,048. At 2,048 tokens the worst inter-token gap p99 is 86 ms — past the 80 ms target — and goodput falls to 2,181 tok/s, attainment 31.8%.",
+        "The goodput cliff between 1,024 and 2,048 is not a modelling artefact, it is the SLO. Almost every request now breaches inter-token latency and earns no goodput while still consuming capacity."
+      ],
+      "look_for": "Throughput staying flat near 18,700 tok/s in both A and B while goodput falls by more than 8x."
+    },
+    {
+      "at_sim_s": 88,
+      "speed": 2,
+      "observe_tab": "machine",
+      "highlight": "batch",
+      "title": "8,192 and 16,384: first token keeps improving, everything else is already broken",
+      "body": [
+        "At 8,192 tokens: worst gap p99 302 ms, first-token p99 3,288 ms, goodput 2,437 tok/s, attainment 34.1%. At 16,384: worst gap p99 587 ms (18x the 512-token figure), first-token p99 3,255 ms — the best in the sweep — goodput 2,354 tok/s, attainment 33.4%.",
+        "The two latencies move in opposite directions, monotonically, across an 18-fold range of worst gap. A bigger chunk gets the first token out sooner and inserts a longer stall into every stream already decoding, because both compete for the same device in the same step."
+      ],
+      "look_for": "First-token p99 still falling past 2,048 while goodput stays pinned near 2,200-2,450 — the fleet doing identical work and delivering a tenth of the value."
+    },
+    {
+      "at_sim_s": 110,
+      "speed": 1,
+      "control_tab": "scenarios",
+      "observe_tab": "quality",
+      "highlight": "headline",
+      "title": "Throughput is flat across the whole sweep",
+      "body": [
+        "Throughput stays about 18,700 tok/s from 512 through 16,384 tokens. Only goodput moves, from 18,127 down to roughly 2,200-2,450 once the chunk budget crosses the SLO threshold.",
+        "This is the sharpest illustration in this project of why the two measures must not be confused."
+      ],
+      "look_for": "The throughput and goodput lines overlapping at 1,024, then diverging sharply from 2,048 onward."
+    }
+  ]
+}
