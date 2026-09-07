@@ -12,7 +12,7 @@ use crate::idle::wall_now_ns;
 use crate::lease::SubscriptionId;
 use crate::run::{self, Refused, Registry, RowSpec, Run};
 use crate::wire::{self, Json as JsonOut, SubscriptionUpdate, Target};
-use sim_scenario::Scenario;
+use sim_scenario::{OverrideKind, Scenario};
 use std::collections::{BTreeMap, VecDeque};
 use std::io::Write;
 use std::net::TcpStream;
@@ -226,7 +226,43 @@ impl Server {
                 }
                 Ok("{}".to_string())
             }
-            "Rewind" | "UpdateWorkload" | "UpdatePolicies" | "GetTraces" => Err(Refused {
+            "UpdateWorkload" | "UpdatePolicies" => {
+                let run = self.run(run_id()?)?;
+                let kind = if rpc == "UpdateWorkload" { OverrideKind::Workload } else { OverrideKind::Policy };
+                let overrides = match req.get("overrides") {
+                    Some(Json::Obj(fields)) => fields,
+                    Some(_) => return Err(bad("overrides must be an object")),
+                    None => return Err(bad("overrides is required")),
+                };
+                let mut pairs = Vec::with_capacity(overrides.len());
+                for (k, v) in overrides {
+                    let v = v.scalar_string().ok_or_else(|| bad(format!("override {k:?} must be a scalar")))?;
+                    pairs.push((k.clone(), v));
+                }
+                // Policed here by kind before the run thread sees the batch, so a key from the
+                // other group, or a structural one, refuses the whole batch without touching the
+                // engine. WIRE.md: a rejected update is 200 with `rejected_reason`, not a 4xx.
+                let misfiled = pairs.iter().map(|(k, _)| k).find(|k| Scenario::override_kind(k) != kind);
+                let outcome = match misfiled {
+                    Some(k) => Err(match Scenario::override_kind(k) {
+                        OverrideKind::Workload => format!("`{k}` is a workload key; use UpdateWorkload"),
+                        OverrideKind::Policy => format!("`{k}` is a policy key; use UpdatePolicies"),
+                        OverrideKind::Structural => {
+                            format!("`{k}` is a structural key and requires a restart: start a new run")
+                        }
+                    }),
+                    None => run.update(pairs)?,
+                };
+                let mut j = JsonOut::new();
+                j.begin_object()
+                    .field_bool("accepted", outcome.is_ok())
+                    .field_bool("required_resimulation", false)
+                    .field_u64("rewound_to_unix_ns", 0)
+                    .field_str("rejected_reason", outcome.err().as_deref().unwrap_or(""))
+                    .end_object();
+                Ok(j.finish())
+            }
+            "Rewind" | "GetTraces" => Err(Refused {
                 code: 501,
                 message: format!("{rpc} is not implemented by this server yet"),
             }),

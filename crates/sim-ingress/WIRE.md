@@ -69,9 +69,16 @@ message. Until proto codegen exists, `StartRunRequest.scenario` carries that tex
 
 `text` is exactly what `sim-run run` reads; `overrides` are the `--set k=v` pairs. `UpdateWorkload` and
 `UpdatePolicies` likewise carry `{"run_id": "...", "overrides": {...}}` restricted to workload keys and
-policy keys respectively; the server rejects a key from the wrong group with 400. Both are applied by
-restoring the most recent snapshot and re-simulating, so `UpdateResponse.required_resimulation` is
-`true` and `rewound_to_unix_ns` says where.
+policy keys respectively (`Scenario::override_kind` is the classifier). Both are **forward-only**: the
+batch is handed to the run thread and applied through `Sim::apply_overrides` at the next step
+boundary, between two chunks of simulated time, whether the run is advancing or paused; the RPC
+blocks until that happens. Nothing is rewound, so `required_resimulation` is `false` and
+`rewound_to_unix_ns` is `0`. The whole batch is checked before anything moves: a key from the other
+group ("routing is a policy key; use UpdatePolicies"), a structural key (`replicas`, `seed`, the
+physics), an unknown key, or a value that does not parse rejects the entire batch as 200 with
+`accepted: false` and `rejected_reason`, leaving the run exactly as it was. A policy key rebuilds the
+policy with empty state (a round-robin cursor returns to zero); a workload key takes effect at the
+next arrival. A run that is complete or failed answers 409.
 
 ## Messages, as JSON
 
@@ -116,8 +123,8 @@ counterpart as bit-identical merely because both describe the same window.
 ## What the first server supports
 
 The live server serves `StartRun`, `StopRun`, `GetRun`, `ListRuns`, `SetSpeed`, `StepForward`,
-`RenewSubscription`, `CloseSubscription`, `GetResult`, and `OpenSubscription` today, while `Rewind`,
-`UpdateWorkload`, `UpdatePolicies`, and `GetTraces` (until U24 lands) all answer **HTTP 501 Not
+`UpdateWorkload`, `UpdatePolicies`, `RenewSubscription`, `CloseSubscription`, `GetResult`, and
+`OpenSubscription` today, while `Rewind` and `GetTraces` (until U24 lands) answer **HTTP 501 Not
 Implemented** rather than 404, so a client can tell "not built yet" apart from "wrong path".
 
 Scopes: `SCOPE_FLEET` and `SCOPE_REPLICA`. Everything else returns `rejected_reason`.
