@@ -1,6 +1,6 @@
 # TASKS — things that need Issao
 
-Last updated: 2026-09-06 17:48 PDT by Claude.
+Last updated: 2026-09-06 17:58 PDT by Claude.
 
 Checkpoint 2026-09-06 16:43 PDT, resumed 17:04: every agent restarted from files; see `STATUS.md`
 "Session restart". While the respawned tech lead has no agent id yet, any instruction of yours whose work
@@ -105,6 +105,16 @@ The design decisions below are the ones outside that graph.
 | Prefix-affinity index at Ingress is a bounded top-K, not exact (§10.4) | bounded | small |
 
 ## 2. Later, when this phase ends
+
+- [ ] Delete the merged `claude/*` branches left on `origin` from before the restart (`tl-idle`,
+      `tl-web-transport`, `tl-web`, `tl-engine`, `tl-export`, `tl-physics`, `tl-policy-*`, `tl-replay`,
+      `tl-trace-wire`, `tl-arena-rules`, `simplify-1`, `simplify-2`, `docs-round*`). All content-merged,
+      verified by the tech lead with `git cherry`; their only effect is that `tools/sync.sh` and the inbox
+      list two stale quote markers from an old `docs/execution-graph.md`. Claude's sessions are not
+      permitted to delete remote branches, so it is yours:
+      `git fetch --prune && git branch -r --merged origin/master | grep 'origin/claude/' | sed 's|origin/||' | xargs git push origin --delete`.
+      **If you do nothing:** they stay; `tools/integrate.sh` deletes new branches on success, so the list
+      stops growing.
 
 - [ ] Delete the deploy key. `gcloud iam service-accounts keys list --iam-account=lbsim-deployer@lbsim-gcp.iam.gserviceaccount.com`
       shows the id, which starts `94afd556`; then `keys delete KEY_ID --iam-account=...`.
