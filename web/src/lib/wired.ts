@@ -26,11 +26,15 @@ export const WIRED_FRAME_FIELDS: ReadonlySet<keyof Frame> = new Set<keyof Frame>
   'replicas',
 ]);
 
-/** ReplicaSample fields the engine populates from real telemetry on a wire frame. */
+/**
+ * ReplicaSample fields the engine populates from real telemetry on a wire frame. `state` (the
+ * announced health state MachineLevel and ClusterHealth's gray-failure tile read against true
+ * speed) is deliberately absent: per docs/dashboard-plan.md section 3 it is still invented, so a
+ * panel reading it stays 'partial' rather than wrongly earning 'real'.
+ */
 export const WIRED_REPLICA_FIELDS: ReadonlySet<keyof ReplicaSample> = new Set<keyof ReplicaSample>([
   'id',
   'present',
-  'state',
   'queuedSeqs',
   'runningSeqs',
   'batchSize',

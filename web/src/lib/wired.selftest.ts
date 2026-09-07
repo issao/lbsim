@@ -126,6 +126,13 @@ check('replica read of an unwired field is partial', () => {
   return 'queueWaitMs is not wired on ReplicaSample';
 });
 
+check('replica state is still mock even on a wire frame', () => {
+  const r = wired.realness(wireFrame, [], ['state' as keyof ReplicaSample]);
+  eq(r.kind, 'partial', 'kind');
+  eq(r.mockFields, ['state'], 'mockFields');
+  return 'announced state is invented until the engine wires it, per dashboard-plan section 3';
+});
+
 check('isWireFrame distinguishes the two fixtures', () => {
   eq(wired.isWireFrame(mockFrame), false, 'mock');
   eq(wired.isWireFrame(wireFrame), true, 'wire');
