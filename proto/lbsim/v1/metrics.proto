@@ -38,24 +38,66 @@ message ScopedScorecard {
 // One sampled request's journey, for reading by a human. Sampling is stratified by latency bucket
 // and outcome, because uniform sampling of hundreds of millions of requests contains almost no
 // examples of the tail worth reading.
+// Which part of the latency distribution a traced request landed in. The sampler stratifies on it so
+// the far tail is always represented, and the dashboard asks for "a typical request" or "one from
+// the tail" by it.
+enum TraceBucket {
+  TRACE_BUCKET_UNSPECIFIED = 0;
+  TRACE_BUCKET_P50 = 1;   // at or below the median
+  TRACE_BUCKET_P90 = 2;   // between the median and p90
+  TRACE_BUCKET_P99 = 3;   // between p90 and p99
+  TRACE_BUCKET_P999 = 4;  // above p99
+}
+
+// Which roofline a step sat under. Decode at small batch is bandwidth-bound, since the weights are
+// re-read every step; prefill and large batches are compute-bound. It travels with the span because
+// it is the explanation of the span's duration, and re-deriving it from batch size would need the
+// cost model on the reader's side.
+enum StepBound {
+  STEP_BOUND_UNSPECIFIED = 0;
+  STEP_BOUND_BANDWIDTH = 1;
+  STEP_BOUND_COMPUTE = 2;
+}
+
 message RequestTrace {
   RequestRecord record = 1;
   repeated TraceSpan spans = 2;
+  TraceBucket bucket = 3;
 }
 
+// One span of a sampled request's journey, with what the resource was doing while it ran. Issao:
+// "We should have a way to sample requests to see execution traces and what was busy in each resource
+// as it executed." The first version carried only concurrency and KV utilization; the fields from 14
+// on are the resource state the engine actually knows at the step, so a slow span reads as an
+// explanation rather than a mystery. For the gateway and router spans the KV fields are zero, since
+// those components hold no cache.
 message TraceSpan {
   uint64 start_unix_ns = 1;
   uint64 end_unix_ns = 2;
   string component = 3;    // "gateway", "router", "replica:1234"
-  string operation = 4;    // "queue", "prefill", "decode", "preempted", "rpc", "kv_migrate"
+  string operation = 4;    // "queue", "route", "prefill", "decode", "kv_fetch", "preempted"
   uint64 replica_id = 5;
 
-  // Why this span took as long as it did. Without the surrounding conditions a slow span is a
-  // mystery rather than an explanation.
+  // Sequences in flight on the resource, including those not in this span's step.
   uint32 concurrent_seqs = 10;
+  // kv_tokens_resident / kv_capacity, kept for readers that want one number.
   double kv_utilization = 11;
+  // Prompt tokens for a prefill chunk, one for a decode step, zero for a wait.
   uint32 tokens_processed = 12;
   MemoryTier kv_tier = 13;
+
+  // The resource while the span ran.
+  uint32 batch_size = 14;          // sequences in the step this span was part of
+  uint32 queued = 15;              // sequences waiting behind this one
+  uint64 kv_tokens_resident = 16;
+  uint64 kv_capacity = 17;
+  uint64 step_ns = 18;             // the step's duration; for a decode span, the inter-token gap this request saw
+  StepBound bound = 19;
+
+  // Routing spans only: which replicas the router looked at and how stale its view of them was.
+  // This is what turns a bad routing decision from a statistic into a story.
+  repeated uint64 candidates = 20;
+  uint64 stale_view_age_ns = 21;
 }
 
 message RunResult {
