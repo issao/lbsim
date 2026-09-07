@@ -333,7 +333,10 @@ fn export_traces_stays_within_budget_and_keeps_all_failures() {
 
     // Through the run export, the file lands beside the run's other documents.
     let dir = fresh_dir("run");
-    let r = lbsim::sim::run(&lbsim::scenario::Scenario { duration_s: 10.0, warmup_s: 2.0, ..Default::default() }).unwrap();
+    let mut fixture_scenario = lbsim::scenario::Scenario::default();
+    fixture_scenario.duration_s = 10.0;
+    fixture_scenario.warmup_s = 2.0;
+    let r = lbsim::sim::run(&fixture_scenario).unwrap();
     let run_dir = export::export_run_with_traces(&r, &traces, "t/fixture", None, &dir, export::DEFAULT_TRACE_BUDGET_BYTES).unwrap();
     for doc in ["status.json", "result.json", "fleet.jsonl", "traces.jsonl", "manifest.json"] {
         assert!(run_dir.join(doc).is_file(), "{doc}");
