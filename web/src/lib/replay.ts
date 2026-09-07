@@ -18,6 +18,7 @@ import {
   type Json,
   type RunResult,
   type RunStatus,
+  type SubscriptionUpdate,
   ROUTING_TO_ENGINE,
   decodeRunResult,
   decodeRunStatus,
@@ -118,6 +119,18 @@ async function getText(url: string, f: FetchLike): Promise<string> {
   return res.text();
 }
 
+/**
+ * `getText` for a document an older export may not have written: `null` on a 404, and on the HTML
+ * shell a dev server serves with HTTP 200 in place of a missing file (see `probeRunIndex`).
+ */
+async function getOptionalText(url: string, f: FetchLike): Promise<string | null> {
+  const res = await f(url, { method: 'GET', headers: { accept: 'application/json, text/plain' } });
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`GET ${url}: HTTP ${res.status}`);
+  const text = await res.text();
+  return text.trimStart().startsWith('<') ? null : text;
+}
+
 async function getJson(url: string, f: FetchLike): Promise<Json> {
   const text = await getText(url, f);
   try {
@@ -161,23 +174,25 @@ export interface LoadedRun {
 
 export async function loadRun(entry: RunIndexEntry, f: FetchLike = defaultFetch(), base = runsBase()): Promise<LoadedRun> {
   const dir = `${base}${entry.runId}/`;
-  const [statusJson, fleetText, resultJson, scenarioText] = await Promise.all([
+  const [statusJson, fleetText, resultJson, scenarioText, replicasText] = await Promise.all([
     getJson(`${dir}status.json`, f),
     getText(`${dir}fleet.jsonl`, f),
     getJson(`${dir}result.json`, f),
     getText(`${dir}scenario.txt`, f),
+    getOptionalText(`${dir}replicas.jsonl`, f),
   ]);
   const status = decodeRunStatus(statusJson, `${entry.runId}/status.json`);
   const result = decodeRunResult(resultJson, `${entry.runId}/result.json`);
   const { config, unmapped } = configFromScenarioText(scenarioText);
-  const frames = parseFleetJsonl(fleetText, entry.simStartUnixNs);
+  const replicas = replicasText === null ? new Map() : parseReplicasJsonl(replicasText);
+  const frames = parseFleetJsonl(fleetText, entry.simStartUnixNs, replicas);
   if (frames.length === 0) throw new Error(`${entry.runId}/fleet.jsonl: no samples`);
   return { entry, status, result, scenarioText, config, unmapped, frames };
 }
 
-/** `fleet.jsonl`: one SubscriptionUpdate per line, blank lines skipped, frames in file order. */
-export function parseFleetJsonl(text: string, originUnixNs: bigint): ReplayFrame[] {
-  const out: ReplayFrame[] = [];
+/** Every SubscriptionUpdate in a `.jsonl` document, blank lines skipped, in file order. */
+function parseUpdates(text: string, name: string): SubscriptionUpdate[] {
+  const out: SubscriptionUpdate[] = [];
   let lineNo = 0;
   for (const raw of text.split('\n')) {
     lineNo++;
@@ -187,9 +202,39 @@ export function parseFleetJsonl(text: string, originUnixNs: bigint): ReplayFrame
     try {
       parsed = JSON.parse(line) as Json;
     } catch {
-      throw new Error(`fleet.jsonl line ${lineNo}: not JSON`);
+      throw new Error(`${name} line ${lineNo}: not JSON`);
     }
-    out.push(frameFromUpdate(decodeSubscriptionUpdate(parsed, `fleet.jsonl line ${lineNo}`), originUnixNs, out.length));
+    out.push(decodeSubscriptionUpdate(parsed, `${name} line ${lineNo}`));
+  }
+  return out;
+}
+
+/**
+ * `fleet.jsonl`: one SubscriptionUpdate per line, frames in file order. `replicas` is
+ * `parseReplicasJsonl`'s grouping; a frame takes the replica rows recorded at its own instant, and
+ * an export without them (older than U23) gives every frame an empty fleet.
+ */
+export function parseFleetJsonl(
+  text: string,
+  originUnixNs: bigint,
+  replicas: ReadonlyMap<bigint, SubscriptionUpdate[]> = new Map()
+): ReplayFrame[] {
+  return parseUpdates(text, 'fleet.jsonl').map((u, i) =>
+    frameFromUpdate(u, originUnixNs, i, replicas.get(u.simTimeUnixNs) ?? [])
+  );
+}
+
+/**
+ * `replicas.jsonl`: SCOPE_REPLICA updates grouped by instant, in file order within an instant. Keyed
+ * by the exact `sim_time_unix_ns` because the exporter stamps a replica row with its fleet row's
+ * instant, never an interpolated one.
+ */
+export function parseReplicasJsonl(text: string): Map<bigint, SubscriptionUpdate[]> {
+  const out = new Map<bigint, SubscriptionUpdate[]>();
+  for (const u of parseUpdates(text, 'replicas.jsonl')) {
+    const rows = out.get(u.simTimeUnixNs);
+    if (rows === undefined) out.set(u.simTimeUnixNs, [u]);
+    else rows.push(u);
   }
   return out;
 }
