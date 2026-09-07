@@ -1,0 +1,21 @@
+# Golden-fingerprint run list, read by check-fingerprints.sh.
+# One run per line: label then the arguments passed after `sim-run`. `#` comments allowed.
+# Rows are keyed by label, not by position: append new rows, never renumber existing ones,
+# so an append-only change here does not move any other row's fingerprint under a union merge.
+# The holdout suite (scenarios/holdout/*.txt) is not listed here; check-fingerprints.sh loops
+# it directly since it is discovered at run time, not named.
+1-routing compare scenarios/route_round_robin.txt scenarios/route_p2c.txt scenarios/route_least_requests.txt scenarios/route_random.txt
+2-staleness sweep scenarios/route_least_requests.txt --over telemetry_interval_ms=100,250,500,1000,2000,4000
+3-chunking sweep scenarios/route_p2c.txt --over step_token_budget=512,1024,2048,4096,8192,16384
+4-load-curve sweep scenarios/route_p2c.txt --over arrival_rps=30,70,110,150,190,230
+5-long-context sweep scenarios/route_p2c.txt --over long_probability=0.0,0.04,0.08,0.16,0.32
+6-retry compare scenarios/retry_none.txt scenarios/retry_budget.txt scenarios/retry_storm.txt
+7-least-queue-tokens run scenarios/route_least_queue_tokens.txt
+8-probe-live run scenarios/route_p2c.txt --set probe_live=true
+7-no-decode compare scenarios/route_round_robin_no_decode.txt scenarios/route_p2c_no_decode.txt
+8-admission compare scenarios/admit_accept_all.txt scenarios/admit_deadline_aware.txt
+9-fair-share compare scenarios/admit_tenants_accept_all.txt scenarios/admit_fair_share.txt
+10-probes compare scenarios/route_p2c.txt scenarios/route_least_kv_probe.txt
+11-preemption compare scenarios/kv_spiral_never.txt scenarios/kv_spiral_swap.txt
+12-forecast-load run scenarios/route_forecast_load.txt
+13-forecast-latency run scenarios/route_forecast_latency.txt
