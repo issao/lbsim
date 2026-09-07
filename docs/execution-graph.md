@@ -5,11 +5,12 @@ Owned by the tech lead; updated on every spawn, merge and ETA change, in the sam
 Per Issao: *"keep an instruction graph of everything that we need to in an md file, with sections below
 of what each task entails."* A stale graph is worse than none, so the status line moves every time.
 
-**Last updated:** 2026-09-06 20:47 PDT. **RESUMED 20:26 PDT** after the 17:35–20:21 pause; a fresh tech lead (aa236236554a3edd1) restarted from this file. **Done 36 · in flight 8 (incl. review R2; U35 at its final rebase) · queued 14 · paused 1 (S3) · waiting on Issao 1.**
-**20:47:** U24 trace engine landed (3a350b1: rebased over U22 with four keep-both conflicts, `tracing.settle` placed before `follow_up` so a span sees the replica state at finish time; 21 html_md5 rows refreshed, zero fingerprint/events/summary changes; its agent could not force-push so the rebased history went up as `claude/tl-trace-engine-u22`, and the two stale branches were deleted from here, which does work now). U55 landed (e41ec81: live STEP_TIME a value in seconds on both paths, `kv_capacity_tokens.max(1.0)` in the exporter, `jsonl` served as text, WIRE.md decision 5 reworded; 40 sim-ingress tests). U35 was refused at the rebase stage because U24 landed between its rebase and its integrate; told to rebase once more and integrate immediately (its CSV had to be force-added past `.gitignore`'s `*.csv`, reported to main). **Main deployed c90bf35 as lbsim-00006-7sk and verified the live Ingress path on the public URL** (StartRun → RUNNING → SSE fleet rows → StopRun COMPLETE at 4x), so U28 is live for Issao at https://lbsim.ai/#/dashboard. Decision on main's note about Cloud Run's request-scoped CPU (a paced run with no subscriber stands still): documented as the idle rule it already is, in a WIRE.md paragraph added to U54; StartRun's default does not change. U22 and U24 both on master opens the engine fan-out: U25 and U26 spawn next.
+**Last updated:** 2026-09-06 20:50 PDT. **RESUMED 20:26 PDT** after the 17:35–20:21 pause; a fresh tech lead (aa236236554a3edd1) restarted from this file. **Done 40 · in flight 13 (incl. reviews R2, R3; U40a and U40b at their final rebases) · queued 10 · paused 1 (S3) · waiting on Issao 1.**
+**20:50:** the count moved 0 → 10. U49 landed (9218eb9: `walkthroughRunner.ts` state machine over a `RunnerHandle`, 7/7 self-test; Showcase opens a script's `run` recording through the replay branch, `compare` noted not opened; U48's schema adopted mid-unit). Also landed: U57 (8475ed3, `updateBannerText`; `.banner.rejected` style owed, folded into U58), U56 (720db0e: `Sim::drain_frames`, `into_result` yields the undrained remainder, run.rs reattaches `st.frames` once at Finish for GetResult; Leaf trait untouched), U35 (8092332, trace replay, third rebase). U40a and U40b each refused twice at the golden file while five siblings landed; each authorised one more back-to-back rebase and integrate (U40a now, U40b after it). Stamps at 20:46/20:47 in the previous update were typed ahead of the clock (housekeeping caught it); restamped to the commit time 20:42. Spawned: U58 Showcase opens a live run (`run`/`onRun` props on Dashboard), U60 kv-spiral run ids (sonnet), U59a `Sim::apply_overrides` forward-only (the engine half; U59b the server arms after U54), U25a SLO classes in the engine, U26 speculative decoding knob, U31a failure injection in the engine, review R3 over the six merges since R2. U25a/U26/U31a/U59a all open `Replica::step` or the scenario keys; second lands rebases and re-refreshes html_md5.
+**20:42:** U24 trace engine landed (3a350b1: rebased over U22 with four keep-both conflicts, `tracing.settle` placed before `follow_up` so a span sees the replica state at finish time; 21 html_md5 rows refreshed, zero fingerprint/events/summary changes; its agent could not force-push so the rebased history went up as `claude/tl-trace-engine-u22`, and the two stale branches were deleted from here, which does work now). U55 landed (e41ec81: live STEP_TIME a value in seconds on both paths, `kv_capacity_tokens.max(1.0)` in the exporter, `jsonl` served as text, WIRE.md decision 5 reworded; 40 sim-ingress tests). U35 was refused at the rebase stage because U24 landed between its rebase and its integrate; told to rebase once more and integrate immediately (its CSV had to be force-added past `.gitignore`'s `*.csv`, reported to main). **Main deployed c90bf35 as lbsim-00006-7sk and verified the live Ingress path on the public URL** (StartRun → RUNNING → SSE fleet rows → StopRun COMPLETE at 4x), so U28 is live for Issao at https://lbsim.ai/#/dashboard. Decision on main's note about Cloud Run's request-scoped CPU (a paced run with no subscriber stands still): documented as the idle rule it already is, in a WIRE.md paragraph added to U54; StartRun's default does not change. U22 and U24 both on master opens the engine fan-out: U25 and U26 spawn next.
 **20:41:** U48 landed (a98d618): all ten selected dynamics have a walkthrough script with `run`/`compare` filled and checked against the export's ids; two latent bugs fixed on the way (walkthrough.ts read `import.meta.env` at module scope, so it could not be imported under node; the self-test's static `.ts` imports). U49 told to drop its stand-in on rebase. U52 landed (c90bf35, 20:36). Review R2 spawned over dcf77c8, 595ea7e, c90bf35, a98d618 (fourth code merge). U57 spawned 20:38 (`claude/tl-update-banner`, sonnet): `UpdateBanner` printed "nothing was re-simulated" for a refused update, found by U28 outside its files. Critical path is now U49 alone.
 **Resume 20:26–20:29:** twelve units spawned in one wave. The five worktrees holding uncommitted work from agents killed by the rate limit (forecast-latency, forecast-load, mock-tags, walkthroughs, web-live) were resumed *in place*: each brief opens with `git status`, commits the recovered edits as a WIP checkpoint, rebases, and continues; U22 and U24 resumed from their pushed branches with their one-file fixes; U35 from its clean branch. Template v3 pasted verbatim except the Setup block, which for a resume names the existing worktree instead of `worktree add` (deviation recorded here, not in the template). Then the queue: U49 started now against two stand-ins (the `run`/`compare` schema fields as prose from schema.md, read through a local type until U48's walkthrough.ts lands; the live controller as it is on master), U54 and U55 from R1, and U56 from the main agent's decision on R1 item 8. Models: sonnet for U40a, U40b, U48, U52, U55, U56; default for the rest. `lbsim-integ-queue` was reset (three stale log files from the interrupted 17:35 run). The three units that add scenario keys (U22, U24, U35) each refresh the 20 `html_md5` rows because reports embed `Scenario::to_text`; every brief says to stop if anything but html_md5 moves.
-**Dynamics live and showcased: 0 of 11 selected.** Selected: findings 1–6, demos 7–10 (`disable_decode`,
+**Dynamics live and showcased: 10 of 11 selected** (by this file's definition: U18, U28, U48 and U49 on master; every one of the ten scripts opens its exported recording in the Showcase page and the same scenarios run live on the dashboard page; the Showcase page itself does not yet open a *live* run, U58, and `set` steps cannot apply live until the server accepts updates, U59a then U59b; demo 11's script gets its run ids in U60).** Selected: findings 1–6, demos 7–10 (`disable_decode`,
 `least_kv_probe`, `deadline_aware`, `fair_share`); U22 landed at 20:33 (demo 11), so 11 are selected. Live means the dynamic runs
 through the Ingress endpoint in the dashboard (U18 then U28); showcased means a walkthrough script steps
 through it (U48, then U49 for the runner). The first number moves when U18, U28, U48 and U49 are all on master;
@@ -64,18 +65,22 @@ flowchart TD
 
   U23[U23 per-replica rows + heatmap]:::done
   U24[U24 trace engine]:::done
-  U35[U35 M4 trace replay workload<br/>claude/tl-trace-workload]:::flight
+  U35[U35 M4 trace replay workload]:::done
   U40a[U40a forecast_load<br/>claude/tl-forecast-load, sonnet]:::flight
   U40b[U40b forecast_latency<br/>claude/tl-forecast-latency, sonnet]:::flight
   U04 --> U40a & U40b
   U40a & U40b --> U40
-  U25[U25 SLO classes]:::queued
-  U26[U26 speculative decoding knob]:::queued
+  U25[U25a SLO classes in the engine<br/>claude/tl-slo-classes]:::flight
+  U25b[U25b per-class rows in report and export]:::queued
+  U25 --> U25b
+  U26[U26 speculative decoding knob<br/>claude/tl-spec-decode]:::flight
   U27[U27 prefix caching + sessions 9/10]:::queued
   U28[U28 web on live transport]:::done
   U29[U29 M3 leaf split + shard determinism]:::queued
   U30[U30 tiering 14 + disaggregation 15]:::queued
-  U31[U31 failure injection + gray failure 11]:::queued
+  U31[U31a failure injection in the engine<br/>claude/tl-failures]:::flight
+  U31b[U31b outlier ejection policy, demo 12, finding 9]:::queued
+  U31 --> U31b
   U32[U32 autoscaling + multi-geo 12/13]:::queued
   U33[U33 M7 control analysis: Bode]:::queued
   U34[U34 arena generator loop]:::done
@@ -92,17 +97,26 @@ flowchart TD
   U46[U46 tests build Scenario by struct update]:::done
   U47[U47 tools/api-card.sh]:::done
   U48[U48 showcase scripts for dynamics 1-10]:::done
-  U49[U49 walkthrough runner<br/>claude/tl-runner]:::flight
+  U49[U49 walkthrough runner]:::done
   U50[U50 WIRE.md: the server's nine decisions]:::done
   U51[U51 trace encoder: new TraceSpan fields]:::done
   U18 --> U50
   U52[U52 mode-aware mock tags]:::done
-  U57[U57 UpdateBanner names a refused update<br/>claude/tl-update-banner, sonnet]:::flight
+  U57[U57 UpdateBanner names a refused update]:::done
   U28 --> U57
+  U58[U58 Showcase opens a live run<br/>claude/tl-showcase-live]:::flight
+  U59a[U59a Sim::apply_overrides, forward-only<br/>claude/tl-live-overrides]:::flight
+  U59b[U59b server UpdateWorkload/UpdatePolicies arms]:::queued
+  U60[U60 kv-spiral script run ids<br/>claude/tl-kv-spiral-script, sonnet]:::flight
+  U49 --> U58
+  U59a --> U59b
+  U54 --> U59b
+  U59b --> U58
+  U22 --> U60
   U53[U53 exporter covers demos 7-10]:::done
   U54[U54 server hardening from review R1<br/>claude/tl-hardening]:::flight
   U55[U55 small fixes from R1 and cloud: STEP_TIME live value, kv cap, jsonl type]:::done
-  U56[U56 Sim::drain_frames, the run thread stops double-holding frames<br/>claude/tl-frame-drain, sonnet]:::flight
+  U56[U56 Sim::drain_frames]:::done
   U18 --> U56
   U18 --> U54
   U23 --> U55
@@ -382,7 +396,7 @@ machine-level heatmap drops its mock tag on a replay. Tests: `replica_rows_follo
 samples, sums equal the fleet row's QUEUED/RUNNING) and a replay self-test case. Upstream U15, U13, U17 (all done).
 
 ### U24 trace engine
-**Landed 20:44** as 3a350b1 (see the 20:47 status line). Brief gaps it reported: integrate.sh reads `origin/<branch>`, so a rebase needs a force push, and its fingerprint diff prints computed on `<`, baseline on `>`.
+**Landed 20:44** as 3a350b1 (see the 20:42 status line). Brief gaps it reported: integrate.sh reads `origin/<branch>`, so a rebase needs a force push, and its fingerprint diff prints computed on `<`, baseline on `>`.
 **Re-spawned 20:29** in place from 7f79532 (html_md5 refresh, rebase over U22, integrate).
 **Spawned 17:35** on `claude/tl-trace-engine`, worktree `/home/agents/repo/lbsim-wt-trace-engine`, model default,
 ETA 18:05. **Paused 17:35, complete on the branch, gate-blocked.** Commit 7f79532 on `origin/claude/tl-trace-engine`, worktree `/home/agents/repo/lbsim-wt-trace-engine` clean. Four tests pass; sim-model, scenario_parse, trace_wire pass. integrate.sh refused at stage 4: the 20 `html_md5` rows moved because reports embed `Scenario::to_text`, which now emits `trace_sample_rate = 0`; every `fingerprint=`, `events=` and `summary_md5=` is unchanged. **Resume:** in that worktree refresh the 20 html_md5 values in `bench/golden-fingerprints.txt` (the fingerprint script's update path), commit with the explanation "report text gained one scenario line", rebase onto origin/master (U22 adds six keys to the same three places; whoever lands second re-refreshes html_md5), re-run integrate.sh. The inserted call lines in `Replica::step`: `r.tracer.admitted(id)` after the `running.push`, `r.tracer.prefill_chunk(id, take)` after `prefill_tokens += take`, `r.tracer.snapshot(ResourceSnapshot {..})` after `r.last_step_ns = step_ns`, `r.tracer.decode_step(id)` after `s.last_token_at = token_at`, `r.tracer.retired(id)` after `r.completed += 1`; plus `pub mod trace;`, a `tracer` field and `tracer_mut()`. Known limits: `candidates` holds probed replicas plus the chosen one (free stale views are not observable without a recorder in `RouteContext`); retries draw afresh.
@@ -448,11 +462,13 @@ rebuilds through `tools/build.sh`, runs the round, records the source hash, appe
 are committed only when the generator is asked to keep them. Upstream U04, U20 (done), U40 (stand-in).
 
 ### U35 M4 trace replay workload
-**20:46, at its final rebase.** Branch `claude/tl-trace-workload` at d289d09: keys `workload`/`trace_file`, trace mode behind `next_gap_ns`/`make` with a lazy CSV load and zero random draws, arrivals stop after the last row; `scenarios/traces/sample.csv` (195 rows, burst at 12–14 s), `scenarios/trace_replay.txt`; both tests pass, only html_md5 moved. Choices: trace times are offsets from the first row (the leaf fires the first arrival at start); tenant clamped; `is_long` = prompt above the geometric mean of the two prompt means; a missing trace panics with the path. Refused once at the rebase stage (U24 landed in between); one more rebase and integrate authorised.
+**Landed** as 8092332 after a third rebase. The CSV was force-added past `.gitignore`'s `*.csv`; narrowing that rule is reported to main.
+**20:42, at its final rebase.** Branch `claude/tl-trace-workload` at d289d09: keys `workload`/`trace_file`, trace mode behind `next_gap_ns`/`make` with a lazy CSV load and zero random draws, arrivals stop after the last row; `scenarios/traces/sample.csv` (195 rows, burst at 12–14 s), `scenarios/trace_replay.txt`; both tests pass, only html_md5 moved. Choices: trace times are offsets from the first row (the leaf fires the first arrival at start); tenant clamped; `is_long` = prompt above the geometric mean of the two prompt means; a missing trace panics with the path. Refused once at the rebase stage (U24 landed in between); one more rebase and integrate authorised.
 **Re-spawned 20:29** from the clean branch (nothing had been written before the pause); html_md5 refresh expected for the two new keys.
 **Spawned 18:12** on `claude/tl-trace-workload`, ETA 18:35. **Paused 17:35.** Branch `claude/tl-trace-workload`, worktree `/home/agents/repo/lbsim-wt-trace-workload`; WIP checkpoint requested (spawned 18:12, so likely early). **Resume:** from the WIP commit, per the brief; add the two keys at the end of the three places and rebase over U22/U24. `workload = trace`, `trace_file` CSV (`t_s,prompt_tokens,output_tokens,tenant`), arrivals stop at the end of the trace, no random draw in trace mode so synthetic fingerprints cannot move; `scenarios/traces/sample.csv` and `scenarios/trace_replay.txt`. Fits behind `Workload::next_gap_ns`/`make` without touching sim-leaf.
 
 ### U40a `forecast_load` · U40b `forecast_latency` (`model: sonnet`)
+**Both complete on their branches, refused twice each at the golden-file rebase** (U40a b47ca16: staleness CV 0.1449 → 0.1414; U40b f341424: at load 0.8 TTFT p99 3768 → 3291 ms, attainment 0.6235 → 0.6349, labelled `12-forecast-*` as plain `run` rows because `compare` refuses differing workloads). One more back-to-back rebase and integrate each, U40a first. Catalog rows in their reports go to housekeeping at landing.
 **Re-spawned 20:29** in place from three untracked files each (policy, scenario, test); each adds a check-fingerprints.sh line and golden rows; second to land rebases.
 **Spawned 18:12** on `claude/tl-forecast-load` and `claude/tl-forecast-latency`, ETA 18:30. **Paused 17:35.** Branches `claude/tl-forecast-load` (worktree `/home/agents/repo/lbsim-wt-forecast-load`) and `claude/tl-forecast-latency` (`/home/agents/repo/lbsim-wt-forecast-latency`); WIP checkpoints requested (spawned 18:12). **Resume:** from the WIP commits, per the briefs; both append a `run` line and golden rows, second to land rebases. Per Issao at 16:22, the two forecasting families as policy files against the trait: `forecast_load` extrapolates queued tokens from the last two views' slope over the view's age; `forecast_latency` routes on predicted TTFT from queued tokens, the request's own prefill and the candidate's last step. Both keep p2c's candidate draw so candidate sets are byte-identical at a seed. Each: scenario, tests against p2c under staleness / long prompts, golden rows appended, catalog row to housekeeping.
 
@@ -518,7 +534,7 @@ test that parses run-demos.sh so the two cannot drift; the eight new run ids go 
 **Paused 17:35, cancelled for now.** Branch `claude/simplify-3`, worktree `/home/agents/repo/lbsim-wt-simplify-3`; told to stop, checkpoint only if edits existed. **Resume:** re-spawn after U54 lands (it edits the same files), never alongside another simplification. **Spawned 18:12** on `claude/simplify-3`, the crate that grew 1,800 lines today; export.rs excluded while U53 edits it; tests unchanged are the proof.
 
 ### U54 server hardening from review R1 (queued, default model)
-**20:46, scope +1:** also owns one WIRE.md paragraph under "Leases and idle shutdown" documenting Cloud Run's request-scoped CPU: a paced run advances only while a request (an SSE subscription counts) is in flight, which is the idle rule; fire-and-forget callers use an unpaced run. No code change.
+**20:42, scope +1:** also owns one WIRE.md paragraph under "Leases and idle shutdown" documenting Cloud Run's request-scoped CPU: a paced run advances only while a request (an SSE subscription counts) is in flight, which is the idle rule; fire-and-forget callers use an unpaced run. No code change.
 **Spawned 20:29** on `claude/tl-hardening`, worktree `/home/agents/repo/lbsim-wt-hardening`, model default, ETA 20:50. Tests first for items 1, 2, 3, 6 in tests/ingress_http.rs; 4, 5, 7 as unit tests in run.rs. Shares run.rs/lib.rs lines with U55 and U56 on disjoint ranges; second to land rebases.
 From R1's read-only review of c0e9ea8, ranked: (1) `server.rs:592-657` the JSON `Parser::value` recurses without a depth limit; ~10 KB of `[` overflows the thread stack and aborts the process, losing every run: add a depth argument, error past 64. (2) SSE sockets have no write timeout (`lib.rs:125`, `server.rs:366,375`): a client that stops reading pins a thread, a MAX_CONNECTIONS slot and a lease forever; `set_write_timeout(30 s)` before `sse_head`. (3) On write error `?` returns without removing the `Sub`; ring and lease leak: expire leases in `open_subscription` and at line 308. (4) No cap on runs (`run.rs:243-287`); unpaced runs are never reaped: refuse with 503 past a small constant of non-terminal runs. (5) `checkpoint` does fs writes under the run mutex while `server.rs:326` holds `subs` then the run lock: build strings under the lock, write after `drop(st)`. (6) `is_final` can be sent twice for the last frame at natural end: `is_final = (terminal || stop_requested) && j == n`. (7) On `advance_to` error frames closed in that chunk are dropped: copy before `Failed`. Tests first for 1, 2, 3, 6 in `tests/ingress_http.rs`. R1's item 8 (frames cloned out of `engine.frames()`, 2x memory, unbounded; needs a sim-leaf drain API) is a crate-boundary decision reported to the main agent, not made here.
 
@@ -528,6 +544,7 @@ From R1's read-only review of c0e9ea8, ranked: (1) `server.rs:592-657` the JSON 
 (a) `run.rs:566-579` emits replica `METRIC_STEP_TIME` as a nanosecond distribution while the exporter (U23) emits a seconds value and `adapter.ts` reads values, so the live heatmap's step time is NaN: emit `value(METRIC_STEP_TIME, last_step_ns / 1e9)` live and update WIRE.md decision 5 accordingly. (b) `export.rs:261` lacks `.max(1.0)` on `kv_capacity_tokens` (run.rs:551 has it). (c) `lib.rs` content-type table has no `jsonl`, so `fleet.jsonl` is served as octet-stream: add `text/plain; charset=utf-8`.
 
 ### U49 walkthrough runner on replay and live runs
+**Landed** as 9218eb9 (see the status line). Brief gaps it reported: the handle needs `play()`; Dashboard's replay picker is URL-driven only, so Showcase pinned `?run=` through `history.replaceState` (removed by U58).
 **Spawned 20:29** on `claude/tl-runner`, worktree `/home/agents/repo/lbsim-wt-runner`, model default, ETA 20:55. Files: `web/src/pages/Showcase.tsx`, new `web/src/lib/walkthroughRunner.ts` and its self-test. Both edges broken by stand-ins (see the graph): it reads `run`/`compare` through a local type until U48 lands, and codes against the live controller as it is on master. Its self-test drives a fake handle: set-before-advance, replay refusal with a reason, live 501 as a reason, done after the last step.
 Queued behind U28 and U48. `Showcase.tsx` opens a script's `run` through the replay source or, when the Ingress
 answers, starts it live; `set` steps call UpdateWorkload/UpdatePolicies in live mode and are refused with the reason
@@ -536,10 +553,31 @@ in replay mode. This is the unit that turns "N live and showcased" from 0 to 10.
 ### U56 `Sim::drain_frames` (from R1 item 8, decided by the main agent 20:28; `model: sonnet`)
 **Spawned 20:29** on `claude/tl-frame-drain`, worktree `/home/agents/repo/lbsim-wt-frame-drain`, ETA 20:45. The run thread clones every new frame out of `engine.frames()` and the engine keeps its own copy, so a live run holds every frame twice, unbounded. `pub fn drain_frames(&mut self) -> Vec<Frame>` on `Sim`, used at run.rs 409/427; `RunResult.frames` stays complete for a drained run (the agent picks the smaller of two ways and reports which); `frames()` stays for the export path so the golden file proves nothing moved. The `Leaf` trait is not touched; if it had to be, that goes back to the main agent. Test: `draining_yields_the_same_frames_as_not_draining`.
 ### U57 `UpdateBanner` names a refused update (`model: sonnet`)
+**Landed** as 8475ed3; `.banner.rejected` CSS rule owed (styles.css was not owned), folded into U58.
 **Spawned 20:38** on `claude/tl-update-banner`, worktree `/home/agents/repo/lbsim-wt-update-banner`, ETA 20:50. Found by U28: `UpdateBanner` reads only `requiredResimulation`, so a 501 or a replay refusal renders as "nothing was re-simulated". A pure `updateBannerText(u)` in `web/src/lib/updateBanner.ts` with a self-test (rejected / resim / applied), rendered with a `rejected` class.
 
 ### R2 review of the resume's first four code merges (read-only)
 **Spawned 20:41** over dcf77c8 (U22), 595ea7e (U28), c90bf35 (U52), a98d618 (U48): determinism first, then concrete-input bugs, live-path leaks, unsupported claims. Findings become units.
+### U58 Showcase opens a live run
+**Spawned** on `claude/tl-showcase-live`, model default. `Dashboard` gains `run?: string` and `onRun?: (run: RunHandle) => void`; Showcase hands the live or replay handle to its runner instead of pinning `?run=`; live when `dataModeFrom` says server, from `scenarioFor(script)`; adds `.banner.rejected`. Files: Dashboard.tsx, Showcase.tsx, walkthroughRunner.ts (interface only), styles.css.
+
+### U59a `Sim::apply_overrides`, forward-only (engine half of live updates)
+**Spawned** on `claude/tl-live-overrides`, model default. `Scenario::with_override` and `override_kind` (workload / policy / structural) in sim-scenario; `Sim::apply_overrides(&[(key, value)]) -> Result<Applied>` refuses structural keys whole, replaces `sc`, rebuilds router/admission through `make_routing`/`make_admission` when a policy key changed; streams untouched. Four tests in tests/live_overrides.rs. **U59b** (queued, after U54 and U59a): server.rs 184 arms for UpdateWorkload/UpdatePolicies calling it on the run thread, `UpdateResponse { accepted, required_resimulation: false, rewound_to_s: now, rejected_reason }`, Rewind stays 501; WIRE.md decision.
+
+### U60 kv-spiral script run ids (`model: sonnet`)
+**Spawned** on `claude/tl-kv-spiral-script`: `run` = `11-preemption/kv-spiral-never`, `compare` = `11-preemption/kv-spiral-swap`, finding-8 numbers in the steps, the ids added to the self-test allow-list. Makes the count 11 of 11 by the current definition.
+
+### U25a SLO classes in the engine
+**Spawned** on `claude/tl-slo-classes`, model default. Key `slo_classes = interactive:0.7,agent:0.2,batch:0.1`; targets are U42's constants; class drawn from its own stream only when on; `class` on Request and RequestRecord; per-class `class_goodput_tokens_s`/`class_attainment` on RunResult; four tests including byte-identity when off. **U25b** (queued): per-class rows in the report table and the export.
+
+### U26 speculative decoding knob
+**Spawned** on `claude/tl-spec-decode`, model default. Keys `spec_draft_tokens`, `spec_accept_rate`; a deterministic per-sequence fractional accumulator advances (1 − α^(N+1))/(1 − α) tokens per step (a geometric draw from a named stream is the later refinement); `CostModel.spec_draft_tokens` adds `decoding × N / prefill_tokens_per_s` to the compute term; tests on both sides of the crossover, the finding paragraph in the report; demo wiring is a follow-up.
+
+### U31a failure injection in the engine
+**Spawned** on `claude/tl-failures`, model default. Key `failures = t=60,replica=2,kind=slow=0.3;...` parsed into `Vec<FailureEvent>`; `Replica.speed` and `down`; slow is silent (gray), hang is speed 0, crash fails in-flight requests and is announced through the *delayed* view (`ejected: true`), `until` restores. Four tests; finding-9 draft from the slow-replica numbers. **U31b** (queued): outlier ejection policy, demo 12 pair, walkthrough.
+
+### R3 review of the six merges since R2 (read-only)
+**Spawned** over 3a350b1, e41ec81, 9218eb9, 8475ed3, 720db0e, 8092332; determinism first (tracing on/off, trace mode draws), drain-vs-ring frame loss, runner overshoot.
 
 ## Waiting on Issao
 
