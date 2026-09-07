@@ -5,7 +5,7 @@ Owned by the tech lead; updated on every spawn, merge and ETA change, in the sam
 Per Issao: *"keep an instruction graph of everything that we need to in an md file, with sections below
 of what each task entails."* A stale graph is worse than none, so the status line moves every time.
 
-**Last updated:** 2026-09-06 17:35 PDT. **Done 22 · in flight 10 · queued 17 · waiting on Issao 1.**
+**Last updated:** 2026-09-06 17:45 PDT. **Done 23 · in flight 11 · queued 17 · waiting on Issao 1.**
 **Dynamics live and showcased: 0 of 10 selected.** Selected: findings 1–6, demos 7–10 (`disable_decode`,
 `least_kv_probe`, `deadline_aware`, `fair_share`); U22 makes it 11 when it lands. Live means the dynamic runs
 through the Ingress endpoint in the dashboard (U18 then U28); showcased means a walkthrough script steps
@@ -18,7 +18,9 @@ adopted from the first spawn; profile §5 item 1 was already done by U20 (gate 4
 `tools/build.sh` fix in U45. Stale remote branches `claude/tl-*` from the previous session are content-merged
 (`git cherry` says so) but could not be deleted from here; `tools/sync.sh` will keep listing their two old
 markers until someone with push-delete rights removes them. Nothing in those branches is unmerged.
-**Critical path:** U18 (live agent, 2 of 3 commits) → U28 (started now against a fixture stand-in) → U49
+**17:45:** U18 landed (c0e9ea8, 38 unit + 8 HTTP tests, fingerprints PASS); U50 records its nine server decisions in
+WIRE.md and U51 makes the trace encoder emit the TraceSpan fields the main agent added to metrics.proto at f5eddf1.
+**Critical path:** U18 done → U28 (in flight; can now be checked against `sim-run serve` on master) → U49
 (walkthrough runner opens a live run) → the first "N live" number. U23 puts the heatmap on real data in
 parallel; U22 opens the dynamics fan-out. Every unit is `model: default` unless its section says `sonnet`.
 
@@ -48,7 +50,7 @@ flowchart TD
   U16[U16 simplify 1+2]:::done
 
   U17[U17 replay source + Frame adapter]:::done
-  U18[U18 live ingress server<br/>claude/tl-ingress-server, agent alive]:::flight
+  U18[U18 live ingress server]:::done
   U19[U19 trace wire + export]:::done
   U20[U20 arena objective + catalog append]:::done
   U21[U21 disable_decode]:::done
@@ -81,6 +83,10 @@ flowchart TD
   U47[U47 tools/api-card.sh<br/>claude/tl-api-card, sonnet]:::flight
   U48[U48 showcase scripts for dynamics 1-10<br/>claude/tl-walkthroughs, sonnet]:::flight
   U49[U49 walkthrough runner on replay and live runs]:::queued
+  U50[U50 WIRE.md: the server's nine decisions<br/>claude/tl-wire-decisions, sonnet]:::flight
+  U51[U51 trace encoder: new TraceSpan fields<br/>claude/tl-trace-fields, sonnet]:::flight
+  U18 --> U50
+  U19 --> U51
 
   U01 --> U04 --> U10 & U11 & U12
   U01 --> U14 --> U22
@@ -216,7 +222,7 @@ uncommitted), a browser render check against an export under `web/public/runs` (
 per-replica rows and the heatmap (that is U23). Next: finish the render check, commit the README and any
 fix it surfaces, push, report branch, hash and open choices.
 
-### U18 live ingress server
+### U18 live ingress server (done, c0e9ea8)
 `POST /v1/ingress/*` and the SSE `OpenSubscription` per WIRE.md, on the existing HTTP server, driving
 `Sim` on a run thread paced by realtime_factor, leases from U05, idle guard wired to checkpoint-and-stop,
 GetTraces returning U19's encoding when present. Files: `crates/sim-ingress/src/{server.rs,run.rs}`,
@@ -225,7 +231,8 @@ U05, U13, U15 (done). Downstream U28. Agent on `claude/tl-ingress-server`, workt
 `/home/agents/repo/lbsim-wt-server`. ETA ~19:30 before the checkpoint. Done: the HTTP test starts a
 run, subscribes, renews, closes, sees idle shutdown fire; `/health` untouched by run state.
 
-**17:35, watched, not re-spawned.** The previous session's agent is alive in `/home/agents/repo/lbsim-wt-server`:
+**Landed 17:23** as c0e9ea8: three commits (49a8da6 lifecycle, 3f6fb71 subscriptions/SSE/leases/ring/Last-Event-ID, 6244632 idle checkpoint and health), 38 unit and 8 HTTP tests, fingerprints PASS; its report went to the main agent, who relayed nine decisions now being written into WIRE.md by U50. Correction to docs/iteration-profile.md: the `ingress_http` hang was this agent's first uncommitted draft (StepForward on a paused run waited forever), fixed before its first commit; the committed suite runs in about 10 s. Unimplemented RPCs answer 501: Rewind, UpdateWorkload, UpdatePolicies, GetTraces (one arm once U24 lands).
+Earlier note kept for the record: **17:35, watched, not re-spawned.** The previous session's agent is alive in `/home/agents/repo/lbsim-wt-server`:
 f8b1683 (17:11, lifecycle: StartRun/GetRun/ListRuns/StopRun/SetSpeed/StepForward/GetResult over TCP) and 5c5354b
 (17:14, subscriptions over SSE, leases, replay ring) are on `origin/claude/tl-ingress-server`; the idle commit is
 next. Its brief predates `tools/integrate.sh`, so when the branch stops moving with `tests/ingress_http.rs` green
@@ -440,6 +447,19 @@ matching items with 12 lines of context.
 numbers, with two new optional schema fields `run` and `compare` naming the exported demo run ids the step plays;
 `index.json` cards updated so every selected dynamic has a script; a self-test validates monotone `at_sim_s` and that
 every `run` id is one `sim-run export --demos` writes. Content only; the runner that opens `run` is U49.
+
+### U50 WIRE.md records the live server's decisions (`model: sonnet`)
+**Spawned 17:45** on `claude/tl-wire-decisions`, ETA 17:55. The nine decisions U18 made (reconnect carries
+`subscription_id` with Last-Event-ID, 410 when dead; idle = paused, complete, or paced without a lease; the idle
+checkpoint is the export documents, not a snapshot; `from_merged_histogram` true on live rows; replica STEP_TIME a
+one-sample distribution; StopRun finalises COMPLETE; lease default 60 s, 0 dead; 501 for unimplemented RPCs;
+1 MiB body cap) written into the sections of `crates/sim-ingress/WIRE.md` they belong to.
+
+### U51 trace encoder emits the new TraceSpan fields (`model: sonnet`)
+**Spawned 17:45** on `claude/tl-trace-fields`, ETA 17:55. metrics.proto at f5eddf1 gave TraceSpan the resource state
+(batch_size 14 … stale_view_age_ns 21, `StepBound bound`) and RequestTrace a `bucket`; `trace_wire.rs` emits them
+and `tests/trace_wire.rs` checks the names against the proto. `web/src/lib/types.ts` follows in U49 or the trace
+panel unit. U19's section stands; U24 fills the values.
 
 ### U49 walkthrough runner on replay and live runs
 Queued behind U28 and U48. `Showcase.tsx` opens a script's `run` through the replay source or, when the Ingress
