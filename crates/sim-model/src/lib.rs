@@ -373,10 +373,13 @@ impl Replica {
         // policy evicts until it does: parked context first, then running sequences by the victim
         // rule, and a sequence evicted here re-enters at the head of admission next step. A lone
         // sequence is never evicted: admission let it in over the cap, and evicting it would only
-        // re-admit it next step.
+        // re-admit it next step. The queue head's own parked context is exempt here as at
+        // admission: swapped out now, it would be swapped straight back when its turn comes, two
+        // transfers for nothing.
         if policy != Policy::Never {
+            let keep = r.queue.front().map(|q| q.id);
             while r.kv_tokens + decoding as u64 > kv_cap
-                && r.evict(policy, victim, None, cost, dram_cap, &mut extra_ns, r.running.len() > 1)
+                && r.evict(policy, victim, keep, cost, dram_cap, &mut extra_ns, r.running.len() > 1)
             {
                 preempted += 1;
                 decoding = r.running.iter().filter(|s| s.prefill_left == 0).count();
