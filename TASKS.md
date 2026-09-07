@@ -1,6 +1,6 @@
 # TASKS — things that need Issao
 
-Last updated: 2026-09-06 17:58 PDT by Claude.
+Last updated: 2026-09-06 18:06 PDT by Claude.
 
 Checkpoint 2026-09-06 16:43 PDT, resumed 17:04: every agent restarted from files; see `STATUS.md`
 "Session restart". While the respawned tech lead has no agent id yet, any instruction of yours whose work
@@ -47,7 +47,8 @@ Three from Issao at 16:22, routed by the main agent:
 
 7. **Done, c7f8c6a.** *"we could get disable decode basically by setting HBM to infinity, so that should
    be straight forward."* Scenario key `disable_decode` zeroes the bandwidth term; demo 7; finding 7.
-8. **Catalog append done, f6a87a9**; the forecasting families are U40, queued. *"Load and latency forecasting should be added as potential policies to evaluate (populate an md with
+8. **Catalog append done, f6a87a9; the generator loop that calls it done, fe71bcf**; the forecasting
+   families themselves are U40, queued. *"Load and latency forecasting should be added as potential policies to evaluate (populate an md with
    all policy ideas we have had so far and instruct the arena policy generator to populate that as well
    with any that it authors)."* `docs/policy-catalog.md` is being written by a separate agent; the tech
    lead wired the arena generator's append, `sim_arena::catalog::append`, with a test holding the
