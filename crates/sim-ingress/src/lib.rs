@@ -12,8 +12,11 @@
 pub mod export;
 pub mod idle;
 pub mod lease;
+pub mod run;
+pub mod server;
 pub mod trace_wire;
 pub mod wire;
+pub use server::Server;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Component, Path, PathBuf};
@@ -25,13 +28,22 @@ use std::sync::Arc;
 /// scanner.
 const MAX_CONNECTIONS: usize = 64;
 const MAX_REQUEST_BYTES: usize = 16 * 1024;
+/// A `StartRun` body is a scenario file plus overrides, a few kilobytes; this is the ceiling on any
+/// request body, well above that and well below anything that could exhaust the box.
+const MAX_BODY_BYTES: usize = 1024 * 1024;
 
 pub fn serve(dir: &str, port: u16) -> Result<(), String> {
     let root = std::fs::canonicalize(dir).map_err(|e| format!("{dir}: {e}"))?;
     let listener = TcpListener::bind(("0.0.0.0", port))
         .map_err(|e| format!("bind 0.0.0.0:{port}: {e}"))?;
     println!("serving {} on 0.0.0.0:{port}", root.display());
+    serve_on(Arc::new(Server::new(root, idle::idle_threshold_ns_from_env())), listener)
+}
 
+/// The accept loop on a listener the caller bound, with the idle threshold injected through the
+/// server rather than read from the environment. What tests use, on an ephemeral port, keeping
+/// their own handle on the server to look at run state the wire does not expose.
+pub fn serve_on(server: Arc<Server>, listener: TcpListener) -> Result<(), String> {
     let live = Arc::new(AtomicUsize::new(0));
     for stream in listener.incoming() {
         let Ok(stream) = stream else { continue };
@@ -42,17 +54,17 @@ pub fn serve(dir: &str, port: u16) -> Result<(), String> {
             continue;
         }
         live.fetch_add(1, Ordering::Relaxed);
-        let root = root.clone();
+        let server = Arc::clone(&server);
         let live2 = Arc::clone(&live);
         std::thread::spawn(move || {
-            let _ = handle(stream, &root);
+            let _ = handle(stream, &server);
             live2.fetch_sub(1, Ordering::Relaxed);
         });
     }
     Ok(())
 }
 
-fn handle(mut stream: TcpStream, root: &Path) -> std::io::Result<()> {
+fn handle(mut stream: TcpStream, server: &Server) -> std::io::Result<()> {
     stream.set_read_timeout(Some(std::time::Duration::from_secs(10)))?;
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut line = String::new();
@@ -62,8 +74,10 @@ fn handle(mut stream: TcpStream, root: &Path) -> std::io::Result<()> {
     if line.len() > MAX_REQUEST_BYTES {
         return respond(stream, 431, "text/plain", b"request line too long");
     }
-    // Drain headers. Not used, but the connection must be read before replying or some clients see a
-    // reset instead of the response.
+    // Headers are kept: the ingress routes need `Content-Length`, `Last-Event-ID` and `Expect`.
+    // The static routes ignore them, but the connection must be read before replying either way or
+    // some clients see a reset instead of the response.
+    let mut headers: Vec<(String, String)> = Vec::new();
     let mut header = String::new();
     let mut total = line.len();
     loop {
@@ -73,21 +87,54 @@ fn handle(mut stream: TcpStream, root: &Path) -> std::io::Result<()> {
         if n == 0 || header == "\r\n" || header == "\n" || total > MAX_REQUEST_BYTES {
             break;
         }
+        if let Some((k, v)) = header.split_once(':') {
+            headers.push((k.trim().to_ascii_lowercase(), v.trim().to_string()));
+        }
     }
 
     let mut parts = line.split_whitespace();
     let method = parts.next().unwrap_or("");
     let target = parts.next().unwrap_or("/");
+    let path_only = target.split(['?', '#']).next().unwrap_or("/");
+
+    if path_only.starts_with(server::INGRESS_PREFIX) {
+        let length = headers
+            .iter()
+            .find(|(k, _)| k == "content-length")
+            .and_then(|(_, v)| v.parse::<usize>().ok())
+            .unwrap_or(0);
+        if length > MAX_BODY_BYTES {
+            return respond(stream, 413, "text/plain", b"request body too large");
+        }
+        // curl sends `Expect: 100-continue` for bodies above a threshold and waits for the nod
+        // before sending them; without this the read below stalls until curl gives up.
+        if headers.iter().any(|(k, v)| k == "expect" && v.eq_ignore_ascii_case("100-continue")) {
+            stream.write_all(b"HTTP/1.1 100 Continue\r\n\r\n")?;
+            stream.flush()?;
+        }
+        let mut body = vec![0u8; length];
+        reader.read_exact(&mut body)?;
+        let req = server::Request {
+            method: method.to_string(),
+            path: path_only.to_string(),
+            query: target.split_once('?').map(|(_, q)| q.split('#').next().unwrap_or("")).unwrap_or("").to_string(),
+            headers,
+            body,
+        };
+        // A stream can outlive the request read timeout by hours; it paces itself.
+        stream.set_read_timeout(None)?;
+        return server.handle(req, stream);
+    }
+
     if method != "GET" && method != "HEAD" {
         return respond(stream, 405, "text/plain", b"method not allowed");
     }
 
-    let path_only = target.split(['?', '#']).next().unwrap_or("/");
     if is_health_path(path_only) {
         return respond(stream, 200, "text/plain", b"ok");
     }
 
-    let Some(file) = resolve(root, path_only) else {
+    let Some(file) = resolve(&server.root, path_only) else {
         return respond(stream, 404, "text/plain", b"not found");
     };
     let mut body = Vec::new();
@@ -145,7 +192,7 @@ fn resolve(root: &Path, url_path: &str) -> Option<PathBuf> {
     }
 }
 
-fn percent_decode(s: &str) -> String {
+pub(crate) fn percent_decode(s: &str) -> String {
     let b = s.as_bytes();
     let mut out = Vec::with_capacity(b.len());
     let mut i = 0;
@@ -180,12 +227,18 @@ fn content_type(p: &Path) -> &'static str {
     }
 }
 
-fn respond(mut stream: TcpStream, code: u16, ctype: &str, body: &[u8]) -> std::io::Result<()> {
+pub(crate) fn respond(mut stream: TcpStream, code: u16, ctype: &str, body: &[u8]) -> std::io::Result<()> {
     let reason = match code {
         200 => "OK",
+        400 => "Bad Request",
         404 => "Not Found",
         405 => "Method Not Allowed",
+        409 => "Conflict",
+        410 => "Gone",
+        413 => "Payload Too Large",
         431 => "Request Header Fields Too Large",
+        500 => "Internal Server Error",
+        501 => "Not Implemented",
         503 => "Service Unavailable",
         _ => "OK",
     };
