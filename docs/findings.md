@@ -223,7 +223,8 @@ This is result 5's token budget seen from the other side: there the budget bound
 long, here it binds because idle context is never released, at a load twenty times below rated
 capacity. The metric that misleads is the one a load balancer would watch: the fleet is nearly idle by
 compute while it serves one sequence at a time. The full table is the report's; the numbers here are
-the unit's own, quoted rather than re-run.
+the unit's own, quoted rather than re-run. Goodput in the report, as quoted by demo 11's walkthrough
+script (U60, c16675b): 780 tok/s without eviction, 1,426 with swap.
 
 ---
 
