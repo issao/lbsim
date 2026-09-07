@@ -396,7 +396,11 @@ async function probeAll(): Promise<DataSource> {
   return { state: 'mock' };
 }
 
-function probeOnce(): Promise<DataSource> {
+/**
+ * The one probe every surface decides from. The walkthrough page calls it too, so what a script
+ * drives (live, replay or mock) is the same answer the dashboard under it acts on.
+ */
+export function probeDataSource(): Promise<DataSource> {
   if (probe === null) probe = probeAll();
   return probe;
 }
@@ -411,7 +415,7 @@ export function useDataSource(enabled = true): DataSource {
   useEffect(() => {
     if (!enabled) return;
     let alive = true;
-    void probeOnce().then((s) => {
+    void probeDataSource().then((s) => {
       if (alive) setSrc(s);
     });
     return () => {
