@@ -8,6 +8,7 @@
 // wired-ness alone can't tell mock from real -- that's what isWireFrame is for.
 
 import type { Frame, ReplicaSample } from './engine';
+import { DATA_SOURCE_LABEL, type DataMode } from './mode';
 
 /** Frame fields the engine populates from real telemetry on a wire frame. Everything else is NaN or empty. */
 export const WIRED_FRAME_FIELDS: ReadonlySet<keyof Frame> = new Set<keyof Frame>([
@@ -75,4 +76,15 @@ export function realness(
     if (!WIRED_REPLICA_FIELDS.has(field)) mockFields.push(field as string);
   }
   return mockFields.length === 0 ? { kind: 'real', mockFields: [] } : { kind: 'partial', mockFields };
+}
+
+/**
+ * U70: the word a panel's tag should show, given what it may honestly claim and the active data
+ * source. Anything short of fully wired -- unknown (no `Realness` computed yet), mock, or partial
+ * -- says `mock`, in every data mode: a panel that reads even one unwired field never gets to
+ * borrow the mode's own word just because the rest of it is real.
+ */
+export function panelTagWord(data: Realness | undefined, mode: DataMode): 'mock' | 'replay' | 'live' {
+  if (!data || data.kind !== 'real') return 'mock';
+  return DATA_SOURCE_LABEL[mode];
 }

@@ -27,8 +27,10 @@ async function load<T>(name: string): Promise<T> {
 }
 
 const wired = await load<typeof import('./wired')>('wired');
+const mode = await load<typeof import('./mode')>('mode');
 type Frame = import('./engine').Frame;
 type ReplicaSample = import('./engine').ReplicaSample;
+type DataMode = import('./mode').DataMode;
 
 // ---------------------------------------------------------------------------
 // harness
@@ -137,6 +139,32 @@ check('isWireFrame distinguishes the two fixtures', () => {
   eq(wired.isWireFrame(mockFrame), false, 'mock');
   eq(wired.isWireFrame(wireFrame), true, 'wire');
   return 'presence of simTimeUnixNs alone';
+});
+
+// U70: one vocabulary, the same three words everywhere, each with its own gloss.
+
+check('every_data_mode_has_a_label_and_a_gloss', () => {
+  const expectedWord: Record<DataMode, string> = { mock: 'mock', server: 'live', replay: 'replay' };
+  for (const m of Object.keys(expectedWord) as DataMode[]) {
+    eq(mode.DATA_SOURCE_LABEL[m], expectedWord[m], `label for ${m}`);
+    const gloss = mode.dataSourceGloss(m);
+    if (typeof gloss !== 'string' || gloss.length === 0) throw new Error(`${m} has no gloss: ${show(gloss)}`);
+  }
+  return 'mock/server/replay -> mock/live/replay, each with a non-empty gloss';
+});
+
+check('a_partial_panel_is_labelled_mock_in_every_mode', () => {
+  const partial = wired.realness(wireFrame, ['offeredRps', 'prefixHitRate']);
+  eq(partial.kind, 'partial', 'fixture is actually partial');
+  const modes: DataMode[] = ['mock', 'server', 'replay'];
+  for (const m of modes) {
+    eq(wired.panelTagWord(partial, m), 'mock', `partial panel's word in ${m} mode`);
+  }
+  eq(wired.panelTagWord(undefined, 'server'), 'mock', 'unknown realness is treated as mock too');
+  const real = wired.realness(wireFrame, ['offeredRps']);
+  eq(wired.panelTagWord(real, 'server'), 'live', 'a fully-wired panel borrows the active mode\'s own word');
+  eq(wired.panelTagWord(real, 'replay'), 'replay', 'same, in replay mode');
+  return 'reading even one unwired field keeps the tag at mock, regardless of the active data mode';
 });
 
 // ---------------------------------------------------------------------------

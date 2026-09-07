@@ -218,6 +218,11 @@ function WalkthroughOver({
     (n): n is string => n !== null && n !== undefined
   );
   const refusal = current.reason ?? lateReason;
+  // U70: the word for what this walkthrough is driving, and, when a step's conditions could not be
+  // applied, which of the three explains why -- replay never accepts a `set`, live can refuse one.
+  const narration =
+    source.kind === 'server' ? 'driving a live run' : source.kind === 'replay' ? 'stepping through a replay' : 'stepping through the mock';
+  const refusalPrefix = source.kind === 'replay' ? 'not applied (replay):' : source.kind === 'server' ? 'not applied (live, refused):' : 'not applied (mock):';
 
   return (
     <Dashboard
@@ -241,6 +246,7 @@ function WalkthroughOver({
             <span className="wt-step">
               {current.index + 1}/{script.steps.length} &middot; {step.at_sim_s}s
             </span>
+            <span className="wt-mode">{narration}</span>
             <span className="wt-title">{current.advancing ? 'advancing…' : step.title}</span>
           </div>
           {current.advancing ? (
@@ -259,7 +265,7 @@ function WalkthroughOver({
           )}
           {refusal ? (
             <div className="wt-body" style={{ color: 'var(--critical)' }}>
-              conditions not applied: {refusal}
+              {refusalPrefix} {refusal}
             </div>
           ) : null}
           {notes.length ? (

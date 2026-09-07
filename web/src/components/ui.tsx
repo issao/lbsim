@@ -1,11 +1,23 @@
-import type { ReactNode } from 'react';
+import { useSyncExternalStore, type ReactNode } from 'react';
+import { activeMode, DATA_SOURCE_GLOSS, subscribeActiveMode } from '../lib/mode';
+import { panelTagWord } from '../lib/wired';
 
 /**
  * Every panel carries this. Per docs/ui-spec.md section 5: a dashboard that looks real while
  * showing invented numbers is how someone ends up trusting a chart that was never connected.
+ *
+ * U70: the same three words everywhere -- mock, replay, live -- each glossed in the tooltip on
+ * whichever word this instance shows. `what` also takes free text (a caller's own longer label);
+ * only the three canonical words carry a gloss, so free text keeps its old generic tooltip.
  */
 export function MockTag({ what = 'mock', fields }: { what?: string; fields?: string[] }) {
-  const title = fields && fields.length > 0 ? `mock: ${fields.join(', ')}` : 'Generated in the browser. Not connected to sim-ingress.';
+  const gloss = (DATA_SOURCE_GLOSS as Record<string, string | undefined>)[what];
+  const title =
+    fields && fields.length > 0
+      ? `mock: ${fields.join(', ')}`
+      : gloss
+        ? `${what} — ${gloss}`
+        : 'Generated in the browser. Not connected to sim-ingress.';
   return (
     <span className="mock-tag" title={title}>
       {what}
@@ -36,10 +48,15 @@ export function Panel({
   bodyClass?: string;
   highlight?: boolean;
   id?: string;
-  /** Whether the frame behind this panel is mock, partially wired, or real. Absent means unknown: the
-   *  tag shows unconditionally, same as before this prop existed, so no panel regresses by omission. */
+  /** Whether the frame behind this panel is mock, partially wired, or real. Absent means unknown,
+   *  which is treated as mock: no panel renders a number without one of the three words in its tag. */
   data?: PanelData;
 }) {
+  // U70: a panel that reads any unwired field -- or draws from a mock frame at all -- is tagged
+  // `mock`, full stop. Only a panel where every field it reads is wired earns the active source's
+  // own word (`replay` or `live`), because that is the only case where "real" and "mock" differ.
+  const active = useSyncExternalStore(subscribeActiveMode, activeMode);
+  const tagWord = panelTagWord(data, active.mode);
   return (
     <section className={`panel${highlight ? ' highlight' : ''}`} id={id} data-panel={id}>
       <header className="panel-head">
@@ -47,7 +64,7 @@ export function Panel({
         {sub ? <span className="panel-sub">{sub}</span> : null}
         <span className="panel-head-right">
           {right}
-          {data?.kind === 'real' ? null : <MockTag fields={data?.kind === 'partial' ? data.mockFields : undefined} />}
+          <MockTag what={tagWord} fields={data?.kind === 'partial' ? data.mockFields : undefined} />
         </span>
       </header>
       <div className={`panel-body ${bodyClass}`}>{children}</div>
