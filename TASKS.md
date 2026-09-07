@@ -1,6 +1,6 @@
 # TASKS — things that need Issao
 
-Last updated: 2026-09-06 20:41 PDT by Claude.
+Last updated: 2026-09-06 20:42 PDT by Claude.
 
 Paused 17:31–20:25 PDT at your request, resumed 20:27: every agent restarted from files; see `STATUS.md`
 "Session restart". Any instruction of yours whose work is code is recorded verbatim under "Routed to
@@ -111,7 +111,7 @@ The design decisions below are the ones outside that graph.
 
 - [ ] Delete the merged `claude/*` branches left on `origin` from before the restart (`tl-idle`,
       `tl-web-transport`, `tl-web`, `tl-engine`, `tl-export`, `tl-physics`, `tl-policy-*`, `tl-replay`,
-      `tl-trace-wire`, `tl-arena-rules`, `simplify-1`, `simplify-2`, `docs-round*`). All content-merged,
+      `tl-trace-wire`, `tl-arena-rules`, `tl-trace-engine`, `tl-trace-engine-rebased`, `simplify-1`, `simplify-2`, `docs-round*`; the two `tl-trace-engine*` added at 20:42 from the tech lead, merged as 3a350b1, not deletable from an agent's session). All content-merged,
       verified by the tech lead with `git cherry`; their only effect is that `tools/sync.sh` and the inbox
       list two stale quote markers from an old `docs/execution-graph.md`. Claude's sessions are not
       permitted to delete remote branches, so it is yours:
