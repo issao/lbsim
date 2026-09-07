@@ -340,3 +340,65 @@ Ranked, at 32 merged units per hour:
 
 Next section at about 21:10: the 20:46–20:50 spawns, U40b's landing, and whether the union merge
 landed.
+
+## 2026-09-06 21:00 PDT — closing section: the day in numbers
+
+Stopped for the day at Issao's request, approaching the usage limit. Everything below is from
+`origin/master` merge commits and the transcripts under this session's tasks directory; the pause
+17:31–20:21 is a gap in the data, not idle time.
+
+**Units merged per hour, code branches only** (`claude/tl-*`, simplify, fixes; housekeeping's docs
+merges excluded): 13:00 1 · 14:00 3 · 15:00 12 · 16:00 15 · 17:00–17:31 21 (40 per hour) ·
+20:26–20:59 25 (45 per hour). Before the 17:07 restart the pipeline never exceeded 15 an hour; after
+it, with the execution graph as the only state and every agent integrating itself, it ran at 40–45.
+
+**Mean minutes per merged unit, by template version.**
+
+| Template | Units | Mean min | First edit | Reads before it | Report→merge |
+|---|---|---|---|---|---|
+| none (§2, ten units, 15:00–16:40) | 10 | 13.8 | 4.7 | 15 | 5.9 min, merged by main |
+| none, large units (16:40 wave) | 4 | 23.7 | 6.5 | 24 | merged by main; 30 agent-min lost to one hung test |
+| v2 (17:18 wave) | 7 | 5.1 | 2.0 | 10 | 0.7 min, agent runs integrate.sh |
+| v3 (20:30 wave) | 13 | 7.6 (6.0 without the three golden-file conflicts) | 2.5 | 10.8 | 0.6–1.7 min |
+| v4 (landed 20:55) | 0 | — | | | |
+
+**Gate time trend** (`integrate.sh`, lock held → fingerprints match): §3 measured the warm workspace
+test alone at 88 s and `check-fingerprints.sh` at 80–94 s when it had to rebuild release. 17:10 the
+gate was 40 s (tests 22, fingerprints 18); 17:33 20 s (17 + 3); 20:55 34 s (23 + 11). The step was
+the arena round leaving the default test path; since then the gate has stayed under a minute at
+every one of about 40 integrations, and the lock waited more than 25 s only twice (59 and 68 s at
+20:40–20:41, four integrations queued). Under a minute is what made it safe for the agent to run
+the gate itself, which is where report→merge 5.9 → 0.7 min came from.
+
+**Three fix-once items and what they saved.**
+
+1. `tools/build.sh` waits round-robin over both slots and bounds cargo with `timeout` (U45,
+   35c7918). Before: three agents each lost 600 s to one hung test holding slot 1 while slot 2 sat
+   idle, 30 agent-minutes in one wave. After: no 600 s tool timeout in 34 units.
+2. `Scenario` built by `default()` in tests (U46). Before: `missing fields admission, ...` broke
+   `scenario_parse` on every branch that added a key, 7 hits across 2 agents. After: zero compile
+   failures caused by another branch's change in either later wave.
+3. The arena round out of the default test path ("fast arena tests"). Before: 80–92 s per
+   workspace test run, three runs per unit before reporting. After: 17–23 s, and the template could
+   forbid agents from running the workspace tests at all; the gate does it once.
+   Plus the template's "do not read" line: 25 reads of the four tool files across ten agents → 1.
+
+**Top three still open for tomorrow**, ranked by minutes saved per unit × units per hour:
+
+1. `bench/golden-fingerprints.txt` and the `run` list merge by union (`.gitattributes`; the list as a
+   data file; name-keyed rows so nobody renumbers). Three of 13 units this evening lost 24
+   agent-minutes to six stage-2 refusals on those two files; every scenario-adding unit will hit
+   it until fixed. Tech lead; proposed 20:54.
+2. `html_md5` computed without the scenario text, or dropped. Every new scenario key moves all 20
+   rows and the second key-adding unit to land refreshes them again (U24's two stage-4 refusals).
+   Tech lead's decision; proposed 20:54.
+3. Unit size, still. The four 20:48–20:50 spawns carried 5.8–6.6 KB briefs, default model, and read
+   `sim-leaf/src/lib.rs` in 9–36 ranges before any edit, the 17:35 pattern that costs 5–8 minutes
+   before the first edit and 3× the per-turn cost for the unit's whole life. The sizing paragraph
+   in the template says ≤6 owned files; the briefs that exceed it are the ones to split.
+   Behind these: md-only diffs (graph updates) skipping the test gate, ~1 min of tech-lead time and
+   35 s of lock hold each.
+
+State for the next productivity agent: the parser is `~/.prod/profile.py` (method in §6), the
+integrate logs `~/.prod/integ-*.log`, the worktree `/home/agents/repo/lbsim-prod` on `claude/prod-5`,
+the cycle monitor stopped with this section.
