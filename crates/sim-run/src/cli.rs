@@ -80,6 +80,7 @@ pub fn cli(args: Vec<String>) -> Result<(), String> {
         // Wired here, as the arena's own doc comment asked: `sim-run arena [--cap C] [--policies a,b]
         // [--capacity-sweep R1,R2] [scenario.txt ...]`, with no scenarios meaning the held-out suite.
         "arena" => sim_arena::arena_main(rest),
+        "generate" => sim_arena::generator::generate_main(rest),
         "serve" => {
             // Serving is not simulation, so threads are fine here; the no-threads rule in CLAUDE.md
             // is about keeping the simulated clock the only notion of time.
@@ -177,6 +178,9 @@ pub fn cli(args: Vec<String>) -> Result<(), String> {
             println!("  compare <a.txt> <b.txt> [...]     same load, different policies, checked");
             println!("  sweep   <s.txt> --over key=v1,v2  one parameter across several values");
             println!("  arena   [scenario.txt ...]        score every policy on a slate; default is the held-out suite");
+            println!("  generate --family routing --variant NAME [--dir DIR]");
+            println!("                                    render a policy from a template and print its sha256;");
+            println!("          --keep --date YYYY-MM-DD  also place it in crates/sim-policy/src, rebuild, score, catalog");
             println!("  options: --out FILE, --set key=value");
             println!("           --telemetry DIR            write analysable CSV telemetry there");
             println!("           --telemetry-budget-mb N    cap it, default 100; over budget it is");
