@@ -178,6 +178,10 @@ fixed. Two fix-once proposals go to the tech lead with this section: `build.sh` 
 `timeout -k 5 ${LBSIM_BUILD_TIMEOUT:-420}` so a hang returns an error inside the agent's turn
 instead of a silent tool timeout that leaves the process running. The ingress test itself needs a
 deadline in the test (a `recv_timeout`, or a server built with a shutdown handle).
+*Footnote, 17:35:* the hang was that agent's first uncommitted draft (`StepForward` on a paused run
+waited forever), fixed before its first commit; the committed suite on master (c0e9ea8) runs in about
+10 s, so there is no open test item. The `build.sh` fallback was real regardless and landed as U45
+(35c7918): round-robin slot wait, cargo bounded by `timeout`.
 
 Smaller items seen in this wave. The arena unit ran the full arena round in debug three times
 (80–92 s each) before its 603 s loss, which §5 item 1 addresses and which the tech lead's
@@ -187,3 +191,63 @@ replay unit's 112 turns pulled 380 KB of Bash output into context, mostly whole-
 
 Next section: the first wave under brief template v1, spawned by tech lead a86e5fcc (17:07), at
 about 17:40.
+
+## 2026-09-06 17:35 PDT — first wave under the template (v2 from the first spawn)
+
+Tech lead a86e5fcc spawned 14 agents between 17:18 and 17:27, every brief pasted from
+`docs/agents/brief-template.md` v2 with excerpts filled in. Seven had merged by 17:29 through
+`tools/integrate.sh`; three large units and three small ones were still running at 17:31; one is a
+review agent. Model is "sonnet" where the spawn said so, "default" otherwise.
+
+| Unit | Model | Brief KB / excerpt lines / files owned | Wall min | Turns | Ctx k | s per turn (median) | First edit min | Reads before it | integrate.sh s (lock wait) |
+|---|---|---|---|---|---|---|---|---|---|
+| build-slots | sonnet | 4.9 / 17 / 2 | 4.0 | 22 | 51 | 5.3 | 0.4 | 1 | 54 (21) |
+| wire-decisions | sonnet | 5.0 / 1 / 1 | 4.7 | 27 | 61 | 5.0 | 1.7 | 1 | 41 (6) |
+| scenario-default | sonnet | 4.5 / 3 / 11 | 4.8 | 39 | 57 | 3.7 | 2.3 | 12 | 53 (19) |
+| trace-fields | sonnet | 5.4 / 13 / 4 | 5.2 | 35 | 69 | 4.3 | 2.6 | 7 | 34 (0) |
+| replica-rows | default | 7.3 / 21 / 11 | 5.2 | 29 | 64 | 5.0 | 1.6 | 29 | 37 (0) |
+| api-card | sonnet | 4.5 / 1 / 2 | 5.3 | 27 | 59 | 5.3 | 2.1 | 4 | 33 (0) |
+| generator | default | 7.6 / 20 / 6 | 6.8 | 33 | 58 | 9.1 | 3.0 | 15 | 41 (5) |
+| **merged, mean** | | | **5.1** | 30 | 60 | 5.4 | **2.0** | **10** | **42 (7)** |
+| preemption | default | 8.6 / 30 / 13 | 11.2+ | 45 | 77 | 14.8 | 4.7 | 36 | in flight |
+| trace-engine | default | 9.0 / 16 / 9 | 9.9+ | 38 | 78 | 17.8 | 6.7 | 48 | in flight |
+| web-live | default | 8.9 / 10 / 13 | 12.1+ | 42 | 91 | 13.1 | 7.8 | 50 | in flight |
+| walkthroughs | sonnet | 7.1 / 7 / 8 | 7.8+ | 32 | 70 | 6.5 | 5.9 | 11 | in flight |
+| export-demos, mock-tags | sonnet | 5–7 / 6–9 / 2–13 | 2–3 | | | 4–5 | 1.5 | 9–11 | in flight |
+
+**Delta against §2 (the ten pre-template units).** Wall 13.8 → 5.1 min for the merged units.
+First edit 4.7 → 2.0 min. Files read before it 15 → 10, and `tools/build.sh`,
+`check-fingerprints.sh`, `.cargo/config.toml` and `tests/layering.rs` were read by one agent
+between them (preemption, twice, `check-fingerprints.sh`), against 25 reads across ten agents
+before. Report→merge 5.9 min → 0.7 min: the agent runs `integrate.sh` itself, the gate is 33–54 s
+end to end (workspace tests 7–22 s now that the arena round is out of the default path), and the
+integration lock waited at most 21 s with seven agents finishing inside six minutes. No full
+workspace test was run by any agent before the gate; no 600 s timeouts. The tech lead: 23 min,
+69 turns, 152k tokens per turn (was 508k), 15 spawns and 6 messages, its Bash calls 55–61 s
+only when a graph update carries its own integration.
+
+**What the numbers say about unit size.** The variable that predicts the rest is the number of
+files a unit owns. The seven merged units own 1–11 files and reached their first edit in 0.4–3.0
+min at 4–9 s per turn. The three large units own 9–13 files, read 36–50 file slices before the
+first edit (4.7–7.8 min), and run at 13–18 s per turn, three times the small units, because each
+turn carries 77–91k tokens. Excerpts in the brief did not close the gap: 16–30 pasted lines cover
+one seam, and a 13-file unit has several. `crates/sim-leaf/src/lib.rs` (1047 lines) was read in
+15 slices by preemption, `sim-scenario/src/lib.rs` (379 lines) in 10 slices over three turns by
+trace-engine, where one whole read would have been one turn and 4k tokens.
+
+Ranked, at the current rate of about 20 merged units per hour:
+
+| # | Change | Saves | Owner | Status |
+|---|---|---|---|---|
+| 1 | **Units own at most ~6 files.** A unit that needs 9–13 files is two or three units with a stand-in seam between them. When one cannot be split, the brief carries `tools/api-card.sh <crate>` output (U47, landed 17:26) for every crate it touches, not just the seam. | 3–5 min on each large unit, and 3× cheaper turns for its whole life; 3 of 13 units this wave | tech lead | proposed 17:35 |
+| 2 | Read a file under 400 lines once, whole; slice only longer ones, several ranges per command. | ~1 min on units touching `sim-scenario`, `sim-model` or any mid-sized file; 4 of 13 | template | **v3, this section** |
+| 3 | Model choice written into the template header: sonnet for a unit with ≤4 owned files and one test (measured 4–5 s per turn, 4–5 min wall); default otherwise. Already the tech lead's practice; recorded so it survives a restart. | keeps the 5 s turn | template | **v3** |
+| 4 | Integration lock: waits of 0–21 s at seven finishes in six minutes. Nothing to do until it exceeds a minute. | | | measured, no action |
+
+Failures this wave, none repeated across agents: preemption one borrow error and one test
+failure of its own test; trace-engine nine compile errors in `sim-leaf` and one failing test of
+its own; export-demos one failing test of its own; the generator one intentional parse error. No
+compile failure came from another branch's change, which is what U46 (Scenario by `default()`)
+was for.
+
+Next section at about 17:55, after the three large units finish, with their report→merge.
