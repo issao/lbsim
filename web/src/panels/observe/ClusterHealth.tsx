@@ -8,6 +8,18 @@ import { LineChart } from '../../components/charts/LineChart';
 import { fmtNum } from '../../lib/format';
 import { useSubscriptions } from '../../lib/useSubscriptions';
 import { Metric } from '../../lib/types';
+import { realness } from '../../lib/wired';
+
+// Fields this panel reads off Frame. Keep this list honest: it drives the mock tag on every Panel below.
+const FRAME_READS: (keyof Frame)[] = [
+  'loadImbalanceCv',
+  'readyReplicas',
+  'warmingReplicas',
+  'drainingReplicas',
+  'offeredRps',
+  'completedRps',
+  'rejectedRps',
+];
 
 export function ClusterHealth({
   engine,
@@ -33,12 +45,13 @@ export function ClusterHealth({
   );
 
   const h = healthCounts(frame);
+  const data = realness(frame, FRAME_READS);
   const x = xs(frames);
   const events = useMemo(() => engine.eventsUpTo(cursorS).slice(-12).reverse(), [engine, cursorS, frames.length]);
 
   return (
     <div className="grid c2">
-      <Panel title="Fleet state" sub={`${config.fleet.accelerator}, 1 cluster / 1 pool`} highlight={highlight === 'fleet-state'} id="fleet-state">
+      <Panel title="Fleet state" sub={`${config.fleet.accelerator}, 1 cluster / 1 pool`} highlight={highlight === 'fleet-state'} id="fleet-state" data={data}>
         <div className="grid c4" style={{ gap: 6 }}>
           <Tile label="ready" value={String(h.ready)} />
           <Tile label="warming" value={String(h.warming)} note="cold start" />
@@ -69,6 +82,7 @@ export function ClusterHealth({
         sub="announced state against true speed"
         highlight={highlight === 'gray'}
         id="gray"
+        data={data}
       >
         <div className="grid c2" style={{ gap: 6 }}>
           <Tile
@@ -97,7 +111,7 @@ export function ClusterHealth({
         </div>
       </Panel>
 
-      <Panel title="Failure events" sub="on the simulated timeline" bodyClass="scroll" highlight={highlight === 'events'} id="events">
+      <Panel title="Failure events" sub="on the simulated timeline" bodyClass="scroll" highlight={highlight === 'events'} id="events" data={data}>
         {events.length === 0 ? (
           <p className="note" style={{ margin: 0 }}>nothing yet. The scripted schedule starts at 52 s.</p>
         ) : (
@@ -115,7 +129,7 @@ export function ClusterHealth({
         )}
       </Panel>
 
-      <Panel title="Throughput against arrivals" sub="offered, admitted, shed" highlight={highlight === 'arrivals'} id="arrivals">
+      <Panel title="Throughput against arrivals" sub="offered, admitted, shed" highlight={highlight === 'arrivals'} id="arrivals" data={data}>
         <LineChart
           xs={x}
           series={[
