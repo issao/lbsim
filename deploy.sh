@@ -138,6 +138,7 @@ gcloud run deploy "$SERVICE" \
   --cpu-throttling \
   --no-cpu-boost \
   --concurrency 80 \
+  --session-affinity \
   --min-instances 0 \
   --max-instances 10 \
   --min 0 \
@@ -154,11 +155,16 @@ gcloud run deploy "$SERVICE" \
 # --min-instances / --min at zero.
 #
 # What is deliberately absent, or deliberately off:
-#   --no-cpu-throttling  : not used; --cpu-throttling is set instead. This is a static server, so CPU
-#                          only during a request is correct and cheaper. It becomes necessary when a
-#                          simulation advances between requests, which is the real Ingress service,
-#                          not this one.
-#   --session-affinity   : not set, for the same reason. Nothing here holds per-user state.
+#   --no-cpu-throttling  : not used; --cpu-throttling stays. A paced run advances only while a request
+#                          is in flight, and an open subscription is one, so the dashboard case has CPU;
+#                          a run nobody is watching stands still, which is WIRE.md's idle rule.
+#   --session-affinity   : SET since the live Ingress (U18). A run lives in one instance's memory,
+#                          so a StartRun answered by instance A followed by an OpenSubscription routed
+#                          to instance B leaves the browser reconnecting forever; the browser gate saw
+#                          exactly that on lbsim.ai (13 of 15 walkthroughs stuck at "stream opening"
+#                          while every one passed locally). The affinity cookie keeps a viewer on the
+#                          instance that holds its run; it is best effort, which is why a run the
+#                          instance does not hold answers 404 and the client reopens from scratch.
 #   --cpu-boost          : explicitly *off*. It is on by default on new services, and it is billed.
 #                          The container is a static binary that binds its port in milliseconds, so
 #                          there is nothing for extra startup CPU to accelerate.
