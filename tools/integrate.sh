@@ -24,6 +24,12 @@
 #   7  the push did not land, or master on origin does not contain the branch afterwards
 #   1  anything else: bad arguments, missing branch, worktree trouble
 #
+# Docs-only fast path (U68). If every path in the rebased branch's diff against origin/master
+# ends in .md, and there is at least one such path, stages 3 and 4 are skipped — a change that
+# touches no non-.md file cannot move a fingerprint or fail a Rust test — and one line is
+# printed instead: "docs-only diff: tests and fingerprints skipped". Stage 5 already skips
+# itself when the diff touches no web/ file. A mixed diff, or an empty one, runs the full gate.
+#
 # Where it runs. All verification happens in one persistent worktree, $QUEUE, which no agent edits by
 # hand. Persistent, not per-branch, so its target directory stays warm across integrations; one, not
 # many, because the flock serialises integrations anyway. The merge itself is made in $MAIN, the only
@@ -57,6 +63,21 @@ work="integ/$slug"
 
 say() { printf '%s integrate %s: %s\n' "$(date '+%H:%M:%S')" "$branch" "$*"; }
 die() { local code=$1; shift; say "REFUSED ($code): $*"; exit "$code"; }
+
+# docs_only <newline-separated paths>: true (0) iff every path ends in .md and there is at
+# least one path; false (1) for a mixed diff or an empty one. Kept dependency-free (no sourcing,
+# no globals) so tools/integrate-md.test.sh can carry an identical copy and test it in isolation.
+docs_only() {
+  local paths=$1 p n=0
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    case "$p" in
+      *.md) n=$((n + 1)) ;;
+      *) return 1 ;;
+    esac
+  done <<<"$paths"
+  [ "$n" -gt 0 ]
+}
 
 # One integration at a time, machine-wide. flock waits in the kernel; nobody polls.
 exec {lockfd}>"$LOCK"
@@ -96,12 +117,17 @@ fi
 say "rebased: $n commit(s) on top of origin/master $(git -C "$MAIN" rev-parse --short origin/master)"
 
 # Verification. All of it is mechanical, and all of it runs on the rebased branch.
-( cd "$QUEUE" && tools/build.sh test --workspace -q >"$QUEUE/.integrate-test.log" 2>&1 ) \
-  || { tail -40 "$QUEUE/.integrate-test.log"; die 3 "workspace tests fail"; }
-say "tests pass"
-( cd "$QUEUE" && ./check-fingerprints.sh >"$QUEUE/.integrate-fp.log" 2>&1 ) \
-  || { cat "$QUEUE/.integrate-fp.log"; die 4 "fingerprints moved without a baseline update"; }
-say "fingerprints match"
+branch_diff=$(git -C "$QUEUE" diff --name-only origin/master...HEAD)
+if docs_only "$branch_diff"; then
+  say "docs-only diff: tests and fingerprints skipped"
+else
+  ( cd "$QUEUE" && tools/build.sh test --workspace -q >"$QUEUE/.integrate-test.log" 2>&1 ) \
+    || { tail -40 "$QUEUE/.integrate-test.log"; die 3 "workspace tests fail"; }
+  say "tests pass"
+  ( cd "$QUEUE" && ./check-fingerprints.sh >"$QUEUE/.integrate-fp.log" 2>&1 ) \
+    || { cat "$QUEUE/.integrate-fp.log"; die 4 "fingerprints moved without a baseline update"; }
+  say "fingerprints match"
+fi
 if [ -n "$(git -C "$QUEUE" diff --name-only origin/master...HEAD -- web/)" ]; then
   ( cd "$QUEUE/web" && npm ci --prefer-offline --no-audit --no-fund >/dev/null 2>&1 && npm run build >"$QUEUE/.integrate-web.log" 2>&1 ) \
     || { tail -40 "$QUEUE/.integrate-web.log"; die 5 "web build fails"; }
