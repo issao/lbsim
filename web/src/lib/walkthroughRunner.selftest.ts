@@ -69,12 +69,17 @@ function ok(cond: boolean, what: string): void {
 function fakeHandle(mode: DataMode, reject?: string) {
   const log: string[] = [];
   let cursor = 0;
-  const h: RunnerHandle & { log: string[]; moveTo(s: number): void } = {
+  let endedFlag = false;
+  const h: RunnerHandle & { log: string[]; moveTo(s: number): void; end(): void } = {
     mode,
     log,
     moveTo: (s) => {
       cursor = s;
     },
+    end: () => {
+      endedFlag = true;
+    },
+    ended: () => endedFlag,
     cursorS: () => cursor,
     scrubTo: (s) => {
       log.push(`scrub ${s}`);
@@ -88,6 +93,51 @@ function fakeHandle(mode: DataMode, reject?: string) {
       if (reject) return Promise.reject(new Error(reject));
       return Promise.resolve();
     },
+  };
+  return h;
+}
+
+/** A live handle whose `scrubTo` clamps to what has been recorded so far, the way the real
+ * server handle clamps to `recordedToS` (see useServerRun.ts). */
+function liveClampedHandle(recordedToS: number) {
+  const log: string[] = [];
+  let cursor = 0;
+  const h: RunnerHandle & { log: string[]; moveTo(s: number): void } = {
+    mode: 'server',
+    log,
+    moveTo: (s) => {
+      cursor = s;
+    },
+    cursorS: () => cursor,
+    scrubTo: (s) => {
+      cursor = Math.min(s, recordedToS);
+      log.push(`scrub ${s} -> ${cursor}`);
+    },
+    setSpeed: (x) => log.push(`speed ${x}`),
+    pause: () => log.push('pause'),
+    play: () => log.push('play'),
+    update: () => Promise.resolve(),
+  };
+  return h;
+}
+
+/** A replay handle whose seek lands slightly past what was asked for, the way a frame-quantized
+ * recording might snap to the nearest available frame. */
+function overshootingReplayHandle(overshootBy: number) {
+  const log: string[] = [];
+  let cursor = 0;
+  const h: RunnerHandle & { log: string[] } = {
+    mode: 'replay',
+    log,
+    cursorS: () => cursor,
+    scrubTo: (s) => {
+      log.push(`scrub ${s}`);
+      cursor = s + overshootBy;
+    },
+    setSpeed: (x) => log.push(`speed ${x}`),
+    pause: () => log.push('pause'),
+    play: () => log.push('play'),
+    update: () => Promise.resolve(),
   };
   return h;
 }
@@ -197,6 +247,54 @@ await check('skip seeks to the timestamp and pauses; idle skip is a no-op', asyn
   ok(!s.advancing && s !== before, 'settled into a new state');
   ok(r.skip() === s, 'no-op when paused');
   return h.log.join(' > ');
+});
+
+await check('skip_on_a_live_run_keeps_advancing_until_the_cursor_arrives', async () => {
+  const h = liveClampedHandle(40);
+  const r = new runner.WalkthroughRunner(script, h);
+  await r.next(); // step 0, at_sim_s 60
+  const s = r.skip();
+  ok(s.advancing, 'the live run has not reached 60s yet, so the step keeps advancing');
+  ok(!h.log.includes('pause'), 'not settled while short of the timestamp');
+  h.moveTo(60);
+  const t = r.tick();
+  ok(!t.advancing, 'settles once the cursor actually arrives');
+  eq(h.log[h.log.length - 1], 'pause', 'paused after catching up');
+  return h.log.join(' > ');
+});
+
+await check('a_cursor_already_past_the_step_rewinds_on_replay_and_explains_on_live', async () => {
+  // Replay: an imperfect seek that lands past the target is corrected before settling.
+  const hr = overshootingReplayHandle(5);
+  const rr = new runner.WalkthroughRunner(script, hr);
+  const sr = await rr.next(); // target 60
+  eq(hr.log.filter((l) => l === 'scrub 60').length, 2, 'scrubbed to seek, then again to rewind onto the target');
+  ok(!sr.advancing, 'settled despite the overshoot');
+  eq(sr.reason, undefined, 'replay puts itself back exactly, so there is nothing to explain');
+
+  // Live: the cursor is already past the target (the viewer scrubbed ahead); it cannot rewind.
+  const hl = fakeHandle('server');
+  const rl = new runner.WalkthroughRunner(script, hl);
+  await rl.next(); // target 60, cursor still 0
+  hl.moveTo(200);
+  const sl = rl.tick();
+  eq(sl.reason, 'the run is already past this step', 'live explains rather than rewinding');
+  ok(!sl.advancing, 'settled in place');
+  eq(hl.cursorS(), 200, 'the live cursor is not moved backward');
+  ok(!hl.log.some((l) => l.startsWith('scrub')), 'no seek attempted on a live run');
+  return `replay: ${sr.reason ?? 'rewound'}; live: ${sl.reason}`;
+});
+
+await check('a_run_that_ends_early_settles_with_a_reason', async () => {
+  const h = fakeHandle('server');
+  const r = new runner.WalkthroughRunner(script, h);
+  await r.next(); // target 60, cursor 0
+  h.moveTo(45);
+  h.end();
+  const s = r.tick();
+  eq(s.reason, 'the run ended at 45s before this step', 'explains why the step never arrived');
+  ok(!s.advancing, 'settled rather than stuck "advancing…" forever');
+  return s.reason ?? '';
 });
 
 console.log(`${cases - failures}/${cases} passed`);
