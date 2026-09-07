@@ -121,7 +121,8 @@ export function Utilization({
           xs={x}
           series={[{ key: 'w', label: 'wasted', color: 'var(--series-2)', points: series(frames, (f) => f.wastedGpuFraction) }]}
           format={(v) => fmtPct(v, 0)}
-          yMax={Math.max(0.2, Math.max(...frames.map((f) => f.wastedGpuFraction)) * 1.3)}
+          // A replayed frame carries NaN here until the engine measures waste; a NaN axis draws nothing.
+          yMax={Math.max(0.2, Math.max(...frames.map((f) => f.wastedGpuFraction).filter(Number.isFinite)) * 1.3)}
           height={116}
         />
       </Panel>

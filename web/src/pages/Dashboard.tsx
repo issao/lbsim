@@ -171,10 +171,13 @@ function ReplayBanner({ run, picker }: { run: ReplayRunHandle; picker: ReactNode
         </div>
       ) : null}
       {run.loaded.unmapped.length ? (
-        <div className="banner">
-          <span className="tagline">not shown in the control panel</span>
+        <details className="banner" style={{ display: 'block' }}>
+          <summary style={{ cursor: 'pointer' }}>
+            <span className="tagline">scenario</span> {run.loaded.unmapped.length} keys of this run's{' '}
+            <code>scenario.txt</code> have no control-panel field
+          </summary>
           <span style={{ color: 'var(--ink-3)' }}>{run.loaded.unmapped.join(' · ')}</span>
-        </div>
+        </details>
       ) : null}
     </>
   );

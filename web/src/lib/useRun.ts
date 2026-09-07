@@ -246,8 +246,10 @@ export interface ReplayRunHandle extends RunHandle {
 export function useReplayRun(loaded: LoadedRun, autoplay = true): ReplayRunHandle {
   const engine = useMemo(() => new ReplayEngine(loaded.frames, cloneConfig(loaded.config)), [loaded]);
   const durationS = engine.durationS;
-  // Open at the end of warm-up, as the mock does, so the window has something in it.
-  const startS = clampCursor(loaded.config.warmupS, durationS);
+  // Open where the recording has its first completion. The exporter buckets only the measured
+  // records (`RunResult.records` excludes warm-up), so every window before warm-up ends has zero
+  // completions and no latency; opening there would show a dashboard of zeros and dashes.
+  const startS = clampCursor(loaded.frames.find((f) => f.completedRps > 0)?.simS ?? loaded.config.warmupS, durationS);
 
   const [config, setConfig] = useState<ScenarioConfig>(() => cloneConfig(loaded.config));
   const [paused, setPaused] = useState(!autoplay);
