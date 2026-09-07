@@ -1,14 +1,23 @@
 # TASKS — things that need Issao
 
-Last updated: 2026-09-06 20:46 PDT by Claude.
+Last updated: 2026-09-06 21:00 PDT by Claude.
 
-Paused 17:31–20:25 PDT at your request, resumed 20:27: every agent restarted from files; see `STATUS.md`
-"Session restart". Any instruction of yours whose work is code is recorded verbatim under "Routed to
-the tech lead" below and stays in the tree for it.
-Stack ranked, most blocking first. Every item says what Claude does if you say nothing, so nothing
-here stalls the work. What is finished and live is in `STATUS.md`.
+**Stopped 21:00 PDT at your request** (*"we are approaching limit... tie up loose ends... give me a doc
+summarizing the state and most interesting outcomes with deep links and I will review and wrap up
+tomorrow"*). This file is the review list for tomorrow morning, stack ranked, each item with what
+Claude does if you say nothing. What is finished and live is in `STATUS.md`; the summary with deep
+links is `docs/wrap-up-2026-09-06.md`, the main agent's. Every agent's state is in its file; resume by
+re-spawning from `docs/agents/` (its `README.md` gives the order).
 
-## 0. Review the `TraceSpan` extension in `proto/lbsim/v1/metrics.proto`
+## 0. Read `docs/wrap-up-2026-09-06.md`
+
+The main agent's summary of the day: state, the most interesting outcomes, deep links into the
+findings, the graph, the deployed site and the catalog. Written at the stop; if it is not on `master`
+yet when you read this, the main agent was still writing it when housekeeping stopped.
+
+**If you say nothing:** the agents resume tomorrow from their files with the graph's queue as is.
+
+## 1. Review the `TraceSpan` extension in `proto/lbsim/v1/metrics.proto`
 
 On `master` at f5eddf1 (a035514, 17:20), acting on *"We should have a way to sample requests to see
 execution traces and what was busy in each resource as it executed."* `TraceSpan` now carries the
@@ -21,7 +30,7 @@ operation names now match the engine's (`queue`, `route`, `prefill`, `decode`, `
 
 **If you say nothing:** it stands as written.
 
-## 0b. Review `docs/vision-progress.md`
+## 2. Review `docs/vision-progress.md`
 
 Snapshot at 2026-09-06 16:19 PDT, on `master` d42546a: every `VISION.md` requirement classified as done,
 building in the next two hours, or far away, each with one line of evidence. It ends with five priority
@@ -29,9 +38,24 @@ far-away items and eight requirements no plan document mentions: the `disable_de
 latency forecasting, redundancy policies, model-weight locality, per-machine trace spans, the fluid
 limit, and the training-versus-serving question.
 
-**If you say nothing:** it is deleted at the next housekeeping round after 24 hours, 2026-09-07 16:19.
+**If you say nothing:** it is deleted at the next housekeeping round after 24 hours, 2026-09-07 16:19. The
+reading is stale by a day of work now; `docs/execution-graph.md` and `STATUS.md` are current.
 
-## Routed to the tech lead
+## 3. Delete the stale `claude/*` branches on `origin`
+
+The merged branches from before the 16:43 restart (`tl-idle`, `tl-web-transport`, `tl-web`,
+`tl-engine`, `tl-export`, `tl-physics`, `tl-policy-*`, `tl-replay`, `tl-trace-wire`, `tl-arena-rules`,
+`simplify-1`, `simplify-2`, `docs-round*`) are content-merged, verified by the tech lead with
+`git cherry`; their only effect is that `tools/sync.sh` and the inbox list six stale quote markers
+from an old `docs/execution-graph.md` on three of them. The tech lead deleted `tl-trace-engine` and
+`tl-trace-engine-rebased` from its session at 20:47, so deletion from here works after all.
+
+**If you say nothing:** they stay; Claude deletes nothing it did not create in its own session without
+your word. Say *"delete the stale branches"* and housekeeping runs `git push origin --delete` on exactly
+that list, name by name, never by prefix. Or do it yourself:
+`git fetch --prune && git branch -r --merged origin/master | grep 'origin/claude/' | sed 's|origin/||' | xargs git push origin --delete`.
+
+## 4. Routed to the tech lead, for the record
 
 Each of these is a unit in `docs/execution-graph.md`, the tech lead's graph, which carries its state
 and ETA; this list is the record of what was routed and why.
@@ -96,7 +120,7 @@ consequences that belong to the tech lead; verbatim, from `TASKS.md` before the 
 
 ---
 
-## 1. Decisions with a default
+## 5. Decisions with a default
 
 `docs/execution-graph.md` has a section "Waiting on Issao" listing the units that need a word from
 you, each with the default it takes if you say nothing. Those defaults stand until you say otherwise.
@@ -107,17 +131,7 @@ The design decisions below are the ones outside that graph.
 | A routing policy that scans the fleet fails the run rather than warning (`docs/ARCHITECTURE.md` §10.4) | fail | small |
 | Prefix-affinity index at Ingress is a bounded top-K, not exact (§10.4) | bounded | small |
 
-## 2. Later, when this phase ends
-
-- [ ] Delete the merged `claude/*` branches left on `origin` from before the restart (`tl-idle`,
-      `tl-web-transport`, `tl-web`, `tl-engine`, `tl-export`, `tl-physics`, `tl-policy-*`, `tl-replay`,
-      `tl-trace-wire`, `tl-arena-rules`, `tl-trace-engine`, `tl-trace-engine-rebased`, `simplify-1`, `simplify-2`, `docs-round*`; the two `tl-trace-engine*` added at 20:42 from the tech lead, merged as 3a350b1, not deletable from an agent's session). All content-merged,
-      verified by the tech lead with `git cherry`; their only effect is that `tools/sync.sh` and the inbox
-      list two stale quote markers from an old `docs/execution-graph.md`. Claude's sessions are not
-      permitted to delete remote branches, so it is yours:
-      `git fetch --prune && git branch -r --merged origin/master | grep 'origin/claude/' | sed 's|origin/||' | xargs git push origin --delete`.
-      **If you do nothing:** they stay; `tools/integrate.sh` deletes new branches on success, so the list
-      stops growing.
+## 6. Later, when this phase ends
 
 - [ ] Delete the deploy key. `gcloud iam service-accounts keys list --iam-account=lbsim-deployer@lbsim-gcp.iam.gserviceaccount.com`
       shows the id, which starts `94afd556`; then `keys delete KEY_ID --iam-account=...`.
