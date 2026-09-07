@@ -278,6 +278,7 @@ label.check input { accent-color: var(--accent); }
   background: var(--surface-2); color: var(--ink-2);
 }
 .banner.resim { background: var(--mock-bg); color: var(--mock); border-bottom-color: var(--mock-line); }
+.banner.rejected { color: var(--serious); border-bottom-color: var(--serious); }
 .banner .tagline { font-family: var(--mono); font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; }
 .banner .btn { margin-left: auto; }
 
