@@ -128,6 +128,32 @@ impl RunResult {
         let ok = self.records.iter().filter(|r| r.outcome == Outcome::Ok).count();
         ok as f64 / n as f64
     }
+    /// The SLO classes present in the measured records, ascending. Empty-string scenarios give `[0]`.
+    pub fn classes(&self) -> Vec<u8> {
+        let mut cs: Vec<u8> = self.records.iter().map(|r| r.class).collect();
+        cs.sort_unstable();
+        cs.dedup();
+        cs
+    }
+    /// `goodput_tokens_s` restricted to one class.
+    pub fn class_goodput_tokens_s(&self, class: u8) -> f64 {
+        let toks: u64 = self
+            .records
+            .iter()
+            .filter(|r| r.class == class && r.outcome == Outcome::Ok)
+            .map(|r| r.output_tokens as u64)
+            .sum();
+        toks as f64 / self.measured_s()
+    }
+    /// `slo_attainment` restricted to one class: Ok over every measured request of that class.
+    pub fn class_attainment(&self, class: u8) -> f64 {
+        let n = self.records.iter().filter(|r| r.class == class).count();
+        if n == 0 {
+            return f64::NAN;
+        }
+        let ok = self.records.iter().filter(|r| r.class == class && r.outcome == Outcome::Ok).count();
+        ok as f64 / n as f64
+    }
     pub fn completed_rps(&self) -> f64 {
         self.completed() as f64 / self.measured_s()
     }
@@ -477,6 +503,7 @@ fn follow_up(
         deadline: at + (sc.client_timeout_s * 1e9) as Nanos,
         is_long: prev.is_long,
         tenant: prev.tenant,
+        class: prev.class,
     };
     replica.park(req.id, context, req.deadline, now);
     q.schedule(at, Ev::SessionTurn(i, req));
@@ -771,10 +798,12 @@ impl Sim {
                     let Some(out) = self.replicas[i].step(sc, &self.cost, now) else { continue };
                     let token_at = out.token_at;
                     for s in out.finished {
-                        let within = s.first_token_at - s.req.arrived_at
-                            <= (sc.ttft_slo_ms * 1e6) as Nanos
-                            && s.max_itl <= (sc.itl_slo_ms * 1e6) as Nanos
-                            && token_at - s.req.arrived_at <= (sc.e2e_slo_s * 1e9) as Nanos;
+                        // An infinite ITL target saturates to Nanos::MAX in the cast, which is the
+                        // intended "never fails on ITL".
+                        let (ttft_ms, itl_ms, e2e_s) = sc.slo_for(s.req.class);
+                        let within = s.first_token_at - s.req.arrived_at <= (ttft_ms * 1e6) as Nanos
+                            && s.max_itl <= (itl_ms * 1e6) as Nanos
+                            && token_at - s.req.arrived_at <= (e2e_s * 1e9) as Nanos;
                         let outcome = if within { Outcome::Ok } else { Outcome::OkSloViolated };
                         self.admission.on_complete(s.req.tenant, s.req.output, token_at);
                         finish(
@@ -1449,6 +1478,7 @@ fn finish(
         outcome,
         max_itl,
         mean_itl,
+        class: req.class,
     };
     window.record(&rec);
     records.push(rec);

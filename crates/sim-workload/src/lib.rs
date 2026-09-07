@@ -20,6 +20,8 @@ pub struct Request {
     pub is_long: bool,
     /// Which tenant sent it. Zero when the scenario has no tenancy.
     pub tenant: u32,
+    /// SLO class, an index into `sim_scenario::SLO_CLASSES` plus one. Zero when classes are off.
+    pub class: u8,
 }
 
 pub struct Workload {
@@ -29,6 +31,10 @@ pub struct Workload {
     /// Its own stream, so enabling tenancy cannot perturb arrivals or shapes: an A/B between a
     /// fair-share policy and none must see byte-identical load.
     tenants: Rng,
+    /// Same reason as `tenants`: turning classes on relabels requests and nothing else.
+    classes: Rng,
+    /// `Scenario::slo_class_shares()` re-parses text, and that is too much per arrival.
+    class_shares: Option<Vec<(u8, f64)>>,
     /// Loaded on the first call in trace mode. `new` only sees the seed streams, and a synthetic run
     /// must never touch the file system, so the file cannot be read any earlier.
     trace: Option<Trace>,
@@ -88,6 +94,8 @@ impl Workload {
             arrivals: seed_streams.stream("arrival"),
             shapes: seed_streams.stream("shape"),
             tenants: seed_streams.stream("tenant"),
+            classes: seed_streams.stream("class"),
+            class_shares: None,
             trace: None,
         }
     }
@@ -128,8 +136,28 @@ impl Workload {
         (gap * 1e9) as Nanos
     }
 
+    /// Only touches the class stream when classes are on, so every classes-off run is byte-identical
+    /// to what it was before classes existed.
+    fn draw_class(&mut self, sc: &Scenario) -> u8 {
+        if sc.slo_classes.is_empty() {
+            return 0;
+        }
+        let shares = self.class_shares.get_or_insert_with(|| sc.slo_class_shares());
+        let Some(last) = shares.last() else { return 0 };
+        let u = self.classes.f64();
+        let mut acc = 0.0;
+        for &(c, w) in shares.iter() {
+            acc += w;
+            if u < acc {
+                return c;
+            }
+        }
+        last.0
+    }
+
     pub fn make(&mut self, sc: &Scenario, now: Nanos) -> Request {
         self.next_id += 1;
+        let class = self.draw_class(sc);
         if sc.workload == "trace" {
             let id = self.next_id;
             let t = self.trace(sc);
@@ -149,6 +177,7 @@ impl Workload {
                 // Clamped, because the leaf indexes per-tenant state by this and a trace recorded
                 // with more tenants than the scenario declares must not crash the run.
                 tenant: row.tenant.min(sc.tenants.saturating_sub(1) as u32),
+                class,
             };
         }
         let long = self.shapes.f64() < sc.long_probability;
@@ -185,6 +214,7 @@ impl Workload {
             deadline: now + (sc.client_timeout_s * 1e9) as Nanos,
             is_long: long,
             tenant,
+            class,
         }
     }
 }

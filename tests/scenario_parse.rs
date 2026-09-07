@@ -9,7 +9,7 @@
 use lbsim::scenario::Scenario;
 
 /// Every key `parse` accepts, which is also every key `to_text` must emit.
-const KEYS: [&str; 55] = [
+const KEYS: [&str; 56] = [
     "name", "seed", "duration_s", "warmup_s", "replicas", "max_batch", "step_base_ms",
     "step_per_seq_ms", "step_per_kv_ktoken_ms", "kv_capacity_tokens", "prefill_tokens_per_s",
     "step_token_budget", "max_queue", "disable_decode", "preemption", "preemption_victim",
@@ -21,7 +21,7 @@ const KEYS: [&str; 55] = [
     "telemetry_interval_ms", "telemetry_delay_ms", "client_timeout_s", "max_attempts",
     "retry_budget_fraction", "retry_backoff_s", "ttft_slo_ms", "itl_slo_ms", "e2e_slo_s",
     "sample_interval_ms", "trace_sample_rate", "workload", "trace_file", "spec_draft_tokens",
-    "spec_accept_rate",
+    "spec_accept_rate", "slo_classes",
 ];
 
 /// A scenario in which no field holds its default value, so a field that silently falls back to the
@@ -83,6 +83,7 @@ fn all_fields_distinct() -> Scenario {
         trace_file: "scenarios/traces/sample.csv".into(),
         spec_draft_tokens: 6,
         spec_accept_rate: 0.65,
+        slo_classes: "interactive:0.6,batch:0.4".into(),
     }
 }
 
@@ -139,6 +140,7 @@ fn to_text_then_parse_preserves_every_field() {
     assert_eq!(got.trace_file, want.trace_file);
     assert_eq!(got.spec_draft_tokens, want.spec_draft_tokens);
     assert_eq!(got.spec_accept_rate, want.spec_accept_rate);
+    assert_eq!(got.slo_classes, want.slo_classes);
 
     // And the trip is idempotent, so an archived scenario re-saved is byte-identical.
     assert_eq!(got.to_text(), want.to_text());
