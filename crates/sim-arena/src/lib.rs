@@ -31,19 +31,30 @@
 //! Nothing in here is parallel or wall-clock dependent: a round is a nested loop in a fixed order
 //! with the seed taken from the scenario file, so every policy meets byte-identical load.
 
+pub mod catalog;
+
 use sim_metrics::Outcome;
 use sim_scenario::Scenario;
 use sim_leaf::{self as sim, RunResult};
 use sim_workload::Workload;
 
-/// The cap from `docs/arena.md` section 1: *"keeping out-of-SLO sessions under an SLA cap (say
-/// 99.9%)"*.
+/// The cap of record. `docs/arena.md` section 1 says *"(say 99.9%)"*, and section 5b measures that no
+/// policy reaches it on any chat or long-context mixture, because a length-independent first-token
+/// target cannot be held against a lognormal prompt tail. Issao, 15:26: *"SLA 0.95 ok for now, but we
+/// need to figure out how to do better."* So 0.95 until per-class or length-scaled targets exist, and
+/// every score records the cap it was earned under, per section 2.3.
+pub const DEFAULT_SLA_CAP: f64 = 0.95;
+
+/// Which rules a score was earned under. `docs/arena.md` section 2.3: *"Rule changes apply forward,
+/// never backward ... the archive records which rule set each score was earned under, and a round is
+/// only ever compared within one rule set."* Every [`RunScore`] carries this and [`round_text`] prints
+/// it, so two rounds can be told apart by the score alone.
 ///
-/// It is the default and not a constant, because today's engine does not reach it at any offered
-/// rate on the held-out suite (see `docs/arena-implementation.md`), and a gate that every candidate
-/// fails ranks nothing. Run with a looser cap while the engine is being calibrated, and record which
-/// cap a score was earned under — the same discipline section 2.3 demands for rule sets.
-pub const DEFAULT_SLA_CAP: f64 = 0.999;
+/// v1 was the objective as written in section 1: the minimum over in-scope loads of absolute gated
+/// goodput, which section 5b shows is decided by the *lightest* load. v2 is Issao's fix, 16:12: *"You
+/// can remove this, I agreed with this."* Goodput as a share of what the load offered, so loads that
+/// differ by 20x in offered work are comparable and the minimum lands on the hardest one.
+pub const RULE_SET: &str = "v2: cap 0.95 default, min over in-scope loads of gated goodput share";
 
 /// Warm-up floor from `docs/arena.md` section 3: *"warm-up longer than a cold start, so at least
 /// several minutes of simulated time"*, because a policy declaring capacity from a transient is
@@ -208,24 +219,28 @@ pub struct RunScore {
     /// The engine's own figure, over successful requests only. Kept beside the arena figure because
     /// the gap between them is the size of the shedding loophole on that run.
     pub engine_attainment: f64,
+    /// Absolute goodput, output tokens/s within SLO. Under [`RULE_SET`] v2 this is the diagnostic and
+    /// `goodput_share` is the objective; it stays reported because the absolute number is what the
+    /// findings quote and what capacity is measured in.
     pub goodput_tokens_s: f64,
-    /// Goodput as a fraction of the output tokens the load offered. A diagnostic, not the score.
+    /// Goodput as a fraction of the output tokens the load offered. **The objective**, per Issao.
     ///
-    /// Section 1 scores the *minimum over loads of goodput*, and goodput is an absolute rate, so the
-    /// minimum across a slate whose loads differ by 20x in offered work is decided by the smallest
-    /// load rather than by the hardest one — which is visible in the measured round in
-    /// `docs/arena-implementation.md`. This is the same quantity made comparable across loads, and it
-    /// is what a normalized objective would use. Reported so the distortion is measurable rather than
-    /// argued about.
+    /// Section 1 as written scores the *minimum over loads of goodput*, and goodput is an absolute
+    /// rate, so the minimum across a slate whose loads differ by 20x in offered work is decided by the
+    /// smallest load rather than by the hardest one (section 5b, and the measured v1 round in
+    /// `docs/arena-implementation.md`). This is the same quantity made comparable across loads.
     pub goodput_share: f64,
     pub throughput_tokens_s: f64,
     pub completed_rps: f64,
     pub load_imbalance_cv: f64,
-    /// Zero when the gate is breached, goodput otherwise. Meaningless unless `in_scope`.
+    /// Zero when the gate is breached, `goodput_share` otherwise. Meaningless unless `in_scope`.
     pub score: f64,
     /// The cap this run was scored under. Recorded per run because section 2.3 requires that a score
     /// remember which rule set earned it.
     pub gate_cap: f64,
+    /// The rule set the score was earned under; [`RULE_SET`]. The cap alone does not identify it,
+    /// because v1 and v2 can run under the same cap and their scores are in different units.
+    pub rule_set: &'static str,
     /// Set when a mechanical check failed. A failed check is a hard zero, not an omission, so the
     /// strict physics referee can hook in here unchanged.
     pub violations: Vec<String>,
@@ -259,6 +274,7 @@ pub fn score_run(r: &RunResult, cfg: &ScoreConfig) -> RunScore {
     // NaN attainment means no requests were measured at all, which is a broken load rather than a
     // perfect policy, so it gates.
     let passes = attainment >= cfg.sla_cap;
+    let goodput_share = if offered_tokens_s > 0.0 { goodput / offered_tokens_s } else { f64::NAN };
     RunScore {
         load: r.scenario.name.clone(),
         policy: r.routing_label.clone(),
@@ -271,12 +287,15 @@ pub fn score_run(r: &RunResult, cfg: &ScoreConfig) -> RunScore {
         attainment,
         engine_attainment: r.slo_attainment(),
         goodput_tokens_s: goodput,
-        goodput_share: if offered_tokens_s > 0.0 { goodput / offered_tokens_s } else { f64::NAN },
+        goodput_share,
         throughput_tokens_s: r.throughput_tokens_s(),
         completed_rps: r.completed_rps(),
         load_imbalance_cv: r.load_imbalance_cv(),
-        score: if passes { goodput } else { 0.0 },
+        // A load that offered nothing has a NaN share; it scores zero rather than poisoning the
+        // minimum, for the same reason a NaN attainment gates.
+        score: if passes && goodput_share.is_finite() { goodput_share } else { 0.0 },
         gate_cap: cfg.sla_cap,
+        rule_set: RULE_SET,
         violations: Vec::new(),
     }
 }
@@ -285,14 +304,15 @@ pub fn score_run(r: &RunResult, cfg: &ScoreConfig) -> RunScore {
 #[derive(Clone, Debug)]
 pub struct PolicyScore {
     pub policy: String,
-    /// `min` over in-scope loads of the gated goodput. `None` when no load was in scope, which is
-    /// itself a finding rather than a zero: the policy was never tested inside its own claim.
+    /// `min` over in-scope loads of the gated goodput share, in `[0, 1]`. `None` when no load was in
+    /// scope, which is itself a finding rather than a zero: the policy was never tested inside its
+    /// own claim.
     pub score: Option<f64>,
     /// Which load produced the minimum. The interesting half of a worst-case score.
     pub worst_load: Option<String>,
-    /// Mean gated goodput over in-scope loads, reported only so the gap to `score` is visible. It is
-    /// deliberately not the score: section 1 is a minimum *because* the guarantee must hold against
-    /// an adversarial load generator.
+    /// Mean gated goodput share over in-scope loads, reported only so the gap to `score` is visible.
+    /// It is deliberately not the score: section 1 is a minimum *because* the guarantee must hold
+    /// against an adversarial load generator.
     pub mean_score: Option<f64>,
     /// Mean *ungated* goodput over in-scope loads. Not a score under any reading of section 1, and
     /// present for exactly one reason: when every candidate is gated to zero — which is the state of
@@ -870,13 +890,29 @@ pub fn run_round(
     cfg: &RoundConfig,
 ) -> Result<RoundResult, String> {
     let mut loads: Vec<Scenario> = Vec::new();
-    let mut envelope_violations = Vec::new();
-    let mut warmup_violations = Vec::new();
     for path in scenario_paths {
         let mut sc = load_scenario(path)?;
         if sc.name == "unnamed" {
             sc.name = path.clone();
         }
+        loads.push(sc);
+    }
+    run_round_on(policies, &loads, cfg)
+}
+
+/// [`run_round`] on scenarios already in memory, for a caller that builds or shortens its loads rather
+/// than reading them from the frozen suite. The checks and the order are identical.
+pub fn run_round_on(
+    policies: &[String],
+    scenarios: &[Scenario],
+    cfg: &RoundConfig,
+) -> Result<RoundResult, String> {
+    let mut loads: Vec<Scenario> = Vec::new();
+    let mut envelope_violations = Vec::new();
+    let mut warmup_violations = Vec::new();
+    for sc in scenarios {
+        let sc = sc.clone();
+        let path = &sc.name;
         let vs = check_realism(&sc);
         if !vs.is_empty() {
             if cfg.enforce_envelope {
@@ -998,16 +1034,22 @@ pub fn round_text(r: &RoundResult) -> String {
         r.runs,
         r.sla_cap
     );
+    let _ = writeln!(s, "rule set: {RULE_SET}");
     let _ = writeln!(s);
 
     // Names are cut to one column's width so a long scenario name cannot push a row out of the grid.
     let short = |name: &str| -> String { name.chars().take(20).collect() };
     let opt = |v: Option<f64>| v.map_or_else(|| "none".to_string(), |v| format!("{v:.0}"));
+    let share = |v: Option<f64>| v.map_or_else(|| "none".to_string(), |v| format!("{v:.3}"));
 
     for (title, get) in [
         (
-            "goodput tokens/s within SLO (payoff matrix)",
-            (|c: &Cell| format!("{:.0}", c.run.goodput_tokens_s)) as fn(&Cell) -> String,
+            "goodput as a share of offered output tokens (payoff matrix; the objective under rule set v2)",
+            (|c: &Cell| format!("{:.3}", c.run.goodput_share)) as fn(&Cell) -> String,
+        ),
+        (
+            "goodput tokens/s within SLO (absolute; a diagnostic, the v1 objective)",
+            |c: &Cell| format!("{:.0}", c.run.goodput_tokens_s),
         ),
         (
             "arena SLO attainment (all requests, sheds and timeouts included)",
@@ -1018,14 +1060,10 @@ pub fn round_text(r: &RoundResult) -> String {
             |c: &Cell| format!("{:.4}", c.run.engine_attainment),
         ),
         (
-            "goodput as a share of offered output tokens (comparable across loads; a diagnostic)",
-            |c: &Cell| format!("{:.3}", c.run.goodput_share),
-        ),
-        (
-            "gated score: goodput if attainment >= cap else 0; '-' means out of scope",
+            "gated score: goodput share if attainment >= cap else 0; '-' means out of scope",
             |c: &Cell| {
                 if c.run.in_scope {
-                    format!("{:.0}", c.run.score)
+                    format!("{:.3}", c.run.score)
                 } else {
                     "-".into()
                 }
@@ -1071,11 +1109,11 @@ pub fn round_text(r: &RoundResult) -> String {
     }
     let _ = writeln!(s);
 
-    let _ = writeln!(s, "ranking (worst case over in-scope loads, section 1)");
+    let _ = writeln!(s, "ranking (worst case over in-scope loads, section 1; score and mean are goodput shares)");
     let _ = writeln!(
         s,
         "{:<4}{:<22}{:>12}{:>12}{:>14}{:>10}{:>6}{:>10}  {}",
-        "#", "policy", "score", "mean", "mean goodput", "in scope", "out", "breaches", "worst load"
+        "#", "policy", "score", "mean", "mean tok/s", "in scope", "out", "breaches", "worst load"
     );
     for (i, p) in r.ranking.iter().enumerate() {
         let _ = writeln!(
@@ -1083,8 +1121,8 @@ pub fn round_text(r: &RoundResult) -> String {
             "{:<4}{:<22}{:>12}{:>12}{:>14}{:>10}{:>6}{:>10}  {}",
             i + 1,
             short(&p.policy),
-            opt(p.score),
-            opt(p.mean_score),
+            share(p.score),
+            share(p.mean_score),
             opt(p.mean_goodput),
             p.loads_in_scope,
             p.loads_out_of_scope,
@@ -1259,9 +1297,39 @@ mod tests {
         );
     }
 
-    /// The round, printed. `cargo test --release -- --nocapture arena_round` is how the numbers in
-    /// `docs/arena-implementation.md` were produced.
+    /// One round of two policies over two shortened holdout loads: the round runner end to end, in
+    /// well under a second, standing in for the two `#[ignore]`d reproductions below in every
+    /// `cargo test`.
     #[test]
+    fn smoke_round_on_shortened_loads() {
+        let mut loads = Vec::new();
+        for idx in [0, 5] {
+            let mut sc = load_scenario(&holdout()[idx]).unwrap();
+            sc.warmup_s = WARMUP_FLOOR_TODAY_S;
+            sc.duration_s = 20.0;
+            loads.push(sc);
+        }
+        let policies = vec!["round_robin".to_string(), "p2c".to_string()];
+        let cfg = RoundConfig { sla_cap: 0.95, ..Default::default() };
+        let round = run_round_on(&policies, &loads, &cfg).unwrap();
+        assert_eq!(round.determinism_checked, Some(true));
+        assert_eq!(round.ranking.len(), 2);
+        assert!(round.warmup_violations.is_empty());
+        for p in &round.ranking {
+            assert_eq!(p.runs.len(), 2);
+            for r in &p.runs {
+                assert_eq!(r.rule_set, RULE_SET);
+                assert!(r.score >= 0.0 && r.score <= 1.0, "{}: {}", r.load, r.score);
+            }
+        }
+        assert!(round_text(&round).contains(RULE_SET));
+    }
+
+    /// The round, printed: reproduces the tables in `docs/arena-implementation.md`. Three caps x five
+    /// policies x eight loads is about a minute, so it is `#[ignore]`d; run it with
+    /// `tools/build.sh test --release -p sim-arena -- --ignored --nocapture arena_round`.
+    #[test]
+    #[ignore]
     fn arena_round_over_the_holdout_suite() {
         for cap in [0.999, 0.99, 0.95] {
             let cfg = RoundConfig { sla_cap: cap, ..Default::default() };
@@ -1272,9 +1340,11 @@ mod tests {
     }
 
     /// What every policy's honest declaration would be, at three caps, on the two mixtures that bracket
-    /// the suite: h2's chat load and h7's code completion. `cargo test --release -- --nocapture
-    /// honest_capacity` reproduces the tables in `docs/arena-implementation.md`.
+    /// the suite: h2's chat load and h7's code completion. Reproduces the capacity tables in
+    /// `docs/arena-implementation.md`; 330 runs, so `#[ignore]`d. Run it with
+    /// `tools/build.sh test --release -p sim-arena -- --ignored --nocapture honest_capacity`.
     #[test]
+    #[ignore]
     fn honest_capacity_of_every_policy() {
         let cases: [(usize, &[f64]); 2] = [
             (1, &[16.0, 33.0, 49.0, 66.0, 98.0, 118.0, 148.0, 177.0, 197.0, 246.0, 295.0]),
