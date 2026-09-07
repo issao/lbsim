@@ -1,6 +1,6 @@
 # TASKS — things that need Issao
 
-Last updated: 2026-09-07 11:18 PDT by Claude.
+Last updated: 2026-09-07 11:21 PDT by Claude.
 
 **Resumed 2026-09-07 11:17 PDT.** The fleet stopped at 21:00 on 2026-09-06 at your request (*"we are approaching
 limit... tie up loose ends... give me a doc summarizing the state and most interesting outcomes with deep
@@ -64,8 +64,9 @@ and ETA; this list is the record of what was routed and why.
 **2026-09-07, routed to the tech lead (`a0899ca58df6febdc`) as U80–U83, beside U79 (the Cloud Run fix),
 relayed verbatim by the main agent at 11:18:** *"is the load test dashboard link ready to point to the live sim engine? can you make sure that all links in the homepage are separated by a section for 'live' one for 'replay' and one for 'mock' and that the message in the top right corner for each page is accurate. also, clean up all text from any reference of the build process to make this look like a finished product, ensuring accuracy and succinctness. also take a pass over all the ui to keep things clean and simple and intuitive, with no knobs that are not doing anything."*
 Main answered the first question: the Load test link already opens a live run when the server answers, with
-the `docs/wrap-up-2026-09-06.md` §5b caveat (one tab at a time until U79 lands). The rest is the tech lead's,
-recorded in `docs/execution-graph.md` when its entry commits; `STATUS.md` records each unit as it lands.
+the `docs/wrap-up-2026-09-06.md` §5b caveat (one tab at a time until U79 lands). The rest is the tech lead's:
+`docs/execution-graph.md` at 5080f22 (merged 37893ca 11:19) carries the same words and the five briefs, U79–U82 spawned
+11:19, U83 queued behind U81; `STATUS.md` records each unit as it lands.
 **If you say nothing:** the tech lead's reading of it in the graph stands.
 
 Nothing else routed since the checkpoint; the tree scans clean (`python3 tools/inbox.py`, 11:17 today). Nothing
