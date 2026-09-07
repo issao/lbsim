@@ -1408,6 +1408,7 @@ export const ROUTING_TO_ENGINE: Record<RoutingKind, string | null> = {
   random: 'random',
   least_requests: 'least_requests',
   least_kv_tokens: 'least_queue_tokens',
+  least_kv_probe: 'least_kv_probe',
   power_of_two_choices: 'p2c',
   prefix_affinity: null,
 };

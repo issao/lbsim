@@ -262,6 +262,14 @@ check('kv-spiral: the live run is kv_spiral_never.txt, sessions and preemption i
   return 'preemption = never, session_turns_mean = 8, fleet of 4 at 30k KV';
 });
 
+check('least-kv-probe: routing.kind reaches the wire as least_kv_probe, not dropped', () => {
+  const script = readJson<WalkthroughScript>('least-kv-probe.json');
+  const wire = api.scenarioConfigToWire(walkthrough.scenarioFor(script));
+  eq(wire.fields.routing, 'least_kv_probe', 'routing');
+  if (wire.dropped.includes('routing.kind')) throw new Error(`routing.kind was dropped: ${JSON.stringify(wire.dropped)}`);
+  return 'routing = least_kv_probe, routing.kind not dropped';
+});
+
 check('a scenario key the engine does not accept fails at encode time', () => {
   const script = readJson<WalkthroughScript>('spec-decode.json');
   const config = walkthrough.scenarioFor({ ...script, scenario: { ...script.scenario, preemptoin: 'never' } });

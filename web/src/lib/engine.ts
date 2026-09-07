@@ -226,9 +226,11 @@ function routingWeights(c: ScenarioConfig, t: number, st: State, out: Float64Arr
         // that drew long requests keeps them.
         w = 1 + 0.18 * drift(4, t, seed + 2, i) + 0.40 * clamp(longScale, 0, 3) * normal(seed + 11, i);
         break;
-      case 'least_kv_tokens': {
+      case 'least_kv_tokens':
+      case 'least_kv_probe': {
         // Right unit, stale input. Every router sees the same delayed snapshot and picks the same
-        // apparently-idle replica, so the load sloshes: dynamic 2.
+        // apparently-idle replica, so the load sloshes: dynamic 2. The mock has no live probe, so
+        // least_kv_probe renders identically to least_kv_tokens here.
         const f = 1 / Math.max(2 * loopDelayS, 0.4);
         const amp = clamp(0.05 + 0.55 * (loopDelayS - 0.2), 0.05, 1.2);
         w = 1 + amp * Math.cos(2 * Math.PI * f * t - (2 * Math.PI * i) / R) + 0.05 * drift(5, t, seed + 3, i);
