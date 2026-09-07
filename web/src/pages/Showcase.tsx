@@ -8,33 +8,59 @@ import {
   type ShowcaseIndex,
   type WalkthroughScript,
 } from '../lib/walkthrough';
-import type { RunHandle } from '../lib/useRun';
+import { probeDataSource, type RunHandle } from '../lib/useRun';
 import type { ScenarioConfig } from '../lib/config';
-import { dataModeFrom, replayOverride, serverMode } from '../lib/mode';
-import { probeRunIndex } from '../lib/replay';
 import { type RunnerHandle, type StepState, WalkthroughRunner } from '../lib/walkthroughRunner';
 import { Dashboard, type TabHint } from './Dashboard';
 import { MockTag } from '../components/ui';
 
+/**
+ * The open walkthrough lives in the hash, `#/showcase?script=<card id>`, so the nav link, the back
+ * button, a reload and a pasted URL all agree on what is open. State kept in the component did not:
+ * a click on the "Showcase" link is a same-route hash change, which re-renders the same instance.
+ */
+function scriptIdFromHash(): string | null {
+  const q = window.location.hash.indexOf('?');
+  return q < 0 ? null : new URLSearchParams(window.location.hash.slice(q + 1)).get('script');
+}
+
 export function Showcase() {
   const [index, setIndex] = useState<ShowcaseIndex | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [wanted, setWanted] = useState<string | null>(scriptIdFromHash);
   const [script, setScript] = useState<WalkthroughScript | null>(null);
 
   useEffect(() => {
     loadIndex().then(setIndex).catch((e) => setError(String(e)));
   }, []);
 
-  const open = async (card: ShowcaseCard) => {
-    if (!card.script) return;
-    try {
-      setScript(await loadScript(card.script));
-    } catch (e) {
-      setError(String(e));
+  useEffect(() => {
+    const onHash = () => setWanted(scriptIdFromHash());
+    window.addEventListener('hashchange', onHash);
+    return () => window.removeEventListener('hashchange', onHash);
+  }, []);
+
+  // An id the index does not know shows the cards, the same as no id.
+  useEffect(() => {
+    const file = wanted && index ? index.cards.find((c) => c.id === wanted)?.script : undefined;
+    if (!file) {
+      setScript(null);
+      return;
     }
+    let alive = true;
+    loadScript(file)
+      .then((s) => alive && setScript(s))
+      .catch((e) => alive && setError(String(e)));
+    return () => {
+      alive = false;
+    };
+  }, [wanted, index]);
+
+  const open = (card: ShowcaseCard) => {
+    if (card.script) window.location.hash = `#/showcase?script=${card.id}`;
   };
 
-  if (script) return <Walkthrough script={script} onExit={() => setScript(null)} />;
+  if (script) return <Walkthrough script={script} onExit={() => (window.location.hash = '#/showcase')} />;
 
   return (
     <div className="page-pad">
@@ -104,16 +130,6 @@ type Source =
   | { kind: 'replay'; run: string; note?: undefined };
 
 /**
- * What can be decided without a round trip: a server that is switched on takes every script,
- * live; a script with no recording drives the mock. Only a named recording needs the index.
- */
-function initialSource(script: WalkthroughScript): Source {
-  const override = replayOverride(window.location.search, window.location.hash);
-  if (dataModeFrom(serverMode(), false, override) === 'server') return { kind: 'server' };
-  return script.run ? { kind: 'probing' } : { kind: 'mock' };
-}
-
-/**
  * The runner's view of whatever handle the dashboard hands back. Read lazily, because the handle's
  * identity changes on every render and the runner outlives all of them. A synchronous refusal
  * (the mock and the replay return an `UpdateResponse`) becomes a rejection here; the server's
@@ -145,26 +161,26 @@ function adapt(get: () => RunHandle): RunnerHandle {
  */
 function Walkthrough({ script, onExit }: { script: WalkthroughScript; onExit: () => void }) {
   const initial = useRef<ScenarioConfig>(scenarioFor(script)).current;
-  const [source, setSource] = useState<Source>(() => initialSource(script));
-  const probing = source.kind === 'probing';
+  const [source, setSource] = useState<Source>({ kind: 'probing' });
 
+  // The same probe the dashboard decides from, so the overlay never says "replay" over a live run.
   useEffect(() => {
     const wanted = script.run;
-    if (!probing || !wanted) return;
     let alive = true;
-    void probeRunIndex().then((runs) => {
+    void probeDataSource().then((d) => {
       if (!alive) return;
-      const served = runs?.some((r) => r.runId === wanted) ?? false;
-      const mode = dataModeFrom(serverMode(), runs !== null, replayOverride(window.location.search, window.location.hash));
-      if (served && mode === 'replay') setSource({ kind: 'replay', run: wanted });
-      else setSource({ kind: 'mock', note: `recording ${wanted} is not in the served runs index; playing the mock instead` });
+      if (d.state === 'server') setSource({ kind: 'server' });
+      else if (d.state === 'replay' && wanted && d.runs.some((r) => r.runId === wanted)) setSource({ kind: 'replay', run: wanted });
+      else if (d.state === 'replay' && wanted)
+        setSource({ kind: 'mock', note: `recording ${wanted} is not in the served runs index; playing the mock instead` });
+      else setSource({ kind: 'mock' });
     });
     return () => {
       alive = false;
     };
-  }, [script.run, probing]);
+  }, [script.run]);
 
-  if (source.kind === 'probing') return <div className="page-pad">looking for {script.run}…</div>;
+  if (source.kind === 'probing') return <div className="page-pad">looking for a server{script.run ? ` or ${script.run}` : ''}…</div>;
   return <WalkthroughOver key={source.kind} script={script} initial={initial} source={source} compare={script.compare} onExit={onExit} />;
 }
 
@@ -196,6 +212,9 @@ function WalkthroughOver({
       setSourceLabel((l) => (l === label ? l : label));
       const late = run.lastUpdate && !run.lastUpdate.accepted ? run.lastUpdate.rejectedReason : null;
       setLateReason((r) => (r === late ? r : late));
+      // A server handle renders before StartRun has answered, and its controls drop on the floor
+      // until then; a runner built that early would call play() into nothing and wait forever.
+      if (run.source?.kind === 'server' && !run.source.runId) return;
       if (!runnerRef.current) {
         const runner = new WalkthroughRunner(script, adapt(() => runRef.current as RunHandle));
         runnerRef.current = runner;

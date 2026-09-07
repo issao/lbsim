@@ -16,7 +16,8 @@ const LINKS: { href: Route; label: string }[] = [
 ];
 
 function currentRoute(): Route {
-  const h = window.location.hash.replace(/^#/, '') || '/';
+  // A page keeps its own state after `?` (`#/showcase?script=x`), so the route is the part before it.
+  const h = window.location.hash.replace(/^#/, '').replace(/\?.*$/, '') || '/';
   return (LINKS.find((l) => l.href === h)?.href ?? '/') as Route;
 }
 
