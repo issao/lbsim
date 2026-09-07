@@ -299,6 +299,7 @@ struct Window {
     itl_max: Histogram,
     e2e: Histogram,
     queue_wait: Histogram,
+    preemptions: u64,
 }
 
 impl Window {
@@ -344,6 +345,7 @@ impl Window {
             itl_max: w.itl_max.to_sparse(),
             e2e: w.e2e.to_sparse(),
             queue_wait: w.queue_wait.to_sparse(),
+            preemptions: w.preemptions,
             replicas: replicas
                 .iter()
                 .map(|r| ReplicaSample {
@@ -370,6 +372,9 @@ pub struct Sim {
     admission: Box<dyn AdmissionPolicy>,
     tenant_shares: Vec<f64>,
     route_rng: Rng,
+    /// Its own stream, so turning sessions on cannot perturb arrivals, shapes or routing.
+    session_rng: Rng,
+    sessions_spawned: u64,
     workload: Workload,
 
     start: Nanos,
@@ -409,6 +414,50 @@ pub struct Sim {
     finished: bool,
 }
 
+/// Ids for session turns, above the first-attempt and retry ranges.
+const SESSION_ID_BASE: u64 = 1 << 40;
+
+/// Perhaps schedule the session's next turn after a completed one. The number of turns is geometric
+/// with mean `session_turns_mean`, the next turn carries the whole context so far plus a short new
+/// prompt, and it goes straight back to the replica that holds that context, which parks it in the
+/// meantime. Pinned rather than routed: the point of keeping context resident is lost on any other
+/// replica, and a router that knew that would do the same.
+fn follow_up(
+    sc: &Scenario,
+    rng: &mut Rng,
+    spawned: &mut u64,
+    i: usize,
+    replica: &mut Replica,
+    q: &mut EventQueue<Ev>,
+    prev: &Request,
+    now: Nanos,
+) {
+    if sc.session_turns_mean <= 1.0 {
+        return;
+    }
+    if rng.f64() >= 1.0 - 1.0 / sc.session_turns_mean {
+        return;
+    }
+    *spawned += 1;
+    let context = prev.prompt as u64 + prev.output as u64;
+    let new_prompt = 1 + rng.below(sc.prompt_mean.max(1.0) as u64) as u32;
+    let output = 1 + rng.below((2.0 * sc.output_mean).max(1.0) as u64) as u32;
+    let at = now + (sc.session_think_s * 1e9) as Nanos;
+    let req = Request {
+        id: SESSION_ID_BASE + *spawned,
+        arrived_at: at,
+        attempt_at: at,
+        prompt: (context + new_prompt as u64).min(u32::MAX as u64) as u32,
+        output,
+        attempts: 1,
+        deadline: at + (sc.client_timeout_s * 1e9) as Nanos,
+        is_long: prev.is_long,
+        tenant: prev.tenant,
+    };
+    replica.park(req.id, context, req.deadline, now);
+    q.schedule(at, Ev::Admit(i, req));
+}
+
 pub fn run(sc: &Scenario) -> Result<RunResult, String> {
     let mut sim = Sim::new(sc)?;
     let end = sim.end();
@@ -424,6 +473,7 @@ impl Sim {
         let tenant_shares = sc.tenant_shares();
         let streams = Streams::new(sc.seed);
         let route_rng: Rng = streams.stream("route");
+        let session_rng: Rng = streams.stream("session");
         let workload = Workload::new(&streams);
 
         let start = EPOCH_BASE;
@@ -455,6 +505,8 @@ impl Sim {
             admission,
             tenant_shares,
             route_rng,
+            session_rng,
+            sessions_spawned: 0,
             workload,
             start,
             end,
@@ -590,7 +642,9 @@ impl Sim {
                     let (id, deadline) = (req.id, req.deadline);
                     if let Err(req) = r.enqueue(req, sc.max_queue) {
                         // Shed before consuming device time: the cheap failure, and deliberately
-                        // distinct in the outcome from one that fails after burning work.
+                        // distinct in the outcome from one that fails after burning work. A session
+                        // turn shed here releases the context parked for it.
+                        r.remove(id);
                         finish(
                             &mut self.records, &mut self.outcomes, &mut self.done, &mut self.window,
                             Outcome::Rejected, &req, now, target, 0, 0, 0, 0,
@@ -620,7 +674,12 @@ impl Sim {
                             outcome, &s.req, token_at, i, s.admitted_at, s.first_token_at, s.max_itl,
                             s.mean_itl,
                         );
+                        follow_up(
+                            sc, &mut self.session_rng, &mut self.sessions_spawned, i,
+                            &mut self.replicas[i], &mut self.q, &s.req, token_at,
+                        );
                     }
+                    self.window.preemptions += out.preempted as u64;
 
                     if !out.idle {
                         self.q.schedule(token_at, Ev::Step(i));

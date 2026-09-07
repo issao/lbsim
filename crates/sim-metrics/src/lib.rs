@@ -261,6 +261,9 @@ pub struct Frame {
     pub itl_max: SparseHistogram,
     pub e2e: SparseHistogram,
     pub queue_wait: SparseHistogram,
+    /// Contexts evicted from a cache in the window, running or parked; the dashboard's preemption
+    /// rate.
+    pub preemptions: u64,
     pub replicas: Vec<ReplicaSample>,
 }
 

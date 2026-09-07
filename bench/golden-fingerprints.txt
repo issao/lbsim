@@ -4,6 +4,8 @@
 1-routing/03-random.summary.csv                              fingerprint=17138230929116121469   events=296227    summary_md5=71f6fa7551ae
 10-probes/00-p2c.summary.csv                                 fingerprint=13155901060006219336   events=296643    summary_md5=0bfb6770c71c
 10-probes/01-least_kv_probe.summary.csv                      fingerprint=9718064755447683793    events=296830    summary_md5=0d20c2931f49
+11-preemption/00-kv_spiral_never.summary.csv                 fingerprint=5972592742089223014    events=45076     summary_md5=a67ae0f2d958
+11-preemption/01-kv_spiral_swap.summary.csv                  fingerprint=4949261867223813137    events=44596     summary_md5=6553483ddcb5
 2-staleness/00-telemetry_interval_ms___100.summary.csv       fingerprint=16393865130379415143   events=352465    summary_md5=da7851829984
 2-staleness/01-telemetry_interval_ms___250.summary.csv       fingerprint=16416231017560174181   events=307351    summary_md5=027912a13c69
 2-staleness/02-telemetry_interval_ms___500.summary.csv       fingerprint=11216039682751027244   events=279763    summary_md5=ad1f269d628d
@@ -46,23 +48,24 @@ h-h5-bursty-step/00-h5_bursty_step.summary.csv               fingerprint=1380300
 h-h6-low-rate-heavy-context/00-h6_low_rate_heavy_context.summary.csv fingerprint=15940118259117105240   events=231936    summary_md5=10be43f0b8a3
 h-h7-code-completion/00-h7_code_completion.summary.csv       fingerprint=18343344250318204309   events=249330    summary_md5=86728b1a62f6
 h-h8-retry-storm/00-h8_retry_storm.summary.csv               fingerprint=4264169605968401035    events=309388    summary_md5=b999943696c1
-1-routing.html                                               html_md5=0afdfeeb897d
-10-probes.html                                               html_md5=07828e9e1dd6
-2-staleness.html                                             html_md5=0bdd7897d13d
-3-chunking.html                                              html_md5=3d42b161d6cc
-4-load-curve.html                                            html_md5=fdc9545f11e6
-5-long-context.html                                          html_md5=d481f4d2b221
-6-retry.html                                                 html_md5=c6ff90d1bfb6
-7-least-queue-tokens.html                                    html_md5=93035bfd7550
-7-no-decode.html                                             html_md5=452427736bee
-8-admission.html                                             html_md5=026311a73a35
-8-probe-live.html                                            html_md5=42accd3ca48d
-9-fair-share.html                                            html_md5=adbe007cf94d
-h-h1-light-chat.html                                         html_md5=5492f6e966f3
-h-h2-near-rated-chat.html                                    html_md5=ac92bf36f4b4
-h-h3-over-rated-chat.html                                    html_md5=eaa68e540ed6
-h-h4-long-prompt-mixture.html                                html_md5=51b84ea5a207
-h-h5-bursty-step.html                                        html_md5=72120ee8be64
-h-h6-low-rate-heavy-context.html                             html_md5=4e28e458471b
-h-h7-code-completion.html                                    html_md5=0d84b6c40ed8
-h-h8-retry-storm.html                                        html_md5=726771c08a3f
+1-routing.html                                               html_md5=26901aa33a3e
+10-probes.html                                               html_md5=d584181d9285
+11-preemption.html                                           html_md5=317d2a8b9150
+2-staleness.html                                             html_md5=9845fe9c7819
+3-chunking.html                                              html_md5=074153d1a192
+4-load-curve.html                                            html_md5=72f1971c0a56
+5-long-context.html                                          html_md5=0bf182833fdc
+6-retry.html                                                 html_md5=312f8031efcd
+7-least-queue-tokens.html                                    html_md5=7b0b720e1ab0
+7-no-decode.html                                             html_md5=b5c7b6e5c4be
+8-admission.html                                             html_md5=afb8762788d3
+8-probe-live.html                                            html_md5=0ab6b8d0078b
+9-fair-share.html                                            html_md5=c6494515f6ee
+h-h1-light-chat.html                                         html_md5=f4485d85a735
+h-h2-near-rated-chat.html                                    html_md5=b0fe5df3f876
+h-h3-over-rated-chat.html                                    html_md5=60302f933067
+h-h4-long-prompt-mixture.html                                html_md5=d1ca98f63e98
+h-h5-bursty-step.html                                        html_md5=1f09ce04ac21
+h-h6-low-rate-heavy-context.html                             html_md5=79cc4273997a
+h-h7-code-completion.html                                    html_md5=fd99f5741a3d
+h-h8-retry-storm.html                                        html_md5=0910d28f2d48

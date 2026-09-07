@@ -1,0 +1,44 @@
+# The key-value spiral. Multi-turn sessions keep their context resident on a replica between turns,
+# so at a request rate the device could serve several times over, the cache fills with parked
+# context. Without eviction, admission is blocked by memory that nobody is computing on, and the
+# replica is reduced to one sequence at a time. Same fleet physics as route_p2c.txt; a small fleet
+# and a small cache so the fill happens inside a two-minute run.
+name = kv_spiral_never
+seed = 20260906
+duration_s = 120
+warmup_s = 15
+
+replicas = 4
+max_batch = 64
+kv_capacity_tokens = 30000
+step_base_ms = 10.2
+step_per_seq_ms = 0.0
+step_per_kv_ktoken_ms = 0.0175
+prefill_tokens_per_s = 28286
+step_token_budget = 1024
+max_queue = 400
+
+# Sessions of eight turns on average, eight seconds of thinking between them, short prompts and
+# answers: the kind of chat traffic that looks harmless by request count. Every turn carries the
+# whole previous context, so a session's footprint grows by a prompt and an answer each turn.
+arrival_rps = 2
+prompt_mean = 400
+prompt_cv = 0.8
+output_mean = 150
+output_cv = 1.0
+long_probability = 0.0
+session_turns_mean = 8
+session_think_s = 8
+
+preemption = never
+
+routing = p2c
+telemetry_interval_ms = 1000
+telemetry_delay_ms = 200
+
+client_timeout_s = 60
+max_attempts = 1
+ttft_slo_ms = 2000
+itl_slo_ms = 80
+e2e_slo_s = 60
+sample_interval_ms = 250

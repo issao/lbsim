@@ -9,11 +9,13 @@
 use lbsim::scenario::Scenario;
 
 /// Every key `parse` accepts, which is also every key `to_text` must emit.
-const KEYS: [&str; 44] = [
+const KEYS: [&str; 50] = [
     "name", "seed", "duration_s", "warmup_s", "replicas", "max_batch", "step_base_ms",
     "step_per_seq_ms", "step_per_kv_ktoken_ms", "kv_capacity_tokens", "prefill_tokens_per_s",
-    "step_token_budget", "max_queue", "disable_decode", "arrival_rps", "prompt_mean", "prompt_cv", "output_mean",
-    "output_cv", "long_probability", "long_prompt_mean", "long_output_mean", "load_step_at_s",
+    "step_token_budget", "max_queue", "disable_decode", "preemption", "preemption_victim",
+    "dram_capacity_tokens", "swap_gbps", "arrival_rps", "prompt_mean", "prompt_cv", "output_mean",
+    "output_cv", "long_probability", "long_prompt_mean", "long_output_mean", "session_turns_mean",
+    "session_think_s", "load_step_at_s",
     "load_step_factor", "load_step_until_s", "routing", "p2c_choices", "probe_live",
     "admission", "admission_headroom", "fair_share_burst", "tenants", "tenant_weights", "tenant_demand",
     "telemetry_interval_ms", "telemetry_delay_ms", "client_timeout_s", "max_attempts",
@@ -39,6 +41,10 @@ fn all_fields_distinct() -> Scenario {
         step_token_budget: 1536,
         max_queue: 17,
         disable_decode: true,
+        preemption: "swap_else_recompute".into(),
+        preemption_victim: "largest_kv".into(),
+        dram_capacity_tokens: 2_222_000.0,
+        swap_gbps: 32.5,
         arrival_rps: 19.5,
         prompt_mean: 1500.5,
         prompt_cv: 1.75,
@@ -47,6 +53,8 @@ fn all_fields_distinct() -> Scenario {
         long_probability: 0.13,
         long_prompt_mean: 18_000.5,
         long_output_mean: 512.5,
+        session_turns_mean: 3.5,
+        session_think_s: 6.5,
         load_step_at_s: 21.0,
         load_step_factor: 2.5,
         load_step_until_s: 41.0,
@@ -90,6 +98,10 @@ fn to_text_then_parse_preserves_every_field() {
     assert_eq!(got.prefill_tokens_per_s, want.prefill_tokens_per_s);
     assert_eq!(got.step_token_budget, want.step_token_budget);
     assert_eq!(got.max_queue, want.max_queue);
+    assert_eq!(got.preemption, want.preemption);
+    assert_eq!(got.preemption_victim, want.preemption_victim);
+    assert_eq!(got.dram_capacity_tokens, want.dram_capacity_tokens);
+    assert_eq!(got.swap_gbps, want.swap_gbps);
     assert_eq!(got.arrival_rps, want.arrival_rps);
     assert_eq!(got.prompt_mean, want.prompt_mean);
     assert_eq!(got.prompt_cv, want.prompt_cv);
@@ -98,6 +110,8 @@ fn to_text_then_parse_preserves_every_field() {
     assert_eq!(got.long_probability, want.long_probability);
     assert_eq!(got.long_prompt_mean, want.long_prompt_mean);
     assert_eq!(got.long_output_mean, want.long_output_mean);
+    assert_eq!(got.session_turns_mean, want.session_turns_mean);
+    assert_eq!(got.session_think_s, want.session_think_s);
     assert_eq!(got.load_step_at_s, want.load_step_at_s);
     assert_eq!(got.load_step_factor, want.load_step_factor);
     assert_eq!(got.load_step_until_s, want.load_step_until_s);
