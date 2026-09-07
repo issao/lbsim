@@ -8,6 +8,7 @@
 //! What is still derived rather than carried structurally: `kv_utilization` from the resident and
 //! capacity counts, `concurrent_seqs` from the in-flight count.
 
+use crate::server::{parse_json, Json as Value};
 use crate::wire::Json;
 use sim_metrics::trace::{BandwidthOrCompute, RequestTrace, SpanKind, TraceBucket, TraceSpan};
 use sim_metrics::Outcome;
@@ -232,192 +233,48 @@ pub fn get_traces_json(traces: &[RequestTrace], req: &GetTracesRequest) -> Strin
     j.finish()
 }
 
-/// Parse a `GetTracesRequest` body. The request is one flat object, so the parser is a flat one:
-/// string, number, `true`/`false`/`null` values, and `uint64` accepted as either a decimal string
-/// (what WIRE.md asks a client to send) or a bare number (what a hand-typed curl sends). Unknown
-/// keys are ignored, as proto3 JSON parsers do; a malformed document is a 400.
+/// Parse a `GetTracesRequest` body with `server.rs`'s reader. `uint64` is accepted as either a
+/// decimal string (what WIRE.md asks a client to send) or a bare number (what a hand-typed curl
+/// sends). Unknown keys are ignored, as proto3 JSON parsers do; a malformed document is a 400.
+/// Nested containers are refused even under an unknown key: nothing in `GetTracesRequest` has one.
 pub fn parse_get_traces_request(text: &str) -> Result<GetTracesRequest, String> {
+    let Value::Obj(fields) = parse_json(text)? else { return Err("expected an object".into()) };
     let mut req = GetTracesRequest::default();
-    for (key, value) in flat_object(text)? {
+    for (key, value) in &fields {
+        if matches!(value, Value::Obj(_) | Value::Arr(_)) {
+            return Err(format!("{key}: nested container"));
+        }
         match key.as_str() {
-            "run_id" => req.run_id = value.string("run_id")?,
-            "outcome" => req.outcome = outcome_from_name(&value.string("outcome")?)?,
-            "min_e2e_ns" => req.min_e2e_ns = value.u64("min_e2e_ns")?,
-            "tenant_id" => req.tenant_id = value.u64("tenant_id")?,
-            "limit" => {
-                req.limit = u32::try_from(value.u64("limit")?).map_err(|_| "limit exceeds uint32".to_string())?
-            }
+            "run_id" => req.run_id = string(value, key)?,
+            "outcome" => req.outcome = outcome_from_name(&string(value, key)?)?,
+            "min_e2e_ns" => req.min_e2e_ns = u64(value, key)?,
+            "tenant_id" => req.tenant_id = u64(value, key)?,
+            "limit" => req.limit = u32::try_from(u64(value, key)?).map_err(|_| "limit exceeds uint32".to_string())?,
             _ => {}
         }
     }
     Ok(req)
 }
 
-/// A scalar from a flat JSON object.
-#[derive(Debug, PartialEq)]
-enum Scalar {
-    Str(String),
-    Num(String),
-    Bool(bool),
-    Null,
-}
-
-impl Scalar {
-    fn string(&self, key: &str) -> Result<String, String> {
-        match self {
-            Scalar::Str(s) => Ok(s.clone()),
-            Scalar::Num(n) => Ok(n.clone()),
-            Scalar::Null => Ok(String::new()),
-            Scalar::Bool(_) => Err(format!("{key}: expected a string")),
-        }
-    }
-
-    fn u64(&self, key: &str) -> Result<u64, String> {
-        match self {
-            Scalar::Str(s) | Scalar::Num(s) => {
-                if s.is_empty() {
-                    return Ok(0);
-                }
-                s.parse().map_err(|_| format!("{key}: {s:?} is not an unsigned integer"))
-            }
-            Scalar::Null => Ok(0),
-            Scalar::Bool(_) => Err(format!("{key}: expected an unsigned integer")),
-        }
+/// A string field. A number is accepted for the enum, since a client may send the number; `null`
+/// is proto3's absent.
+fn string(v: &Value, key: &str) -> Result<String, String> {
+    match v {
+        Value::Str(s) => Ok(s.clone()),
+        Value::Num(n) => Ok(format!("{n}")),
+        Value::Null => Ok(String::new()),
+        _ => Err(format!("{key}: expected a string")),
     }
 }
 
-/// The key/value pairs of one JSON object whose values are all scalars. Nested containers are
-/// refused: nothing in `GetTracesRequest` has one.
-fn flat_object(text: &str) -> Result<Vec<(String, Scalar)>, String> {
-    let mut p = Parser { b: text.as_bytes(), i: 0 };
-    p.skip_ws();
-    p.expect(b'{')?;
-    let mut out = Vec::new();
-    p.skip_ws();
-    if p.peek() == Some(b'}') {
-        p.i += 1;
-        p.skip_ws();
-        return if p.i == p.b.len() { Ok(out) } else { Err("trailing characters after object".into()) };
-    }
-    loop {
-        p.skip_ws();
-        let key = p.string()?;
-        p.skip_ws();
-        p.expect(b':')?;
-        p.skip_ws();
-        let value = p.scalar()?;
-        out.push((key, value));
-        p.skip_ws();
-        match p.next() {
-            Some(b',') => continue,
-            Some(b'}') => break,
-            _ => return Err(format!("expected ',' or '}}' at byte {}", p.i)),
-        }
-    }
-    p.skip_ws();
-    if p.i == p.b.len() {
-        Ok(out)
-    } else {
-        Err("trailing characters after object".into())
-    }
-}
-
-struct Parser<'a> {
-    b: &'a [u8],
-    i: usize,
-}
-
-impl Parser<'_> {
-    fn peek(&self) -> Option<u8> {
-        self.b.get(self.i).copied()
-    }
-
-    fn next(&mut self) -> Option<u8> {
-        let c = self.peek()?;
-        self.i += 1;
-        Some(c)
-    }
-
-    fn skip_ws(&mut self) {
-        while matches!(self.peek(), Some(b' ' | b'\n' | b'\r' | b'\t')) {
-            self.i += 1;
-        }
-    }
-
-    fn expect(&mut self, c: u8) -> Result<(), String> {
-        if self.next() == Some(c) {
-            Ok(())
-        } else {
-            Err(format!("expected {:?} at byte {}", c as char, self.i))
-        }
-    }
-
-    fn string(&mut self) -> Result<String, String> {
-        self.expect(b'"')?;
-        let mut out = String::new();
-        loop {
-            let start = self.i;
-            while let Some(c) = self.peek() {
-                if c == b'"' || c == b'\\' {
-                    break;
-                }
-                self.i += 1;
-            }
-            out.push_str(std::str::from_utf8(&self.b[start..self.i]).map_err(|e| e.to_string())?);
-            match self.next() {
-                Some(b'"') => return Ok(out),
-                Some(b'\\') => match self.next() {
-                    Some(b'"') => out.push('"'),
-                    Some(b'\\') => out.push('\\'),
-                    Some(b'/') => out.push('/'),
-                    Some(b'n') => out.push('\n'),
-                    Some(b'r') => out.push('\r'),
-                    Some(b't') => out.push('\t'),
-                    Some(b'b') => out.push('\u{08}'),
-                    Some(b'f') => out.push('\u{0c}'),
-                    Some(b'u') => {
-                        let hex = self.b.get(self.i..self.i + 4).ok_or("truncated \\u escape")?;
-                        let code = std::str::from_utf8(hex)
-                            .ok()
-                            .and_then(|h| u32::from_str_radix(h, 16).ok())
-                            .and_then(char::from_u32)
-                            .ok_or("bad \\u escape")?;
-                        out.push(code);
-                        self.i += 4;
-                    }
-                    _ => return Err("bad escape".into()),
-                },
-                None => return Err("unterminated string".into()),
-                _ => unreachable!(),
-            }
-        }
-    }
-
-    fn scalar(&mut self) -> Result<Scalar, String> {
-        match self.peek() {
-            Some(b'"') => Ok(Scalar::Str(self.string()?)),
-            Some(b'{') | Some(b'[') => Err(format!("nested container at byte {}", self.i)),
-            Some(_) => {
-                let start = self.i;
-                while let Some(c) = self.peek() {
-                    if matches!(c, b',' | b'}' | b' ' | b'\n' | b'\r' | b'\t') {
-                        break;
-                    }
-                    self.i += 1;
-                }
-                let word = std::str::from_utf8(&self.b[start..self.i]).map_err(|e| e.to_string())?;
-                match word {
-                    "true" => Ok(Scalar::Bool(true)),
-                    "false" => Ok(Scalar::Bool(false)),
-                    "null" => Ok(Scalar::Null),
-                    w if !w.is_empty() && w.bytes().all(|c| c.is_ascii_digit() || matches!(c, b'-' | b'+' | b'.' | b'e' | b'E')) => {
-                        Ok(Scalar::Num(w.to_string()))
-                    }
-                    w => Err(format!("unexpected token {w:?}")),
-                }
-            }
-            None => Err("unexpected end of input".into()),
-        }
+fn u64(v: &Value, key: &str) -> Result<u64, String> {
+    match v {
+        Value::Str(s) if s.is_empty() => Ok(0),
+        Value::Str(s) => s.parse().map_err(|_| format!("{key}: {s:?} is not an unsigned integer")),
+        Value::Num(n) if *n >= 0.0 && n.fract() == 0.0 => Ok(*n as u64),
+        Value::Num(n) => Err(format!("{key}: {n} is not an unsigned integer")),
+        Value::Null => Ok(0),
+        _ => Err(format!("{key}: expected an unsigned integer")),
     }
 }
 
