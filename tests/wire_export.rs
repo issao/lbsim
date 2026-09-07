@@ -271,7 +271,7 @@ fn window_counts_sum_to_the_scorecard() {
 }
 
 #[test]
-fn demos_export_writes_the_six_groups() {
+fn demos_export_writes_the_ten_groups() {
     let dir = fresh_dir("demos");
     let overrides = vec![("duration_s".to_string(), "20".to_string()), ("warmup_s".to_string(), "5".to_string())];
     let ids = export::export_demos(&workspace().join("scenarios"), &dir, &overrides).unwrap();
@@ -283,7 +283,11 @@ fn demos_export_writes_the_six_groups() {
     assert_eq!(count("4-load-curve/arrival_rps="), 6);
     assert_eq!(count("5-long-context/long_probability="), 5);
     assert_eq!(count("6-retry/"), 3);
-    assert_eq!(ids.len(), 30);
+    assert_eq!(count("7-no-decode/"), 2);
+    assert_eq!(count("8-admission/"), 2);
+    assert_eq!(count("9-fair-share/"), 2);
+    assert_eq!(count("10-probes/"), 2);
+    assert_eq!(ids.len(), 38);
     assert!(ids.contains(&"1-routing/round-robin".to_string()), "{ids:?}");
     assert!(ids.contains(&"2-staleness/telemetry_interval_ms=250".to_string()));
 
@@ -298,7 +302,59 @@ fn demos_export_writes_the_six_groups() {
         assert!(scenario.contains("warmup_s = 5\n"), "{id}");
     }
     let index = read(&dir.join("runs/index.json"));
-    assert_eq!(index.lines().filter(|l| l.starts_with('{')).count(), 30);
+    assert_eq!(index.lines().filter(|l| l.starts_with('{')).count(), 38);
     assert!(index.contains(r#""scenario_file":""#));
     assert!(read(&dir.join("runs/3-chunking/step_token_budget=4096/scenario.txt")).contains("step_token_budget = 4096\n"));
+}
+
+/// `run-demos.sh` is the source of truth for what a demo shows; `DEMOS` is what the dashboard's
+/// export can replay. Parse the script's own `compare` and `--out` lines and check the two cannot
+/// silently drift apart: every scenario file the script compares must show up in some `DEMOS` entry,
+/// and every `DEMOS` group name must be one the script actually writes to `out/`.
+#[test]
+fn demos_table_mirrors_run_demos_sh() {
+    let script = read(&workspace().join("run-demos.sh"));
+
+    let mut out_groups: BTreeSet<String> = BTreeSet::new();
+    let mut compare_files: BTreeSet<String> = BTreeSet::new();
+
+    for block in script.split("\n\n") {
+        if !block.contains("$S ") {
+            continue;
+        }
+        if let Some(out_line) = block.lines().find(|l| l.contains("--out out/")) {
+            if let Some(start) = out_line.find("out/") {
+                let rest = &out_line[start + "out/".len()..];
+                if let Some(end) = rest.find(".html") {
+                    out_groups.insert(rest[..end].to_string());
+                }
+            }
+        }
+        if block.contains("$S compare") {
+            for token in block.split_whitespace() {
+                if let Some(file) = token.strip_prefix("scenarios/") {
+                    if file.ends_with(".txt") {
+                        compare_files.insert(file.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    assert!(!out_groups.is_empty() && !compare_files.is_empty(), "parsed nothing out of run-demos.sh");
+
+    for demo in export::DEMOS {
+        assert!(
+            out_groups.contains(demo.group),
+            "DEMOS group {:?} has no matching `--out out/{{group}}.html` in run-demos.sh (found: {out_groups:?})",
+            demo.group
+        );
+    }
+
+    for file in &compare_files {
+        assert!(
+            export::DEMOS.iter().any(|d| d.files.contains(&file.as_str())),
+            "run-demos.sh compares scenarios/{file} but no DEMOS entry lists it"
+        );
+    }
 }
