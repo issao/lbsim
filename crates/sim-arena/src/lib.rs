@@ -32,6 +32,7 @@
 //! with the seed taken from the scenario file, so every policy meets byte-identical load.
 
 pub mod catalog;
+pub mod generator;
 
 use sim_metrics::Outcome;
 use sim_scenario::Scenario;
