@@ -42,13 +42,28 @@ const finalLine = extraFail => {
   const browser = await chromium.launch({ executablePath: CHROME, args: ['--no-sandbox'] });
   const ctx = await browser.newContext({ viewport: { width: 1400, height: 900 } });
 
+  // Every run the harness starts is its own to stop: the server caps live runs at 8 and answers
+  // 503 past it, so a harness that leaked its runs failed every card from the ninth on.
+  const started = new Set();
+  const stopped = new Set();
+  const stopRuns = async () => {
+    for (const id of started) {
+      if (stopped.has(id)) continue;
+      stopped.add(id);
+      await ctx.request.post(BASE + '/v1/ingress/StopRun', { data: { run_id: id } }).catch(() => null);
+    }
+  };
+
   // Every load gets a fresh page so it is a real navigation and its event log starts empty.
   const fresh = async (hash) => {
     const page = await ctx.newPage();
     const log = { errs: [], bad: [], startRuns: [], requests: [] };
     page.on('pageerror', e => log.errs.push(e.message.slice(0, 200)));
     page.on('console', m => { if (m.type() === 'error' && !m.text().includes('SetSpeed')) log.errs.push('console: ' + m.text().slice(0, 200)); });
-    page.on('response', r => { if (r.status() >= 400 && !r.url().includes('SetSpeed')) log.bad.push(`${r.status()} ${r.url().slice(0, 100)}`); });
+    page.on('response', r => {
+      if (r.status() >= 400 && !r.url().includes('SetSpeed')) log.bad.push(`${r.status()} ${r.url().slice(0, 100)}`);
+      if (r.url().endsWith('/StartRun') && r.status() === 200) r.json().then(j => { if (j && j.run_id) started.add(j.run_id); }).catch(() => null);
+    });
     page.on('request', r => {
       log.requests.push(r.url());
       if (r.url().endsWith('/StartRun') && r.postData()) log.startRuns.push(r.postData());
@@ -146,6 +161,7 @@ const finalLine = extraFail => {
       }
     }
     if (ok && !open) open = { page, log, until }; else await page.close();
+    await stopRuns();
   }
 
   // e. the nav link leaves the walkthrough; the browser's back button returns to it
@@ -188,6 +204,15 @@ const finalLine = extraFail => {
     await page.close();
   }
 
+  await stopRuns();
+  // Best effort: the server's own view of what the harness left running.
+  try {
+    const listed = await (await ctx.request.post(BASE + '/v1/ingress/ListRuns', { data: {} })).json();
+    const running = (listed.runs || []).filter(r => started.has(r.run_id) && String(r.state) === 'STATE_RUNNING');
+    check('harness stopped its runs', running.length === 0, `${started.size} started, ${running.length} still running`);
+  } catch (e) {
+    check('harness stopped its runs', false, `ListRuns: ${String(e && e.message || e).slice(0, 120)}`);
+  }
   await browser.close();
   console.log(finalLine(0));
   process.exit(results.every(Boolean) ? 0 : 1);
