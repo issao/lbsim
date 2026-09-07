@@ -5,7 +5,8 @@ Owned by the tech lead; updated on every spawn, merge and ETA change, in the sam
 Per Issao: *"keep an instruction graph of everything that we need to in an md file, with sections below
 of what each task entails."* A stale graph is worse than none, so the status line moves every time.
 
-**Last updated:** 2026-09-06 22:05 PDT. **STOPPED 2026-09-06 22:05 PDT: the session's scope is complete; resume from this file, U77 first.** No unit is in flight; no monitor or server of the tech lead's is running. One worktree not of this session remains, `/home/agents/repo/lbsim-wt-simplify-3` on `claude/simplify-3` (one unmerged commit, clean tree, an earlier S3 simplification pass): left for its owner rather than removed. **Session goal, from Issao verbatim: "ask the TL to get to the point that the load test dashboard is running with live backend."** Scope is exactly main's five findings from its 21:15 QA of lbsim.ai, then stop. Definition of done is a browser: main's headless Chromium harness becomes `tools/qa/` (U73) and gates this work against `sim-run serve` on a fresh build, then lbsim.ai after main redeploys. **Done 67 · in flight 0 · queued 11 · waiting on Issao 1.**
+**Last updated:** 2026-09-07 11:19 PDT. **RESUMED 2026-09-07 11:19 PDT** from the STOPPED line below (333626c), a fresh tech lead. Deployed: lbsim-00013-mvq from master c22ea56. Housekeeping is running (agent a33bf6bd10b64d29f, `claude/docs-round38`); productivity is not. **Session goal, Issao this morning, verbatim:** *"is the load test dashboard link ready to point to the live sim engine? can you make sure that all links in the homepage are separated by a section for 'live' one for 'replay' and one for 'mock' and that the message in the top right corner for each page is accurate. also, clean up all text from any reference of the build process to make this look like a finished product, ensuring accuracy and succinctness. also take a pass over all the ui to keep things clean and simple and intuitive, with no knobs that are not doing anything."* Five units, U79–U83, briefs below; the gate is `tools/qa/qa.js` locally and then `QA_BASE=https://lbsim.ai` after main redeploys. **Done 67 · in flight 4 · queued 12 · waiting on Issao 1.**
+**11:19, wave 1 spawned:** **U79** (default, `claude/tl-cloud-hang`, port 8191) the Cloud Run degradation plus U77; **U80** (sonnet, `claude/tl-home-sections`, 8192) Home in three sections; **U81** (sonnet, `claude/tl-mode-badge`, 8193) the top-right badge accurate per route and state, asserted by the harness; **U82** (sonnet, `claude/tl-finished-text`, 8194) build-process references out of user-facing text. **U83** (default, the UI pass) waits for U81 because both edit `Dashboard.tsx` in adjacent hunks. Read while briefing, recorded here: (1) main's brief puts the A/B page under "Replay"; `Compare.tsx` runs `useRun` twice, the mock engine on both sides, so it is **mock** and Home lists it there (told main). (2) The likely cause of the Cloud Run hang is in `server.rs::stream_updates`: two `return self.finish_subscription(id)` sit inside the block that holds the `subs` guard, and `finish_subscription` locks `subs` again on the same thread, which on Linux parks the thread forever holding `subs`; the next request whose `reap()` finds an expired lease then blocks on `subs` with no response (StartRun after a 60 s lapse is the usual victim, and every later request with nothing expired still answers, which is exactly the "GetRun answers in 120 ms" observation), every new OpenSubscription blocks at `self.subs().insert` after the lease is opened and before `sse_head` (no bytes), and each stuck thread keeps a connection slot until the 64 cap says "busy". The triggers are a run that stops, fails or finishes before its first closed frame (`n == 0 && ending`, a tab closed within the first sample interval, likelier on Cloud Run where the run thread has CPU only during a request) and a reconnect that already holds the final sequence (`sub.finished`). A second, latent fault: `drive()` takes `reg.leases()` while holding `run.lock()` (run.rs ~402), the reverse of `stream_updates` (`subs` → `run.state`) and `reap` (`leases` → `subs`); the order to document is leases → subs → run.state. U79 is briefed to prove both with tests before fixing.
 **21:32:** U74 landed (a5061da: `start()` sends `maxRealtimeFactor: lastFactor` on both paths, `speed` falls back to `lastFactor`, `speedLabel()` in the banner; local browser check: slider 9.5 → 13.5 over 4 s at `speed 1×`; no existing case had asserted 0 on the playing path). Remaining in flight: U73, U75, U72, U71.
 **21:36:** U72 landed (77fb48f: `ScenarioConfig.extra`, `EXTRA_KEYS` of 25 including `disable_decode` and `swap_gbps` which the brief missed, `diffConfig` walks both sides' keys, an unaccepted key throws by name; kv-spiral.json is kv_spiral_never.txt key for key; Playwright saw the card's StartRun carry `preemption = never`, `session_turns_mean = 8`, `session_think_s = 8`). Main fixed the Dockerfile itself (9c754c8: reports 11 and 12 built), so U71's links resolve after the redeploy. Remaining in flight: U73, U75, U71.
 **21:38:** U73 landed (8c75b9f: `tools/qa/qa.js`, `serve-local.sh`, playwright-core 1.47.0 pinned; local gate 14 passed / 29 failed on the pre-wave master, lbsim.ai 20 / 23) and U71 (f97c175: assertions against the exported banner constants, `.wt-mode`/`.tag-line`, Home lists twelve reports). The gate's first run found two things outside main's five: **every showcase card is stuck at "0 samples" on the live path**, locally and on lbsim.ai, because the walkthrough runner's `setSpeed(2)`/`play()` fire from the dashboard's first render while StartRun is in flight, `setPaused` returns on the null run id, and `start(play=false)` then pauses the run once the id arrives with nothing left to unpause it; and **runs outlive closed pages** (no unmount on `page.close()` or a closed tab, so no StopRun) until the server's eight-live-run cap answers 503 for everyone. **U76 spawned** (`claude/tl-pending-controls`, default, port 8186): controls issued before the run id are remembered and applied once after StartRun; a `pagehide` listener stops the run with a keepalive StopRun; the harness stops every run it started. Decision for main, not made here: an idle-stopped run still counts toward the 503 cap of eight, so eight abandoned tabs lock the public site until their leases lapse; the server should either exclude idle-stopped runs from the cap or reap them. Remaining in flight: U75, U76.
@@ -92,8 +93,18 @@ flowchart TD
   U73 --> U76
   U78[U78 least_kv_probe is a RoutingKind; favicon link]:::done
   U73 --> U78
-  U77[U77 live-run cap counts busy or leased runs only; evict, then reap, idle-stopped runs]:::queued
+  U77[U77 live-run cap counts busy or leased runs only; evict, then reap, idle-stopped runs]:::flight
   U54 --> U77
+  U79[U79 Cloud Run: the live server degrades after a handful of runs; request log; lock order]:::flight
+  U54 --> U79
+  U77 --> U79
+  U80[U80 Home in three sections: Live, Replay, Mock]:::flight
+  U81[U81 the top-right badge is accurate per route and state; harness asserts it]:::flight
+  U82[U82 build-process references out of user-facing text]:::flight
+  U83[U83 UI pass: every control does something in its mode; reviewer agent]:::queued
+  U71 --> U80 & U81 & U82
+  U81 --> U83
+  U80 & U82 --> U83
   U74 --> U76
   U74[U74 live dashboard starts paced; speed label never 0x]:::done
   U75[U75 Showcase: open script in the URL; source from the probe]:::done
@@ -699,6 +710,59 @@ Main's decision, 21:39, verbatim: *"a run counts toward the eight only while it 
 6. **U69** (low): trace recorder eviction span and warmup quotas; U26's note that the pre-decode eviction check assumes one token per sequence per step at N>0.
 7. Then the engine roadmap as before: U27 prefix caching, U30 tiering/disaggregation, U32 autoscaling and multi-geo (after U31b), U33 Bode, U29/U36/U37 the leaf split and scale validation, U38 shaping contrast report, U39 model weights.
 Documented, not owed: the Cloud Run request-scoped-CPU note is in WIRE.md (U54); R3's findings are all landed (U63, U64, U65) except U69.
+
+## Wave of 2026-09-07 (U79–U83), from Issao's morning instruction
+
+### U79 the live server degrades on Cloud Run; request log; lock order; U77 folded in (default model)
+**Spawned 11:19** on `claude/tl-cloud-hang`, port 8191. Evidence and what was ruled out: docs/wrap-up-2026-09-06.md §5b. The
+brief carries the diagnosis in the status line above and asks for the proof first: a test that opens a subscription on a run
+stopped before its first closed frame and asserts the stream ends within 5 s on a thread with a timeout (it hangs on master),
+and a test that a reconnect holding the final sequence ends the same way. Fix: `stream_updates` decides under the lock and
+finishes outside it; `drive()` reads `live_for_run` before taking the run lock; the order leases → subs → run.state is written
+down in WIRE.md. Request log: one stdout line per request (`req <method> <rpc|path> <status> <ms> [run=] [sub=]`) and per
+stream (`sse open`/`sse end reason=`), kept in a 512-line ring served as text at `GET /requests.log`, because the deploy
+account cannot read Cloud Logging. U77 (main's decision, quoted in its section below): `Registry::start` counts non-terminal,
+non-idle-stopped runs; at the cap the oldest idle-stopped run is evicted (its checkpoint stays, `GetRun` answers 404); an
+idle-stopped run is reaped after 2 × IDLE_SHUTDOWN_SECONDS regardless. Files: crates/sim-ingress/src/{server,run,lib}.rs,
+WIRE.md. Done when the new tests pass, `QA_PORT=8191 tools/qa/serve-local.sh` passes three times in a row, and the report
+carries the lbsim.ai harness output from before the fix; then READY TO DEPLOY goes to main and the harness runs against
+lbsim.ai three times after the redeploy.
+
+### U80 Home in three sections (`model: sonnet`)
+**Spawned 11:19** on `claude/tl-home-sections`, port 8192. `web/src/pages/Home.tsx` only. Three `h2` headings, exactly
+"Live", "Replay", "Mock", each with a one-line gloss; every link on Home in exactly one section. Live: the load-test
+dashboard (`#/dashboard`, a run starts on the server when it opens) and the showcase (`#/showcase`, walkthroughs that drive
+live runs). Replay: the dashboard in replay mode (`?server=off#/dashboard`) and the twelve reports (real runs rendered as
+HTML). Mock: the A/B page (two mock runs, same seed) and the note that in live and replay a panel for a dynamic the engine
+does not simulate yet carries a `mock` tag. Finished-product wording throughout: the "stand-in" lede and the "engine does
+not exist yet" footnote go. Harness: the twelve report links still answer 200; U81's harness asserts the three headings.
+
+### U81 the top-right badge is accurate per route and state (`model: sonnet`)
+**Spawned 11:19** on `claude/tl-mode-badge`, port 8193. Files: `web/src/App.tsx`, `web/src/lib/mode.ts`,
+`web/src/pages/Compare.tsx`, `web/src/pages/Dashboard.tsx` (the `Dashboard`, `ServerDashboard` and `ReplayDashboard`
+functions only), `tools/qa/qa.js`. The badge names what is on screen now: nothing on Home and on the showcase card list;
+"connecting…" while a dashboard probes or a live run has no id yet; `live — … · run r-N` once it does; `replay — …: <run>`;
+`mock — …` on the A/B page (which never published its mode, so it inherited the last page's) and on a dashboard whose probe
+failed; the server's refusal when StartRun was refused. The brand line stops saying "stand-in". The harness asserts the
+badge text per route (`.mock-global`), Home's three headings, and picks scripted cards by `:not([disabled])` instead of the
+"not scripted yet" text U82 removes.
+
+### U82 build-process references out of user-facing text (`model: sonnet`)
+**Spawned 11:19** on `claude/tl-finished-text`, port 8194. Files: `web/index.html` (title, description),
+`web/src/pages/Showcase.tsx` (the `Showcase` function only: intro paragraph, phase labels, card footers, the schema.md link),
+`web/src/panels/StatusBar.tsx`, `web/public/walkthroughs/index.json` and the fourteen scripts (narration that names
+exports, U-numbers, "recording" where the run may be live). Unscripted cards stay `disabled` with a plain "coming" foot.
+Reports: grep `out/*.html` for build words and report, since sim-report is not owned. Keeps the mock / replay / live words.
+
+### U83 UI pass (default model; queued behind U81)
+Files: `web/src/components/PlaybackBar.tsx`, `web/src/panels/ControlPanel.tsx`, `web/src/pages/Dashboard.tsx` (banners),
+`web/src/styles.css`, a new `tools/qa/screens.js`. Known items: the live banner's "inert controls: fleet.accelerator,
+workload.perturbation…" and "not served by this server, panels stay mock: …" lists go, and the controls they name are
+disabled with a one-word reason where they are shown; the Run tab's second speed selector and play/step/rewind buttons go;
+the playback bar reads play / speed / position, rewind hidden where rewind is off, the "mock run" tag gone (the header says
+the mode); the two "stand-in" notes in ControlPanel reworded; consistent spacing; the replay picker and the live banner never
+both show. Done when a reviewer agent (sonnet) walks `screens.js`'s screenshot of every route and tab and finds nothing to
+remove.
 
 ## Waiting on Issao
 
