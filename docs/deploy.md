@@ -1,6 +1,6 @@
 # Deploying lbsim
 
-Last updated: 2026-09-06 by Claude. Owner of this file and of `deploy.sh`, `cloudbuild.yaml`,
+Last updated: 2026-09-07 by Claude. Owner of this file and of `deploy.sh`, `cloudbuild.yaml`,
 `Dockerfile`, `.dockerignore`, `.gcloudignore`: the cloud agent. Nothing else in the repo is.
 
 Written for you six weeks from now, having forgotten all of it. It says what is live, the one command
@@ -132,6 +132,12 @@ what made the `.cargo` exclusion necessary: the old enumerated `COPY` was avoidi
 Verified rather than assumed: building the workspace tree through Cloud Build failed at step 1 with
 exit 127 before the exclusion and succeeded in 1m22s after it. The context is about 350 KB, so a
 missed exclude also shows up as a suddenly slow upload.
+
+Build times since, for the trend rather than as a target: 1m22s (`lbsim-00003-zc5`, single crate);
+2m9s (`lbsim-00005-dzk`, 2026-09-07, workspace of five crates plus the replay dashboard, context
+560 KB). The reports and the demo export are not where that went: measured against the same binary
+the export takes 1.3 s and reports 7-10 take 0.4 s together. The rest is Rust and npm compile time
+growing with the code, and the machine type is still the free default.
 
 ## 4. Every flag that is load-bearing
 
@@ -285,6 +291,34 @@ flags. Instance count per revision, `ALIGN_MAX` over 60s, `active` and `idle` su
 | `lbsim-00001-zjv` | 2 instances, 22:23–22:28 | **0 from 22:29**, one minute after the next revision took over. Series stops emitting entirely at 22:35. |
 | `lbsim-00002-v7v` | 2 instances, 22:30–22:44 | 1 at 22:45, **0 from 22:47**, about four minutes after losing traffic. |
 | `lbsim-00003-zc5` | 2 instances from 22:46 | still warm at the time of writing, because the deploy was being verified. |
+
+### 2026-09-07: revision `lbsim-00005-dzk`, image `:6897543` — replay runs and reports 7-10
+
+Build `7030c463`, 2m9s, SUCCESS. Deployed at 00:14 UTC; `GET /` answered 200 in 0.12 s. Checked from
+outside, all on the container's own headers:
+
+| Path | Result |
+|---|---|
+| `/runs/index.json` | 200, `application/json`, 7.9 KB, a JSON array of 30 runs in six groups (`1-routing` … `6-retry`) |
+| `/runs/1-routing/least-requests/status.json`, `/runs/2-staleness/telemetry_interval_ms=100/result.json` | 200, `application/json` — nested run paths, including `=` in a segment, resolve |
+| `/runs/6-retry/retry-storm-no-budget/fleet.jsonl` | 200, 986 KB, served as `application/octet-stream`: the server's type table has no `jsonl` entry. The dashboard reads it as text, so it works; a `text/plain` mapping in `crates/sim-ingress/src/lib.rs` would be tidier and is not the cloud agent's file |
+| `/reports/7-no-decode.html` … `/reports/10-probes.html` | 200, `text/html`, 2.3 MB each |
+| `/reports/1-routing.html`, `/docs/findings.md` | 200, unchanged |
+| `/assets/index-CwoZ1XKD.js` (the dashboard bundle) | contains `replay of a recorded run` and the `runs/index.json` fetch, so `/#/dashboard` is in replay mode against the served runs |
+
+Idle check, `./deploy.sh --check-idle` at 00:21 and again at 00:28 UTC, last self-sent request at
+00:15: **1 instance throughout, never more**, still warm at 00:28. Not a scale-to-zero reading, and
+not evidence against one either: the series shows `active` samples at 00:21–00:22 and 00:27 that this
+session did not send (the check itself only calls the Monitoring API), so the idle clock kept
+restarting — exactly the "traffic you did not send" case above. The same series also shows the
+*previous* revision holding one instance from 00:03 to 00:13, before this deploy touched anything,
+for the same reason. What the reading does establish: the new revision's caps are in force (see the
+flag check below) and the count sat at the floor of one, so the exposure while it is being looked at
+is one instance, about a cent an hour. Re-run the check on a quiet hour to see the series stop.
+
+Flag check on the service after the deploy: `autoscaling.knative.dev/maxScale: '10'`,
+`run.googleapis.com/maxScale: '10'`, no `minScale` annotation (which is zero),
+`cpu-throttling: 'true'`, `startup-cpu-boost: 'false'`. Both caps held across the redeploy.
 
 So a genuine zero, reached in one to four minutes, twice. The service total was non-zero at the end
 only because of the revision that had just been deployed and probed — which is the same thing you
