@@ -1,8 +1,8 @@
 # Three stages, so the runtime image carries a binary and static files and nothing else.
 #
-# Node builds the dashboard, Rust builds the simulator and then *runs* it to generate the reports, so
-# the image ships real results rather than placeholders. The runtime stage has no toolchain, no package
-# manager and no shell scripts.
+# Node builds the dashboard, Rust builds the simulator and then *runs* it to generate the reports and
+# the recorded demo runs, so the image ships real results rather than placeholders. The runtime stage
+# has no toolchain, no package manager and no shell scripts.
 
 # --- 1. the dashboard -------------------------------------------------------
 FROM node:22-slim AS web
@@ -42,13 +42,29 @@ RUN mkdir -p site/reports \
  && ./target/release/sim-run sweep scenarios/route_p2c.txt \
       --over long_probability=0.0,0.04,0.08,0.16,0.32 --out site/reports/5-long-context.html \
  && ./target/release/sim-run compare scenarios/retry_none.txt scenarios/retry_budget.txt \
-      scenarios/retry_storm.txt --out site/reports/6-retry.html
+      scenarios/retry_storm.txt --out site/reports/6-retry.html \
+ && ./target/release/sim-run compare scenarios/route_round_robin_no_decode.txt \
+      scenarios/route_p2c_no_decode.txt --out site/reports/7-no-decode.html \
+ && ./target/release/sim-run compare scenarios/admit_accept_all.txt \
+      scenarios/admit_deadline_aware.txt --out site/reports/8-admission.html \
+ && ./target/release/sim-run compare scenarios/admit_tenants_accept_all.txt \
+      scenarios/admit_fair_share.txt --out site/reports/9-fair-share.html \
+ && ./target/release/sim-run compare scenarios/route_p2c.txt \
+      scenarios/route_least_kv_probe.txt --out site/reports/10-probes.html
+# The recorded runs the dashboard replays (web/README.md, "Replay mode"): runs/index.json and one
+# directory per run, written into site/ so the same stage owns everything the image serves. The
+# dashboard fetches /runs/index.json relative to its own origin, so these have to sit beside the app
+# in the runtime image rather than on a bucket. About 15 MB of JSON and two seconds of simulation,
+# both measured, so it costs the build nothing worth caching. The scenario names inside the runs are
+# the ones export.rs hard-codes in DEMOS; there is no flag to pick a subset, and none is wanted.
+RUN ./target/release/sim-run export --demos --dir site
 
 # --- 3. runtime -------------------------------------------------------------
 FROM debian:bookworm-slim
 RUN useradd --uid 10001 --create-home app
 COPY --from=build /s/target/release/sim-run /usr/local/bin/sim-run
 COPY --from=build /s/site/reports/ /srv/reports/
+COPY --from=build /s/site/runs/ /srv/runs/
 COPY --from=web /w/dist/ /srv/
 COPY docs/findings.md /srv/docs/findings.md
 USER 10001
