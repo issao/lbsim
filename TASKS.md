@@ -1,6 +1,6 @@
 # TASKS — things that need Issao
 
-Last updated: 2026-09-06 17:24 PDT by Claude.
+Last updated: 2026-09-06 17:48 PDT by Claude.
 
 Checkpoint 2026-09-06 16:43 PDT, resumed 17:04: every agent restarted from files; see `STATUS.md`
 "Session restart". While the respawned tech lead has no agent id yet, any instruction of yours whose work
@@ -8,7 +8,20 @@ is code is recorded verbatim under "Routed to the tech lead" below and stays in 
 Stack ranked, most blocking first. Every item says what Claude does if you say nothing, so nothing
 here stalls the work. What is finished and live is in `STATUS.md`.
 
-## 0. Review `docs/vision-progress.md`
+## 0. Review the `TraceSpan` extension in `proto/lbsim/v1/metrics.proto`
+
+On `master` at f5eddf1 (a035514, 17:20), acting on *"We should have a way to sample requests to see
+execution traces and what was busy in each resource as it executed."* `TraceSpan` now carries the
+resource state the engine knows at the step: `batch_size`, `queued`, `kv_tokens_resident`,
+`kv_capacity`, `step_ns`, `bound` (bandwidth or compute), and for routing spans the `candidates`
+considered and `stale_view_age_ns` of the view they were scored on; `RequestTrace` gains the
+`TraceBucket` the sampler stratifies on (p50, p90, p99, p99.9). Existing field numbers unchanged;
+operation names now match the engine's (`queue`, `route`, `prefill`, `decode`, `kv_fetch`,
+`preempted`). It matches `sim_metrics::trace::ResourceState` field for field.
+
+**If you say nothing:** it stands as written.
+
+## 0b. Review `docs/vision-progress.md`
 
 Snapshot at 2026-09-06 16:19 PDT, on `master` d42546a: every `VISION.md` requirement classified as done,
 building in the next two hours, or far away, each with one line of evidence. It ends with five priority

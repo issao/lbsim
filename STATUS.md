@@ -3,7 +3,7 @@
 What is live on `origin/master`, what each agent is doing now, and the assumptions being acted on.
 For things that need *you*, see `TASKS.md`.
 
-**Last updated:** 2026-09-06 17:41 PDT by Claude.
+**Last updated:** 2026-09-06 17:48 PDT by Claude.
 
 ---
 
@@ -62,9 +62,9 @@ Scope is `docs/scope-today.md` package B plus item 7, and both side missions Iss
 | Policy ordering survives ±30% cost-model error | `check-sensitivity.sh` | run it; exits non-zero on a flip |
 | Arena, mechanical half, eight-scenario held-out suite | `crates/sim-arena/`, `scenarios/holdout/` | `tools/build.sh test --release -p sim-arena -- --nocapture arena_round` |
 | Stand-in dashboard, three surfaces, mock data | `web/` | `cd web && npm run build` |
-| **Deployed, public at <https://lbsim.ai>** since 16:16, also <https://lbsim-irpwc2yaoa-uc.a.run.app>; dashboard at `/` with links to the reports at `/reports/1-routing.html` to `6-retry.html`; revision `lbsim-00004-t5q` from 6ebfd4e | `Dockerfile`, `cloudbuild.yaml`, `deploy.sh` | `curl -sI` on the URL returns 200; `./deploy.sh --check-idle` reads the instance count from Cloud Monitoring |
+| **Deployed, public at <https://lbsim.ai>** since 16:16, also <https://lbsim-irpwc2yaoa-uc.a.run.app>. **Since 17:20 the dashboard replays real runs**: <https://lbsim.ai/runs/index.json> serves the 30 recorded demo runs and the load-test dashboard plays them with real fleet panels, verified from the public URL by the main agent at 17:20 and by housekeeping at 17:47 (index 200, 30 entries; `/reports/7-no-decode.html` 200); reports 1-10 at `/reports/`; revision per `docs/deploy.md` until the cloud agent's report is relayed | `Dockerfile` (6897543), `cloudbuild.yaml`, `deploy.sh` | `curl -s https://lbsim.ai/runs/index.json` lists 30 runs; `./deploy.sh --check-idle` reads the instance count from Cloud Monitoring |
 | Reference cost model, exact against a naive oracle | `bench/validate_epochs.py` | `tools/sync.sh` runs it |
-| Interfaces, twelve files, reviewed; `GeneratedPolicy` slot (947649b), lease expiry renamed `lease_expires_at_wall_ns` because it is wall clock (db390a4) | `proto/lbsim/v1/` | `tools/sync.sh` compiles them |
+| Interfaces, twelve files, reviewed; `GeneratedPolicy` slot (947649b), lease expiry renamed `lease_expires_at_wall_ns` because it is wall clock (db390a4); `TraceSpan` carries the per-resource state and `RequestTrace` its latency bucket (a035514, merged f5eddf1), awaiting Issao's review, `TASKS.md` item 0 | `proto/lbsim/v1/` | `tools/sync.sh` compiles them |
 | Findings, one section per dynamic | `docs/findings.md` | every table from `./run-demos.sh` |
 | `disable_decode` scenario key, *"basically by setting HBM to infinity"*: zeroes the bandwidth term, KV still binds in tokens; demo 7 (`route_round_robin_no_decode`, `route_p2c_no_decode`), demos 8-10 for admission, fair share and live probes; 28 golden rows added, no existing number moved | `crates/sim-physics/src/lib.rs`, `scenarios/`, `run-demos.sh` (f6b7283, merged c7f8c6a) | `./check-fingerprints.sh` |
 | Policy registry generated from the policy files by `build.rs`, so parallel policy branches cannot conflict on one table | `crates/sim-policy/build.rs` (5083b7b) | `tools/build.sh test -p sim-policy` |
@@ -101,7 +101,7 @@ spend a unit of work, with ranked fixes; its numbers live there, not here.
 |---|---|---|
 | Tech lead `a86e5fccbc930bd58` | `src/`, `tests/`, `scenarios/`, `web/src/lib/` | **Restarted 17:07 from `docs/agents/tech-lead.md`, on Fable; graph at e48887a (17:35): ten units in flight.** U18 live ingress server: the previous session's agent turned out alive and committing (lifecycle f8b1683, SSE subscriptions and leases 5c5354b, idle commit next), so it is watched rather than re-spawned, re-spawn if nothing lands by 18:00. Spawned 17:35: U22 preemption and KV eviction (`claude/tl-preemption`), U23 per-replica rows and heatmap, U24 trace engine, U28 web on the live transport, U34 arena generator loop, and four on `model: sonnet`: U45 `tools/build.sh` round-robin slots with a timeout (from the productivity agent's measurement, ETA 17:50), U46 tests build `Scenario` by struct update (ETA 17:50), U47 `tools/api-card.sh` (ETA 17:45), U48 showcase scripts for the ten selected dynamics (ETA 18:00). Queued behind U28 and U48: U49, the walkthrough runner, *"the unit that turns 'N live and showcased' from 0 to 10."* Twelve finished worktrees removed. The stale `claude/tl-*` remote branches from the previous session are content-merged but the tech lead could not delete them; their two old markers will keep appearing in `tools/sync.sh` until someone with push-delete rights removes them. Old tech lead's last landings: U17 (5077a34), U20 (f6a87a9), U19 (3a00f92), U21 (c7f8c6a), the generated registry (5083b7b) |
 | Productivity `a09d10732748a5738` | `docs/iteration-profile.md`, `docs/agents/brief-template.md` | resumed 17:05 from `docs/agents/productivity.md`, per Issao: *"farming out a separate agent to focus on instrospecting on overall productivity improvements for the tl and coding agents."* Works in `/home/agents/repo/lbsim-prod` on `claude/prod-<n>`, integrates with `tools/integrate.sh`. Every 20 minutes it parses the subagent transcripts and appends a dated section to the profile; first section, the 17:12 baseline, integrating from `claude/prod-1` at 17:15: three subagents of the old tech lead each lost 10 minutes at 16:53 to a hung `tests/ingress_http.rs` that held a build slot; a `tools/build.sh` proposal went to the tech lead. Next section about 17:40. Nothing needs Issao |
-| Cloud `a4c101059bf0331c5`, temporary | `Dockerfile`, `deploy.sh`, `cloudbuild.yaml`, `docs/deploy.md` | **deploying the replay dashboard** since 17:15: the `Dockerfile` now builds reports 7-10 and runs `sim-run export --demos` into the image so `/runs/index.json` sits beside the app (efea414, merged 6897543, `docs/deploy.md` updated with it); the revision is recorded here when the main agent relays it. Before that the cloud agent had **finished**; redeploys are run on request: `./deploy.sh`, about 2.5 minutes end to end. First deploy at 15:22 (72dfb16); scale-to-zero verified twice (993c03a); `docs/deploy.md` is its handover. No further grant was needed, the pending `legacyBucketReader` request is withdrawn: the blocker was two bucket permissions, worked around in `cloudbuild.yaml` |
+| Cloud `a4c101059bf0331c5`, temporary | `Dockerfile`, `deploy.sh`, `cloudbuild.yaml`, `docs/deploy.md` | **deployed the replay dashboard, live at 17:20**: the `Dockerfile` builds reports 7-10 and runs `sim-run export --demos` into the image so `/runs/index.json` sits beside the app (efea414, merged 6897543, `docs/deploy.md` updated with it); revision per `docs/deploy.md` until the cloud agent's report is relayed. Before that the cloud agent had **finished**; redeploys are run on request: `./deploy.sh`, about 2.5 minutes end to end. First deploy at 15:22 (72dfb16); scale-to-zero verified twice (993c03a); `docs/deploy.md` is its handover. No further grant was needed, the pending `legacyBucketReader` request is withdrawn: the blocker was two bucket permissions, worked around in `cloudbuild.yaml` |
 | Monitor and housekeeping | `TASKS.md`, `STATUS.md`, `README.md`, `docs/*.md` except the tech lead's and cloud's | resumed 17:04 on `claude/docs-round36`; inbox and PR loop every 90 s; this round wrote finding 7, the catalog's v2 scores, `docs/arena-implementation.md` §3 under v2, `docs/arena.md` §5b closed, `web/public/runs/` ignored; no open PR on `issao/lbsim`; no pending marker in the tree |
 
 The main agent coordinates and owns `CLAUDE.md` and `proto/`.
@@ -123,7 +123,7 @@ temporary, for Issao to review.
 | M5 policies | partial | six routing policies and two admission controllers, `deadline_aware` and `fair_share`, behind a one-file-per-policy registry that `build.rs` now generates from the files (289cb22, 120e62d, 210b657, 072a932, 5083b7b); no prefix affinity, no per-decision cost measurement |
 | M6 failures | done | retry contrast, finding 6 |
 | M7 control analysis | not started | |
-| M8 dashboard and first deploy | in progress | static deploy live, scale-to-zero measured (993c03a); `sim-ingress` has leases and the idle guard (d688f8f) but no run or subscription endpoint, though `Sim` is now resumable (fc910f6) and per-sample frames exist (2c4a7eb), which the endpoint needs; `sim-run export` writes runs as the `WIRE.md` JSON documents the stream will carry (41f6435); browser transport merged (389f41e) with mock still the default; the replay source that joins the two is on `master` (U17, 5077a34): **the pre-baked dashboard is deployable and the cloud agent is deploying it**, revision to follow; the live server is U18, in flight, not yet written; until the deploy lands the public dashboard is still mock |
+| M8 dashboard and first deploy | in progress | static deploy live, scale-to-zero measured (993c03a); `sim-ingress` has leases and the idle guard (d688f8f) but no run or subscription endpoint, though `Sim` is now resumable (fc910f6) and per-sample frames exist (2c4a7eb), which the endpoint needs; `sim-run export` writes runs as the `WIRE.md` JSON documents the stream will carry (41f6435); browser transport merged (389f41e) with mock still the default; the replay source that joins the two is on `master` (U17, 5077a34) and **deployed: since 17:20 <https://lbsim.ai> replays the 30 recorded demo runs with real fleet panels**, revision per `docs/deploy.md` until relayed; the live server U18 is finished on `claude/tl-ingress-server` per the main agent (38 unit and 8 HTTP tests) and awaits the tech lead's integration, recorded as live here only when the merge lands; the A/B view, the showcase and the per-replica panels stay mock until U23, U28 and U49 |
 | M9 scale validation | not measured | |
 
 22 of the graph's 46 units are done (edbd04a); the arena's judging half scores under rule set v2 with
@@ -131,10 +131,13 @@ the catalog append wired (f6a87a9), and request traces exist on the wire against
 
 ## When the dashboard shows real demos
 
-Today the six demos are live as real-data HTML reports at
-<https://lbsim.ai/reports/1-routing.html> through `6-retry.html`. The React
-dashboard at `/` shows mock data and says so on every panel. The homepage links to the six reports
-since cf12e33, live since 16:03 in revision `lbsim-00004-t5q`, built from `master` 6ebfd4e.
+**It does, since 17:20 PDT.** <https://lbsim.ai/runs/index.json> serves the 30 recorded demo runs and
+the load-test dashboard at `/` plays them: load, throughput, latency, imbalance and KV are the engine's
+numbers; preemptions, wasted GPU, prefix hits and memory tiers are NaN because they are not simulated
+yet; the per-replica table and heatmap are empty until U23; every panel still carries its `mock` tag
+until U28 removes them panel by panel. The ten demos are also HTML reports at
+<https://lbsim.ai/reports/1-routing.html> through `10-probes.html`. Verified from the public URL by the
+main agent at 17:20 and by housekeeping at 17:47; revision per `docs/deploy.md` until relayed.
 
 `docs/dashboard-plan.md` (16c28ac) is the breakdown of why the first dashboard with real runs is
 estimated at 19:00 and what can be pulled in; its estimate table moves only on word from the tech lead
@@ -145,13 +148,11 @@ mock engine; and a rebuild and redeploy, measured at
 1m22s. The shortest path, asked of the tech lead by the main agent: pre-baked run output in wire format
 served statically, so every panel shows real data before the live path exists.
 
-From `docs/execution-graph.md` at edbd04a: **U17 is on `master` (5077a34), so the pre-baked dashboard is
-deployable now.** Deploy is `sim-run export --demos --dir <served dir>` then `./deploy.sh`, per
-`web/README.md` "Replay mode"; the temporary cloud agent folded both into the `Dockerfile` (6897543) and its
-revision is recorded here when relayed. After the deploy the load, throughput, latency, imbalance and KV
-panels show the engine's numbers for the 30 demo runs; the per-replica table and heatmap wait for U23,
-the live path is U18 then U28, and the A/B view and the showcase stay mock until then. The 15:55 ETA
-table (19:00 pre-baked, 21:00 live, 22:30 deployed) is superseded: the pre-baked step beat it by two hours.
+What remains between this and *"all selected dynamics live demoable in the dashboard and in the showcase
+page"*: the live path (U18, finished on its branch and awaiting integration; then U28), the per-replica
+rows (U23), the showcase scripts (U48) and the runner that plays them (U49), all in flight or queued in
+`docs/execution-graph.md`, whose status line counts the dynamics live and showcased. The 15:55 ETA table
+(19:00 pre-baked, 21:00 live, 22:30 deployed) is superseded: the pre-baked step landed at 17:20.
 
 ## Assumptions being acted on
 
