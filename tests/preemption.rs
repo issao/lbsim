@@ -169,3 +169,64 @@ fn the_spiral_collapses_without_preemption_and_recovers_with_it() {
     assert_eq!(never.frames.iter().map(|f| f.preemptions).sum::<u64>(), 0);
     assert!(swap.frames.iter().map(|f| f.preemptions).sum::<u64>() > 0);
 }
+
+/// Session turns carry ids above this; the loop keeps them apart from first attempts and retries.
+const SESSION_ID_BASE: u64 = 1 << 40;
+
+#[test]
+fn a_session_turn_is_offered_to_admission() {
+    // Zero headroom: any expected queue wait at all sheds the request, and the policy estimates that
+    // wait from batch slots, so a small batch keeps the fleet queueing when turns come back. Both
+    // first turns and follow-ups are then shed.
+    let mut sc = scenario("scenarios/kv_spiral_swap.txt");
+    sc.admission = "deadline_aware".into();
+    sc.admission_headroom = 1.0;
+    sc.max_batch = 4;
+    let r = sim::run(&sc).unwrap();
+    let turns: Vec<_> = r.records.iter().filter(|x| x.attempts == 1 && x.id >= SESSION_ID_BASE).collect();
+    assert!(!turns.is_empty(), "the spiral scenario must spawn session turns");
+    let shed = turns.iter().filter(|x| x.outcome == lbsim::metrics::Outcome::Rejected).count();
+    assert!(shed > 0, "admission never saw a follow-up turn: {} turns, none rejected", turns.len());
+    // A follow-up is a request like any other for the retry budget too: every recorded first attempt,
+    // session turn or not, was counted before it was placed.
+    let first = r.records.iter().filter(|x| x.attempts == 1).count() as u64;
+    assert!(
+        r.first_attempts >= first,
+        "first_attempts {} is below the {} recorded first attempts, so session turns were not counted",
+        r.first_attempts, first
+    );
+}
+
+#[test]
+fn eviction_never_swaps_the_queue_heads_own_context() {
+    // Two sessions park their context on the replica; one's next turn is already at the head of the
+    // queue, the other is still thinking. A lone sequence runs ahead of both, and its decode growth
+    // reaches the cap on its last step. Evicting the head's context there is pure waste: it goes out
+    // this step and straight back in the next, two transfers charged, while the other session's
+    // context is the obvious victim. Cap: 100 running + 100 + 100 parked, plus ten decode steps.
+    let mut sc = tiny("swap_to_dram");
+    sc.kv_capacity_tokens = 310.0;
+    sc.max_batch = 1;
+    let cost = sc.cost_model();
+    let deadline = EPOCH_BASE + 60 * SECOND;
+    let mut r = Replica::default();
+    r.park(12, 100, deadline, EPOCH_BASE);
+    r.park(11, 100, deadline, EPOCH_BASE + 1);
+    r.enqueue(req(1, 100, 11), sc.max_queue).ok().unwrap();
+    r.enqueue(req(11, 110, 5), sc.max_queue).ok().unwrap();
+    r.wake(EPOCH_BASE);
+    let mut now = EPOCH_BASE;
+    let last = step_until(&mut r, &sc, &cost, &mut now, |o| !o.finished.is_empty());
+    assert_eq!(last.finished[0].req.id, 1);
+    assert!(last.preempted <= 1, "one victim at most on the step that reaches the cap");
+    // The head's context is resident whichever way the cap was met, so its turn comes in for the
+    // price of its ten new tokens: no transfer in, and so no transfer out before it.
+    let back = r.step(&sc, &cost, now).unwrap();
+    assert_eq!(r.running(), 1);
+    assert_eq!(
+        back.step_ns,
+        cost.step_ns(1, r.kv_tokens(), 10),
+        "the head's turn should be admitted on resident context, without a swap-in charge"
+    );
+    assert_eq!(r.parked(), 1, "the thinking session's context is the one that may be evicted");
+}

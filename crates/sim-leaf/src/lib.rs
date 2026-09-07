@@ -38,6 +38,8 @@ enum Ev {
     Timeout(u64),
     Sample,
     Admit(usize, Request),
+    /// A session's next turn arriving at the gateway, bound for the replica that parked its context.
+    SessionTurn(usize, Request),
 }
 
 pub struct RunResult {
@@ -440,9 +442,10 @@ const SESSION_ID_BASE: u64 = 1 << 40;
 
 /// Perhaps schedule the session's next turn after a completed one. The number of turns is geometric
 /// with mean `session_turns_mean`, the next turn carries the whole context so far plus a short new
-/// prompt, and it goes straight back to the replica that holds that context, which parks it in the
-/// meantime. Pinned rather than routed: the point of keeping context resident is lost on any other
-/// replica, and a router that knew that would do the same.
+/// prompt, and it goes back to the replica that holds that context, which parks it in the meantime.
+/// The turn arrives at the gateway like any other request and admission may shed it, but routing
+/// may not move it: the point of keeping context resident is lost on any other replica, and a router
+/// that knew that would do the same.
 fn follow_up(
     sc: &Scenario,
     rng: &mut Rng,
@@ -476,7 +479,7 @@ fn follow_up(
         tenant: prev.tenant,
     };
     replica.park(req.id, context, req.deadline, now);
-    q.schedule(at, Ev::Admit(i, req));
+    q.schedule(at, Ev::SessionTurn(i, req));
 }
 
 pub fn run(sc: &Scenario) -> Result<RunResult, String> {
@@ -718,6 +721,22 @@ impl Sim {
                     }
                     let gap = self.workload.next_gap_ns(sc, elapsed);
                     self.q.schedule(now + gap.max(1), Ev::Arrival);
+                }
+
+                Ev::SessionTurn(i, req) => {
+                    // A first attempt for the retry budget as much as a fresh arrival is.
+                    self.first_attempts += 1;
+                    let d = dispatch_pinned(
+                        &mut *self.admission, &self.views, &self.tenant_shares, now, &req, i,
+                    );
+                    if matches!(d, Dispatch::Rejected) {
+                        // The turn that would have reused the parked context is not coming.
+                        self.replicas[i].remove(req.id);
+                    }
+                    place(
+                        &mut self.q, &mut self.records, &mut self.outcomes, &mut self.done,
+                        &mut self.window, d, req, now,
+                    );
                 }
 
                 Ev::Admit(target, req) => {
@@ -1134,16 +1153,8 @@ fn dispatch(
     req: &Request,
     probed: Option<&mut Vec<usize>>,
 ) -> Dispatch {
-    let request = RequestView {
-        id: req.id,
-        prompt_tokens: req.prompt,
-        arrived_at: req.arrived_at,
-        deadline: req.deadline,
-        tenant: req.tenant,
-        attempts: req.attempts,
-    };
-    let actx = AdmissionContext { now, views, request: &request, tenant_weights: tenant_shares };
-    if admission.admit(&actx) == Admission::Reject {
+    let request = request_view(req);
+    if shed(admission, views, tenant_shares, now, &request) {
         return Dispatch::Rejected;
     }
     // A traced request also learns which replicas the policy paid to look at; the stale views it
@@ -1163,6 +1174,47 @@ fn dispatch(
         }
         None => Dispatch::Dropped,
     }
+}
+
+/// A session's follow-up turn: admission exactly as for any other request, then the replica holding
+/// its context, unrouted and with nothing paid for a view. Admission may shed a turn; routing may not
+/// move it, because the context it reuses is resident on that replica and nowhere else.
+fn dispatch_pinned(
+    admission: &mut dyn AdmissionPolicy,
+    views: &[ReplicaView],
+    tenant_shares: &[f64],
+    now: Nanos,
+    req: &Request,
+    target: usize,
+) -> Dispatch {
+    if shed(admission, views, tenant_shares, now, &request_view(req)) {
+        Dispatch::Rejected
+    } else {
+        Dispatch::Route { target, delay: 0 }
+    }
+}
+
+fn request_view(req: &Request) -> RequestView {
+    RequestView {
+        id: req.id,
+        prompt_tokens: req.prompt,
+        arrived_at: req.arrived_at,
+        deadline: req.deadline,
+        tenant: req.tenant,
+        attempts: req.attempts,
+    }
+}
+
+/// The admission step alone, from the stale view: true when the policy shed the request.
+fn shed(
+    admission: &mut dyn AdmissionPolicy,
+    views: &[ReplicaView],
+    tenant_shares: &[f64],
+    now: Nanos,
+    request: &RequestView,
+) -> bool {
+    let actx = AdmissionContext { now, views, request, tenant_weights: tenant_shares };
+    admission.admit(&actx) == Admission::Reject
 }
 
 /// Apply a dispatch: schedule the admission at the replica, or record the shed.
