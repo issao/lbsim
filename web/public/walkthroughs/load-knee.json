@@ -1,0 +1,82 @@
+{
+  "id": "load-knee",
+  "dynamic": 17,
+  "title": "Past the knee, more load delivers less work",
+  "summary": "Two knees, in different places. Goodput peaks at 64% of rated capacity; throughput peaks later; past both, offering more load delivers less of everything.",
+  "scenario": {
+    "name": "showcase: load curve",
+    "seed": 20260906,
+    "durationS": 120,
+    "routing.kind": "power_of_two_choices",
+    "workload.arrivalRps": 150
+  },
+  "run": "4-load-curve/arrival_rps=150",
+  "compare": "4-load-curve/arrival_rps=230",
+  "steps": [
+    {
+      "at_sim_s": 12,
+      "speed": 2,
+      "control_tab": "load",
+      "observe_tab": "quality",
+      "highlight": "goodput",
+      "title": "150 requests per second: the goodput peak",
+      "body": [
+        "This run offers 150 rps, power-of-two-choices routing. Goodput is 33,068 tok/s, the highest in the sweep, at 93.3% attainment and a first-token p99 of 5,637 ms. Throughput is 35,350 tok/s.",
+        "150 rps is 64% of the fleet's rated 235. Below this the fleet is under-used; above it, offering more load buys less delivered value."
+      ],
+      "look_for": "Attainment still above 93% and the goodput/throughput gap still small."
+    },
+    {
+      "at_sim_s": 34,
+      "speed": 2,
+      "observe_tab": "utilization",
+      "highlight": "capacity",
+      "title": "Where 150 sits against the rest of the sweep",
+      "body": [
+        "At 30 rps: 7,919 goodput, 98.1% attainment. At 70: 18,127 goodput, 97.0%. At 110: 26,457 goodput, 95.4%. Each step up costs a little attainment for a lot more delivered work.",
+        "That trade is still worth it all the way to 150 rps, which is why the peak sits there and not lower."
+      ],
+      "look_for": "The utilization panel: headroom shrinking steadily as offered load climbs toward 150."
+    },
+    {
+      "at_sim_s": 58,
+      "speed": 2,
+      "set": { "workload.arrivalRps": 190 },
+      "observe_tab": "quality",
+      "highlight": "headline",
+      "title": "190 rps: throughput's own peak, and goodput already falling",
+      "body": [
+        "At 190 rps throughput reaches its peak, 37,976 tok/s, but goodput has already dropped to 31,761 and attainment to 83.3%, with first-token p99 at 8,590 ms.",
+        "Between 150 and 190 rps the fleet is doing more work and delivering less value. Two knees, in different places, is the whole finding."
+      ],
+      "look_for": "Throughput still rising while the goodput line has already turned over."
+    },
+    {
+      "at_sim_s": 84,
+      "speed": 2,
+      "set": { "workload.arrivalRps": 230 },
+      "control_tab": "run",
+      "observe_tab": "quality",
+      "highlight": "headline",
+      "title": "230 rps: both collapse",
+      "body": [
+        "At 230 rps throughput itself falls 20% below its own peak, to 30,175 tok/s. Goodput drops to 18,128 and attainment to 53.2%, with first-token p99 at 38,655 ms.",
+        "Offering 53% more load than the goodput optimum (230 vs 150) yields 45% less goodput. Open the A/B view with A = 150 rps and B = 230 rps to see it on the same seed."
+      ],
+      "look_for": "First-token p99 jumping from single-digit seconds to nearly 39 seconds."
+    },
+    {
+      "at_sim_s": 108,
+      "speed": 1,
+      "control_tab": "load",
+      "observe_tab": "quality",
+      "highlight": "headline",
+      "title": "Admission control is not a refinement here",
+      "body": [
+        "The gap between the peak at 150 rps and the collapse at 230 rps is the entire argument for admission control: it is the difference between the right-hand column of this table and the peak.",
+        "No routing policy fixes an offered rate past the knee. The fix is refusing some of the load before it arrives."
+      ],
+      "look_for": "Set arrival rate back to 150 and watch attainment recover without touching the routing policy."
+    }
+  ]
+}

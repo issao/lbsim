@@ -1,0 +1,77 @@
+{
+  "id": "retry-storm",
+  "dynamic": 5,
+  "title": "Retry storms and metastable collapse",
+  "summary": "A retry budget is the difference between a bad minute and an outage that never clears once the original cause is gone.",
+  "scenario": {
+    "name": "showcase: retry storm",
+    "seed": 20260906,
+    "durationS": 240
+  },
+  "run": "6-retry/retry-storm-no-budget",
+  "compare": "6-retry/retry-with-budget",
+  "steps": [
+    {
+      "at_sim_s": 20,
+      "speed": 2,
+      "control_tab": "scenarios",
+      "observe_tab": "cluster",
+      "highlight": "queue",
+      "title": "Before the spike: all three policies look identical",
+      "body": [
+        "Three runs, identical except for retry policy: none, a 3-attempt policy capped at a 10% retry budget, and 3 attempts with no budget at all. All start with a queue depth around 2.",
+        "The load spike is a jump to three times normal for forty seconds, then a return to normal. Nothing has happened yet."
+      ],
+      "look_for": "Queue depth flat and low across the fleet before the spike arrives."
+    },
+    {
+      "at_sim_s": 70,
+      "speed": 2,
+      "observe_tab": "cluster",
+      "highlight": "queue",
+      "title": "During the spike, this run has no retry budget",
+      "body": [
+        "This recording is the unbudgeted policy: 3 retry attempts, no cap on what fraction of traffic may be retries. Each timeout during the spike adds load precisely when the fleet is least able to absorb it.",
+        "A request that times out after twenty seconds has already consumed twenty seconds of device time producing tokens nobody will read — retries here are far more expensive than in a stateless service."
+      ],
+      "look_for": "Queue depth climbing well past its pre-spike level of 2 while the retry count in the corner rises fast."
+    },
+    {
+      "at_sim_s": 130,
+      "speed": 2,
+      "observe_tab": "quality",
+      "highlight": "goodput",
+      "title": "The retry count: 35,806 against 3,841",
+      "body": [
+        "This run reaches 35,806 retries by the end. The budgeted policy (3 attempts, 10% cap) reaches only 3,841 — a ninefold difference — because the cap stops retries from compounding the very overload that caused them.",
+        "Goodput here ends at 7,344 tok/s, 46.3% attainment. The no-retry policy ends at 20,161 tok/s, 84.5%. The budgeted policy ends at 17,373 tok/s, 81.1%."
+      ],
+      "look_for": "The goodput line for this run sitting far below the other two, with retries still climbing."
+    },
+    {
+      "at_sim_s": 190,
+      "speed": 2,
+      "control_tab": "run",
+      "observe_tab": "cluster",
+      "highlight": "queue",
+      "title": "Offered load is back to normal. This run never comes back.",
+      "body": [
+        "The spike ended at 40 seconds in; by now load has been back to normal for well over a minute. This run's queue is still about 3x its pre-spike depth (2 to 6) at the end of the run.",
+        "That is a metastable collapse: the system is in a state it sustains on its own, and the original cause is gone. The budgeted and no-retry runs both recover, queue 2 to 2."
+      ],
+      "look_for": "Open the A/B view with A = no budget, B = 10% budget. Queue depth in A stays elevated; in B it returns to 2."
+    },
+    {
+      "at_sim_s": 225,
+      "speed": 1,
+      "observe_tab": "utilization",
+      "highlight": "imbalance",
+      "title": "Invisible in the balancer's own metric",
+      "body": [
+        "Load imbalance is 0.22 to 0.25 in all three runs, essentially identical, even though one of them has collapsed and two have not.",
+        "A 10% retry budget recovers 86% of the no-retry goodput (17,373 vs 20,161) and turns the collapse into a recovery. Not smarter routing, not more capacity — just a cap on how much of the offered load may be retries."
+      ],
+      "look_for": "The imbalance panel reading nearly the same number across all three, while goodput tells three different stories."
+    }
+  ]
+}

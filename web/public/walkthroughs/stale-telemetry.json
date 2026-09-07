@@ -2,82 +2,83 @@
   "id": "stale-telemetry",
   "dynamic": 2,
   "title": "Stale-telemetry oscillation",
-  "summary": "The right load metric, measured late. A control loop with delay in it does not settle, it rings.",
+  "summary": "Herding is a smooth function of staleness, and it is steep: a twelvefold goodput collapse across scrape intervals that all look reasonable.",
   "scenario": {
-    "name": "showcase: stale telemetry",
+    "name": "showcase: staleness sweep",
     "seed": 20260906,
     "durationS": 120,
-    "routing.kind": "least_kv_tokens",
-    "workload.arrivalRps": 105,
-    "telemetryIntervalMs": 1000,
-    "telemetryDelayMs": 200
+    "routing.kind": "least_requests",
+    "workload.arrivalRps": 70,
+    "telemetryIntervalMs": 100
   },
+  "run": "2-staleness/telemetry_interval_ms=4000",
+  "compare": "2-staleness/telemetry_interval_ms=100",
   "steps": [
     {
-      "at_sim_s": 14,
+      "at_sim_s": 12,
       "speed": 2,
       "control_tab": "policies",
       "observe_tab": "machine",
       "highlight": "heatmap",
-      "title": "Least resident KV tokens, with fresh telemetry",
+      "title": "Least-requests, telemetry fresh",
       "body": [
-        "This is the correct load signal: resident key-value tokens, which is the unit capacity is actually denominated in. With a 1 s scrape and a 200 ms delay the fleet is close to flat.",
-        "Nothing here is wrong yet. That is the point: the policy is not the bug."
+        "Least-requests routing, 100 ms telemetry publication interval: 14,912 tok/s goodput, 79.3% attainment, load spread 0.67.",
+        "This is not yet the correct-signal case from finding 1 — least-requests is still weaker than sampling — but at this interval the fleet has barely started to ring."
       ],
-      "look_for": "A near-uniform heatmap and a low imbalance coefficient of variation."
+      "look_for": "A heatmap with visible but not extreme imbalance, matching a load spread of 0.67."
     },
     {
       "at_sim_s": 34,
       "speed": 2,
-      "set": { "telemetryDelayMs": 900, "telemetryIntervalMs": 1500 },
+      "set": { "telemetryIntervalMs": 250 },
       "control_tab": "policies",
       "observe_tab": "machine",
       "highlight": "heatmap",
-      "title": "Now make the observation late",
+      "title": "250 ms: almost nothing happens",
       "body": [
-        "The scrape interval went to 1.5 s and the delay to 900 ms. Every router is now deciding on a picture of the fleet that is roughly a second and a half old, and every router sees the same picture.",
-        "So they all agree about which replica is idle, and they all send work to it. By the time the snapshot updates, that replica is the most loaded one in the fleet and the next-idlest becomes the new target."
+        "Goodput 14,941 tok/s, attainment 79.5%, load spread 0.71 — essentially unchanged from 100 ms.",
+        "Between 100 and 250 ms almost nothing happens. Staleness has a threshold rather than a gradient, set by how fast queues change: the loop's own time constant."
       ],
-      "look_for": "A travelling wave rather than a stripe: the pattern moves because the herd moves, not because the work does."
+      "look_for": "The heatmap looking almost identical to the previous step, not a smooth drift."
     },
     {
       "at_sim_s": 56,
-      "speed": 1,
+      "speed": 2,
+      "set": { "telemetryIntervalMs": 1000 },
       "observe_tab": "quality",
-      "highlight": "itl",
-      "title": "The oscillation is visible in the latency, not just in the balance",
+      "highlight": "goodput",
+      "title": "1 second: past the threshold",
       "body": [
-        "Inter-token latency rings at the loop frequency, because step time grows with batch size and the batch on any given replica is now swinging.",
-        "The period is set by the loop delay, which means this is measurable rather than anecdotal: sweep the delay and you get gain and phase from offered load to observed queue depth, hence loop gain, hence a prediction of when it will oscillate instead of an observation after the fact."
+        "At 500 ms goodput was already down to 11,771 tok/s (64.8% attainment, spread 0.95). At 1 second it is 6,943 tok/s, 39.4% attainment, spread 1.27.",
+        "Nothing about the fleet changed; only how old the information was when the routing decision was made."
       ],
-      "look_for": "Regular ripples in p50 and p90 inter-token latency, in phase with each other."
+      "look_for": "The goodput line dropping sharply relative to throughput, which barely moves."
     },
     {
       "at_sim_s": 80,
       "speed": 2,
-      "set": { "routing.kind": "power_of_two_choices", "routing.choices": 2 },
-      "control_tab": "policies",
+      "set": { "telemetryIntervalMs": 4000 },
       "observe_tab": "machine",
       "highlight": "heatmap",
-      "title": "The same stale telemetry, a policy that tolerates it",
+      "title": "4 seconds: a twelvefold collapse from where we started",
       "body": [
-        "Telemetry is still 900 ms late and still scraped every 1.5 s. Nothing about the observation improved. The oscillation is gone.",
-        "Power-of-two-choices is robust to staleness because only a fraction of routers consider any one apparently-idle replica at a time. Herding is bounded by the sampling, not by the freshness of the data."
+        "2 seconds gives 3,494 tok/s (22.6% attainment, spread 1.54). 4 seconds gives 1,264 tok/s, 10.6% attainment, spread 1.88 — a twelvefold goodput collapse across a range of intervals that all look reasonable on a dashboard.",
+        "Every router agrees about which replica looked idle four seconds ago, and every router sends work to it. By the time the snapshot updates, that replica is the most loaded one in the fleet."
       ],
-      "look_for": "A flat heatmap under exactly the telemetry conditions that made least-KV-tokens ring."
+      "look_for": "A travelling wave rather than a static hot row: the pattern moves because the herd moves, not because the work does."
     },
     {
       "at_sim_s": 104,
       "speed": 1,
-      "control_tab": "policies",
+      "control_tab": "run",
       "observe_tab": "quality",
       "highlight": "headline",
-      "title": "The lesson, and the caveat",
+      "title": "The fix is not a better metric, it is a different sampling shape",
       "body": [
-        "The best policy on a whiteboard was the worst policy in this fleet, and the reason was the delay in the loop rather than anything about the routing rule.",
-        "Try the probe-live checkbox on power-of-two-choices: it buys freshness for a modelled RPC per decision. The cost is visible rather than free, which is the only way to compare it honestly against a scrape-based policy."
+        "Open the A/B view with A = the 4 s interval and B = the 100 ms interval to see the same seed and arrivals, only staleness differing.",
+        "Finding 1's lesson still holds underneath this one: power-of-two-choices tolerates staleness that least-requests cannot, because only a fraction of routers consider any one replica at once."
       ],
-      "look_for": "Attainment and goodput, then switch back to least-KV-tokens and watch them fall without any change to the workload."
+      "look_for": "Attainment moving from 10.6% to 79.3% with nothing changed but the scrape interval."
     }
   ]
 }

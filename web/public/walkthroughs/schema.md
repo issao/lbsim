@@ -11,6 +11,8 @@ A walkthrough is content, not interface. The server needs no knowledge of any of
   "title":    string,
   "summary":  string,
   "scenario": { <dotted path>: value },   overrides applied to the base scenario at start
+  "run":      string?,            the exported run id (`sim-run export --demos`) this walkthrough plays
+  "compare":  string?,            a second exported run id, for the A/B view; only meaningful with `run`
   "steps": [
     {
       "at_sim_s":    number,      simulated seconds; the run advances to here, then pauses
@@ -38,3 +40,9 @@ Two things are worth knowing about the semantics:
 
 `index.json` lists the cards. A card without a `script` is listed and disabled, so the catalogue
 shows what exists and what does not rather than quietly omitting it.
+
+- **`run` and `compare` name exported runs, not live scenarios.** They are `run_id`s from
+  `runs/<group>/<run>/`, written by `sim-run export --demos`. A walkthrough with `run` set opens that
+  recording; `compare` adds a second recording for the A/B view. `scenario` and `set` still describe the
+  base scenario and mid-run overrides for a *live* run of the same dynamic, since not every walkthrough
+  has an exported recording to open.

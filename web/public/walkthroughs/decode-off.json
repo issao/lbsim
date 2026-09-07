@@ -1,0 +1,66 @@
+{
+  "id": "decode-off",
+  "dynamic": 19,
+  "title": "Disabling decode: the ordering still holds",
+  "summary": "Zero the HBM bandwidth term and KV still binds in tokens. Power-of-two-choices still beats round robin, by the same shape of margin.",
+  "scenario": {
+    "name": "showcase: disable_decode",
+    "seed": 20260906,
+    "durationS": 120,
+    "routing.kind": "power_of_two_choices"
+  },
+  "run": "7-no-decode/p2c-no-decode",
+  "compare": "7-no-decode/round-robin-no-decode",
+  "steps": [
+    {
+      "at_sim_s": 14,
+      "speed": 2,
+      "control_tab": "scenarios",
+      "observe_tab": "utilization",
+      "highlight": "capacity",
+      "title": "disable_decode: HBM bandwidth to infinity, KV unchanged",
+      "body": [
+        "This scenario zeroes the bandwidth term of the step cost model. Decode no longer costs device time; KV accounting is unchanged, so capacity still binds in tokens.",
+        "Per Issao: \"we could get disable decode basically by setting HBM to infinity.\" The point of this run is to isolate routing quality from decode cost."
+      ],
+      "look_for": "Utilization panel showing device time spent on prefill only; decode no longer a cost line."
+    },
+    {
+      "at_sim_s": 46,
+      "speed": 2,
+      "observe_tab": "quality",
+      "highlight": "headline",
+      "title": "p2c without decode: 97.0% attainment",
+      "body": [
+        "This run is power-of-two-choices routing with decode disabled. Attainment is 97.0%, first-token p99 is 3.8 s, throughput is 18,986 tok/s.",
+        "These numbers echo finding 1's p2c figures closely (97.0% attainment, 3,859 ms first-token p99 with decode present), which is the finding: the routing ordering does not depend on decode cost."
+      ],
+      "look_for": "Attainment and first-token p99 in the headline tile."
+    },
+    {
+      "at_sim_s": 76,
+      "speed": 2,
+      "control_tab": "run",
+      "observe_tab": "quality",
+      "highlight": "headline",
+      "title": "Round robin without decode: 93.7% attainment",
+      "body": [
+        "Open the A/B view with A = p2c (this run) and B = round robin without decode. Round robin's attainment is 93.7%, first-token p99 is 7.2 s, at the same throughput of 18,986 tok/s.",
+        "Round robin against p2c: 93.7% vs 97.0% attainment, 7.2 s vs 3.8 s first-token p99, at identical throughput. The ordering holds without decode."
+      ],
+      "look_for": "Throughput overlapping between A and B while attainment and first-token p99 do not."
+    },
+    {
+      "at_sim_s": 102,
+      "speed": 1,
+      "observe_tab": "quality",
+      "highlight": "headline",
+      "title": "Why this run exists",
+      "body": [
+        "Disabling decode is a way of asking whether the routing-policy story from finding 1 depends on decode competing with prefill for the device. It does not: p2c still wins by roughly the same margin.",
+        "That separability is useful for reasoning about prefill/decode disaggregation later — dynamic 14 — where the two costs genuinely live on different pools."
+      ],
+      "look_for": "The KV utilization panel: still binding, even with decode's device cost at zero."
+    }
+  ]
+}

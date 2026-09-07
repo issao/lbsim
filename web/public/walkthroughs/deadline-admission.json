@@ -1,0 +1,65 @@
+{
+  "id": "deadline-admission",
+  "dynamic": 21,
+  "title": "Shedding on expected wait, not on arrival",
+  "summary": "deadline_aware admission sheds work based on expected queue wait rather than accepting everything and letting the queue decide who misses their deadline.",
+  "scenario": {
+    "name": "showcase: deadline_aware",
+    "seed": 20260906,
+    "durationS": 120
+  },
+  "run": "8-admission/deadline-aware",
+  "compare": "8-admission/accept-all",
+  "steps": [
+    {
+      "at_sim_s": 14,
+      "speed": 2,
+      "control_tab": "policies",
+      "observe_tab": "quality",
+      "highlight": "goodput",
+      "title": "Shedding on expected wait",
+      "body": [
+        "deadline_aware estimates a request's expected queue wait at admission time and sheds it before it consumes any device time, rather than admitting everything and discovering the miss only once the request is already running.",
+        "This is the admission-control counterpart to finding 4's load-knee result: past the knee, the fix is refusing load before it arrives, not routing it better once it has."
+      ],
+      "look_for": "The admission tile showing a non-zero shed rate even while the fleet is not visibly overloaded."
+    },
+    {
+      "at_sim_s": 44,
+      "speed": 2,
+      "observe_tab": "quality",
+      "highlight": "goodput",
+      "title": "Goodput at 1.4x offered load: 241 to 496 tok/s",
+      "body": [
+        "At 1.4x the baseline offered rate, deadline_aware goodput is 496 tok/s against 241 tok/s for accept-all admission at the same offered load — better than double.",
+        "The requests deadline_aware sheds were already going to miss their deadline under accept-all; shedding them early frees the device time they would otherwise have wasted."
+      ],
+      "look_for": "The goodput tile in this run against the accept-all comparison run."
+    },
+    {
+      "at_sim_s": 76,
+      "speed": 1,
+      "control_tab": "run",
+      "observe_tab": "quality",
+      "highlight": "headline",
+      "title": "Open the A/B view",
+      "body": [
+        "A = deadline_aware (this run), B = accept_all. Same seed, same offered load, only the admission policy differs.",
+        "Watch the shed rate in A and the missed-deadline rate in B: the mass being shed in A is close to the mass that would have missed its deadline anyway in B."
+      ],
+      "look_for": "The shed-rate tile in A against the deadline-miss tile in B."
+    },
+    {
+      "at_sim_s": 102,
+      "speed": 1,
+      "observe_tab": "quality",
+      "highlight": "headline",
+      "title": "Why shed early rather than late",
+      "body": [
+        "A request shed at admission costs nothing. A request that runs to completion and still misses its deadline has consumed prefill and decode time that produced no goodput.",
+        "Where admission control belongs in the stack, and what it costs to shed late instead of early, is exactly the question dynamic 6 (traffic shaping) is scoped to answer more generally."
+      ],
+      "look_for": "This run's device-utilization tile against the accept-all comparison: similar utilization, very different goodput."
+    }
+  ]
+}

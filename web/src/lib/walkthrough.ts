@@ -27,6 +27,10 @@ export interface WalkthroughScript {
   summary: string;
   scenario: Record<string, PatchValue>;
   steps: WalkthroughStep[];
+  /** The exported `sim-run export --demos` run id this walkthrough plays. */
+  run?: string;
+  /** A second exported run id, for the A/B view. Only meaningful alongside `run`. */
+  compare?: string;
 }
 
 export interface ShowcaseCard {
@@ -44,16 +48,21 @@ export interface ShowcaseIndex {
   cards: ShowcaseCard[];
 }
 
-const BASE_URL = `${import.meta.env.BASE_URL}walkthroughs/`;
+// Computed lazily, not at module scope: the self-test imports this module under plain node
+// (no Vite), where `import.meta.env` does not exist, and it only calls validate()/applyPatch().
+function baseUrl(): string {
+  const env = (import.meta as unknown as { env?: { BASE_URL?: string } }).env;
+  return `${env?.BASE_URL ?? '/'}walkthroughs/`;
+}
 
 export async function loadIndex(): Promise<ShowcaseIndex> {
-  const r = await fetch(`${BASE_URL}index.json`);
+  const r = await fetch(`${baseUrl()}index.json`);
   if (!r.ok) throw new Error(`walkthrough index: ${r.status}`);
   return (await r.json()) as ShowcaseIndex;
 }
 
 export async function loadScript(file: string): Promise<WalkthroughScript> {
-  const r = await fetch(`${BASE_URL}${file}`);
+  const r = await fetch(`${baseUrl()}${file}`);
   if (!r.ok) throw new Error(`walkthrough ${file}: ${r.status}`);
   const s = (await r.json()) as WalkthroughScript;
   validate(s);
@@ -61,7 +70,7 @@ export async function loadScript(file: string): Promise<WalkthroughScript> {
 }
 
 /** Fail loudly on a malformed script rather than half-running it. */
-function validate(s: WalkthroughScript): void {
+export function validate(s: WalkthroughScript): void {
   if (!Array.isArray(s.steps) || s.steps.length === 0) throw new Error(`${s.id}: no steps`);
   let last = -Infinity;
   for (const [i, st] of s.steps.entries()) {
@@ -69,6 +78,12 @@ function validate(s: WalkthroughScript): void {
     if (st.at_sim_s <= last) throw new Error(`${s.id} step ${i}: at_sim_s must increase`);
     last = st.at_sim_s;
     if (!st.title || !Array.isArray(st.body)) throw new Error(`${s.id} step ${i}: title and body required`);
+  }
+  if (s.run !== undefined && (typeof s.run !== 'string' || !s.run)) {
+    throw new Error(`${s.id}: run must be a non-empty string`);
+  }
+  if (s.compare !== undefined && (typeof s.compare !== 'string' || !s.compare)) {
+    throw new Error(`${s.id}: compare must be a non-empty string`);
   }
 }
 
