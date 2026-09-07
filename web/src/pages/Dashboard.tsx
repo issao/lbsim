@@ -26,10 +26,17 @@ interface DashboardProps {
   overlay?: ReactNode;
   /**
    * `auto` runs on the Ingress server when one answers, plays recorded runs when `runs/index.json`
-   * is served, and the mock otherwise; `mock` never probes. The showcase asks for `mock` because
-   * its scripts drive the mock's dynamics.
+   * is served, and the mock otherwise; `mock` and `server` never probe. The showcase asks for one
+   * of those two when it has already decided where a walkthrough runs, so the decision is made
+   * once rather than twice.
    */
-  data?: 'auto' | 'mock';
+  data?: 'auto' | 'mock' | 'server';
+  /**
+   * The recorded run to open when the replay branch is taken; `?run=` on the URL otherwise. A
+   * caller that knows which recording it wants (the showcase) says so here rather than by
+   * rewriting the URL under the dashboard's feet.
+   */
+  run?: string;
 }
 
 /**
@@ -42,13 +49,14 @@ interface DashboardProps {
  * started on the Ingress server.
  */
 export function Dashboard(props: DashboardProps) {
-  const auto = (props.data ?? 'auto') === 'auto';
-  const src = useDataSource(auto);
+  const data = props.data ?? 'auto';
+  const src = useDataSource(data === 'auto');
+  const state = data === 'server' ? 'server' : src.state;
   useEffect(() => {
-    if (src.state === 'mock') setActiveMode('mock');
-  }, [src.state]);
-  if (src.state === 'probing') return <div className="page-pad">looking for a server or recorded runs…</div>;
-  if (src.state === 'server') return <ServerDashboard {...props} />;
+    if (state === 'mock') setActiveMode('mock');
+  }, [state]);
+  if (state === 'probing') return <div className="page-pad">looking for a server or recorded runs…</div>;
+  if (state === 'server') return <ServerDashboard {...props} />;
   if (src.state === 'replay') return <ReplayDashboard {...props} runs={src.runs} />;
   return <MockDashboard {...props} />;
 }
@@ -57,7 +65,7 @@ export function Dashboard(props: DashboardProps) {
 // Live: a run started on the Ingress server, streamed as it advances
 // ---------------------------------------------------------------------------
 
-function ServerDashboard({ initial, autoplay = true, ...rest }: DashboardProps) {
+function ServerDashboard({ initial, autoplay = true, run: _recording, ...rest }: DashboardProps) {
   const run = useServerRun(initial, { autoplay });
   useEffect(() => {
     setActiveMode('server', run.runId ?? undefined);
@@ -100,7 +108,7 @@ function ServerBanner({ run }: { run: ServerRunHandle }) {
   );
 }
 
-function MockDashboard({ initial, autoplay = true, ...rest }: DashboardProps) {
+function MockDashboard({ initial, autoplay = true, run: _recording, ...rest }: DashboardProps) {
   const run = useRun(initial, autoplay);
   return <DashboardBody run={run} {...rest} />;
 }
@@ -109,14 +117,21 @@ function MockDashboard({ initial, autoplay = true, ...rest }: DashboardProps) {
 // Replay: pick a run from the index, load it, drive the same body
 // ---------------------------------------------------------------------------
 
-/** `?run=<run_id>` on the URL picks the run for this tab; otherwise the first one in the index. */
-function initialRunId(runs: RunIndexEntry[]): string {
-  const wanted = new URLSearchParams(window.location.search).get('run');
-  return runs.find((r) => r.runId === wanted)?.runId ?? runs[0].runId;
+/**
+ * The `run` prop picks the run when the caller has one; `?run=<run_id>` on the URL picks it for
+ * a tab opened by hand; otherwise the first one in the index.
+ */
+function initialRunId(runs: RunIndexEntry[], wanted: string | undefined): string {
+  const asked = wanted ?? new URLSearchParams(window.location.search).get('run');
+  return runs.find((r) => r.runId === asked)?.runId ?? runs[0].runId;
 }
 
-function ReplayDashboard({ runs, ...rest }: DashboardProps & { runs: RunIndexEntry[] }) {
-  const [runId, setRunId] = useState(() => initialRunId(runs));
+function ReplayDashboard({ runs, run: wanted, ...rest }: DashboardProps & { runs: RunIndexEntry[] }) {
+  const [runId, setRunId] = useState(() => initialRunId(runs, wanted));
+  useEffect(() => {
+    // A caller that changes its mind is obeyed; a name not in the index leaves the picker alone.
+    if (wanted && runs.some((r) => r.runId === wanted)) setRunId(wanted);
+  }, [runs, wanted]);
   const [loaded, setLoaded] = useState<LoadedRun | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -169,7 +184,7 @@ function ReplayBody({
   picker,
   autoplay = true,
   ...rest
-}: Omit<DashboardProps, 'initial'> & { loaded: LoadedRun; picker: ReactNode }) {
+}: Omit<DashboardProps, 'initial' | 'run'> & { loaded: LoadedRun; picker: ReactNode }) {
   const run = useReplayRun(loaded, autoplay);
   return <DashboardBody run={run} banner={<ReplayBanner run={run} picker={picker} />} {...rest} />;
 }
@@ -245,7 +260,7 @@ function DashboardBody({
   tabHint,
   overlay,
   banner,
-}: Omit<DashboardProps, 'initial' | 'autoplay' | 'data'> & { run: RunHandle; banner?: ReactNode }) {
+}: Omit<DashboardProps, 'initial' | 'autoplay' | 'data' | 'run'> & { run: RunHandle; banner?: ReactNode }) {
   const [controlTab, setControlTab] = useState<ControlTab>('load');
   const [observeTab, setObserveTab] = useState<ObserveTab>('quality');
 

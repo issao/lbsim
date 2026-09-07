@@ -40,13 +40,14 @@ export function Showcase() {
     <div className="page-pad">
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, marginBottom: 4 }}>
         <h1 style={{ fontSize: 15, margin: 0, fontWeight: 600 }}>Showcase</h1>
-        <MockTag what="mock or replay" />
+        <MockTag what="mock, replay or live" />
       </div>
       <p className="note" style={{ maxWidth: '80ch', marginTop: 0 }}>
         One card per dynamic in <code>docs/ARCHITECTURE.md</code> section 12, stack ranked as it is there. Clicking a
         card with a script starts a scripted walkthrough: the run advances, pauses at the moments that matter, says what
-        is interesting, and offers resume. A script that names a recorded run plays that recording when the runs index
-        is served; otherwise it drives the mock engine. The scripts are JSON files in{' '}
+        is interesting, and offers resume. When an Ingress server is on, the script runs live on it. Otherwise a script
+        that names a recorded run plays that recording when the runs index is served, and drives the mock engine when
+        it does not. The scripts are JSON files in{' '}
         <code>web/public/walkthroughs/</code>, loaded at runtime; the format is in{' '}
         <a href={`${import.meta.env.BASE_URL}walkthroughs/schema.md`}>schema.md</a>.
       </p>
@@ -93,16 +94,23 @@ export function Showcase() {
 }
 
 /**
- * Where a walkthrough gets its run from. Decided once per script, before the dashboard mounts,
- * because the dashboard's replay branch reads `?run=` at mount to pick its recording.
+ * Where a walkthrough gets its run from. Decided once per script, before the dashboard mounts, and
+ * handed to the dashboard as props (`data`, `run`) so the two never disagree about what is open.
  */
-type Source = { kind: 'probing'; note?: undefined } | { kind: 'mock'; note?: string } | { kind: 'auto'; note?: string };
+type Source =
+  | { kind: 'probing'; note?: undefined }
+  | { kind: 'mock'; note?: string }
+  | { kind: 'server'; note?: undefined }
+  | { kind: 'replay'; run: string; note?: undefined };
 
-/** Put `?run=<id>` on the URL so the dashboard's replay branch opens that recording; undo it on exit. */
-function pinRunOnUrl(runId: string): () => void {
-  const { pathname, search, hash } = window.location;
-  window.history.replaceState(window.history.state, '', `${pathname}?run=${encodeURIComponent(runId)}${hash}`);
-  return () => window.history.replaceState(window.history.state, '', `${pathname}${search}${window.location.hash}`);
+/**
+ * What can be decided without a round trip: a server that is switched on takes every script,
+ * live; a script with no recording drives the mock. Only a named recording needs the index.
+ */
+function initialSource(script: WalkthroughScript): Source {
+  const override = replayOverride(window.location.search, window.location.hash);
+  if (dataModeFrom(serverMode(), false, override) === 'server') return { kind: 'server' };
+  return script.run ? { kind: 'probing' } : { kind: 'mock' };
 }
 
 /**
@@ -137,33 +145,24 @@ function adapt(get: () => RunHandle): RunnerHandle {
  */
 function Walkthrough({ script, onExit }: { script: WalkthroughScript; onExit: () => void }) {
   const initial = useRef<ScenarioConfig>(scenarioFor(script)).current;
-  const [source, setSource] = useState<Source>(script.run ? { kind: 'probing' } : { kind: 'mock' });
+  const [source, setSource] = useState<Source>(() => initialSource(script));
+  const probing = source.kind === 'probing';
 
   useEffect(() => {
     const wanted = script.run;
-    if (!wanted) return;
+    if (!probing || !wanted) return;
     let alive = true;
-    let unpin: (() => void) | null = null;
     void probeRunIndex().then((runs) => {
       if (!alive) return;
       const served = runs?.some((r) => r.runId === wanted) ?? false;
       const mode = dataModeFrom(serverMode(), runs !== null, replayOverride(window.location.search, window.location.hash));
-      if (served && mode === 'replay') {
-        unpin = pinRunOnUrl(wanted);
-        setSource({ kind: 'auto' });
-      } else if (mode === 'server') {
-        // The dashboard starts the scenario live once it has a server branch; the footer says
-        // what it actually opened, so no promise is made here.
-        setSource({ kind: 'auto' });
-      } else {
-        setSource({ kind: 'mock', note: `recording ${wanted} is not in the served runs index; playing the mock instead` });
-      }
+      if (served && mode === 'replay') setSource({ kind: 'replay', run: wanted });
+      else setSource({ kind: 'mock', note: `recording ${wanted} is not in the served runs index; playing the mock instead` });
     });
     return () => {
       alive = false;
-      unpin?.();
     };
-  }, [script.run]);
+  }, [script.run, probing]);
 
   if (source.kind === 'probing') return <div className="page-pad">looking for {script.run}…</div>;
   return <WalkthroughOver key={source.kind} script={script} initial={initial} source={source} compare={script.compare} onExit={onExit} />;
@@ -224,9 +223,11 @@ function WalkthroughOver({
     <Dashboard
       key={script.id}
       initial={initial}
-      // `auto` lets the dashboard open the pinned recording (or, once it has a live branch, start
-      // the scenario on the server); a script without a run keeps driving the mock's dynamics.
-      data={source.kind === 'auto' ? 'auto' : 'mock'}
+      // The decision was made above. `server` and `mock` skip the dashboard's own probe so it
+      // cannot decide differently; replay keeps `auto` because the replay branch takes its run
+      // list from that (cached) probe, and `run` names the recording to open from it.
+      data={source.kind === 'server' ? 'server' : source.kind === 'replay' ? 'auto' : 'mock'}
+      run={source.kind === 'replay' ? source.run : undefined}
       autoplay={false}
       onRun={onRun}
       highlight={!current.advancing ? step.highlight ?? null : null}
