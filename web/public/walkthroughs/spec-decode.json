@@ -1,0 +1,67 @@
+{
+  "id": "spec-decode",
+  "dynamic": 15,
+  "title": "Speculative decoding: a small-batch win that shrinks and reverses",
+  "summary": "N=4 drafts at 70% acceptance more than double small-batch throughput, but verify compute grows with batch, and past batch 72 the trade turns into a net loss.",
+  "scenario": {
+    "name": "spec_n4",
+    "seed": 20260906,
+    "durationS": 120,
+    "spec_draft_tokens": 4,
+    "spec_accept_rate": 0.7
+  },
+  "run": "12-spec-decode/spec-off",
+  "compare": "12-spec-decode/spec-n4",
+  "steps": [
+    {
+      "at_sim_s": 20,
+      "speed": 2,
+      "control_tab": "scenarios",
+      "observe_tab": "utilization",
+      "highlight": "capacity",
+      "title": "spec_n4: four drafts a step, 70% accepted",
+      "body": [
+        "spec_n4 is byte-for-byte the route_p2c baseline apart from two keys: spec_draft_tokens = 4 and spec_accept_rate = 0.7. Everything else — fleet, workload, routing — is identical to spec_off.",
+        "With N=4 drafts at α=0.7 a sequence advances 2.77 expected tokens a step, against 1 token a step with speculation off."
+      ],
+      "look_for": "The scenario panel showing spec_draft_tokens and spec_accept_rate as the only two keys that differ from spec_off."
+    },
+    {
+      "at_sim_s": 48,
+      "speed": 2,
+      "observe_tab": "utilization",
+      "highlight": "capacity",
+      "title": "Where the win turns into a cost: verify compute against the fixed step",
+      "body": [
+        "Every accepted draft still has to be verified, and verification cost scales with batch size B while the step's fixed cost does not. At the defaults (10.2 ms step, 28,286 prefill tok/s), the verify compute B·N/prefill_tokens_per_s equals the fixed step cost at B ≈ 72 sequences.",
+        "Below that batch, speculation is nearly free extra throughput. Above it, the fleet is spending device time verifying drafts it could have spent decoding directly."
+      ],
+      "look_for": "The step-cost breakdown in the utilization panel: a verify term growing with batch size alongside the fixed per-step cost."
+    },
+    {
+      "at_sim_s": 76,
+      "speed": 2,
+      "observe_tab": "throughput",
+      "highlight": "headline",
+      "title": "Measured on one replica: 2.61x shrinking to a 0.61x loss",
+      "body": [
+        "Measured on one replica, holding everything but batch size fixed: batch 4 goes 392 → 1,024 tok/s, a 2.61x speed-up. Batch 36 is 1.84x, batch 72 is 1.38x.",
+        "Batch 144 is 0.92x — a net loss — and batch 256 is 0.61x. The crossover predicted by the B ≈ 72 estimate lands almost exactly where the measured multiplier passes 1x."
+      ],
+      "look_for": "Per-batch throughput multiplier falling monotonically from 2.61x at batch 4 to 0.61x at batch 256."
+    },
+    {
+      "at_sim_s": 100,
+      "speed": 1,
+      "control_tab": "run",
+      "observe_tab": "quality",
+      "highlight": "headline",
+      "title": "On the full fleet, capacity barely moves",
+      "body": [
+        "Open the A/B view with A = spec_off (this run) and B = spec_n4. The route_p2c fleet runs at an effective batch of 256 with the bandwidth term present — deep in the loss region measured above.",
+        "rated_rps moves only 234.8 → 240.2 between the two runs. Speculation is a small-batch, latency tool, not a capacity tool: it helps a lightly loaded replica respond faster, but it does not raise what the fleet can sustain once it is actually full."
+      ],
+      "look_for": "rated_rps in the headline tile nearly unchanged between A and B, while the earlier per-batch multipliers moved by more than 4x end to end."
+    }
+  ]
+}

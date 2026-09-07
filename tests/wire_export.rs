@@ -288,7 +288,8 @@ fn demos_export_writes_every_group() {
     assert_eq!(count("9-fair-share/"), 2);
     assert_eq!(count("10-probes/"), 2);
     assert_eq!(count("11-preemption/"), 2);
-    assert_eq!(ids.len(), 40);
+    assert_eq!(count("12-spec-decode/"), 2);
+    assert_eq!(ids.len(), 42);
     assert!(ids.contains(&"1-routing/round-robin".to_string()), "{ids:?}");
     assert!(ids.contains(&"2-staleness/telemetry_interval_ms=250".to_string()));
 
@@ -303,7 +304,7 @@ fn demos_export_writes_every_group() {
         assert!(scenario.contains("warmup_s = 5\n"), "{id}");
     }
     let index = read(&dir.join("runs/index.json"));
-    assert_eq!(index.lines().filter(|l| l.starts_with('{')).count(), 40);
+    assert_eq!(index.lines().filter(|l| l.starts_with('{')).count(), 42);
     assert!(index.contains(r#""scenario_file":""#));
     assert!(read(&dir.join("runs/3-chunking/step_token_budget=4096/scenario.txt")).contains("step_token_budget = 4096\n"));
 }

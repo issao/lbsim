@@ -629,6 +629,11 @@ pub const DEMOS: &[Demo] = &[
         files: &["kv_spiral_never.txt", "kv_spiral_swap.txt"],
         sweep: None,
     },
+    Demo {
+        group: "12-spec-decode",
+        files: &["spec_off.txt", "spec_n4.txt"],
+        sweep: None,
+    },
 ];
 
 /// Set one key, through the text form so there is exactly one place that knows the key names. The
