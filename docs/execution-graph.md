@@ -5,13 +5,14 @@ Owned by the tech lead; updated on every spawn, merge and ETA change, in the sam
 Per Issao: *"keep an instruction graph of everything that we need to in an md file, with sections below
 of what each task entails."* A stale graph is worse than none, so the status line moves every time.
 
-**Last updated:** 2026-09-06 16:51 PDT. **Done 18 · in flight 4 · queued 22 · waiting on Issao 1.**
+**Last updated:** 2026-09-06 17:06 PDT. **Done 22 · in flight 1 · queued 22 · waiting on Issao 1.**
 **CHECKPOINT 2026-09-06 16:51 PDT:** the session restarts from files. This file plus CLAUDE.md is the tech lead's whole
 memory. Every in-flight unit has a Resume paragraph below with its branch and worktree; a fresh tech lead
 re-spawns each from its section, then continues down the queue keeping at least six units in flight.
 **Critical path to the next Issao-visible milestone (real runs in the dashboard, first deploy):**
-U13 export (done) → U17 replay source → integrate + deploy. ETA ~18:00 PDT (fleet panels); the heatmap
-follows when U23 lands (per-replica rows, unblocked now that U15's frames are on master).
+U17 is on master (5077a34): the pre-baked dashboard is deployable now. Deploy = `sim-run export --demos
+--dir <served dir>` then `./deploy.sh` (web/README.md "Replay mode"). The heatmap follows with U23; the
+live path is U18 (in flight, no code yet) then U28.
 
 Legend: solid box = done; **bold** = in flight, with branch; plain = queued; dashed = waiting on Issao.
 Edge labels name the stand-in that let the downstream unit start early, or why the edge could not be broken.
@@ -38,12 +39,12 @@ flowchart TD
   U15[U15 engine core: sim-model, frames, Sim, Leaf seam]:::done
   U16[U16 simplify 1+2]:::done
 
-  U17[U17 replay source + Frame adapter<br/>claude/tl-replay]:::flight
+  U17[U17 replay source + Frame adapter]:::done
   U18[U18 live ingress server<br/>claude/tl-ingress-server]:::flight
-  U19[U19 trace wire + export<br/>claude/tl-trace-wire]:::flight
-  U20[U20 arena objective + catalog append<br/>claude/tl-arena-rules]:::flight
+  U19[U19 trace wire + export]:::done
+  U20[U20 arena objective + catalog append]:::done
   U21[U21 disable_decode]:::done
-  U22[U22 preemption + KV eviction<br/>claude/tl-preemption]:::flight
+  U22[U22 preemption + KV eviction: spawn first]:::queued
 
   U23[U23 per-replica export rows + heatmap]:::queued
   U24[U24 trace engine: spans in the step]:::queued
@@ -173,7 +174,7 @@ and a `sim-leaf` binary, per Issao's separate-process decision. Four commits, ea
 
 ## In flight
 
-### U17 replay source and Frame adapter (dashboard path C+D)
+### U17 replay source and Frame adapter (done, 5077a34)
 Load `runs/index.json` and `runs/<id>/{status.json,fleet.jsonl,result.json}` from the served directory
 when no Ingress answers; map SubscriptionUpdate rows to the panels' `Frame`; play/pause/speed/step/scrub
 local; rewind and update disabled with a visible reason. Files: `web/src/lib/replay.ts`, `adapter.ts`,
@@ -184,7 +185,11 @@ the dashboard from static files with the load, throughput, latency, imbalance an
 every other panel still marked mock; never commit exported runs (place an export under
 `web/public/runs/` for local dev); deployed by the main agent.
 
-**Resume (checkpoint):** WIP pushed at 33af5f1 on origin/claude/tl-replay: `npm run build` green, tsc
+**Landed.** 4f1013e merged as 5077a34: 15+33 self-test cases, headless Chromium shows the 30 demo runs
+replaying with real fleet panels; open choices for U23/U28: the exporter buckets only measured records so
+the first 15 s of a replay show no completions (export warm-up completions, or accept); `derive.ts` could
+prefer the exact wire goodput/attainment fields; `web/public/runs/` should be gitignored (housekeeping).
+Earlier resume note kept for the record: WIP pushed at 33af5f1 on origin/claude/tl-replay: `npm run build` green, tsc
 clean, `replay.selftest.ts` 15/15, `api.selftest.ts` 33/33. Design: `adapter.ts` builds `hist.ts`
 Histograms from the wire percentiles via a piecewise-linear CDF and keeps the exact wire p-values on the
 frame, empty windows stay count 0 / NaN; a `ReplayEngine` implements the panels' FrameSource subset so
@@ -220,7 +225,7 @@ Shutdown write frames-so-far under `runs/<run_id>/`, STATE_PAUSED, `resume()` on
 `/health` never touches run state (assert the frame count unchanged across 20 calls). Determinism test:
 two starts of the same scenario give the same fingerprint.
 
-### U19 trace wire and export
+### U19 trace wire and export (done, 3a00f92)
 metrics.proto RequestTrace/TraceSpan as JSON per WIRE.md rules, `GetTraces` filters, traces in the export
 under `runs/<id>/traces.jsonl` within the telemetry budget. Files: `crates/sim-metrics/src/trace.rs`
 (the struct, a stand-in with fixtures until U24 fills it), `crates/sim-ingress/src/trace_wire.rs`,
@@ -229,7 +234,11 @@ struct stand-in. Downstream U18 (GetTraces route), U24, the dashboard trace pane
 `claude/tl-trace-wire`, worktree `/home/agents/repo/lbsim-wt-trace-wire`. Done: field-name test against
 metrics.proto; export writes traces for a fixture run.
 
-**Resume (checkpoint):** `crates/sim-metrics/src/trace.rs` is written and pushed at f94f284 (RequestTrace,
+**Landed.** 9c1130a merged as 3a00f92: struct, sampler, encoder, GetTraces filters, `export_traces` with a
+5 MiB default budget and manifest. Findings for the proto owner: TraceSpan lacks queued, batch_size,
+step_ns, kv resident/capacity, bandwidth-vs-compute and the routing candidates; the TS types in
+`web/src/lib/types.ts` differ from the proto in field names, units and prefixes (adapter work in U28).
+Earlier resume note kept for the record: `crates/sim-metrics/src/trace.rs` is written and pushed at f94f284 (RequestTrace,
 TraceSpan, SpanKind, ResourceState, TraceBucket, TraceSampler with windowed quotas,
 `fixtures::sample_traces`, one unit test). Not yet: `crates/sim-ingress/src/trace_wire.rs` (encoder
 emitting only proto TraceSpan and RequestTrace field names; `operation` from SpanKind, `concurrent_seqs`
@@ -241,7 +250,7 @@ get_traces_filters_by_outcome_min_e2e_tenant_and_limit, sampler_keeps_every_tail
 sampler_is_deterministic_for_a_seed, export_traces_stays_within_budget_and_keeps_all_failures,
 fixture_trace_round_trips_through_the_encoder), and the fingerprint run.
 
-### U20 arena objective and catalog append
+### U20 arena objective and catalog append (done, f6a87a9)
 Per Issao, on the arena objective (TASKS.md entry 6, docs/arena.md 5b): *"You can remove this, I agreed
 with this."* The score becomes the minimum over in-scope loads of goodput as a share of offered output
 tokens, gated by the SLA cap as before; absolute goodput stays beside it as the diagnostic; a rule-set
@@ -258,7 +267,12 @@ worktree `/home/agents/repo/lbsim-wt-arena`. Done: `sim-run arena` ranks by shar
 printed; the catalog tests pass against the committed file; `tools/build.sh test -p sim-arena` no
 longer takes 80 s.
 
-**Resume (checkpoint):** WIP commit 9d05e6d on origin/claude/tl-arena-rules builds: `catalog.rs`,
+**Landed.** 21365f9 merged as f6a87a9: share objective v2, rule set recorded per score, cap 0.95, catalog
+append with the header test, the two slow arena tests ignored with a smoke round (81.7 s → 0.5 s). Ranking
+unchanged in order (p2c 0.762, round_robin 0.732, random 0.705, the two scanners 0); the worst load moved
+from h6 to h4 for all three, the inversion arena.md 5b predicted. Docs owed to housekeeping: policy-catalog
+Format wording and v1 scores, arena-implementation section 3, TASKS entry 6 closed.
+Earlier resume note kept for the record: WIP commit 9d05e6d on origin/claude/tl-arena-rules builds: `catalog.rs`,
 `RULE_SET` v2, `DEFAULT_SLA_CAP` 0.95, the share objective, `run_round_on`, `#[ignore]` on the two slow
 arena tests plus `smoke_round_on_shortened_loads`, `tests/arena_rules.rs` and `tests/arena_catalog.rs`
 written. Not yet run: the new tests, the full `tools/build.sh test`, `./check-fingerprints.sh`, the after
