@@ -1,0 +1,10 @@
+{
+  "name": "lbsim-qa",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Browser gate for the lbsim dashboard: node qa.js against a running sim-run serve",
+  "license": "UNLICENSED",
+  "dependencies": {
+    "playwright-core": "1.47.0"
+  }
+}
