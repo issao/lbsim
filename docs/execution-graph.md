@@ -5,7 +5,7 @@ Owned by the tech lead; updated on every spawn, merge and ETA change, in the sam
 Per Issao: *"keep an instruction graph of everything that we need to in an md file, with sections below
 of what each task entails."* A stale graph is worse than none, so the status line moves every time.
 
-**Last updated:** 2026-09-06 17:58 PDT. **Done 26 · in flight 10 · queued 17 · waiting on Issao 1.** Review R1 running over the first four code merges.
+**Last updated:** 2026-09-06 18:12 PDT. **Done 30 · in flight 10 · queued 15 · waiting on Issao 1.** Review R1 running over the first four code merges; simplification S3 running on sim-ingress.
 **Dynamics live and showcased: 0 of 10 selected.** Selected: findings 1–6, demos 7–10 (`disable_decode`,
 `least_kv_probe`, `deadline_aware`, `fair_share`); U22 makes it 11 when it lands. Live means the dynamic runs
 through the Ingress endpoint in the dashboard (U18 then U28); showcased means a walkthrough script steps
@@ -20,6 +20,7 @@ adopted from the first spawn; profile §5 item 1 was already done by U20 (gate 4
 markers until someone with push-delete rights removes them. Nothing in those branches is unmerged.
 **17:45:** U18 landed (c0e9ea8, 38 unit + 8 HTTP tests, fingerprints PASS); U50 records its nine server decisions in
 WIRE.md and U51 makes the trace encoder emit the TraceSpan fields the main agent added to metrics.proto at f5eddf1.
+**18:12:** U47 landed (128fc26, `tools/api-card.sh`, used for this round's briefs), U34 (e304990: `sim-run generate`, three p2c variants with the registry header, sha256, catalog append; first result: p2c d=3 scores 0 on h7 and 0.746 mean against p2c d=2's 0.762/0.872, so wider sampling is worse under stale telemetry, recorded in arena-implementation §6), U50 (96e88d0: the nine server decisions in WIRE.md), U51 (36f6538: encoder emits the new TraceSpan fields and `bucket`). Spawned: S3 simplify sim-ingress (excluding export.rs while U53 edits it), U40a `forecast_load` and U40b `forecast_latency` (sonnet, the two families Issao asked for at 16:22, byte-identical candidate sets to p2c so the comparison is honest), U35 trace-replay workload (M4, `workload = trace`, CSV). The engine units U25/U26/U31 stay queued until U22 and U24 land, because all three would be a fourth hand in `Replica::step`.
 **17:58:** U23 landed (ede7b1f: replicas.jsonl, heatmap data real; it found the mock tag is unconditional in `Panel`, now U52), U45 (35c7918: build.sh round-robin slots, 420 s bound; 0.01 s / 3.01 s / exit 124 measured), U46 (072aa03: struct-update Scenario in eight tests, zero behaviour change). U53 spawned so the exporter covers demos 7–10, which U48's scripts need for run ids. Review agent R1 spawned over c0e9ea8, ede7b1f, 35c7918, 072aa03; its findings become units. Brief gaps fed back: web worktrees lack `node_modules` (symlink line now in web briefs); `cd` out of the worktree before integrate.sh (harmless getcwd noise otherwise).
 **Critical path:** U18 done → U28 (in flight; can now be checked against `sim-run serve` on master) → U49
 (walkthrough runner opens a live run) → the first "N live" number. U23 puts the heatmap on real data in
@@ -59,6 +60,11 @@ flowchart TD
 
   U23[U23 per-replica rows + heatmap]:::done
   U24[U24 trace engine<br/>claude/tl-trace-engine]:::flight
+  U35[U35 M4 trace replay workload<br/>claude/tl-trace-workload]:::flight
+  U40a[U40a forecast_load<br/>claude/tl-forecast-load, sonnet]:::flight
+  U40b[U40b forecast_latency<br/>claude/tl-forecast-latency, sonnet]:::flight
+  U04 --> U40a & U40b
+  U40a & U40b --> U40
   U25[U25 SLO classes]:::queued
   U26[U26 speculative decoding knob]:::queued
   U27[U27 prefix caching + sessions 9/10]:::queued
@@ -68,8 +74,7 @@ flowchart TD
   U31[U31 failure injection + gray failure 11]:::queued
   U32[U32 autoscaling + multi-geo 12/13]:::queued
   U33[U33 M7 control analysis: Bode]:::queued
-  U34[U34 arena generator loop<br/>claude/tl-generator]:::flight
-  U35[U35 M4 trace replay workload]:::queued
+  U34[U34 arena generator loop]:::done
   U36[U36 leaf as a process]:::queued
   U37[U37 M9 scale validation]:::queued
   U38[U38 traffic shaping contrast report 5]:::queued
@@ -81,11 +86,11 @@ flowchart TD
   U43[U43 rule-set version bump sign-off]:::blocked
   U45[U45 build.sh: round-robin slots + timeout]:::done
   U46[U46 tests build Scenario by struct update]:::done
-  U47[U47 tools/api-card.sh<br/>claude/tl-api-card, sonnet]:::flight
+  U47[U47 tools/api-card.sh]:::done
   U48[U48 showcase scripts for dynamics 1-10<br/>claude/tl-walkthroughs, sonnet]:::flight
   U49[U49 walkthrough runner on replay and live runs]:::queued
-  U50[U50 WIRE.md: the server's nine decisions<br/>claude/tl-wire-decisions, sonnet]:::flight
-  U51[U51 trace encoder: new TraceSpan fields<br/>claude/tl-trace-fields, sonnet]:::flight
+  U50[U50 WIRE.md: the server's nine decisions]:::done
+  U51[U51 trace encoder: new TraceSpan fields]:::done
   U18 --> U50
   U52[U52 mode-aware mock tags<br/>claude/tl-mock-tags, sonnet]:::flight
   U53[U53 exporter covers demos 7-10<br/>claude/tl-export-demos, sonnet]:::flight
@@ -413,8 +418,8 @@ Replica lifecycle with turn-up delay, warm pools, diurnal load per cluster, casc
 ### U33 M7 control analysis
 Perturbation input, frequency sweep, empirical Bode plot predicting oscillation onset. Upstream U15, U32.
 
-### U34 arena generator loop
-**Spawned 17:35** on `claude/tl-generator`, worktree `/home/agents/repo/lbsim-wt-generator`, model default, ETA 18:05.
+### U34 arena generator loop (done, e304990)
+**Landed 18:05.** `sim-run generate --family routing --variant <p2c_d3|p2c_d4|least_kv_p2c> [--keep --date]`: header line exact, in-crate sha256, `--keep` rebuilds and scores through a child invocation, catalog row appended; no generated file committed. First measured result: p2c_d3 0.000 min (h7) / 0.746 mean vs p2c 0.762 / 0.872. Originally: **Spawned 17:35** on `claude/tl-generator`, worktree `/home/agents/repo/lbsim-wt-generator`, model default, ETA 18:05.
 `sim-run generate`: writes a policy file into `crates/sim-policy/src/gen_<name>.rs` whose first line is the registry
 header `//! lbsim-policy: routing names=<name>` (required by the main agent: `build.rs` reads exactly that line),
 rebuilds through `tools/build.sh`, runs the round, records the source hash, appends the catalog row through
@@ -422,7 +427,13 @@ rebuilds through `tools/build.sh`, runs the round, records the source hash, appe
 (d = 3, 4, and least-KV keyed) so the loop is exercised end to end before forecasting families exist. Generated files
 are committed only when the generator is asked to keep them. Upstream U04, U20 (done), U40 (stand-in).
 
-### U35 M4 trace replay workload · U36 leaf as a process · U37 M9 scale validation · U38 shaping contrast
+### U35 M4 trace replay workload
+**Spawned 18:12** on `claude/tl-trace-workload`, ETA 18:35. `workload = trace`, `trace_file` CSV (`t_s,prompt_tokens,output_tokens,tenant`), arrivals stop at the end of the trace, no random draw in trace mode so synthetic fingerprints cannot move; `scenarios/traces/sample.csv` and `scenarios/trace_replay.txt`. Fits behind `Workload::next_gap_ns`/`make` without touching sim-leaf.
+
+### U40a `forecast_load` · U40b `forecast_latency` (`model: sonnet`)
+**Spawned 18:12** on `claude/tl-forecast-load` and `claude/tl-forecast-latency`, ETA 18:30. Per Issao at 16:22, the two forecasting families as policy files against the trait: `forecast_load` extrapolates queued tokens from the last two views' slope over the view's age; `forecast_latency` routes on predicted TTFT from queued tokens, the request's own prefill and the candidate's last step. Both keep p2c's candidate draw so candidate sets are byte-identical at a seed. Each: scenario, tests against p2c under staleness / long prompts, golden rows appended, catalog row to housekeeping.
+
+### U36 leaf as a process · U37 M9 scale validation · U38 shaping contrast
 report · U39 model weights and MoE (17) · U40 forecasting policy families · U41 simplification cadence
 Each as named in docs/execution-plan.md and docs/scope-today.md; none started; each becomes a section
 when it is specified to the five-field standard.
@@ -441,8 +452,8 @@ other branch at rebase. Each becomes `tests/common::small()` plus field sets, or
 exhaustive literal in `tests/scenario_parse.rs` stays: it is the round-trip guard and must name every key. Zero
 behaviour change: every test passes unchanged.
 
-### U47 `tools/api-card.sh <crate>` (fix-once, `model: sonnet`)
-**Spawned 17:35** on `claude/tl-api-card`, worktree `/home/agents/repo/lbsim-wt-api-card`, ETA 17:45. Profile §5 row 2:
+### U47 `tools/api-card.sh <crate>` (fix-once, `model: sonnet`, done 128fc26)
+**Landed 18:00.** `tools/api-card.sh <crate|tests|web> [pattern] [context]`; five checks in tools/api-card.test.sh. Originally: **Spawned 17:35** on `claude/tl-api-card`, worktree `/home/agents/repo/lbsim-wt-api-card`, ETA 17:45. Profile §5 row 2:
 prints every `pub` item of a crate with `file:line` and its signature line, so a brief can carry excerpts cheaply.
 Done: `tools/api-card.sh sim-model` lists `Replica::step` at its line; `tools/api-card.sh sim-model step` prints the
 matching items with 12 lines of context.
@@ -454,15 +465,15 @@ numbers, with two new optional schema fields `run` and `compare` naming the expo
 `index.json` cards updated so every selected dynamic has a script; a self-test validates monotone `at_sim_s` and that
 every `run` id is one `sim-run export --demos` writes. Content only; the runner that opens `run` is U49.
 
-### U50 WIRE.md records the live server's decisions (`model: sonnet`)
-**Spawned 17:45** on `claude/tl-wire-decisions`, ETA 17:55. The nine decisions U18 made (reconnect carries
+### U50 WIRE.md records the live server's decisions (`model: sonnet`, done 96e88d0)
+**Landed 18:05**, nine decisions in their sections; the H2 "What the first server supports" kept because run.rs and server.rs cite it. Originally: **Spawned 17:45** on `claude/tl-wire-decisions`, ETA 17:55. The nine decisions U18 made (reconnect carries
 `subscription_id` with Last-Event-ID, 410 when dead; idle = paused, complete, or paced without a lease; the idle
 checkpoint is the export documents, not a snapshot; `from_merged_histogram` true on live rows; replica STEP_TIME a
 one-sample distribution; StopRun finalises COMPLETE; lease default 60 s, 0 dead; 501 for unimplemented RPCs;
 1 MiB body cap) written into the sections of `crates/sim-ingress/WIRE.md` they belong to.
 
-### U51 trace encoder emits the new TraceSpan fields (`model: sonnet`)
-**Spawned 17:45** on `claude/tl-trace-fields`, ETA 17:55. metrics.proto at f5eddf1 gave TraceSpan the resource state
+### U51 trace encoder emits the new TraceSpan fields (`model: sonnet`, done 36f6538)
+**Landed 18:07**: batch_size, queued, kv_tokens_resident, kv_capacity, step_ns, bound (STEP_BOUND_*), candidates and stale_view_age_ns on routing spans, bucket (TRACE_BUCKET_*); 8/8 trace_wire tests. Originally: **Spawned 17:45** on `claude/tl-trace-fields`, ETA 17:55. metrics.proto at f5eddf1 gave TraceSpan the resource state
 (batch_size 14 … stale_view_age_ns 21, `StepBound bound`) and RequestTrace a `bucket`; `trace_wire.rs` emits them
 and `tests/trace_wire.rs` checks the names against the proto. `web/src/lib/types.ts` follows in U49 or the trace
 panel unit. U19's section stands; U24 fills the values.
@@ -475,6 +486,9 @@ when everything read is wired and titles it with the still-mock fields when part
 ### U53 exporter covers demos 7–10 (`model: sonnet`)
 **Spawned 17:58** on `claude/tl-export-demos`, ETA 18:10. Four `Demo` entries mirroring run-demos.sh, guarded by a
 test that parses run-demos.sh so the two cannot drift; the eight new run ids go to U48's scripts.
+
+### S3 simplification pass, sim-ingress
+**Spawned 18:12** on `claude/simplify-3`, the crate that grew 1,800 lines today; export.rs excluded while U53 edits it; tests unchanged are the proof.
 
 ### U49 walkthrough runner on replay and live runs
 Queued behind U28 and U48. `Showcase.tsx` opens a script's `run` through the replay source or, when the Ingress
