@@ -3,7 +3,9 @@
 What is live on `origin/master`, what each agent is doing now, and the assumptions being acted on.
 For things that need *you*, see `TASKS.md`.
 
-**Last updated:** 2026-09-07 11:21 PDT by Claude.
+**Last updated:** 2026-09-07 11:22 PDT by Claude.
+
+**PAUSED 2026-09-07 11:22 PDT, quota; resume by a message from main; agents re-spawned from `docs/agents/`.** From Issao, verbatim via main: *"actually, pause everything, we are almost out of quota. we will resume when we are back within limit"*. Housekeeping's monitor and loop are stopped; U79–U83 are paused with the tech lead's graph entry pending (its state is `docs/execution-graph.md`, 5080f22 at the pause).
 
 **RESUMED 2026-09-07 11:17 PDT.** Housekeeping is back on `claude/docs-round38` from `origin/master` 00c6021. Agent ids
 from the main agent at the resume: tech lead `a0899ca58df6febdc` (Fable), running U79–U83, the Cloud Run

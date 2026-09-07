@@ -1,6 +1,8 @@
 # TASKS — things that need Issao
 
-Last updated: 2026-09-07 11:21 PDT by Claude.
+Last updated: 2026-09-07 11:22 PDT by Claude.
+
+**PAUSED 2026-09-07 11:22 PDT, quota**, per you via main: *"actually, pause everything, we are almost out of quota. we will resume when we are back within limit"*. U79–U83 are paused in flight with the tech lead's graph entry pending; everything below stands as it was. Resume by a message from main; agents re-spawned from `docs/agents/`.
 
 **Resumed 2026-09-07 11:17 PDT.** The fleet stopped at 21:00 on 2026-09-06 at your request (*"we are approaching
 limit... tie up loose ends... give me a doc summarizing the state and most interesting outcomes with deep
