@@ -234,6 +234,48 @@ check('no two scripts share an id', () => {
 });
 
 // ---------------------------------------------------------------------------
+// scenario keys with no control-panel field: they must survive into the StartRun text
+// ---------------------------------------------------------------------------
+
+const api = await load<typeof import('./api')>('api');
+
+check('spec-decode: spec_draft_tokens and spec_accept_rate reach the wire', () => {
+  const script = readJson<WalkthroughScript>('spec-decode.json');
+  const fields = api.scenarioConfigToWire(walkthrough.scenarioFor(script)).fields;
+  eq(fields.spec_draft_tokens, 4, 'spec_draft_tokens');
+  eq(fields.spec_accept_rate, 0.7, 'spec_accept_rate');
+  return 'spec_draft_tokens = 4, spec_accept_rate = 0.7';
+});
+
+check('kv-spiral: the live run is kv_spiral_never.txt, sessions and preemption included', () => {
+  const script = readJson<WalkthroughScript>('kv-spiral.json');
+  const fields = api.scenarioConfigToWire(walkthrough.scenarioFor(script)).fields;
+  eq(fields.preemption, 'never', 'preemption');
+  eq(fields.session_turns_mean, 8, 'session_turns_mean');
+  eq(fields.session_think_s, 8, 'session_think_s');
+  eq(fields.replicas, 4, 'replicas');
+  eq(fields.max_batch, 64, 'max_batch');
+  eq(fields.kv_capacity_tokens, 30000, 'kv_capacity_tokens');
+  eq(fields.arrival_rps, 2, 'arrival_rps');
+  eq(fields.long_probability, 0, 'long_probability');
+  eq(fields.routing, 'p2c', 'routing');
+  return 'preemption = never, session_turns_mean = 8, fleet of 4 at 30k KV';
+});
+
+check('a scenario key the engine does not accept fails at encode time', () => {
+  const script = readJson<WalkthroughScript>('spec-decode.json');
+  const config = walkthrough.scenarioFor({ ...script, scenario: { ...script.scenario, preemptoin: 'never' } });
+  let threw = '';
+  try {
+    api.scenarioConfigToWire(config);
+  } catch (e) {
+    threw = e instanceof Error ? e.message : String(e);
+  }
+  if (!/preemptoin/.test(threw)) throw new Error(`expected a throw naming the key, got ${JSON.stringify(threw)}`);
+  return threw;
+});
+
+// ---------------------------------------------------------------------------
 
 console.log(`${cases} cases, ${cases - failures} passed, ${failures} failed`);
 if (failures > 0) throw new Error(`${failures} of ${cases} walkthrough self-test cases failed`);

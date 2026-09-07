@@ -401,7 +401,8 @@ await checkAsync('loadRun fetches the four documents relative to runs/ and decod
   eq(run.config.samplesPerSimSecond, 4, 'sample rate from 250 ms');
   eq(run.config.durationS, 120, 'duration');
   eq(run.config.warmupS, 15, 'warm-up');
-  ok(run.unmapped.includes('admission = accept_all'), `admission reported as unmapped: ${run.unmapped.join(', ')}`);
+  eq(run.config.extra.admission, 'accept_all', 'admission rides in extra rather than being reported');
+  eq(run.unmapped, [], `nothing the engine accepts is unmapped: ${run.unmapped.join(', ')}`);
   ok(!run.unmapped.some((u) => u.startsWith('routing')), 'routing was mapped');
   return `4 documents, 2 frames, config ${run.config.routing.kind} at ${run.config.workload.arrivalRps} rps`;
 });
@@ -565,6 +566,49 @@ check('replay is the mode when no server is configured and the index is served; 
   eq(mode.activeMode().mode, 'replay', 'and holds the mode');
   mode.setActiveMode('mock');
   return 'server > replay > mock; ?replay=0 forces mock; banners as specified';
+});
+
+// ---------------------------------------------------------------------------
+// engine keys the panel has no field for: `ScenarioConfig.extra`
+// ---------------------------------------------------------------------------
+
+const fsModule = 'node:fs';
+const fs = (await import(fsModule)) as { readFileSync: (p: URL | string, enc: 'utf8') => string };
+const repoFile = (rel: string): string => fs.readFileSync(new URL(`../../../${rel}`, import.meta.url), 'utf8');
+
+check('scenarios/kv_spiral_never.txt: session and preemption keys land in `extra`, nothing is unmapped, every key round-trips', () => {
+  const src = repoFile('scenarios/kv_spiral_never.txt');
+  const { config, unmapped } = replay.configFromScenarioText(src);
+  eq(unmapped, [], 'unmapped');
+  eq(Object.keys(config.extra).sort(), ['preemption', 'session_think_s', 'session_turns_mean'], 'extra keys');
+  eq(config.extra.session_turns_mean, 8, 'session_turns_mean is a number');
+  eq(config.extra.session_think_s, 8, 'session_think_s is a number');
+  eq(config.extra.preemption, 'never', 'preemption stays text');
+  eq(config.fleet.replicas, 4, 'replicas');
+  eq(config.fleet.kvTokensPerReplica, 30000, 'kv_capacity_tokens');
+  const text = api.parseScenarioText(src);
+  const back = api.scenarioConfigToWire(config).fields;
+  for (const [k, raw] of Object.entries(text)) {
+    const v = back[k];
+    if (v === undefined) throw new Error(`${k} = ${raw} did not come back`);
+    const numeric = Number.isFinite(Number(raw)) && typeof v === 'number';
+    const same = numeric ? Number(raw) === v : String(v) === raw;
+    if (!same) throw new Error(`${k}: text ${raw}, round trip ${String(v)}`);
+  }
+  return `${Object.keys(text).length} keys round-trip, 3 through extra`;
+});
+
+check('an extra key the engine does not accept throws at encode time, not at the server', () => {
+  const { config } = replay.configFromScenarioText('name = x\n');
+  config.extra.preemptoin = 'never';
+  let threw = '';
+  try {
+    api.scenarioConfigToWire(config);
+  } catch (e) {
+    threw = e instanceof Error ? e.message : String(e);
+  }
+  ok(/preemptoin/.test(threw), `expected a throw naming the key, got ${JSON.stringify(threw)}`);
+  return threw;
 });
 
 // ---------------------------------------------------------------------------
