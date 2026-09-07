@@ -228,6 +228,7 @@ export const ROUTING_LABEL: Record<RoutingKind, string> = {
   random: 'Random',
   least_requests: 'Least requests',
   least_kv_tokens: 'Least KV tokens',
+  least_kv_probe: 'Least KV, live probe',
   power_of_two_choices: 'Power of two choices',
   prefix_affinity: 'Prefix affinity',
 };
@@ -238,6 +239,7 @@ export const ROUTING_NOTE: Record<RoutingKind, string> = {
   random: 'The null hypothesis. Same expected share as round robin, higher variance, no rotating structure.',
   least_requests: 'A baseline that is wrong for this domain, for the same reason round robin is: it counts requests.',
   least_kv_tokens: 'The same idea in the right unit. Correct when telemetry is fresh; herds when it is not.',
+  least_kv_probe: "Probes d candidates' live KV at dispatch instead of reading the telemetry snapshot; p2c_choices is d.",
   power_of_two_choices: 'Sample d replicas, take the least loaded. Bounds herding by construction, and is O(1).',
   prefix_affinity: 'Prefer the replica holding this prefix until imbalance exceeds the cap. Trades balance for cache hits.',
 };

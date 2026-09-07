@@ -77,6 +77,7 @@ export type RoutingKind =
   | 'random'
   | 'least_requests'
   | 'least_kv_tokens'
+  | 'least_kv_probe'
   | 'power_of_two_choices'
   | 'prefix_affinity';
 
