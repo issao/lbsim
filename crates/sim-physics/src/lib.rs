@@ -30,7 +30,15 @@ pub struct CostModel {
     /// bandwidth term, so a decode step costs only the fixed and per-sequence parts and traffic looks
     /// like stateless serving. KV accounting is untouched: capacity still binds in tokens.
     pub disable_decode: bool,
+    /// Host link bandwidth for swapping key-value context between HBM and DRAM, in GB/s. PCIe 5.0 x16
+    /// is 64 GB/s on paper and about 50 in practice, which is the default.
+    pub swap_gbps: f64,
 }
+
+/// Bytes of key-value cache per resident token: 80 layers, keys and values, 8 grouped-query heads of
+/// 128 dimensions, two bytes each. That is a 70B-class model in bf16 with GQA, 320 KiB a token, so
+/// a 3,000-token context is close to a gigabyte and crosses a 50 GB/s link in about 20 ms.
+pub const KV_BYTES_PER_TOKEN: u64 = 80 * 2 * 8 * 128 * 2;
 
 impl CostModel {
     /// Duration of one engine step.
@@ -56,6 +64,18 @@ impl CostModel {
             + bandwidth
             + ((prefill_tokens as f64 / self.prefill_tokens_per_s) * 1e9) as Nanos;
         step_ns.max(1)
+    }
+
+    /// Time to move `tokens` of key-value context across the host link, one direction. A swap out
+    /// and a swap back in are two of these. Never below one nanosecond for a non-empty transfer, so
+    /// a swap is never free.
+    #[inline]
+    pub fn swap_ns(&self, tokens: u64) -> Nanos {
+        if tokens == 0 {
+            return 0;
+        }
+        let bytes = tokens as f64 * KV_BYTES_PER_TOKEN as f64;
+        ((bytes / (self.swap_gbps * 1e9)) * 1e9).max(1.0) as Nanos
     }
 
     /// Effective batch limit: the sequence cap, or the token budget, whichever binds first.

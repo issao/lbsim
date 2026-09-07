@@ -48,6 +48,19 @@ pub struct Scenario {
     /// The knob VISION.md section 3a asks for "early on": with decode's bandwidth term zeroed, traffic
     /// behaves like stateless serving and the rolling hotspot can be shown without any LLM physics.
     pub disable_decode: bool,
+    /// What a replica does when resident context outgrows its cache: `never` (a blocked request
+    /// waits, and a parked session's context stays until its next turn), `recompute` (drop the
+    /// victim's context and prefill it again on re-admission), `swap_to_dram` (copy it over the host
+    /// link and back, paying the transfer instead of the compute), or `swap_else_recompute` (swap
+    /// while `dram_capacity_tokens` has room, recompute once it has not).
+    pub preemption: String,
+    /// Which resident context goes first: `newest` (last admitted, what vLLM does), `largest_kv`, or
+    /// `latest_deadline` (the request with the most slack).
+    pub preemption_victim: String,
+    /// Host-side room for swapped context per replica, in tokens. Zero means four times the cache.
+    pub dram_capacity_tokens: f64,
+    /// Host link bandwidth for swapping context, in GB/s.
+    pub swap_gbps: f64,
 
     // -- workload ----------------------------------------------------------
     pub arrival_rps: f64,
@@ -60,6 +73,12 @@ pub struct Scenario {
     pub long_probability: f64,
     pub long_prompt_mean: f64,
     pub long_output_mean: f64,
+    /// Multi-turn sessions. A request that completes may be followed by another turn from the same
+    /// conversation after `session_think_s`, carrying the whole previous context plus a short new
+    /// prompt, and that context stays resident on the replica in between. The number of turns is
+    /// geometric with this mean; one means every request is its own conversation.
+    pub session_turns_mean: f64,
+    pub session_think_s: f64,
     /// Step change in offered load, used to drive a collapse and then test recovery.
     pub load_step_at_s: f64,
     pub load_step_factor: f64,
@@ -134,6 +153,10 @@ impl Default for Scenario {
             step_token_budget: 1024,
             max_queue: 64,
             disable_decode: false,
+            preemption: "never".into(),
+            preemption_victim: "newest".into(),
+            dram_capacity_tokens: 0.0,
+            swap_gbps: 50.0,
             arrival_rps: 40.0,
             prompt_mean: 1200.0,
             prompt_cv: 1.2,
@@ -142,6 +165,8 @@ impl Default for Scenario {
             long_probability: 0.08,
             long_prompt_mean: 24_000.0,
             long_output_mean: 400.0,
+            session_turns_mean: 1.0,
+            session_think_s: 0.0,
             load_step_at_s: -1.0,
             load_step_factor: 1.0,
             load_step_until_s: -1.0,
@@ -219,6 +244,10 @@ impl Scenario {
                 "step_token_budget" => s.step_token_budget = f("step_token_budget") as u32,
                 "max_queue" => s.max_queue = f("max_queue") as usize,
                 "disable_decode" => s.disable_decode = v == "true",
+                "preemption" => s.preemption = v.clone(),
+                "preemption_victim" => s.preemption_victim = v.clone(),
+                "dram_capacity_tokens" => s.dram_capacity_tokens = f("dram_capacity_tokens"),
+                "swap_gbps" => s.swap_gbps = f("swap_gbps"),
                 "arrival_rps" => s.arrival_rps = f("arrival_rps"),
                 "prompt_mean" => s.prompt_mean = f("prompt_mean"),
                 "prompt_cv" => s.prompt_cv = f("prompt_cv"),
@@ -227,6 +256,8 @@ impl Scenario {
                 "long_probability" => s.long_probability = f("long_probability"),
                 "long_prompt_mean" => s.long_prompt_mean = f("long_prompt_mean"),
                 "long_output_mean" => s.long_output_mean = f("long_output_mean"),
+                "session_turns_mean" => s.session_turns_mean = f("session_turns_mean"),
+                "session_think_s" => s.session_think_s = f("session_think_s"),
                 "load_step_at_s" => s.load_step_at_s = f("load_step_at_s"),
                 "load_step_factor" => s.load_step_factor = f("load_step_factor"),
                 "load_step_until_s" => s.load_step_until_s = f("load_step_until_s"),
@@ -286,6 +317,17 @@ impl Scenario {
             step_per_kv_ktoken_ms: self.step_per_kv_ktoken_ms,
             prefill_tokens_per_s: self.prefill_tokens_per_s,
             disable_decode: self.disable_decode,
+            swap_gbps: self.swap_gbps,
+        }
+    }
+
+    /// Host-side room for swapped context per replica, in tokens: the key, or four times the cache
+    /// when the scenario says nothing.
+    pub fn dram_capacity_tokens(&self) -> f64 {
+        if self.dram_capacity_tokens > 0.0 {
+            self.dram_capacity_tokens
+        } else {
+            4.0 * self.kv_capacity_tokens
         }
     }
 
@@ -349,9 +391,11 @@ impl Scenario {
             "name = {}\nseed = {}\nduration_s = {}\nwarmup_s = {}\nreplicas = {}\nmax_batch = {}\n\
              step_base_ms = {}\nstep_per_seq_ms = {}\nstep_per_kv_ktoken_ms = {}\n\
              kv_capacity_tokens = {}\nprefill_tokens_per_s = {}\n\
-             step_token_budget = {}\nmax_queue = {}\ndisable_decode = {}\narrival_rps = {}\nprompt_mean = {}\n\
+             step_token_budget = {}\nmax_queue = {}\ndisable_decode = {}\npreemption = {}\n\
+             preemption_victim = {}\ndram_capacity_tokens = {}\nswap_gbps = {}\narrival_rps = {}\nprompt_mean = {}\n\
              prompt_cv = {}\noutput_mean = {}\noutput_cv = {}\nlong_probability = {}\n\
-             long_prompt_mean = {}\nlong_output_mean = {}\nload_step_at_s = {}\n\
+             long_prompt_mean = {}\nlong_output_mean = {}\nsession_turns_mean = {}\n\
+             session_think_s = {}\nload_step_at_s = {}\n\
              load_step_factor = {}\nload_step_until_s = {}\nrouting = {}\np2c_choices = {}\n\
              probe_live = {}\nadmission = {}\nadmission_headroom = {}\nfair_share_burst = {}\n\
              tenants = {}\ntenant_weights = {}\ntenant_demand = {}\n\
@@ -362,9 +406,11 @@ impl Scenario {
             self.name, self.seed, self.duration_s, self.warmup_s, self.replicas, self.max_batch,
             self.step_base_ms, self.step_per_seq_ms, self.step_per_kv_ktoken_ms,
             self.kv_capacity_tokens, self.prefill_tokens_per_s,
-            self.step_token_budget, self.max_queue, self.disable_decode, self.arrival_rps, self.prompt_mean,
+            self.step_token_budget, self.max_queue, self.disable_decode, self.preemption,
+            self.preemption_victim, self.dram_capacity_tokens, self.swap_gbps, self.arrival_rps, self.prompt_mean,
             self.prompt_cv, self.output_mean, self.output_cv, self.long_probability,
-            self.long_prompt_mean, self.long_output_mean, self.load_step_at_s,
+            self.long_prompt_mean, self.long_output_mean, self.session_turns_mean,
+            self.session_think_s, self.load_step_at_s,
             self.load_step_factor, self.load_step_until_s, self.routing, self.p2c_choices,
             self.probe_live, self.admission, self.admission_headroom, self.fair_share_burst,
             self.tenants,

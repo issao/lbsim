@@ -52,5 +52,9 @@ echo; echo "== 10. live probes: least-KV on fresh state against p2c on the snaps
 $S compare scenarios/route_p2c.txt scenarios/route_least_kv_probe.txt \
            --out out/10-probes.html
 
+echo; echo "== 11. the KV spiral: parked session context fills the cache, and swapping it out cures it =="
+$S compare scenarios/kv_spiral_never.txt scenarios/kv_spiral_swap.txt \
+           --out out/11-preemption.html
+
 echo; echo "reports in out/"
 echo "for machine-readable telemetry, add: --telemetry out/NAME.tele [--telemetry-budget-mb N]"
