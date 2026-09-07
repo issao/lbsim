@@ -66,6 +66,12 @@ export interface ScenarioConfig {
   slo: Slo;
   /** Points per simulated second. A view parameter: it changes the chart, not the physics. */
   samplesPerSimSecond: number;
+  /**
+   * Engine keys the panel has no field for (sessions, preemption, speculative decoding, admission,
+   * tenants, the load step, retries), by their engine name. Sent verbatim at StartRun, read back
+   * from `scenario.txt`, never edited live: a change here is a restart, never an UpdateWorkload.
+   */
+  extra: Record<string, number | string>;
 }
 
 /**
@@ -118,6 +124,7 @@ export const BASE: ScenarioConfig = {
   slo: { ttftMs: 2000, itlMs: 80, e2eS: 60 },
   // base.txt records at sample_interval_ms = 250.
   samplesPerSimSecond: 4,
+  extra: {},
 };
 
 export function cloneConfig(c: ScenarioConfig): ScenarioConfig {
@@ -127,6 +134,7 @@ export function cloneConfig(c: ScenarioConfig): ScenarioConfig {
     fleet: { ...c.fleet },
     routing: { ...c.routing },
     slo: { ...c.slo },
+    extra: { ...c.extra },
   };
 }
 
@@ -312,7 +320,13 @@ function flat(c: ScenarioConfig): Record<string, unknown> {
   for (const [k, v] of Object.entries(c.fleet)) out[`fleet.${k}`] = v;
   for (const [k, v] of Object.entries(c.routing)) out[`routing.${k}`] = v;
   for (const [k, v] of Object.entries(c.slo)) out[`slo.${k}`] = v;
+  for (const [k, v] of Object.entries(c.extra)) out[`extra.${k}`] = v;
   return out;
+}
+
+/** Everything under `extra` is an engine key with no live update path, so it always restarts. */
+function isPhysics(path: string): boolean {
+  return PHYSICS_PATHS.has(path) || path.startsWith('extra.');
 }
 
 export interface ConfigDiff {
@@ -325,11 +339,12 @@ export function diffConfig(a: ScenarioConfig, b: ScenarioConfig): ConfigDiff {
   const fa = flat(a);
   const fb = flat(b);
   const paths: string[] = [];
-  for (const k of Object.keys(fa)) if (fa[k] !== fb[k]) paths.push(k);
+  // The union: an `extra` key present on one side only is a change too.
+  for (const k of new Set([...Object.keys(fa), ...Object.keys(fb)])) if (fa[k] !== fb[k]) paths.push(k);
   return {
     paths,
-    physicsPaths: paths.filter((p) => PHYSICS_PATHS.has(p)),
-    viewPaths: paths.filter((p) => !PHYSICS_PATHS.has(p)),
+    physicsPaths: paths.filter(isPhysics),
+    viewPaths: paths.filter((p) => !isPhysics(p)),
   };
 }
 

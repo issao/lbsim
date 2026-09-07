@@ -87,13 +87,18 @@ export function validate(s: WalkthroughScript): void {
   }
 }
 
-/** Dotted paths, one level deep, matching the field paths the diff and the labels already use. */
+/**
+ * Dotted paths, one level deep, matching the field paths the diff and the labels already use. A
+ * bare name that is not a panel field is an engine key (`preemption`, `spec_draft_tokens`) and
+ * lands in `extra`, where `scenarioConfigToWire` sends it verbatim or refuses it by name.
+ */
 export function applyPatch(base: ScenarioConfig, patch: Record<string, PatchValue>): ScenarioConfig {
   const c = cloneConfig(base) as unknown as Record<string, unknown>;
   for (const [path, value] of Object.entries(patch)) {
     const parts = path.split('.');
     if (parts.length === 1) {
-      c[parts[0]] = value;
+      if (parts[0] in BASE) c[parts[0]] = value;
+      else (c.extra as Record<string, unknown>)[parts[0]] = value;
     } else {
       const head = c[parts[0]] as Record<string, unknown> | undefined;
       if (!head) throw new Error(`unknown scenario path ${path}`);

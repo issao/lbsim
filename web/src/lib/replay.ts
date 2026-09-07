@@ -19,6 +19,7 @@ import {
   type RunResult,
   type RunStatus,
   type SubscriptionUpdate,
+  EXTRA_KEYS,
   ROUTING_TO_ENGINE,
   decodeRunResult,
   decodeRunStatus,
@@ -254,8 +255,9 @@ const ENGINE_TO_ROUTING: Record<string, RoutingKind> = Object.fromEntries(
  * The control panel's config from the run's resolved scenario, so the panels show the run's real
  * parameters: SLO thresholds, fleet size, arrival rate, routing. The inverse of api.ts's
  * `scenarioConfigToWire`; the self-test checks the round trip key for key. Keys the panel has no
- * field for (admission, tenants, the load step, retries) are reported rather than dropped silently,
- * and a routing the panel cannot name keeps BASE's kind and is reported too.
+ * field for (sessions, preemption, admission, tenants, the load step, retries) ride in `extra`,
+ * so `unmapped` names only keys the engine itself does not have; a routing the panel cannot name
+ * keeps BASE's kind and is reported there too.
  */
 export function configFromScenarioText(text: string): { config: ScenarioConfig; unmapped: string[] } {
   const f = parseScenarioText(text);
@@ -318,6 +320,14 @@ export function configFromScenarioText(text: string): { config: ScenarioConfig; 
   num('e2e_slo_s', (v) => { c.slo.e2eS = v; });
   // Exact reciprocal of the encoder's `1000 / samplesPerSimSecond`.
   num('sample_interval_ms', (v) => { c.samplesPerSimSecond = 1000 / v; });
+
+  // Numbers as numbers so the round trip compares `0.0` with `0`; anything else (`preemption =
+  // never`, a tenant weight list) stays the text the engine will parse itself.
+  for (const k of EXTRA_KEYS) {
+    if (f[k] === undefined) continue;
+    used.add(k);
+    c.extra[k] = Number.isFinite(Number(f[k])) ? Number(f[k]) : f[k];
+  }
 
   for (const k of Object.keys(f)) if (!used.has(k)) unmapped.push(`${k} = ${f[k]}`);
   return { config: c, unmapped };

@@ -1350,19 +1350,38 @@ export interface ScenarioEnvelope {
   overrides: Overrides;
 }
 
-/** Exactly the keys `Scenario::parse` in `crates/sim-scenario` accepts. An unknown key is an error there. */
-export const SCENARIO_KEYS = [
+/** The engine keys a `ScenarioConfig` field encodes to, in the order `scenarios/*.txt` lists them. */
+const PANEL_KEYS = [
   'name', 'seed', 'duration_s', 'warmup_s',
   'replicas', 'max_batch', 'step_base_ms', 'step_per_seq_ms', 'step_per_kv_ktoken_ms',
   'kv_capacity_tokens', 'prefill_tokens_per_s', 'step_token_budget', 'max_queue',
   'arrival_rps', 'prompt_mean', 'prompt_cv', 'output_mean', 'output_cv',
   'long_probability', 'long_prompt_mean', 'long_output_mean',
-  'load_step_at_s', 'load_step_factor', 'load_step_until_s',
   'routing', 'p2c_choices', 'probe_live',
   'telemetry_interval_ms', 'telemetry_delay_ms',
-  'client_timeout_s', 'max_attempts', 'retry_budget_fraction', 'retry_backoff_s',
+  'client_timeout_s', 'max_attempts',
   'ttft_slo_ms', 'itl_slo_ms', 'e2e_slo_s', 'sample_interval_ms',
 ] as const;
+
+/**
+ * The engine keys the control panel has no field for. They travel in `ScenarioConfig.extra`,
+ * verbatim, and only at StartRun: none of them is live-tunable, and the panel does not grow a
+ * control per engine key. Keep this in step with the `match` in `Scenario::parse`.
+ */
+export const EXTRA_KEYS = [
+  'load_step_at_s', 'load_step_factor', 'load_step_until_s',
+  'retry_budget_fraction', 'retry_backoff_s',
+  'disable_decode', 'spec_draft_tokens', 'spec_accept_rate',
+  'preemption', 'preemption_victim', 'dram_capacity_tokens', 'swap_gbps',
+  'session_turns_mean', 'session_think_s',
+  'admission', 'admission_headroom', 'fair_share_burst',
+  'tenants', 'tenant_weights', 'tenant_demand',
+  'workload', 'trace_file', 'trace_sample_rate',
+  'slo_classes', 'failures',
+] as const;
+
+/** Exactly the keys `Scenario::parse` in `crates/sim-scenario` accepts. An unknown key is an error there. */
+export const SCENARIO_KEYS = [...PANEL_KEYS, ...EXTRA_KEYS] as const;
 export type ScenarioKey = (typeof SCENARIO_KEYS)[number];
 
 /** The subset UpdateWorkload may carry: load shape only. */
@@ -1412,7 +1431,7 @@ export interface WireEncoding {
  * accelerator label, the workload perturbation (the engine has a one-shot load step, not a
  * sinusoid, and config.ts carries no timing for a step), and the two prefix-affinity knobs.
  */
-export function scenarioConfigToWire(c: ScenarioConfig, extra: Partial<Record<ScenarioKey, ScenarioValue>> = {}): WireEncoding {
+export function scenarioConfigToWire(c: ScenarioConfig, overrides: Partial<Record<ScenarioKey, ScenarioValue>> = {}): WireEncoding {
   const fields: Record<string, ScenarioValue> = {
     name: c.name,
     seed: c.seed,
@@ -1453,7 +1472,14 @@ export function scenarioConfigToWire(c: ScenarioConfig, extra: Partial<Record<Sc
   Object.assign(fields, p.fields);
   dropped.push(...p.dropped);
 
-  for (const [k, v] of Object.entries(extra)) if (v !== undefined) fields[k] = v;
+  // A typo in `extra` fails here, by name, rather than as the server's "unknown keys" refusal.
+  const accepted = new Set<string>(SCENARIO_KEYS);
+  for (const [k, v] of Object.entries(c.extra)) {
+    if (!accepted.has(k)) throw new Error(`scenario extra key ${JSON.stringify(k)} is not one the engine accepts`);
+    fields[k] = v;
+  }
+
+  for (const [k, v] of Object.entries(overrides)) if (v !== undefined) fields[k] = v;
   return { fields, dropped };
 }
 
