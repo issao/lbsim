@@ -196,7 +196,7 @@ fi
 # one shape of that error a script can catch, so it is an invariant here.
 future=$(grep -hoE 'Last updated:\*{0,2} *[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}' TASKS.md STATUS.md docs/execution-graph.md docs/iteration-profile.md 2>/dev/null \
   | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}' | while read -r st; do
-      if [ "$(date -d "$st" +%s 2>/dev/null || echo 0)" -gt "$(( $(date +%s) + 180 ))" ]; then echo "$st"; fi
+      if [ "$(date -d "$st" +%s 2>/dev/null || echo 0)" -gt "$(( $(date +%s) + 60 ))" ]; then echo "$st"; fi
     done)
 if [ -n "$future" ]; then
   attention=1
