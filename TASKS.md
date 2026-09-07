@@ -1,6 +1,6 @@
 # TASKS — things that need Issao
 
-Last updated: 2026-09-06 20:27 PDT by Claude.
+Last updated: 2026-09-06 20:41 PDT by Claude.
 
 Paused 17:31–20:25 PDT at your request, resumed 20:27: every agent restarted from files; see `STATUS.md`
 "Session restart". Any instruction of yours whose work is code is recorded verbatim under "Routed to
@@ -55,8 +55,8 @@ Three from Issao at 16:22, routed by the main agent:
    with any that it authors)."* `docs/policy-catalog.md` is being written by a separate agent; the tech
    lead wired the arena generator's append, `sim_arena::catalog::append`, with a test holding the
    catalog's header to the code.
-9. **Wire side done, 3a00f92**; the engine side, spans recorded in the step, is U24, queued behind
-   preemption. *"We should have a way to sample requests to see execution traces and what was busy in each resource
+9. **Done: wire side 3a00f92, engine side U24 3a350b1 (20:40)**, spans recorded in the step for a seeded
+   sample, byte-identical runs with tracing on or off. *"We should have a way to sample requests to see execution traces and what was busy in each resource
    as it executed."* Request trace sampling: seeded, stratified by latency bucket, spans with
    per-resource state, exposed through `GetTraces` and the export. The struct, sampler, encoder,
    `GetTraces` filters and `traces.jsonl` in the export exist against fixtures; the proto owner was told
