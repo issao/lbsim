@@ -40,6 +40,7 @@ fn req(id: u64, prompt: u32, output: u32) -> Request {
         deadline: EPOCH_BASE + 600 * SECOND,
         is_long: false,
         tenant: 0,
+        class: 0,
     }
 }
 
