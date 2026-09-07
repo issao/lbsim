@@ -1,10 +1,10 @@
 # TASKS — things that need Issao
 
-Last updated: 2026-09-06 17:32 PDT by Claude.
+Last updated: 2026-09-06 20:27 PDT by Claude.
 
-Checkpoint 2026-09-06 16:43 PDT, resumed 17:04: every agent restarted from files; see `STATUS.md`
-"Session restart". While the respawned tech lead has no agent id yet, any instruction of yours whose work
-is code is recorded verbatim under "Routed to the tech lead" below and stays in the tree for it.
+Paused 17:31–20:25 PDT at your request, resumed 20:27: every agent restarted from files; see `STATUS.md`
+"Session restart". Any instruction of yours whose work is code is recorded verbatim under "Routed to
+the tech lead" below and stays in the tree for it.
 Stack ranked, most blocking first. Every item says what Claude does if you say nothing, so nothing
 here stalls the work. What is finished and live is in `STATUS.md`.
 
@@ -36,7 +36,9 @@ limit, and the training-versus-serving question.
 Each of these is a unit in `docs/execution-graph.md`, the tech lead's graph, which carries its state
 and ETA; this list is the record of what was routed and why.
 
-Nothing new routed since the checkpoint; the tree scans clean (`python3 tools/inbox.py`, 17:04).
+Nothing new routed since the checkpoint; the tree scans clean (`python3 tools/inbox.py`, 20:27). Nothing
+from the 17:31–17:35 checkpoints needs you: R1's findings became U54 and U55 in the graph, and its item 8
+is a crate-boundary decision for the main agent.
 
 Your feedback inside the graph at 16:45 (0b53c59), on the SLO class targets: *"That looks good. ideally
 we would have an average throughput for batch averaged at a longer time window, but don't worry about it
