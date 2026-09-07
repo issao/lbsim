@@ -18,7 +18,7 @@ use crate::idle::{wall_now_ns, IdleDecision, IdleGuard};
 use crate::lease::LeaseRegistry;
 use crate::wire::{self, Distribution, MetricRow, RunStatus, State, SubscriptionUpdate, Target};
 use sim_core::{Nanos, EPOCH_BASE};
-use sim_leaf::Sim;
+use sim_leaf::{Applied, Sim};
 use sim_metrics::{Frame, SparseHistogram};
 use sim_scenario::Scenario;
 use std::collections::BTreeMap;
@@ -71,7 +71,21 @@ pub struct RunState {
     pub checkpoints: u32,
     /// The idle guard's note, kept apart from `error` because WIRE.md promises `error` stays empty.
     pub note: String,
+    /// An `UpdateWorkload` or `UpdatePolicies` waiting for the run thread, the only place the
+    /// engine lives. One at a time: a second caller waits for the slot.
+    pub pending_update: Option<PendingUpdate>,
+    /// The run thread's verdict on the last pending update, until its caller takes it.
+    pub update_result: Option<UpdateOutcome>,
 }
+
+/// Overrides bound for `Sim::apply_overrides`, already policed by kind at the server.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingUpdate {
+    pub overrides: Vec<(String, String)>,
+}
+
+/// What the engine said to an update: which keys changed, or why the whole batch was refused.
+pub type UpdateOutcome = Result<Applied, String>;
 
 impl RunState {
     pub fn new(run_id: String, scenario: Scenario, max_realtime_factor: f64) -> RunState {
@@ -92,6 +106,8 @@ impl RunState {
             stop_requested: false,
             checkpoints: 0,
             note: String::new(),
+            pending_update: None,
+            update_result: None,
         }
     }
 
@@ -185,6 +201,34 @@ impl Run {
             st = self.changed.wait(st).unwrap_or_else(|e| e.into_inner());
         }
         Ok(st.status())
+    }
+
+    /// `UpdateWorkload` / `UpdatePolicies`: hand the overrides to the run thread and wait for its
+    /// verdict, the way `step` waits for its target. Forward only: nothing is rewound, and a
+    /// refused batch leaves the run exactly as it was. A paused run applies it too, since the run
+    /// thread looks for one on every visit rather than only after an advance.
+    pub fn update(&self, overrides: Vec<(String, String)>) -> Result<UpdateOutcome, Refused> {
+        let mut st = self.lock();
+        while (st.pending_update.is_some() || st.update_result.is_some()) && !st.is_terminal() {
+            st = self.changed.wait(st).unwrap_or_else(|e| e.into_inner());
+        }
+        if st.is_terminal() {
+            return Err(refused(409, format!("run {} is {}", st.run_id, st.state.name())));
+        }
+        st.pending_update = Some(PendingUpdate { overrides });
+        self.changed.notify_all();
+        loop {
+            if let Some(outcome) = st.update_result.take() {
+                // Free the slot for the next caller.
+                self.changed.notify_all();
+                return Ok(outcome);
+            }
+            if st.is_terminal() {
+                st.pending_update = None;
+                return Err(refused(409, format!("run {} ended before the update was applied", st.run_id)));
+            }
+            st = self.changed.wait(st).unwrap_or_else(|e| e.into_inner());
+        }
     }
 
     /// `StopRun`: end the run where it stands. The result is the aggregation over what ran, so
@@ -342,6 +386,15 @@ fn drive(run: Arc<Run>, reg: Arc<Registry>, sc: Scenario, ready: mpsc::SyncSende
         let next = {
             let mut st = run.lock();
             let sample_iv = st.sample_interval_ns();
+
+            // A pending update lands here, between two chunks, whatever the pacing: a paused run
+            // still visits this block every `POLL`, so a viewer's change never waits for a resume.
+            if let (Some(update), Some(engine)) = (st.pending_update.take(), sim.as_mut()) {
+                let pairs: Vec<(&str, &str)> =
+                    update.overrides.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+                st.update_result = Some(engine.apply_overrides(&pairs));
+                run.changed.notify_all();
+            }
 
             // The idle guard, once per visit. A run advancing as fast as it can is busy; one
             // paced for a viewer, or paused, or finished, is only as busy as its leases.

@@ -737,3 +737,111 @@ fn is_final_is_sent_exactly_once() {
     let status = wait_for_state(addr, &run_id, "STATE_COMPLETE", Duration::from_secs(5));
     assert_eq!(status.str("error"), Some(""));
 }
+
+// ---------------------------------------------------------------------------
+// UpdateWorkload and UpdatePolicies: forward-only, applied on the run thread
+// ---------------------------------------------------------------------------
+
+fn update(addr: SocketAddr, rpc: &str, run_id: &str, overrides: &[(&str, &str)]) -> Json {
+    let ov: Vec<String> = overrides.iter().map(|(k, v)| format!("\"{k}\":\"{v}\"")).collect();
+    let r = post(addr, rpc, &format!("{{\"run_id\":\"{run_id}\",\"overrides\":{{{}}}}}", ov.join(",")));
+    assert_eq!(r.status, 200, "{}", r.body);
+    assert_proto_keys(&r.body);
+    r.json()
+}
+
+fn step(addr: SocketAddr, run_id: &str, by_ns: u64) -> Json {
+    let r = post(addr, "StepForward", &format!("{{\"run_id\":\"{run_id}\",\"sim_duration_ns\":\"{by_ns}\"}}"));
+    assert_eq!(r.status, 200, "{}", r.body);
+    r.json()
+}
+
+/// Mean `offered_rps` over the run's closed frames with `t` in `[from, to)`.
+fn mean_offered(server: &Server, run_id: &str, from: u64, to: u64) -> f64 {
+    let run = server.runs.get(run_id).expect("run exists");
+    let st = run.lock();
+    let window: Vec<f64> = st.frames.iter().filter(|f| f.t >= from && f.t < to).map(|f| f.offered_rps).collect();
+    assert!(!window.is_empty(), "no frames in [{from}, {to})");
+    window.iter().sum::<f64>() / window.len() as f64
+}
+
+#[test]
+fn update_workload_mid_run_raises_offered_rps() {
+    let (addr, server, _dir) = start_server("update-workload", 3600 * S);
+    let run_id = start_run(addr, "route_p2c.txt", &[("duration_s", "100")], 1.0);
+    post(addr, "SetSpeed", &format!("{{\"run_id\":\"{run_id}\",\"paused\":true,\"realtime_factor\":1}}"));
+    let t0: u64 = get_run(addr, &run_id).str("sim_time_unix_ns").unwrap().parse().unwrap();
+    step(addr, &run_id, 20 * S);
+
+    // The run is paused: the update must land anyway, without waiting for the next advance.
+    let r = update(addr, "UpdateWorkload", &run_id, &[("arrival_rps", "210")]);
+    assert_eq!(r.bool("accepted"), Some(true), "{r:?}");
+    assert_eq!(r.bool("required_resimulation"), Some(false));
+    assert_eq!(r.str("rewound_to_unix_ns"), Some("0"));
+    assert_eq!(r.str("rejected_reason"), Some(""));
+
+    step(addr, &run_id, 20 * S);
+    let before = mean_offered(&server, &run_id, t0, t0 + 20 * S);
+    let after = mean_offered(&server, &run_id, t0 + 20 * S, t0 + 40 * S);
+    let ratio = after / before;
+    assert!((2.5..3.5).contains(&ratio), "offered_rps {before} -> {after}: ratio {ratio}, expected about 3");
+}
+
+#[test]
+fn update_with_a_structural_key_is_rejected_with_a_reason() {
+    let (addr, _server, _dir) = start_server("update-structural", 3600 * S);
+    let run_id = start_run(addr, "route_p2c.txt", &[("duration_s", "100")], 1.0);
+    step(addr, &run_id, 5 * S);
+    let before = get_run(addr, &run_id);
+
+    // The whole batch goes: the good key beside the structural one is not applied either.
+    let r = update(addr, "UpdateWorkload", &run_id, &[("arrival_rps", "1"), ("replicas", "12")]);
+    assert_eq!(r.bool("accepted"), Some(false), "{r:?}");
+    let reason = r.str("rejected_reason").unwrap();
+    assert!(reason.contains("replicas") && reason.contains("restart"), "{reason}");
+    assert_eq!(get_run(addr, &run_id), before);
+
+    // A key nothing recognises is structural too.
+    let r = update(addr, "UpdatePolicies", &run_id, &[("no_such_key", "1")]);
+    assert_eq!(r.bool("accepted"), Some(false), "{r:?}");
+    assert!(r.str("rejected_reason").unwrap().contains("no_such_key"));
+}
+
+#[test]
+fn update_workload_refuses_a_policy_key() {
+    let (addr, _server, _dir) = start_server("update-wrong-group", 3600 * S);
+    let run_id = start_run(addr, "route_p2c.txt", &[("duration_s", "100")], 1.0);
+    let r = update(addr, "UpdateWorkload", &run_id, &[("routing", "round_robin")]);
+    assert_eq!(r.bool("accepted"), Some(false), "{r:?}");
+    let reason = r.str("rejected_reason").unwrap();
+    assert!(reason.contains("routing") && reason.contains("UpdatePolicies"), "{reason}");
+
+    let r = update(addr, "UpdatePolicies", &run_id, &[("arrival_rps", "5")]);
+    assert_eq!(r.bool("accepted"), Some(false), "{r:?}");
+    let reason = r.str("rejected_reason").unwrap();
+    assert!(reason.contains("arrival_rps") && reason.contains("UpdateWorkload"), "{reason}");
+}
+
+#[test]
+fn update_policies_switches_routing() {
+    let (addr, _server, _dir) = start_server("update-policies", 3600 * S);
+    let run_id = start_run(addr, "route_round_robin.txt", &[("duration_s", "100")], 1.0);
+    let before: u64 = wait_for_state(addr, &run_id, "STATE_RUNNING", Duration::from_secs(5))
+        .str("sim_time_unix_ns").unwrap().parse().unwrap();
+
+    let r = update(addr, "UpdatePolicies", &run_id, &[("routing", "p2c")]);
+    assert_eq!(r.bool("accepted"), Some(true), "{r:?}");
+    assert_eq!(r.str("rejected_reason"), Some(""));
+
+    // Still running, still advancing: the update did not pause or restart the run.
+    let s = get_run(addr, &run_id);
+    assert_eq!(s.str("state"), Some("STATE_RUNNING"), "{s:?}");
+    wait_until("the run advances past the update", Duration::from_secs(5), || {
+        get_run(addr, &run_id).str("sim_time_unix_ns").unwrap().parse::<u64>().unwrap() > before + S
+    });
+
+    // Setting the value it already has is accepted and changes nothing.
+    let r = update(addr, "UpdatePolicies", &run_id, &[("routing", "p2c")]);
+    assert_eq!(r.bool("accepted"), Some(true), "{r:?}");
+    assert_eq!(post(addr, "Rewind", &format!("{{\"run_id\":\"{run_id}\"}}")).status, 501);
+}
