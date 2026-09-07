@@ -79,6 +79,10 @@ impl Trace {
             rows.push(TraceRow { t_ns: (t_s * 1e9).round() as Nanos, prompt, output, tenant });
         }
         assert!(!rows.is_empty(), "trace_file {path:?} has no rows after the header");
+        // Sorted first: a capture is not guaranteed to arrive in time order, and `origin` must be the
+        // earliest row or a later subtraction underflows (Nanos is u64). Stable, so rows that tie on a
+        // timestamp keep the file's order.
+        rows.sort_by_key(|r| r.t_ns);
         let origin = rows[0].t_ns;
         for r in &mut rows {
             r.t_ns -= origin;
@@ -115,6 +119,25 @@ impl Workload {
         } else {
             sc.arrival_rps
         }
+    }
+
+    /// Offered rate over a closing sample window, for the dashboard's offered-load curve. Synthetic
+    /// mode has no window to count and stays exactly `rate_at` at the window's end, so a synthetic
+    /// run's fingerprint cannot move. Trace mode has no rate to sample at all: it counts the rows
+    /// whose recorded arrival (elapsed nanos from the run's start, same base as `next_gap_ns` uses)
+    /// falls in `[window_start_ns, window_end_ns)` and divides by the window's width, which is what
+    /// the CSV itself says the load was.
+    pub fn offered_rps(&self, sc: &Scenario, window_start_ns: Nanos, window_end_ns: Nanos) -> f64 {
+        if sc.workload != "trace" {
+            return Self::rate_at(sc, window_end_ns as f64 / 1e9);
+        }
+        let trace = self
+            .trace
+            .as_ref()
+            .expect("offered_rps in trace mode is sampled only after an arrival has loaded the trace");
+        let count = trace.rows.iter().filter(|r| r.t_ns >= window_start_ns && r.t_ns < window_end_ns).count();
+        let width_s = (window_end_ns - window_start_ns) as f64 / 1e9;
+        count as f64 / width_s
     }
 
     pub fn next_gap_ns(&mut self, sc: &Scenario, elapsed_s: f64) -> Nanos {
