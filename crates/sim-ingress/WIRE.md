@@ -22,10 +22,12 @@ has `fetch` and `EventSource`. So:
   *close* halves are the unary calls above. That split is a transport detail of this mapping and is
   not in the proto.
 - **Reconnect.** Every SSE event carries `id: <n>`, the subscription's delivered-update sequence number
-  starting at 1. A client that reconnects sends `Last-Event-ID: <n>` on the same `GET`; the server
-  replays from its per-subscription ring of the last 256 updates, or answers **HTTP 410 Gone** when the
-  gap is larger than the ring or the subscription is unknown, and the client resubscribes from scratch.
-  The lease is what makes this safe: an unrenewed subscription is gone, ring and all.
+  starting at 1. A client that reconnects sends `Last-Event-ID: <n>` together with `subscription_id` as a
+  query parameter on the same `GET /v1/ingress/OpenSubscription`; the server replays from its
+  per-subscription ring of the last 256 updates, or answers **HTTP 410 Gone** when the gap is larger than
+  the ring, the subscription has already closed, or the subscription is unknown, and the client
+  resubscribes from scratch. The lease is what makes this safe: an unrenewed subscription is gone, ring
+  and all.
 - **Health** is `GET /health` and `GET /healthz`, plain `ok`, touching no run state.
 - Anything else is served as a static file from `--dir`, exactly as today.
 
@@ -48,6 +50,9 @@ schema change.
 6. Errors are HTTP 400 (bad request), 404 (unknown run or subscription), 409 (wrong state), 500, with
    body `{"error": "<message>"}`. A rejected subscription open is HTTP 200 with `rejected_reason` set,
    as the proto specifies.
+7. Request bodies are capped at **1 MiB**, rejected before the body is read. The server answers `100
+   Continue` to an `Expect: 100-continue` request rather than leaving the client to guess whether to
+   send the body.
 
 ## The one deviation from the proto: the scenario
 
@@ -95,15 +100,25 @@ data: {"subscription_id":"s-7","sim_time_unix_ns":"...","realtime_factor":2.0,
               "values":{"40":70.0,"23":12.0},
               "distributions":{"1":{"count":"41","mean":812.5,"min":120000000.0,"max":2400000000.0,
                                     "percentile":[50,99],"value":[700000000.0,2100000000.0],
-                                    "from_merged_histogram":false}}},
+                                    "from_merged_histogram":true}}},
        "final":false}
 ```
 Distribution `count` is `uint64` and therefore a string; `mean`, `min`, `max` and `value[]` are
 doubles in nanoseconds, as the proto declares them. A distribution at time `t` describes the requests that **completed in the
 sample window ending at `t`**, one window per `1 / samples_per_sim_second` simulated seconds, so a chart
 of p99 is a chart of the recent tail, not a cumulative one. `count` says how many that was.
+`from_merged_histogram` is `true` on every row the live server emits, windowed rows included: the engine
+tracks distributions as bucketed Frame histograms and the server reads them as-is. `sim-run export`'s
+`fleet.jsonl` computes its windowed rows straight from the exact per-request samples and writes
+`from_merged_histogram: false` (see below), so a client must not treat a live row and its later-exported
+counterpart as bit-identical merely because both describe the same window.
 
 ## What the first server supports
+
+The live server serves `StartRun`, `StopRun`, `GetRun`, `ListRuns`, `SetSpeed`, `StepForward`,
+`RenewSubscription`, `CloseSubscription`, `GetResult`, and `OpenSubscription` today, while `Rewind`,
+`UpdateWorkload`, `UpdatePolicies`, and `GetTraces` (until U24 lands) all answer **HTTP 501 Not
+Implemented** rather than 404, so a client can tell "not built yet" apart from "wrong path".
 
 Scopes: `SCOPE_FLEET` and `SCOPE_REPLICA`. Everything else returns `rejected_reason`.
 
@@ -120,6 +135,10 @@ Scopes: `SCOPE_FLEET` and `SCOPE_REPLICA`. Everything else returns `rejected_rea
 | `METRIC_TTFT` 1, `METRIC_ITL` 2, `METRIC_E2E` 3, `METRIC_QUEUE_WAIT` 4 | yes | | window histograms |
 | `METRIC_READY_REPLICAS` 60 | yes | | replica count, until lifecycle exists |
 
+`METRIC_STEP_TIME` at replica scope is a one-sample `Distribution` — the last step's duration, not a
+windowed histogram — and is omitted entirely until that replica has stepped at least once; a client
+should read its absence as "no step yet", not as zero.
+
 Sample cadence: the server honours `samples_per_sim_second` as asked. The engine records at the
 scenario's `sample_interval_ms`; a subscription rate finer than that gets the nearest recorded sample
 repeated, and the response's `sim_time_unix_ns` is the recorded sample's time, never an interpolated
@@ -130,11 +149,29 @@ one, because an interpolated batch composition never existed.
 `lease_ns` is wall-clock, and so is `lease_expires_at_wall_ns`, which deliberately breaks the
 `_unix_ns` convention that everywhere else means a *simulated* instant. A client must not compare it to
 the browser's clock, which disagrees with the server's; it counts `lease_ns` down locally and treats the
-renew response's `expired` flag as the only authority. The server drops a subscription whose lease expired
-without renewal and ends its stream. A run with no live lease and no queued work for `IDLE_SHUTDOWN_SECONDS` (default 300)
-checkpoints and stops advancing, so a Cloud Run instance can be reaped; `GetRun` on such a run reports
-`STATE_PAUSED` with `error` empty. Reopening a subscription resumes it. These are `lease.rs` and
-`idle.rs` in this crate.
+renew response's `expired` flag as the only authority. Absent, `lease_ns` defaults to 60 s; `lease_ns: 0`
+means the subscription is dead on arrival, for a client that only wants a single snapshot. The server
+drops a subscription whose lease expired without renewal and ends its stream; a lease also closes on its
+own once a `final` update has gone out, since nothing is left that will ever renew it.
+
+A run counts as **idle** — eligible for the shutdown checkpoint below — when it has no live lease and no
+queued work. "Queued work" means precisely: an unpaced running run (advancing as fast as the host will
+let it) or a run mid-`StepForward` is busy regardless of leases, because it is doing something whether or
+not anyone is watching; a paused run, a completed run, and a *paced* running run (bounded by
+`realtime_factor`) that has no live lease are all idle, because nothing further will happen to any of
+them until a lease or a step arrives. A run with no live lease and no queued work for
+`IDLE_SHUTDOWN_SECONDS` (default 300) checkpoints and stops advancing, so a Cloud Run instance can be
+reaped; `GetRun` on such a run reports `STATE_PAUSED` with `error` empty.
+
+The checkpoint is the same four documents `sim-run export` writes under `runs/<run_id>/` —
+`status.json`, `scenario.txt`, `fleet.jsonl`, `result.json` — not a resumable engine snapshot:
+`Leaf::snapshot` is unimplemented. Reopening a subscription resumes the run from the in-memory `Sim`
+that went idle, not from the checkpoint, so the run is only resumable while that process is still up;
+the checkpoint exists so a paused run's state can be read, not so it can survive the process restarting.
+
+`StopRun` is a different, deliberate ending: it finalises the run as `STATE_COMPLETE` with every rate
+metric computed over the full scenario duration rather than the partial run elapsed so far — the same
+convention `sim-run export` uses for `result.json`. These are `lease.rs` and `idle.rs` in this crate.
 
 ## What `sim-run export` writes, and the decisions it settled
 
