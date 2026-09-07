@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   applyPatch,
   loadIndex,
@@ -10,6 +10,9 @@ import {
 } from '../lib/walkthrough';
 import type { RunHandle } from '../lib/useRun';
 import type { ScenarioConfig } from '../lib/config';
+import { dataModeFrom, replayOverride, serverMode } from '../lib/mode';
+import { probeRunIndex } from '../lib/replay';
+import { type RunnerHandle, type StepState, WalkthroughRunner } from '../lib/walkthroughRunner';
 import { Dashboard, type TabHint } from './Dashboard';
 import { MockTag } from '../components/ui';
 
@@ -37,12 +40,13 @@ export function Showcase() {
     <div className="page-pad">
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, marginBottom: 4 }}>
         <h1 style={{ fontSize: 15, margin: 0, fontWeight: 600 }}>Showcase</h1>
-        <MockTag what="mock walkthroughs" />
+        <MockTag what="mock or replay" />
       </div>
       <p className="note" style={{ maxWidth: '80ch', marginTop: 0 }}>
         One card per dynamic in <code>docs/ARCHITECTURE.md</code> section 12, stack ranked as it is there. Clicking a
         card with a script starts a scripted walkthrough: the run advances, pauses at the moments that matter, says what
-        is interesting, and offers resume. The scripts are JSON files in{' '}
+        is interesting, and offers resume. A script that names a recorded run plays that recording when the runs index
+        is served; otherwise it drives the mock engine. The scripts are JSON files in{' '}
         <code>web/public/walkthroughs/</code>, loaded at runtime; the format is in{' '}
         <a href={`${import.meta.env.BASE_URL}walkthroughs/schema.md`}>schema.md</a>.
       </p>
@@ -88,131 +92,203 @@ export function Showcase() {
   );
 }
 
-type Phase = 'advancing' | 'paused' | 'done';
+/**
+ * Where a walkthrough gets its run from. Decided once per script, before the dashboard mounts,
+ * because the dashboard's replay branch reads `?run=` at mount to pick its recording.
+ */
+type Source = { kind: 'probing'; note?: undefined } | { kind: 'mock'; note?: string } | { kind: 'auto'; note?: string };
+
+/** Put `?run=<id>` on the URL so the dashboard's replay branch opens that recording; undo it on exit. */
+function pinRunOnUrl(runId: string): () => void {
+  const { pathname, search, hash } = window.location;
+  window.history.replaceState(window.history.state, '', `${pathname}?run=${encodeURIComponent(runId)}${hash}`);
+  return () => window.history.replaceState(window.history.state, '', `${pathname}${search}${window.location.hash}`);
+}
 
 /**
- * The runner. It drives the same load-test dashboard a user would drive by hand: set the tabs,
- * apply the step's conditions, play until the step's simulated timestamp, pause, narrate, offer
- * resume. Nothing here is a second interface.
+ * The runner's view of whatever handle the dashboard hands back. Read lazily, because the handle's
+ * identity changes on every render and the runner outlives all of them. A synchronous refusal
+ * (the mock and the replay return an `UpdateResponse`) becomes a rejection here; the server's
+ * `update` returns nothing and reports through `lastUpdate`, which the panel reads separately.
+ */
+function adapt(get: () => RunHandle): RunnerHandle {
+  return {
+    get mode() {
+      const r = get();
+      return r.source?.kind ?? ((r.engine as unknown) === null ? 'server' : 'mock');
+    },
+    cursorS: () => get().cursorS,
+    scrubTo: (s) => get().scrubTo(s),
+    setSpeed: (x) => get().setSpeed(x),
+    pause: () => get().setPaused(true),
+    play: () => get().setPaused(false),
+    update: (patch) => {
+      const r = get();
+      const resp = r.update(applyPatch(r.config, patch)) as ReturnType<RunHandle['update']> | undefined;
+      if (resp && !resp.accepted) throw new Error(resp.rejectedReason || 'the run refused the change');
+    },
+  };
+}
+
+/**
+ * The walkthrough surface. It drives the same load-test dashboard a user would drive by hand: set
+ * the tabs, apply the step's conditions, run to the step's simulated timestamp, pause, narrate,
+ * offer resume. Nothing here is a second interface; the state machine is walkthroughRunner.ts.
  */
 function Walkthrough({ script, onExit }: { script: WalkthroughScript; onExit: () => void }) {
   const initial = useRef<ScenarioConfig>(scenarioFor(script)).current;
-  const [step, setStep] = useState(0);
-  const [phase, setPhase] = useState<Phase>('advancing');
-  const [hint, setHint] = useState<TabHint>({
-    control: script.steps[0].control_tab,
-    observe: script.steps[0].observe_tab,
-    nonce: 0,
-  });
+  const [source, setSource] = useState<Source>(script.run ? { kind: 'probing' } : { kind: 'mock' });
 
+  useEffect(() => {
+    const wanted = script.run;
+    if (!wanted) return;
+    let alive = true;
+    let unpin: (() => void) | null = null;
+    void probeRunIndex().then((runs) => {
+      if (!alive) return;
+      const served = runs?.some((r) => r.runId === wanted) ?? false;
+      const mode = dataModeFrom(serverMode(), runs !== null, replayOverride(window.location.search, window.location.hash));
+      if (served && mode === 'replay') {
+        unpin = pinRunOnUrl(wanted);
+        setSource({ kind: 'auto' });
+      } else if (mode === 'server') {
+        // The dashboard starts the scenario live once it has a server branch; the footer says
+        // what it actually opened, so no promise is made here.
+        setSource({ kind: 'auto' });
+      } else {
+        setSource({ kind: 'mock', note: `recording ${wanted} is not in the served runs index; playing the mock instead` });
+      }
+    });
+    return () => {
+      alive = false;
+      unpin?.();
+    };
+  }, [script.run]);
+
+  if (source.kind === 'probing') return <div className="page-pad">looking for {script.run}…</div>;
+  return <WalkthroughOver key={source.kind} script={script} initial={initial} source={source} compare={script.compare} onExit={onExit} />;
+}
+
+function WalkthroughOver({
+  script,
+  initial,
+  source,
+  compare,
+  onExit,
+}: {
+  script: WalkthroughScript;
+  initial: ScenarioConfig;
+  source: Source;
+  compare?: string;
+  onExit: () => void;
+}) {
   const runRef = useRef<RunHandle | null>(null);
-  const phaseRef = useRef<Phase>('advancing');
-  const stepRef = useRef(0);
-  phaseRef.current = phase;
-  stepRef.current = step;
-
-  const current = script.steps[Math.min(step, script.steps.length - 1)];
+  const runnerRef = useRef<WalkthroughRunner | null>(null);
+  const [st, setSt] = useState<StepState | null>(null);
+  const [sourceLabel, setSourceLabel] = useState('');
+  // A refusal the handle reports after the fact (the server's update is fire-and-forget).
+  const [lateReason, setLateReason] = useState<string | null>(null);
 
   // Called on every dashboard render, which is often enough to catch the moment a step is reached.
   const onRun = useCallback(
     (run: RunHandle) => {
       runRef.current = run;
-      const st = script.steps[stepRef.current];
-      if (!st || phaseRef.current !== 'advancing') return;
-      if (run.speed !== (st.speed ?? 2)) run.setSpeed(st.speed ?? 2);
-      if (run.cursorS >= st.at_sim_s) {
-        run.setPaused(true);
-        setPhase('paused');
-      } else if (run.paused) {
-        run.setPaused(false);
+      const label = run.source?.label ?? 'live run';
+      setSourceLabel((l) => (l === label ? l : label));
+      const late = run.lastUpdate && !run.lastUpdate.accepted ? run.lastUpdate.rejectedReason : null;
+      setLateReason((r) => (r === late ? r : late));
+      if (!runnerRef.current) {
+        const runner = new WalkthroughRunner(script, adapt(() => runRef.current as RunHandle));
+        runnerRef.current = runner;
+        void runner.next().then(setSt);
+        return;
       }
+      // Same object when nothing changed, so this set is a no-op between steps.
+      setSt(runnerRef.current.tick());
     },
     [script]
   );
 
-  const advanceTo = (next: number) => {
-    const run = runRef.current;
-    const st = script.steps[next];
-    if (!run || !st) return;
-    if (st.set) run.update(applyPatch(run.config, st.set));
-    setHint({ control: st.control_tab, observe: st.observe_tab, nonce: next + 1 });
-    setStep(next);
-    setPhase('advancing');
-    run.setSpeed(st.speed ?? 2);
-    run.setPaused(false);
-  };
-
-  useEffect(() => {
-    const st = script.steps[0];
-    if (st.set && runRef.current) runRef.current.update(applyPatch(runRef.current.config, st.set));
-  }, [script]);
-
-  const atEnd = step >= script.steps.length - 1 && phase !== 'advancing';
+  const current = st ?? { index: 0, step: script.steps[0], advancing: true, done: false };
+  const hint = useMemo<TabHint>(
+    () => ({ control: current.step.control_tab, observe: current.step.observe_tab, nonce: current.index + 1 }),
+    [current.step, current.index]
+  );
+  const step = current.step;
+  const notes = [source.note, compare ? `compare ${compare}: this page has no A/B view yet, so the second run is not opened` : null].filter(
+    (n): n is string => n !== null && n !== undefined
+  );
+  const refusal = current.reason ?? lateReason;
 
   return (
     <Dashboard
       key={script.id}
       initial={initial}
-      // The walkthroughs script the mock engine's dynamics and change its config mid-run; a
-      // recording can do neither, so this surface stays mock whatever is served.
-      data="mock"
-      autoplay
+      // `auto` lets the dashboard open the pinned recording (or, once it has a live branch, start
+      // the scenario on the server); a script without a run keeps driving the mock's dynamics.
+      data={source.kind === 'auto' ? 'auto' : 'mock'}
+      autoplay={false}
       onRun={onRun}
-      highlight={phase === 'paused' ? current.highlight ?? null : null}
+      highlight={!current.advancing ? step.highlight ?? null : null}
       tabHint={hint}
       overlay={
         <div className="walkthrough" role="dialog" aria-label="walkthrough step">
           <div className="wt-progress">
-            <i style={{ width: `${((step + (phase === 'paused' ? 1 : 0)) / script.steps.length) * 100}%` }} />
+            <i style={{ width: `${((current.index + (current.advancing ? 0 : 1)) / script.steps.length) * 100}%` }} />
           </div>
           <div className="wt-head">
             <span className="wt-step">
-              {step + 1}/{script.steps.length} &middot; {current.at_sim_s}s
+              {current.index + 1}/{script.steps.length} &middot; {step.at_sim_s}s
             </span>
-            <span className="wt-title">{phase === 'advancing' ? 'advancing…' : current.title}</span>
+            <span className="wt-title">{current.advancing ? 'advancing…' : step.title}</span>
           </div>
-          {phase === 'advancing' ? (
+          {current.advancing ? (
             <div className="wt-body">
               <p className="note" style={{ margin: 0 }}>
-                Running to {current.at_sim_s} s at {current.speed ?? 2}&times;. It will pause there.
+                Running to {step.at_sim_s} s. It will pause there.
               </p>
             </div>
           ) : (
             <div className="wt-body">
-              {current.body.map((p, i) => (
+              {step.body.map((p, i) => (
                 <p key={i}>{p}</p>
               ))}
-              {current.look_for ? <div className="wt-look">Look for: {current.look_for}</div> : null}
+              {step.look_for ? <div className="wt-look">Look for: {step.look_for}</div> : null}
             </div>
           )}
+          {refusal ? (
+            <div className="wt-body" style={{ color: 'var(--critical)' }}>
+              conditions not applied: {refusal}
+            </div>
+          ) : null}
+          {notes.length ? (
+            <div className="wt-body">
+              {notes.map((n) => (
+                <p key={n} className="note" style={{ margin: 0 }}>
+                  {n}
+                </p>
+              ))}
+            </div>
+          ) : null}
           <div className="wt-foot">
             <span className="wt-step" style={{ flex: '0 0 auto' }}>
               {script.title}
+              {sourceLabel ? ` · ${sourceLabel}` : ''}
             </span>
             <span className="grow" />
             <button className="btn" onClick={onExit}>
               exit
             </button>
-            {phase === 'advancing' ? (
-              <button
-                className="btn"
-                onClick={() => {
-                  const run = runRef.current;
-                  if (run) {
-                    run.scrubTo(current.at_sim_s);
-                    run.setPaused(true);
-                  }
-                  setPhase('paused');
-                }}
-              >
+            {current.advancing ? (
+              <button className="btn" onClick={() => runnerRef.current && setSt(runnerRef.current.skip())}>
                 skip ahead
               </button>
-            ) : atEnd ? (
+            ) : current.done ? (
               <button className="btn primary" onClick={onExit}>
                 done
               </button>
             ) : (
-              <button className="btn primary" onClick={() => advanceTo(step + 1)}>
+              <button className="btn primary" onClick={() => runnerRef.current && void runnerRef.current.next().then(setSt)}>
                 resume
               </button>
             )}

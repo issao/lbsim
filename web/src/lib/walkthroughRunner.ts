@@ -1,0 +1,115 @@
+// The walkthrough state machine, with no framework and no engine in it. A script is a list of
+// steps, each a simulated timestamp with conditions to set first; the runner applies the
+// conditions, moves the run to the timestamp, pauses, and says which step it is on. It is
+// written over the smallest handle that can do that, so the same machine drives the mock engine,
+// a recording and a live server run, and the self-test drives it with a fake.
+//
+// Refusals are state, not exceptions. A recording cannot take an override, and a server may
+// answer an update with 501 until the call is implemented; either way the step still plays and
+// the narration panel shows why the conditions did not change. Throwing here would stop the
+// walkthrough at exactly the step whose story the reader came for.
+
+import type { DataMode } from './mode';
+import type { PatchValue, WalkthroughScript, WalkthroughStep } from './walkthrough';
+
+export interface RunnerHandle {
+  readonly mode: DataMode;
+  cursorS(): number;
+  scrubTo(s: number): void;
+  setSpeed(x: number): void;
+  pause(): void;
+  play(): void;
+  /** Rejects (or throws) with the reason when the run refuses the change. */
+  update(patch: Record<string, PatchValue>): Promise<void> | void;
+}
+
+export interface StepState {
+  index: number;
+  step: WalkthroughStep;
+  /** Why the step's `set` was not applied, when it was not. The step plays regardless. */
+  reason?: string;
+  /** Moving toward `step.at_sim_s`; `tick()` pauses the run when it gets there. */
+  advancing: boolean;
+  /** The last step has been reached and the run is paused there. */
+  done: boolean;
+}
+
+export const REPLAY_SET_REFUSED = 'replay of a recording; overrides need a live run';
+
+/** The mock has always run its walkthroughs at 2x; a server run is real work per second. */
+export const DEFAULT_SPEED: Record<DataMode, number> = { mock: 2, server: 1, replay: 1 };
+
+export class WalkthroughRunner {
+  private st: StepState;
+  private readonly script: WalkthroughScript;
+  private readonly handle: RunnerHandle;
+
+  constructor(script: WalkthroughScript, handle: RunnerHandle) {
+    this.script = script;
+    this.handle = handle;
+    this.st = { index: -1, step: script.steps[0], advancing: false, done: false };
+  }
+
+  /** The same object until something changes, so a host can compare by identity. */
+  state(): StepState {
+    return this.st;
+  }
+
+  /**
+   * Move to the next step: apply its `set` first, so the conditions are in force for the whole
+   * stretch the step narrates, then advance toward its timestamp. On the last step this is a no-op.
+   */
+  async next(): Promise<StepState> {
+    const index = this.st.index + 1;
+    if (index >= this.script.steps.length) return this.st;
+    const step = this.script.steps[index];
+    const reason = step.set ? await this.apply(step.set) : undefined;
+    this.st = { index, step, reason, advancing: true, done: false };
+    this.advance(step);
+    return this.st;
+  }
+
+  /**
+   * Called by the host whenever the run may have moved. Pauses at the step's timestamp; returns the
+   * unchanged state object otherwise.
+   */
+  tick(): StepState {
+    if (this.st.advancing && this.handle.cursorS() >= this.st.step.at_sim_s) this.settle();
+    return this.st;
+  }
+
+  /** Jump to the current step's timestamp rather than waiting for the run to get there. */
+  skip(): StepState {
+    if (!this.st.advancing) return this.st;
+    this.handle.scrubTo(this.st.step.at_sim_s);
+    this.settle();
+    return this.st;
+  }
+
+  private async apply(set: Record<string, PatchValue>): Promise<string | undefined> {
+    if (this.handle.mode === 'replay') return REPLAY_SET_REFUSED;
+    try {
+      await this.handle.update(set);
+      return undefined;
+    } catch (e) {
+      return e instanceof Error ? e.message : String(e);
+    }
+  }
+
+  private advance(step: WalkthroughStep): void {
+    if (this.handle.mode === 'replay') {
+      // Every frame already exists, so the timestamp is a seek, not a wait.
+      this.handle.scrubTo(step.at_sim_s);
+      this.settle();
+      return;
+    }
+    this.handle.setSpeed(step.speed ?? DEFAULT_SPEED[this.handle.mode]);
+    this.handle.play();
+    this.tick();
+  }
+
+  private settle(): void {
+    this.handle.pause();
+    this.st = { ...this.st, advancing: false, done: this.st.index === this.script.steps.length - 1 };
+  }
+}
