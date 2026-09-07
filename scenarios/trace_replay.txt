@@ -1,0 +1,29 @@
+# The base fleet driven by a recorded trace instead of the synthetic mixture. Every arrival time and
+# request shape comes from the CSV, so a run is exactly reproducible and carries no random draw at all
+# on the workload side. Tenants are set to match the trace's tenant column.
+name = trace_replay
+seed = 20260906
+duration_s = 30
+warmup_s = 3
+replicas = 32
+max_batch = 256
+kv_capacity_tokens = 1370000
+step_base_ms = 10.2
+step_per_seq_ms = 0.0
+step_per_kv_ktoken_ms = 0.0175
+prefill_tokens_per_s = 28286
+step_token_budget = 1024
+max_queue = 400
+tenants = 3
+routing = round_robin
+telemetry_interval_ms = 1000
+telemetry_delay_ms = 200
+client_timeout_s = 60
+max_attempts = 1
+ttft_slo_ms = 2000
+itl_slo_ms = 80
+e2e_slo_s = 60
+sample_interval_ms = 250
+
+workload = trace
+trace_file = scenarios/traces/sample.csv

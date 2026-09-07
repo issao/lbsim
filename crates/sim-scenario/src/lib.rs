@@ -130,6 +130,15 @@ pub struct Scenario {
     /// Fraction of arrivals whose journey is recorded span by span, drawn from a stream of its own so
     /// the run is byte-identical with tracing on or off. Zero records nothing.
     pub trace_sample_rate: f64,
+
+    // -- trace replay --------------------------------------------------------
+    /// `synthetic` draws arrivals and shapes from the distributions above; `trace` replays
+    /// `trace_file` row by row and touches no random stream, so a recorded burst can be re-run under
+    /// another policy with nothing else changed.
+    pub workload: String,
+    /// CSV `t_s,prompt_tokens,output_tokens,tenant` with a header line, relative to the process cwd
+    /// like every other scenario path. Only read when `workload = trace`.
+    pub trace_file: String,
 }
 
 impl Default for Scenario {
@@ -193,6 +202,8 @@ impl Default for Scenario {
             e2e_slo_s: 30.0,
             sample_interval_ms: 250.0,
             trace_sample_rate: 0.0,
+            workload: "synthetic".into(),
+            trace_file: String::new(),
         }
     }
 }
@@ -297,6 +308,8 @@ impl Scenario {
                 "itl_slo_ms" => s.itl_slo_ms = f("itl_slo_ms"),
                 "e2e_slo_s" => s.e2e_slo_s = f("e2e_slo_s"),
                 "sample_interval_ms" => s.sample_interval_ms = f("sample_interval_ms"),
+                "workload" => s.workload = v.clone(),
+                "trace_file" => s.trace_file = v.clone(),
                 other => unknown.push(other.to_string()),
             }
         }
@@ -407,7 +420,7 @@ impl Scenario {
              telemetry_interval_ms = {}\ntelemetry_delay_ms = {}\n\
              client_timeout_s = {}\nmax_attempts = {}\nretry_budget_fraction = {}\n\
              retry_backoff_s = {}\nttft_slo_ms = {}\nitl_slo_ms = {}\ne2e_slo_s = {}\n\
-             sample_interval_ms = {}\ntrace_sample_rate = {}\n",
+             sample_interval_ms = {}\ntrace_sample_rate = {}\nworkload = {}\ntrace_file = {}\n",
             self.name, self.seed, self.duration_s, self.warmup_s, self.replicas, self.max_batch,
             self.step_base_ms, self.step_per_seq_ms, self.step_per_kv_ktoken_ms,
             self.kv_capacity_tokens, self.prefill_tokens_per_s,
@@ -424,7 +437,7 @@ impl Scenario {
             self.telemetry_interval_ms, self.telemetry_delay_ms,
             self.client_timeout_s, self.max_attempts, self.retry_budget_fraction,
             self.retry_backoff_s, self.ttft_slo_ms, self.itl_slo_ms, self.e2e_slo_s,
-            self.sample_interval_ms, self.trace_sample_rate,
+            self.sample_interval_ms, self.trace_sample_rate, self.workload, self.trace_file
         )
     }
 }
