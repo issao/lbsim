@@ -258,7 +258,7 @@ pub fn replica_rows(r: &RunResult, s: usize) -> Vec<SubscriptionUpdate> {
         row.value(wire::METRIC_QUEUED_SEQS, rep.queued as f64);
         row.value(wire::METRIC_RUNNING_SEQS, rep.running as f64);
         row.value(wire::METRIC_KV_TOKENS_RESIDENT, rep.kv_tokens as f64);
-        row.value(wire::METRIC_KV_UTILIZATION, rep.kv_tokens as f64 / r.scenario.kv_capacity_tokens);
+        row.value(wire::METRIC_KV_UTILIZATION, rep.kv_tokens as f64 / r.scenario.kv_capacity_tokens.max(1.0));
         row.value(wire::METRIC_STEP_TIME, rep.last_step_ns as f64 / 1e9);
         out.push(SubscriptionUpdate {
             subscription_id: EXPORT_SUBSCRIPTION_ID.to_string(),

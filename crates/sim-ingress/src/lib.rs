@@ -220,6 +220,7 @@ fn content_type(p: &Path) -> &'static str {
         Some("svg") => "image/svg+xml",
         Some("csv") => "text/csv; charset=utf-8",
         Some("txt") | Some("md") => "text/plain; charset=utf-8",
+        Some("jsonl") => "text/plain; charset=utf-8",
         Some("png") => "image/png",
         Some("ico") => "image/x-icon",
         Some("woff2") => "font/woff2",
@@ -270,5 +271,11 @@ mod tests {
         let root = std::env::temp_dir();
         assert!(resolve(&root, "/../../etc/passwd").is_none());
         assert!(resolve(&root, "/%2e%2e/%2e%2e/etc/passwd").is_none());
+    }
+
+    #[test]
+    fn jsonl_is_served_as_text() {
+        // U55: fleet.jsonl was falling through to application/octet-stream.
+        assert_eq!(content_type(Path::new("fleet.jsonl")), "text/plain; charset=utf-8");
     }
 }
