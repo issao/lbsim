@@ -571,7 +571,8 @@ pub struct Demo {
 }
 
 /// Mirrors `run-demos.sh` exactly: same files, same sweeps, seeds from the files. A change there is a
-/// change here.
+/// change here. `demos_table_mirrors_run_demos_sh` in `tests/wire_export.rs` guards the two against
+/// drifting apart.
 pub const DEMOS: &[Demo] = &[
     Demo {
         group: "1-routing",
@@ -601,6 +602,26 @@ pub const DEMOS: &[Demo] = &[
     Demo {
         group: "6-retry",
         files: &["retry_none.txt", "retry_budget.txt", "retry_storm.txt"],
+        sweep: None,
+    },
+    Demo {
+        group: "7-no-decode",
+        files: &["route_round_robin_no_decode.txt", "route_p2c_no_decode.txt"],
+        sweep: None,
+    },
+    Demo {
+        group: "8-admission",
+        files: &["admit_accept_all.txt", "admit_deadline_aware.txt"],
+        sweep: None,
+    },
+    Demo {
+        group: "9-fair-share",
+        files: &["admit_tenants_accept_all.txt", "admit_fair_share.txt"],
+        sweep: None,
+    },
+    Demo {
+        group: "10-probes",
+        files: &["route_p2c.txt", "route_least_kv_probe.txt"],
         sweep: None,
     },
 ];
