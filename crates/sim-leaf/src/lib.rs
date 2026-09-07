@@ -7,19 +7,28 @@
 //! later be cut along it without touching the physics.
 
 use sim_leaf_api::{AdvanceRequest, AdvanceResponse, ConfigureShardResponse, Leaf};
+use sim_metrics::trace::{BandwidthOrCompute, MemoryTier, RequestTrace, ResourceState, SpanKind, TraceSampler, TraceSpan};
 use sim_metrics::{Frame, Histogram, Outcome, ReplicaSample, RequestRecord, Series};
 use sim_policy::{Admission, AdmissionContext, AdmissionPolicy, ReplicaView, RequestView, RouteContext, RoutingPolicy};
 use sim_core::queue::{EventQueue, PRIO_OBSERVE};
 use sim_core::rng::{Rng, Streams};
+use sim_model::trace::{ResourceSnapshot, StepEvent};
 use sim_model::Replica;
 use sim_scenario::Scenario;
 use sim_workload::{Request, Workload};
 use sim_core::{Nanos, EPOCH_BASE, MILLI};
+use std::cell::RefCell;
 use std::collections::HashMap;
 
 /// A modelled router-to-replica round trip, paid when a policy probes for fresh state instead of
 /// reading the delayed snapshot.
 const PROBE_COST: Nanos = MILLI;
+
+/// The sampler's quotas per window of `1 / trace_sample_rate` completions: the first this many of
+/// every latency bucket and every outcome are retained whatever the draw says, so the tail and the
+/// failures are present in the retained set rather than merely probable.
+const TRACE_PER_BUCKET: u32 = 2;
+const TRACE_PER_OUTCOME: u32 = 2;
 
 enum Ev {
     Arrival,
@@ -35,6 +44,8 @@ pub struct RunResult {
     pub scenario: Scenario,
     pub routing_label: String,
     pub records: Vec<RequestRecord>,
+    /// Span-by-span journeys of the requests the trace sample kept, measured window only.
+    pub traces: Vec<RequestTrace>,
     pub ttft: Histogram,
     pub itl_max: Histogram,
     pub e2e: Histogram,
@@ -390,6 +401,8 @@ pub struct Sim {
     done: HashMap<u64, bool>,
     records: Vec<RequestRecord>,
 
+    tracing: Tracing,
+
     cost: sim_physics::CostModel,
     sample_iv: Nanos,
     tele_iv: Nanos,
@@ -475,6 +488,7 @@ impl Sim {
         let route_rng: Rng = streams.stream("route");
         let session_rng: Rng = streams.stream("session");
         let workload = Workload::new(&streams);
+        let tracing = Tracing::new(&streams, sc);
 
         let start = EPOCH_BASE;
         let end = start + (sc.duration_s * 1e9) as Nanos;
@@ -518,6 +532,7 @@ impl Sim {
             placed: HashMap::new(),
             done: HashMap::new(),
             records: Vec::new(),
+            tracing,
             cost,
             sample_iv,
             tele_iv,
@@ -625,14 +640,23 @@ impl Sim {
                     let elapsed = (now - start) as f64 / 1e9;
                     let req = self.workload.make(sc, now);
                     self.first_attempts += 1;
+                    let traced = self.tracing.sample();
+                    let mut probed = Vec::new();
                     let d = dispatch(
                         &mut *self.router, &mut *self.admission, &self.views, &self.replicas,
-                        &self.tenant_shares, &mut self.route_rng, sc, now, &req,
+                        &self.tenant_shares, &mut self.route_rng, sc, now, &req, traced.then_some(&mut probed),
                     );
+                    let (id, routed) = (req.id, matches!(d, Dispatch::Route { .. }));
+                    if traced {
+                        self.tracing.draft(&req, now, &d, probed, &self.views, start, self.placed.len());
+                    }
                     place(
                         &mut self.q, &mut self.records, &mut self.outcomes, &mut self.done,
                         &mut self.window, d, req, now,
                     );
+                    if traced && !routed {
+                        self.tracing.settle(id, &self.records, &mut self.replicas, NO_REPLICA, &self.cost);
+                    }
                     let gap = self.workload.next_gap_ns(sc, elapsed);
                     self.q.schedule(now + gap.max(1), Ev::Arrival);
                 }
@@ -649,7 +673,13 @@ impl Sim {
                             &mut self.records, &mut self.outcomes, &mut self.done, &mut self.window,
                             Outcome::Rejected, &req, now, target, 0, 0, 0, 0,
                         );
+                        self.tracing.settle(id, &self.records, &mut self.replicas, target, &self.cost);
                         continue;
+                    }
+                    if let Some(d) = self.tracing.drafts.get_mut(&id) {
+                        d.enqueued_at = now;
+                        d.queue_ahead = r.queued().saturating_sub(1) as u32;
+                        r.tracer_mut().track(id);
                     }
                     self.window.admitted += 1;
                     self.placed.insert(id, target);
@@ -674,6 +704,7 @@ impl Sim {
                             outcome, &s.req, token_at, i, s.admitted_at, s.first_token_at, s.max_itl,
                             s.mean_itl,
                         );
+                        self.tracing.settle(s.req.id, &self.records, &mut self.replicas, i, &self.cost);
                         follow_up(
                             sc, &mut self.session_rng, &mut self.sessions_spawned, i,
                             &mut self.replicas[i], &mut self.q, &s.req, token_at,
@@ -717,6 +748,7 @@ impl Sim {
                             &mut self.records, &mut self.outcomes, &mut self.done, &mut self.window,
                             outcome, &req, now, i, 0, 0, 0, 0,
                         );
+                        self.tracing.settle(id, &self.records, &mut self.replicas, i, &self.cost);
                         // Retry, under a budget. Retries are what turn a slowdown into a collapse, and
                         // they cost far more here than in a stateless service because a timeout after
                         // thirty seconds has already burned thirty seconds of device work.
@@ -735,16 +767,26 @@ impl Sim {
                             again.id = 1_000_000_000 + again.id * 8 + again.attempts as u64;
                             again.arrived_at = req.arrived_at;
                             let at = again.attempt_at;
+                            // A retry is a fresh draw: its journey is its own, from its own arrival.
+                            let traced = self.tracing.sample();
+                            let mut probed = Vec::new();
                             // Re-routed rather than pinned, so a retry does not land on the same
                             // struggling replica by construction.
                             let d = dispatch(
                                 &mut *self.router, &mut *self.admission, &self.views, &self.replicas,
-                                &self.tenant_shares, &mut self.route_rng, sc, at, &again,
+                                &self.tenant_shares, &mut self.route_rng, sc, at, &again, traced.then_some(&mut probed),
                             );
+                            let (again_id, routed) = (again.id, matches!(d, Dispatch::Route { .. }));
+                            if traced {
+                                self.tracing.draft(&again, at, &d, probed, &self.views, start, self.placed.len());
+                            }
                             place(
                                 &mut self.q, &mut self.records, &mut self.outcomes, &mut self.done,
                                 &mut self.window, d, again, at,
                             );
+                            if traced && !routed {
+                                self.tracing.settle(again_id, &self.records, &mut self.replicas, NO_REPLICA, &self.cost);
+                            }
                         }
                     }
                 }
@@ -820,11 +862,14 @@ impl Sim {
             *measured_outcomes.entry(r.outcome.label()).or_insert(0) += 1;
         }
         let _ = self.outcomes;
+        let traces: Vec<RequestTrace> =
+            self.tracing.traces.into_iter().filter(|t| t.record.arrived_at >= measured_from).collect();
 
         Ok(RunResult {
             scenario: sc.clone(),
             routing_label: self.router.label(),
             records: measured,
+            traces,
             ttft,
             itl_max,
             e2e,
@@ -1023,6 +1068,7 @@ fn dispatch(
     sc: &Scenario,
     now: Nanos,
     req: &Request,
+    probed: Option<&mut Vec<usize>>,
 ) -> Dispatch {
     let request = RequestView {
         id: req.id,
@@ -1036,7 +1082,15 @@ fn dispatch(
     if admission.admit(&actx) == Admission::Reject {
         return Dispatch::Rejected;
     }
-    let live = |i: usize| view_of(&replicas[i], now);
+    // A traced request also learns which replicas the policy paid to look at; the stale views it
+    // read for free are not observable from here.
+    let probed = RefCell::new(probed);
+    let live = |i: usize| {
+        if let Some(p) = probed.borrow_mut().as_mut() {
+            p.push(i);
+        }
+        view_of(&replicas[i], now)
+    };
     let mut ctx = RouteContext::new(now, views, &request, rng, &live);
     match router.choose(&mut ctx) {
         Some(target) => {
@@ -1069,6 +1123,185 @@ fn place(
 
 /// The replica index recorded for a request that admission shed before routing.
 pub const NO_REPLICA: usize = usize::MAX;
+
+/// What the loop knows about a traced attempt before and beside the replica: the gateway and router
+/// spans, and when it joined the replica's queue. The replica records the rest.
+struct Draft {
+    tenant: u32,
+    attempt_at: Nanos,
+    routed_until: Nanos,
+    candidates: Vec<u64>,
+    stale_view_age: Nanos,
+    /// Requests placed and not yet finished when this one arrived: the gateway's in-flight count.
+    in_flight: u32,
+    enqueued_at: Nanos,
+    queue_ahead: u32,
+}
+
+/// The trace sample: its own stream, the journeys in flight, and what the sampler retained.
+///
+/// Held apart from the rest of `Sim` so the loop can call it while it holds the scenario borrowed:
+/// every method takes the other fields it needs explicitly.
+struct Tracing {
+    /// Tracing draws from its own stream, so turning it on moves nothing else; the sampler at
+    /// completion then decides which of the drawn journeys are retained.
+    rng: Rng,
+    rate: f64,
+    sampler: TraceSampler,
+    /// Journeys in flight, by attempt id: what the loop saw before the replica took over.
+    drafts: HashMap<u64, Draft>,
+    traces: Vec<RequestTrace>,
+    kv_capacity: u64,
+}
+
+impl Tracing {
+    fn new(streams: &Streams, sc: &Scenario) -> Tracing {
+        Tracing {
+            rng: streams.stream("trace"),
+            rate: sc.trace_sample_rate,
+            sampler: TraceSampler::new(streams.stream("trace_keep"), sc.trace_sample_rate, TRACE_PER_BUCKET, TRACE_PER_OUTCOME),
+            drafts: HashMap::new(),
+            traces: Vec::new(),
+            kv_capacity: sc.kv_capacity_tokens as u64,
+        }
+    }
+
+    /// Whether this attempt's journey is recorded. Nothing else reads the `trace` stream, which is
+    /// why a run is byte-identical with tracing on or off; at rate zero it is not even touched.
+    fn sample(&mut self) -> bool {
+        self.rate > 0.0 && self.rng.f64() < self.rate
+    }
+
+    /// Open the journey of a traced attempt at the moment the router has decided. `in_flight` is
+    /// the gateway's count of placed, unfinished requests.
+    fn draft(&mut self, req: &Request, now: Nanos, d: &Dispatch, probed: Vec<usize>, views: &[ReplicaView], start: Nanos, in_flight: usize) {
+        let (routed_until, target) = match d {
+            Dispatch::Route { target, delay } => (now + delay, Some(*target)),
+            _ => (now, None),
+        };
+        let mut candidates: Vec<u64> = probed.into_iter().map(|i| i as u64).collect();
+        if let Some(t) = target {
+            if !candidates.contains(&(t as u64)) {
+                candidates.push(t as u64);
+            }
+        }
+        // A view never delivered is as old as the run.
+        let stale_view_age = target.map_or(0, |t| match views[t].sampled_at {
+            0 => now.saturating_sub(start),
+            at => now.saturating_sub(at),
+        });
+        self.drafts.insert(
+            req.id,
+            Draft {
+                tenant: req.tenant,
+                attempt_at: now,
+                routed_until,
+                candidates,
+                stale_view_age,
+                in_flight: in_flight as u32,
+                enqueued_at: 0,
+                queue_ahead: 0,
+            },
+        );
+    }
+
+    /// Close the journey of `id`, whose record was just pushed, and let the sampler decide whether it
+    /// is retained. Called after every `finish`; a request that was never drawn returns at once.
+    fn settle(&mut self, id: u64, records: &[RequestRecord], replicas: &mut [Replica], replica: usize, cost: &sim_physics::CostModel) {
+        let Some(draft) = self.drafts.remove(&id) else { return };
+        let rec = match records.last() {
+            Some(r) if r.id == id => r.clone(),
+            _ => return,
+        };
+        // Always read the replica back, kept or not, so it stops recording for this id.
+        let events = match replicas.get_mut(replica) {
+            Some(r) => r.tracer_mut().take(id),
+            None => Vec::new(),
+        };
+        let Some(bucket) = self.sampler.keep(&rec) else { return };
+        let spans = spans_of(&draft, &rec, &events, replica, cost, self.kv_capacity);
+        self.traces.push(RequestTrace { record: rec, tenant_id: draft.tenant as u64, bucket, spans });
+    }
+}
+
+/// The journey as spans: gateway queue, routing decision, then whatever the replica recorded. A
+/// request that timed out in the queue never reached a step, so its replica-queue span is closed by
+/// the record instead.
+fn spans_of(
+    d: &Draft,
+    rec: &RequestRecord,
+    events: &[(StepEvent, ResourceSnapshot)],
+    replica: usize,
+    cost: &sim_physics::CostModel,
+    kv_capacity: u64,
+) -> Vec<TraceSpan> {
+    let mut spans = Vec::with_capacity(events.len() + 3);
+    let loop_state = ResourceState { running: d.in_flight, ..Default::default() };
+    spans.push(TraceSpan {
+        start_unix_ns: d.attempt_at,
+        end_unix_ns: d.attempt_at,
+        kind: SpanKind::IngressQueue,
+        replica_id: 0,
+        resource: loop_state,
+        kv_tier: MemoryTier::None,
+    });
+    spans.push(TraceSpan {
+        start_unix_ns: d.attempt_at,
+        end_unix_ns: d.routed_until,
+        kind: SpanKind::RoutingDecision { candidates: d.candidates.clone(), stale_view_age: d.stale_view_age },
+        replica_id: 0,
+        resource: loop_state,
+        kv_tier: MemoryTier::None,
+    });
+    let replica_id = replica as u64;
+    let mut admitted = false;
+    for (ev, snap) in events {
+        let (start, end, kind) = match *ev {
+            StepEvent::Admitted { at, .. } => {
+                admitted = true;
+                (d.enqueued_at, at, SpanKind::ReplicaQueue)
+            }
+            StepEvent::PrefillChunk { tokens, start, end, .. } => (start, end, SpanKind::PrefillChunk { tokens }),
+            StepEvent::DecodeStep { start, end, .. } => (start, end, SpanKind::DecodeStep),
+            StepEvent::Retired { .. } => continue,
+        };
+        spans.push(TraceSpan {
+            start_unix_ns: start,
+            end_unix_ns: end,
+            kind,
+            replica_id,
+            resource: resource_of(snap, cost, kv_capacity),
+            kv_tier: MemoryTier::Hbm,
+        });
+    }
+    if d.enqueued_at > 0 && !admitted {
+        spans.push(TraceSpan {
+            start_unix_ns: d.enqueued_at,
+            end_unix_ns: rec.finished_at,
+            kind: SpanKind::ReplicaQueue,
+            replica_id,
+            resource: ResourceState { queued: d.queue_ahead, kv_capacity, ..Default::default() },
+            kv_tier: MemoryTier::None,
+        });
+    }
+    spans
+}
+
+/// The step's conditions in the wire's terms. The step is compute-bound when its prefill term
+/// outweighs its weight-and-cache read, which is the comparison the cost model makes implicitly.
+fn resource_of(snap: &ResourceSnapshot, cost: &sim_physics::CostModel, kv_capacity: u64) -> ResourceState {
+    let prefill_term = cost.step_ns(0, 0, snap.prefill_tokens);
+    let bandwidth_term = cost.step_ns(0, snap.kv_tokens, 0);
+    ResourceState {
+        batch_size: snap.batch_size,
+        running: snap.running,
+        queued: snap.queued,
+        kv_tokens_resident: snap.kv_tokens,
+        kv_capacity,
+        step_ns: snap.step_ns,
+        bound: if prefill_term > bandwidth_term { BandwidthOrCompute::Compute } else { BandwidthOrCompute::Bandwidth },
+    }
+}
 
 #[allow(clippy::too_many_arguments)]
 fn finish(

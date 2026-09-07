@@ -163,7 +163,15 @@ pub fn cli(args: Vec<String>) -> Result<(), String> {
             let runs = run_all(&paths, &overrides)?;
             for (r, path) in runs.iter().zip(&paths) {
                 let run_id = id.clone().unwrap_or_else(|| sim_ingress::export::slug(&r.scenario.name));
-                let out = sim_ingress::export::export_run_from(r, &run_id, Some(path), dir)?;
+                // A run that recorded spans exports them beside its result; one that did not leaves no
+                // empty file behind, so a rate-0 export is what it always was.
+                let out = if r.traces.is_empty() {
+                    sim_ingress::export::export_run_from(r, &run_id, Some(path), dir)?
+                } else {
+                    sim_ingress::export::export_run_with_traces(
+                        r, &r.traces, &run_id, Some(path), dir, sim_ingress::export::DEFAULT_TRACE_BUDGET_BYTES,
+                    )?
+                };
                 println!("{}", out.display());
             }
             println!("{}", dir.join("runs/index.json").display());
