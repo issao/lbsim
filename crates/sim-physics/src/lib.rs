@@ -33,6 +33,12 @@ pub struct CostModel {
     /// Host link bandwidth for swapping key-value context between HBM and DRAM, in GB/s. PCIe 5.0 x16
     /// is 64 GB/s on paper and about 50 in practice, which is the default.
     pub swap_gbps: f64,
+    /// Draft tokens per sequence per step from a small speculating model, verified in the same step.
+    /// Zero is off. Verification is compute over N extra tokens per sequence, prefill-class work, and
+    /// that is the cost side of speculation: it grows with the batch while the gain does not.
+    pub spec_draft_tokens: u32,
+    /// Probability the big model accepts each draft token. With `spec_draft_tokens` off it is unused.
+    pub spec_accept_rate: f64,
 }
 
 /// Bytes of key-value cache per resident token: 80 layers, keys and values, 8 grouped-query heads of
@@ -59,11 +65,33 @@ impl CostModel {
         } else {
             ((self.step_per_kv_ktoken_ms * kv_tokens as f64 / 1000.0) * 1e6) as Nanos
         };
+        // Speculation verifies N drafts per decoding sequence in this step: compute work at the
+        // prefill rate. The bandwidth term is untouched, the weights are read once a step either way.
+        let verify = decoding as f64 * self.spec_draft_tokens as f64;
         let step_ns = (self.step_base_ms * 1e6) as Nanos
             + (self.step_per_seq_ms * 1e6) as Nanos * decoding as Nanos
             + bandwidth
-            + ((prefill_tokens as f64 / self.prefill_tokens_per_s) * 1e9) as Nanos;
+            + ((prefill_tokens as f64 / self.prefill_tokens_per_s) * 1e9) as Nanos
+            + ((verify / self.prefill_tokens_per_s) * 1e9) as Nanos;
         step_ns.max(1)
+    }
+
+    /// Expected tokens a decoding sequence advances per step: one, or with N drafts each accepted with
+    /// probability a, the truncated geometric sum (1 - a^(N+1)) / (1 - a). The engine applies this as
+    /// a deterministic per-sequence fractional accumulator rather than a random draw, so a run with
+    /// speculation off is byte-identical to one that never had the feature and the golden fingerprints
+    /// prove it. A per-step geometric draw from a named stream is the stochastic refinement for later.
+    #[inline]
+    pub fn spec_tokens_per_step(&self) -> f64 {
+        let n = self.spec_draft_tokens;
+        let a = self.spec_accept_rate;
+        if n == 0 || a <= 0.0 {
+            1.0
+        } else if a >= 1.0 {
+            (n + 1) as f64
+        } else {
+            (1.0 - a.powi(n as i32 + 1)) / (1.0 - a)
+        }
     }
 
     /// Time to move `tokens` of key-value context across the host link, one direction. A swap out
@@ -87,6 +115,8 @@ impl CostModel {
     ///
     /// Prefill and decode contend for the same device, so device-seconds per request are additive.
     /// `p_mean` and `o_mean` are the workload's mean prompt and output lengths over its mixture.
+    /// Speculation enters on both sides: the verify compute lengthens the step, and the expected
+    /// tokens per step divides the number of steps an output needs.
     pub fn rated_rps(
         &self,
         replicas: usize,
@@ -100,9 +130,10 @@ impl CostModel {
         let batch = self.effective_batch(kv_capacity_tokens, max_batch, ctx_mean);
         let per_kv = if self.disable_decode { 0.0 } else { self.step_per_kv_ktoken_ms };
         let step_s = (self.step_base_ms + self.step_per_seq_ms * batch + per_kv * batch * ctx_mean / 1000.0)
-            / 1000.0;
+            / 1000.0
+            + batch * self.spec_draft_tokens as f64 / self.prefill_tokens_per_s;
         let prefill_s = p_mean / self.prefill_tokens_per_s;
-        let decode_s = o_mean * step_s / batch;
+        let decode_s = o_mean * step_s / (batch * self.spec_tokens_per_step());
         replicas as f64 / (prefill_s + decode_s)
     }
 }

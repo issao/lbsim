@@ -139,6 +139,14 @@ pub struct Scenario {
     /// CSV `t_s,prompt_tokens,output_tokens,tenant` with a header line, relative to the process cwd
     /// like every other scenario path. Only read when `workload = trace`.
     pub trace_file: String,
+
+    // -- speculative decoding ------------------------------------------------
+    /// Draft tokens a small model proposes per step, verified by the big model in that same step. Zero
+    /// is off. VISION section 3a: "observe the value and cost of speculative decoding".
+    pub spec_draft_tokens: u32,
+    /// Probability the big model accepts each draft token, so a sequence advances an expected
+    /// (1 - a^(N+1)) / (1 - a) tokens a step. The formula is `CostModel::spec_tokens_per_step`.
+    pub spec_accept_rate: f64,
 }
 
 /// What a live change to a key means for a run that is under way.
@@ -216,6 +224,8 @@ impl Default for Scenario {
             trace_sample_rate: 0.0,
             workload: "synthetic".into(),
             trace_file: String::new(),
+            spec_draft_tokens: 0,
+            spec_accept_rate: 0.0,
         }
     }
 }
@@ -271,6 +281,8 @@ impl Scenario {
                 "step_token_budget" => s.step_token_budget = f("step_token_budget") as u32,
                 "max_queue" => s.max_queue = f("max_queue") as usize,
                 "disable_decode" => s.disable_decode = v == "true",
+                "spec_draft_tokens" => s.spec_draft_tokens = f("spec_draft_tokens") as u32,
+                "spec_accept_rate" => s.spec_accept_rate = f("spec_accept_rate"),
                 "preemption" => s.preemption = v.clone(),
                 "preemption_victim" => s.preemption_victim = v.clone(),
                 "dram_capacity_tokens" => s.dram_capacity_tokens = f("dram_capacity_tokens"),
@@ -348,6 +360,8 @@ impl Scenario {
             prefill_tokens_per_s: self.prefill_tokens_per_s,
             disable_decode: self.disable_decode,
             swap_gbps: self.swap_gbps,
+            spec_draft_tokens: self.spec_draft_tokens,
+            spec_accept_rate: self.spec_accept_rate,
         }
     }
 
@@ -471,7 +485,8 @@ impl Scenario {
              telemetry_interval_ms = {}\ntelemetry_delay_ms = {}\n\
              client_timeout_s = {}\nmax_attempts = {}\nretry_budget_fraction = {}\n\
              retry_backoff_s = {}\nttft_slo_ms = {}\nitl_slo_ms = {}\ne2e_slo_s = {}\n\
-             sample_interval_ms = {}\ntrace_sample_rate = {}\nworkload = {}\ntrace_file = {}\n",
+             sample_interval_ms = {}\ntrace_sample_rate = {}\nworkload = {}\ntrace_file = {}\n\
+             spec_draft_tokens = {}\nspec_accept_rate = {}\n",
             self.name, self.seed, self.duration_s, self.warmup_s, self.replicas, self.max_batch,
             self.step_base_ms, self.step_per_seq_ms, self.step_per_kv_ktoken_ms,
             self.kv_capacity_tokens, self.prefill_tokens_per_s,
@@ -488,7 +503,8 @@ impl Scenario {
             self.telemetry_interval_ms, self.telemetry_delay_ms,
             self.client_timeout_s, self.max_attempts, self.retry_budget_fraction,
             self.retry_backoff_s, self.ttft_slo_ms, self.itl_slo_ms, self.e2e_slo_s,
-            self.sample_interval_ms, self.trace_sample_rate, self.workload, self.trace_file
+            self.sample_interval_ms, self.trace_sample_rate, self.workload, self.trace_file,
+            self.spec_draft_tokens, self.spec_accept_rate
         )
     }
 }

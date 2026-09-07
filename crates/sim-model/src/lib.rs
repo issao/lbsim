@@ -38,6 +38,9 @@ struct Seq {
     itl_count: u32,
     /// Context is in host memory rather than the cache: re-admission pays the copy back, not prefill.
     swapped: bool,
+    /// Fractional tokens owed by speculative decoding: each step adds the expected tokens per step and
+    /// the integer part is emitted, so the long-run rate matches the formula with no random draw.
+    spec_credit: f64,
 }
 
 impl Seq {
@@ -334,6 +337,7 @@ impl Replica {
                         itl_sum: 0,
                         itl_count: 0,
                         swapped: false,
+                        spec_credit: 0.0,
                         req,
                     });
                     r.tracer.admitted(r.running[r.running.len() - 1].req.id);
@@ -387,27 +391,38 @@ impl Replica {
         r.last_step_ns = step_ns;
         r.tracer.snapshot(ResourceSnapshot { start: now, end: token_at, batch_size: r.running.len() as u32, running: r.running.len() as u32, queued: r.queue.len() as u32, kv_tokens: r.kv_tokens, decoding: decoding as u32, prefill_tokens, step_ns });
 
+        // With speculation each sequence advances by the expected tokens per step, carried as a
+        // fractional credit so the long-run rate is exact; off, the credit is exactly 1.0 a step and
+        // every existing run is unchanged. The tokens of one step arrive together, so the gap a user
+        // sees is still the whole step (max ITL) while the mean is per token produced.
+        let tokens_per_step = cost.spec_tokens_per_step();
         let mut finished: Vec<usize> = Vec::new();
+        let mut generated = 0u64;
         for (idx, s) in r.running.iter_mut().enumerate() {
             if s.prefill_left > 0 {
                 continue;
             }
+            s.spec_credit += tokens_per_step;
+            let emit = s.spec_credit.floor();
+            s.spec_credit -= emit;
+            let produced = (emit as u32).min(s.output_left);
             if s.first_token_at == 0 {
                 s.first_token_at = token_at;
             } else {
                 let gap = token_at - s.last_token_at;
                 s.max_itl = s.max_itl.max(gap);
                 s.itl_sum += gap;
-                s.itl_count += 1;
+                s.itl_count += produced.max(1);
             }
             s.last_token_at = token_at;
             r.tracer.decode_step(s.req.id);
-            s.output_left = s.output_left.saturating_sub(1);
+            s.output_left -= produced;
+            generated += produced as u64;
             if s.output_left == 0 {
                 finished.push(idx);
             }
         }
-        r.kv_tokens += decoding as u64;
+        r.kv_tokens += generated;
 
         let mut retired: Vec<FinishedSeq> = Vec::with_capacity(finished.len());
         for idx in finished.iter().rev() {
