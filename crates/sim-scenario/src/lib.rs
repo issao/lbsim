@@ -141,6 +141,18 @@ pub struct Scenario {
     pub trace_file: String,
 }
 
+/// What a live change to a key means for a run that is under way.
+///
+/// The workload reads the scenario on every draw, so a workload key takes effect at the next arrival.
+/// A policy is built once from the scenario, so a policy key rebuilds it. Everything else is fixed
+/// at construction (fleet shape, physics, clocks, seed, telemetry cadence) and needs a restart.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OverrideKind {
+    Workload,
+    Policy,
+    Structural,
+}
+
 impl Default for Scenario {
     fn default() -> Self {
         Scenario {
@@ -402,6 +414,45 @@ impl Scenario {
         let (p_mean, o_mean) = self.mixture_means();
         let ctx_mean = p_mean + o_mean / 2.0;
         self.cost_model().effective_batch(self.kv_capacity_tokens, self.max_batch, ctx_mean)
+    }
+
+    /// `self` with one key set, through the text form so there is exactly one place that knows the
+    /// key names. An unknown key is an error that names it; a malformed value is `parse`'s error.
+    pub fn with_override(&self, key: &str, value: &str) -> Result<Scenario, String> {
+        let mut replaced = false;
+        let text: Vec<String> = self
+            .to_text()
+            .lines()
+            .map(|l| {
+                if l.split('=').next().map(str::trim) == Some(key) {
+                    replaced = true;
+                    format!("{key} = {value}")
+                } else {
+                    l.to_string()
+                }
+            })
+            .collect();
+        if !replaced {
+            return Err(format!("unknown key {key:?}"));
+        }
+        Scenario::parse(&text.join("\n"))
+    }
+
+    /// Whether a running engine can take a change to `key` without a restart. Unknown keys are
+    /// structural: the safe answer for a name nothing recognises.
+    pub fn override_kind(key: &str) -> OverrideKind {
+        match key {
+            "arrival_rps" | "load_step_at_s" | "load_step_factor" | "load_step_until_s"
+            | "prompt_mean" | "prompt_cv" | "output_mean" | "output_cv"
+            | "long_probability" | "long_prompt_mean" | "long_output_mean"
+            | "session_turns_mean" | "session_think_s" | "tenant_demand"
+            | "client_timeout_s" | "max_attempts" | "retry_budget_fraction" | "retry_backoff_s" => {
+                OverrideKind::Workload
+            }
+            "routing" | "p2c_choices" | "probe_live" | "admission" | "admission_headroom"
+            | "fair_share_burst" | "preemption" | "preemption_victim" => OverrideKind::Policy,
+            _ => OverrideKind::Structural,
+        }
     }
 
     pub fn to_text(&self) -> String {
