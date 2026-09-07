@@ -236,7 +236,7 @@ events and `first_attempts` summary rows moved, by one gateway event per session
 
 Scope item 16, `VISION.md` §3a's value-and-cost question (U26, 6fd648e, merged 0039c28). Scenario
 keys `spec_draft_tokens` and `spec_accept_rate`, off by default; `scenarios/spec_off.txt` against
-`spec_n4.txt`; demo 12's wiring is U26b, in flight. The gain is modelled as the expected tokens a
+`spec_n4.txt`; demo 12, `out/12-spec-decode.html`, since U26b (b827d84, merged 02e5dcb). The gain is modelled as the expected tokens a
 step, (1 − a^(N+1))/(1 − a), through a deterministic per-sequence accumulator rather than a random
 draw, so every existing run is byte-identical and the `route_p2c` golden row proves it; a geometric
 draw from a named stream is the documented refinement. The cost is verify compute added to the step;
@@ -261,7 +261,7 @@ lead's words, forwarded verbatim from the unit's agent:
 The metric that misleads here is the one a serving team would reach for first: a per-sequence
 speed-up of 2.8x in expected tokens a step, which becomes a fleet capacity change of 2% because the
 fleet runs near the batch where verify compute has eaten the gain. The numbers are the unit's own,
-quoted rather than re-run; demo 12's report supersedes them when U26b lands.
+quoted rather than re-run; demo 12's report is the table of record once `./run-demos.sh` has been run on it.
 
 ---
 
