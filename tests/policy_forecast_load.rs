@@ -1,8 +1,7 @@
 //! `forecast_load`: power-of-two-choices scored on a predicted queue depth instead of the stale
-//! scrape. See `crates/sim-policy/src/forecast_load.rs` for the estimator; this file only checks the
-//! observable difference it is meant to make: no worse balance than `p2c` once telemetry goes stale,
-//! and no meaningful difference from `p2c` when telemetry is fresh enough that the prediction
-//! collapses back to the stale value.
+//! scrape. See `crates/sim-policy/src/forecast_load.rs` for the estimator; this file checks the two
+//! observable claims the module doc makes: the candidate draw is byte-identical to `p2c`'s at a
+//! seed, and once telemetry is stale enough to matter, the forecast actually beats a plain scrape.
 //!
 //! The candidate draw is identical to `p2c`'s (same `d`, same rng sequence, same tie-break), so any
 //! difference measured here is the scoring, not the sampling.
@@ -49,58 +48,55 @@ fn forecast_load_is_deterministic() {
     assert_eq!(a.records.len(), b.records.len());
 }
 
-/// The case forecast_load exists for: telemetry stale enough (4 s) that a plain snapshot read is
-/// fighting old information, and the forecast should not do worse than reading it straight.
+/// The module doc's first claim: forecast_load draws candidates from the shared rng in exactly
+/// p2c's sequence (same `d`, same skip-on-unusable, same tie-break), and never spends a draw of its
+/// own. At `d = 1` there is nothing to score -- whichever single candidate is drawn wins outright if
+/// usable -- so the two policies can only diverge here if forecast_load's draw sequence itself
+/// diverges from p2c's. A stray draw smuggled onto the shared rng (instead of a named stream of its
+/// own) would shift every later decision and show up as a fingerprint mismatch.
 #[test]
-fn under_stale_telemetry_forecast_load_balances_no_worse_than_p2c() {
+fn forecast_load_draws_the_same_candidates_as_p2c() {
     let mut p2c = at_load(0.3);
-    p2c.telemetry_interval_ms = 4000;
+    p2c.p2c_choices = 1;
+    p2c.routing = "p2c".into();
+    let rp2c = sim::run(&p2c).unwrap();
+
+    let mut fl = at_load(0.3);
+    fl.p2c_choices = 1;
+    fl.routing = "forecast_load".into();
+    let rfl = sim::run(&fl).unwrap();
+
+    assert_eq!(
+        rp2c.fingerprint, rfl.fingerprint,
+        "forecast_load's candidate draw diverged from p2c's at d=1, where scoring cannot differ"
+    );
+    assert_eq!(rp2c.events, rfl.events);
+    assert_eq!(rp2c.records.len(), rfl.records.len());
+}
+
+/// The case forecast_load exists for: telemetry stale enough (4 s) that a plain snapshot read is
+/// fighting old information. The forecast should actually beat the stale read, not merely tie it.
+#[test]
+fn forecast_load_beats_p2c_under_stale_telemetry() {
+    let mut p2c = at_load(0.3);
+    p2c.telemetry_interval_ms = 4000.0;
     p2c.routing = "p2c".into();
     let rp2c = sim::run(&p2c).unwrap();
     let cv_p2c = imbalance_cv(&rp2c);
+    let att_p2c = rp2c.slo_attainment();
 
     let mut fl = at_load(0.3);
-    fl.telemetry_interval_ms = 4000;
+    fl.telemetry_interval_ms = 4000.0;
     fl.routing = "forecast_load".into();
     let rfl = sim::run(&fl).unwrap();
     let cv_fl = imbalance_cv(&rfl);
+    let att_fl = rfl.slo_attainment();
 
-    eprintln!("stale (4000ms): p2c CV = {cv_p2c:.6}, forecast_load CV = {cv_fl:.6}");
-    assert!(
-        cv_fl <= cv_p2c * 1.05,
-        "forecast_load CV {cv_fl:.6} exceeds p2c CV {cv_p2c:.6} by more than 5%"
+    eprintln!(
+        "stale (4000ms): p2c CV = {cv_p2c:.6}, attainment = {att_p2c:.6}; forecast_load CV = {cv_fl:.6}, attainment = {att_fl:.6}"
     );
-}
-
-/// With fresh telemetry (100 ms), two distinct views are rarely both available at decision time, so
-/// the estimator falls back to the stale value almost every time and forecast_load should track p2c
-/// closely. If the occasional slope term breaks a tie differently, the fingerprints can diverge even
-/// though the balance does not; in that case we fall back to comparing CVs within 2%.
-#[test]
-fn with_fresh_telemetry_forecast_load_equals_p2c_within_noise() {
-    let mut p2c = at_load(0.3);
-    p2c.telemetry_interval_ms = 100;
-    p2c.routing = "p2c".into();
-    let rp2c = sim::run(&p2c).unwrap();
-
-    let mut fl = at_load(0.3);
-    fl.telemetry_interval_ms = 100;
-    fl.routing = "forecast_load".into();
-    let rfl = sim::run(&fl).unwrap();
-
-    if rp2c.fingerprint == rfl.fingerprint {
-        eprintln!("fresh (100ms): fingerprints identical, as expected when predictions collapse to the stale value");
-        assert_eq!(rp2c.records.len(), rfl.records.len());
-    } else {
-        let cv_p2c = imbalance_cv(&rp2c);
-        let cv_fl = imbalance_cv(&rfl);
-        eprintln!(
-            "fresh (100ms): fingerprints differ (a slope term perturbed a tie); p2c CV = {cv_p2c:.6}, forecast_load CV = {cv_fl:.6}"
-        );
-        let diff = (cv_fl - cv_p2c).abs();
-        assert!(
-            diff <= cv_p2c.max(cv_fl) * 0.02,
-            "forecast_load CV {cv_fl:.6} differs from p2c CV {cv_p2c:.6} by more than 2%"
-        );
-    }
+    assert!(
+        cv_fl < cv_p2c || att_fl > att_p2c,
+        "forecast_load did not beat p2c under stale telemetry: CV {cv_fl:.6} vs {cv_p2c:.6}, attainment {att_fl:.6} vs {att_p2c:.6}"
+    );
 }
