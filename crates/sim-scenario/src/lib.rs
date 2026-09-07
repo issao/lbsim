@@ -140,6 +140,12 @@ pub struct Scenario {
     /// like every other scenario path. Only read when `workload = trace`.
     pub trace_file: String,
 
+    // -- failures ------------------------------------------------------------
+    /// Failure events, `;`-separated: `t=<s>,replica=<i>,kind=<crash|slow=<mult>|hang>[,until=<s>]`.
+    /// Kept as text so the scenario round-trips byte for byte; `failure_events` is the parsed form.
+    /// A crash is announced through telemetry after the usual delay; a slowdown or a hang is not
+    /// announced at all, which is what makes it a gray failure.
+    pub failures: String,
     // -- speculative decoding ------------------------------------------------
     /// Draft tokens a small model proposes per step, verified by the big model in that same step. Zero
     /// is off. VISION section 3a: "observe the value and cost of speculative decoding".
@@ -203,6 +209,69 @@ pub enum OverrideKind {
     Workload,
     Policy,
     Structural,
+}
+
+/// What goes wrong with one replica, and when.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FailureEvent {
+    pub at: f64,
+    pub replica: usize,
+    pub kind: FailureKind,
+    pub until: Option<f64>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum FailureKind {
+    /// Refuses everything and drops what it held; telemetry reports it ejected once the delay passes.
+    Crash,
+    /// Every step takes `1/mult` of its modelled time. Nothing announces it.
+    Slow(f64),
+    /// Steps never complete. Nothing announces it; only client timeouts notice.
+    Hang,
+}
+
+/// The parsed form of `Scenario::failures`, or the first thing wrong with it.
+pub fn parse_failures(text: &str) -> Result<Vec<FailureEvent>, String> {
+    let mut out = Vec::new();
+    for ev in text.split(';').map(str::trim).filter(|e| !e.is_empty()) {
+        let (mut at, mut replica, mut kind, mut until) = (None, None, None, None);
+        for field in ev.split(',').map(str::trim).filter(|f| !f.is_empty()) {
+            let (k, v) = field.split_once('=').ok_or_else(|| format!("failure field {field:?} has no '='"))?;
+            let (k, v) = (k.trim(), v.trim());
+            let num = |what: &str| -> Result<f64, String> {
+                v.parse::<f64>().ok().filter(|x| x.is_finite() && *x >= 0.0)
+                    .ok_or_else(|| format!("failure {what} = {v:?} is not a non-negative number"))
+            };
+            match k {
+                "t" => at = Some(num("t")?),
+                "replica" => replica = Some(num("replica")? as usize),
+                "until" => until = Some(num("until")?),
+                "kind" => {
+                    kind = Some(match v {
+                        "crash" => FailureKind::Crash,
+                        "hang" => FailureKind::Hang,
+                        _ => match v.strip_prefix("slow=").and_then(|m| m.parse::<f64>().ok()) {
+                            Some(m) if m.is_finite() && m > 0.0 => FailureKind::Slow(m),
+                            _ => return Err(format!("failure kind {v:?} is not crash, hang or slow=<mult>")),
+                        },
+                    })
+                }
+                _ => return Err(format!("failure field {k:?} is not t, replica, kind or until")),
+            }
+        }
+        let missing = |what| format!("failure {ev:?} has no {what}");
+        let at = at.ok_or_else(|| missing("t"))?;
+        if let Some(u) = until.filter(|u| *u <= at) {
+            return Err(format!("failure {ev:?} ends at {u} before it starts at {at}"));
+        }
+        out.push(FailureEvent {
+            at,
+            replica: replica.ok_or_else(|| missing("replica"))?,
+            kind: kind.ok_or_else(|| missing("kind"))?,
+            until,
+        });
+    }
+    Ok(out)
 }
 
 impl Default for Scenario {
@@ -271,6 +340,7 @@ impl Default for Scenario {
             spec_draft_tokens: 0,
             spec_accept_rate: 0.0,
             slo_classes: String::new(),
+            failures: String::new(),
         }
     }
 }
@@ -383,6 +453,10 @@ impl Scenario {
                     Ok(_) => s.slo_classes = v.clone(),
                     Err(e) => malformed.push(format!("{k} = {v:?} ({e})")),
                 },
+                "failures" => match parse_failures(v) {
+                    Ok(_) => s.failures = v.clone(),
+                    Err(why) => malformed.push(format!("{k} = {v:?} ({why})")),
+                },
                 other => unknown.push(other.to_string()),
             }
         }
@@ -422,6 +496,12 @@ impl Scenario {
         } else {
             4.0 * self.kv_capacity_tokens
         }
+    }
+
+    /// The failure schedule, parsed. `parse` has already rejected a malformed one, so this only fails
+    /// for a scenario built in code.
+    pub fn failure_events(&self) -> Result<Vec<FailureEvent>, String> {
+        parse_failures(&self.failures)
     }
 
     /// Tenant weights normalised to sum to one, one per tenant. Missing weights are one; extra weights
@@ -556,7 +636,8 @@ impl Scenario {
              client_timeout_s = {}\nmax_attempts = {}\nretry_budget_fraction = {}\n\
              retry_backoff_s = {}\nttft_slo_ms = {}\nitl_slo_ms = {}\ne2e_slo_s = {}\n\
              sample_interval_ms = {}\ntrace_sample_rate = {}\nworkload = {}\ntrace_file = {}\n\
-             spec_draft_tokens = {}\nspec_accept_rate = {}\nslo_classes = {}\n",
+             spec_draft_tokens = {}\nspec_accept_rate = {}\nslo_classes = {}\n\
+             failures = {}\n",
             self.name, self.seed, self.duration_s, self.warmup_s, self.replicas, self.max_batch,
             self.step_base_ms, self.step_per_seq_ms, self.step_per_kv_ktoken_ms,
             self.kv_capacity_tokens, self.prefill_tokens_per_s,
@@ -574,7 +655,8 @@ impl Scenario {
             self.client_timeout_s, self.max_attempts, self.retry_budget_fraction,
             self.retry_backoff_s, self.ttft_slo_ms, self.itl_slo_ms, self.e2e_slo_s,
             self.sample_interval_ms, self.trace_sample_rate, self.workload, self.trace_file,
-            self.spec_draft_tokens, self.spec_accept_rate, self.slo_classes
+            self.spec_draft_tokens, self.spec_accept_rate, self.slo_classes,
+            self.failures
         )
     }
 }

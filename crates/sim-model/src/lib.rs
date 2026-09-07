@@ -115,7 +115,6 @@ impl Victim {
     }
 }
 
-#[derive(Default)]
 pub struct Replica {
     queue: VecDeque<Request>,
     running: Vec<Seq>,
@@ -137,6 +136,33 @@ pub struct Replica {
     preemptions: u64,
     /// Records what happens to the sequences the loop asked to trace; inert otherwise.
     tracer: Tracer,
+    /// Fraction of modelled speed; 1 is healthy, 0.3 is a gray failure, 0 is a hang. Nothing but
+    /// `last_step_ns` in telemetry betrays it, which is the point of modelling it.
+    speed: f64,
+    /// Crashed: holds nothing, refuses everything, and telemetry says so after the delay.
+    down: bool,
+}
+
+impl Default for Replica {
+    fn default() -> Self {
+        Replica {
+            queue: VecDeque::new(),
+            running: Vec::new(),
+            preempted: VecDeque::new(),
+            parked: Vec::new(),
+            queued_tokens: 0,
+            kv_tokens: 0,
+            dram_tokens: 0,
+            next_step_at: 0,
+            scheduled: false,
+            last_step_ns: 0,
+            completed: 0,
+            preemptions: 0,
+            tracer: Tracer::default(),
+            speed: 1.0,
+            down: false,
+        }
+    }
 }
 
 /// A sequence that emitted its last token this step, with what the record needs. The SLO verdict is
@@ -257,6 +283,12 @@ impl Replica {
     /// has parked itself and the loop schedules nothing.
     pub fn step(&mut self, sc: &Scenario, cost: &CostModel, now: Nanos) -> Option<StepOutcome> {
         let r = self;
+        // A crashed replica holds nothing and a hung one never finishes a step. Either way there is
+        // no follow-up to schedule, so this reads as idle; what it holds waits for the client timeout.
+        if r.down || r.speed <= 0.0 {
+            r.scheduled = false;
+            return None;
+        }
         let policy = Policy::parse(&sc.preemption);
         let victim = Victim::parse(&sc.preemption_victim);
         let dram_cap = sc.dram_capacity_tokens() as u64;
@@ -389,7 +421,10 @@ impl Replica {
         // Step time comes from the cost model in sim-physics, the one place that formula
         // lives. Prefill and decode contend for one device, which is why a big prefill shows
         // up in everyone's inter-token latency.
-        let step_ns = cost.step_ns(decoding, r.kv_tokens, prefill_tokens) + extra_ns;
+        let modelled = cost.step_ns(decoding, r.kv_tokens, prefill_tokens) + extra_ns;
+        // A slowed replica takes 1/speed of the modelled time. The healthy case skips the float trip
+        // so a run with no failures is byte-identical to one before failures existed.
+        let step_ns = if r.speed == 1.0 { modelled } else { (modelled as f64 / r.speed) as Nanos };
         let token_at = now + step_ns;
         r.last_step_ns = step_ns;
         r.tracer.snapshot(ResourceSnapshot { start: now, end: token_at, batch_size: r.running.len() as u32, running: r.running.len() as u32, queued: r.queue.len() as u32, kv_tokens: r.kv_tokens, decoding: decoding as u32, prefill_tokens, step_ns });
@@ -535,5 +570,36 @@ impl Replica {
     /// The loop's handle on what this replica records about traced sequences.
     pub fn tracer_mut(&mut self) -> &mut Tracer {
         &mut self.tracer
+    }
+
+    /// Lose everything, at once: queued, running, evicted and parked, in the order they were held,
+    /// so the loop can fail each one. The replica refuses work until `recover`.
+    pub fn crash(&mut self) -> Vec<Request> {
+        let r = self;
+        r.down = true;
+        r.scheduled = false;
+        let mut lost: Vec<Request> = r.queue.drain(..).collect();
+        lost.extend(r.running.drain(..).map(|s| s.req));
+        lost.extend(r.preempted.drain(..).map(|s| s.req));
+        r.parked.clear();
+        r.queued_tokens = 0;
+        r.kv_tokens = 0;
+        r.dram_tokens = 0;
+        lost
+    }
+    /// Run at this fraction of modelled speed; 0 hangs. Nothing is announced.
+    pub fn set_speed(&mut self, speed: f64) {
+        self.speed = speed;
+    }
+    /// Back to healthy, whatever was wrong. What it holds, if anything, waits for the next wake.
+    pub fn recover(&mut self) {
+        self.down = false;
+        self.speed = 1.0;
+    }
+    pub fn is_down(&self) -> bool {
+        self.down
+    }
+    pub fn speed(&self) -> f64 {
+        self.speed
     }
 }
