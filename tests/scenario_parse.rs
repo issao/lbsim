@@ -9,7 +9,7 @@
 use lbsim::scenario::Scenario;
 
 /// Every key `parse` accepts, which is also every key `to_text` must emit.
-const KEYS: [&str; 56] = [
+const KEYS: [&str; 57] = [
     "name", "seed", "duration_s", "warmup_s", "replicas", "max_batch", "step_base_ms",
     "step_per_seq_ms", "step_per_kv_ktoken_ms", "kv_capacity_tokens", "prefill_tokens_per_s",
     "step_token_budget", "max_queue", "disable_decode", "preemption", "preemption_victim",
@@ -22,6 +22,7 @@ const KEYS: [&str; 56] = [
     "retry_budget_fraction", "retry_backoff_s", "ttft_slo_ms", "itl_slo_ms", "e2e_slo_s",
     "sample_interval_ms", "trace_sample_rate", "workload", "trace_file", "spec_draft_tokens",
     "spec_accept_rate", "slo_classes",
+    "failures",
 ];
 
 /// A scenario in which no field holds its default value, so a field that silently falls back to the
@@ -84,6 +85,7 @@ fn all_fields_distinct() -> Scenario {
         spec_draft_tokens: 6,
         spec_accept_rate: 0.65,
         slo_classes: "interactive:0.6,batch:0.4".into(),
+        failures: "t=30,replica=2,kind=slow=0.3,until=60;t=45,replica=1,kind=crash".into(),
     }
 }
 
@@ -141,6 +143,7 @@ fn to_text_then_parse_preserves_every_field() {
     assert_eq!(got.spec_draft_tokens, want.spec_draft_tokens);
     assert_eq!(got.spec_accept_rate, want.spec_accept_rate);
     assert_eq!(got.slo_classes, want.slo_classes);
+    assert_eq!(got.failures, want.failures);
 
     // And the trip is idempotent, so an archived scenario re-saved is byte-identical.
     assert_eq!(got.to_text(), want.to_text());

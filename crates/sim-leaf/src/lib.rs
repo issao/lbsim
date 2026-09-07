@@ -14,7 +14,7 @@ use sim_core::queue::{EventQueue, PRIO_OBSERVE};
 use sim_core::rng::{Rng, Streams};
 use sim_model::trace::{ResourceSnapshot, StepEvent};
 use sim_model::Replica;
-use sim_scenario::{OverrideKind, Scenario};
+use sim_scenario::{FailureEvent, FailureKind, OverrideKind, Scenario};
 use sim_workload::{Request, Workload};
 use sim_core::{Nanos, EPOCH_BASE, MILLI};
 use std::cell::RefCell;
@@ -40,6 +40,9 @@ enum Ev {
     Admit(usize, Request),
     /// A session's next turn arriving at the gateway, bound for the replica that parked its context.
     SessionTurn(usize, Request),
+    /// A scheduled failure begins or ends; the index is into `Sim::failures`.
+    Fail(usize),
+    Recover(usize),
 }
 
 pub struct RunResult {
@@ -286,6 +289,14 @@ fn validate(sc: &Scenario) -> Result<(), String> {
     if !(sc.sample_interval_ms.is_finite() && sc.sample_interval_ms > 0.0) {
         bad.push(format!("sample_interval_ms = {} must be positive", sc.sample_interval_ms));
     }
+    match sc.failure_events() {
+        Ok(evs) => {
+            for f in evs.iter().filter(|f| f.replica >= sc.replicas) {
+                bad.push(format!("failures: replica {} is not in a fleet of {}", f.replica, sc.replicas));
+            }
+        }
+        Err(why) => bad.push(format!("failures: {why}")),
+    }
     if sc.max_attempts == 0 {
         bad.push("max_attempts must be at least 1".into());
     }
@@ -443,6 +454,7 @@ pub struct Sim {
     sample_iv: Nanos,
     tele_iv: Nanos,
     tele_delay: Nanos,
+    failures: Vec<FailureEvent>,
 
     replica_load: Vec<Series>,
     fleet_queue: Series,
@@ -550,6 +562,15 @@ impl Sim {
         for i in 0..sc.replicas {
             q.schedule(start + (i as Nanos * tele_iv) / sc.replicas.max(1) as Nanos, Ev::TelemetryPublish(i));
         }
+        // Validated above, so this cannot fail. A scenario without failures schedules nothing here,
+        // which is what keeps every existing run byte-identical.
+        let failures = sc.failure_events().unwrap_or_default();
+        for (k, f) in failures.iter().enumerate() {
+            q.schedule(start + (f.at * 1e9) as Nanos, Ev::Fail(k));
+            if let Some(until) = f.until {
+                q.schedule(start + (until * 1e9) as Nanos, Ev::Recover(k));
+            }
+        }
 
         Ok(Sim {
             sc: sc.clone(),
@@ -575,6 +596,7 @@ impl Sim {
             sample_iv,
             tele_iv,
             tele_delay,
+            failures,
             replica_load,
             fleet_queue: Series::new("fleet_queue"),
             fleet_running: Series::new("fleet_running"),
@@ -589,6 +611,57 @@ impl Sim {
             tripped: None,
             finished: false,
         })
+    }
+
+    /// Record a failed attempt and, under the retry budget, dispatch the next one. Timeouts, crashes
+    /// and refused dispatches all end here, so a retry means the same thing whatever caused it.
+    fn abort(&mut self, req: &Request, i: usize, outcome: Outcome, now: Nanos) {
+        let sc = &self.sc;
+        let start = self.start;
+        finish(
+            &mut self.records, &mut self.outcomes, &mut self.done, &mut self.window,
+            outcome, req, now, i, 0, 0, 0, 0,
+        );
+        self.tracing.settle(req.id, &self.records, &mut self.replicas, i, &self.cost);
+        // Retry, under a budget. Retries are what turn a slowdown into a collapse, and
+        // they cost far more here than in a stateless service because a timeout after
+        // thirty seconds has already burned thirty seconds of device work.
+        let budget_ok = self.retries as f64
+            <= sc.retry_budget_fraction * self.first_attempts.max(1) as f64;
+        if req.attempts < sc.max_attempts && budget_ok {
+            self.retries += 1;
+            let mut again = req.clone();
+            again.attempts += 1;
+            again.attempt_at = now + (sc.retry_backoff_s * 1e9) as Nanos;
+            // The deadline runs from *this* attempt, since a client that retries gives
+            // itself a fresh timeout. Latency, however, is still measured from the
+            // original arrival below: from the user's point of view the wait started when
+            // they first asked.
+            again.deadline = again.attempt_at + (sc.client_timeout_s * 1e9) as Nanos;
+            again.id = 1_000_000_000 + again.id * 8 + again.attempts as u64;
+            again.arrived_at = req.arrived_at;
+            let at = again.attempt_at;
+            // A retry is a fresh draw: its journey is its own, from its own arrival.
+            let traced = self.tracing.sample();
+            let mut probed = Vec::new();
+            // Re-routed rather than pinned, so a retry does not land on the same
+            // struggling replica by construction.
+            let d = dispatch(
+                &mut *self.router, &mut *self.admission, &self.views, &self.replicas,
+                &self.tenant_shares, &mut self.route_rng, sc, at, &again, traced.then_some(&mut probed),
+            );
+            let (again_id, routed) = (again.id, matches!(d, Dispatch::Route { .. }));
+            if traced {
+                self.tracing.draft(&again, at, &d, probed, &self.views, start, self.placed.len());
+            }
+            place(
+                &mut self.q, &mut self.records, &mut self.outcomes, &mut self.done,
+                &mut self.window, d, again, at,
+            );
+            if traced && !routed {
+                self.tracing.settle(again_id, &self.records, &mut self.replicas, NO_REPLICA, &self.cost);
+            }
+        }
     }
 
     pub fn now(&self) -> Nanos {
@@ -675,7 +748,6 @@ impl Sim {
     /// exception is the end of the run: the first event past `end` is popped and discarded, as the
     /// loop always did, because the dispatched count that the report prints includes it.
     pub fn advance_to(&mut self, t: Nanos) -> Result<(), String> {
-        let sc = &self.sc;
         let start = self.start;
         let end = self.end;
         // Tripwires. Each one names what to look at, because the failure mode being guarded against is
@@ -724,6 +796,9 @@ impl Sim {
                 break;
             }
             self.now = now;
+            // Borrowed per event rather than per call, so an arm that ends in `abort` can take the
+            // whole of `self`.
+            let sc = &self.sc;
             match ev {
                 Ev::Arrival => {
                     let elapsed = (now - start) as f64 / 1e9;
@@ -767,6 +842,12 @@ impl Sim {
                 }
 
                 Ev::Admit(target, req) => {
+                    if self.replicas[target].is_down() {
+                        // Sent here on a stale view: the router will not learn of the crash until the
+                        // next telemetry delivery. Refused before any device time, and retried.
+                        self.abort(&req, target, Outcome::TimeoutQueued, now);
+                        continue;
+                    }
                     let r = &mut self.replicas[target];
                     let (id, deadline) = (req.id, req.deadline);
                     if let Err(req) = r.enqueue(req, sc.max_queue) {
@@ -851,50 +932,32 @@ impl Sim {
                         } else {
                             Outcome::TimeoutQueued
                         };
-                        finish(
-                            &mut self.records, &mut self.outcomes, &mut self.done, &mut self.window,
-                            outcome, &req, now, i, 0, 0, 0, 0,
-                        );
-                        self.tracing.settle(id, &self.records, &mut self.replicas, i, &self.cost);
-                        // Retry, under a budget. Retries are what turn a slowdown into a collapse, and
-                        // they cost far more here than in a stateless service because a timeout after
-                        // thirty seconds has already burned thirty seconds of device work.
-                        let budget_ok = self.retries as f64
-                            <= sc.retry_budget_fraction * self.first_attempts.max(1) as f64;
-                        if req.attempts < sc.max_attempts && budget_ok {
-                            self.retries += 1;
-                            let mut again = req.clone();
-                            again.attempts += 1;
-                            again.attempt_at = now + (sc.retry_backoff_s * 1e9) as Nanos;
-                            // The deadline runs from *this* attempt, since a client that retries gives
-                            // itself a fresh timeout. Latency, however, is still measured from the
-                            // original arrival below: from the user's point of view the wait started when
-                            // they first asked.
-                            again.deadline = again.attempt_at + (sc.client_timeout_s * 1e9) as Nanos;
-                            again.id = 1_000_000_000 + again.id * 8 + again.attempts as u64;
-                            again.arrived_at = req.arrived_at;
-                            let at = again.attempt_at;
-                            // A retry is a fresh draw: its journey is its own, from its own arrival.
-                            let traced = self.tracing.sample();
-                            let mut probed = Vec::new();
-                            // Re-routed rather than pinned, so a retry does not land on the same
-                            // struggling replica by construction.
-                            let d = dispatch(
-                                &mut *self.router, &mut *self.admission, &self.views, &self.replicas,
-                                &self.tenant_shares, &mut self.route_rng, sc, at, &again, traced.then_some(&mut probed),
-                            );
-                            let (again_id, routed) = (again.id, matches!(d, Dispatch::Route { .. }));
-                            if traced {
-                                self.tracing.draft(&again, at, &d, probed, &self.views, start, self.placed.len());
-                            }
-                            place(
-                                &mut self.q, &mut self.records, &mut self.outcomes, &mut self.done,
-                                &mut self.window, d, again, at,
-                            );
-                            if traced && !routed {
-                                self.tracing.settle(again_id, &self.records, &mut self.replicas, NO_REPLICA, &self.cost);
+                        self.abort(&req, i, outcome, now);
+                    }
+                }
+
+                Ev::Fail(k) => {
+                    let f = self.failures[k].clone();
+                    match f.kind {
+                        // Everything it held is lost at once, running or not: the work in flight
+                        // is what a crash costs, and every client of it sees a timeout.
+                        FailureKind::Crash => {
+                            for req in self.replicas[f.replica].crash() {
+                                self.abort(&req, f.replica, Outcome::TimeoutRunning, now);
                             }
                         }
+                        FailureKind::Slow(mult) => self.replicas[f.replica].set_speed(mult),
+                        FailureKind::Hang => self.replicas[f.replica].set_speed(0.0),
+                    }
+                }
+
+                Ev::Recover(k) => {
+                    let i = self.failures[k].replica;
+                    let r = &mut self.replicas[i];
+                    r.recover();
+                    // A hang leaves whatever has not timed out still queued; it resumes now.
+                    if r.wake(now) {
+                        self.q.schedule(now, Ev::Step(i));
                     }
                 }
 
@@ -928,7 +991,7 @@ impl Sim {
             self.now = end;
         }
         if let Some(why) = &self.tripped {
-            return Err(format!("run {:?} aborted, {}", sc.name, why));
+            return Err(format!("run {:?} aborted, {}", self.sc.name, why));
         }
         Ok(())
     }
@@ -1155,7 +1218,9 @@ fn view_of(r: &Replica, now: Nanos) -> ReplicaView {
         queued_tokens: r.outstanding_tokens(),
         kv_tokens: r.kv_tokens(),
         last_step_ns: r.last_step_ns(),
-        ejected: false,
+        // Only a crash is announced. A slow or hung replica reports itself as healthy, and the
+        // growing `last_step_ns` is the one tell a policy has.
+        ejected: r.is_down(),
     }
 }
 
