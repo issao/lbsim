@@ -1,0 +1,2 @@
+bench/golden-fingerprints.txt merge=union
+bench/fingerprint-runs.txt merge=union

@@ -477,9 +477,12 @@ merely notice."##);
     heading(&mut h, "h2", "Scenarios, verbatim", r##"Every number above is reproducible from these. Same seed, same output, byte for
 byte; the fingerprint is an event-count-and-checksum pair asserted by the test suite."##);
     for r in runs {
+        // Marked so the fingerprint check can strip this block before hashing the report: a new
+        // Scenario field changes to_text() for every scenario and would otherwise move every
+        // html_md5 row even when no run behaviour changed. See check-fingerprints.sh.
         let _ = write!(
             h,
-            "<h3>{}</h3><pre style=\"font-size:11.5px;background:#f4f4f2;padding:12px;overflow-x:auto\">{}</pre>",
+            "<h3>{}</h3>\n<!-- scenario -->\n<pre style=\"font-size:11.5px;background:#f4f4f2;padding:12px;overflow-x:auto\">{}</pre>\n<!-- /scenario -->\n",
             esc(&r.scenario.name),
             esc(&r.scenario.to_text())
         );
