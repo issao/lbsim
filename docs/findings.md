@@ -190,7 +190,44 @@ decode-physics effect, and any that survives is a queueing effect. Results 1 and
 
 ---
 
-## What these seven have in common
+## 8. The KV spiral: parked session context fills the cache, and swapping it out cures it
+
+Demo 11, `out/11-preemption.html`, `scenarios/kv_spiral_never.txt` against `kv_spiral_swap.txt`
+(U22, d48191f, merged dcf77c8). Capacity is a token budget, and until this unit nothing ever gave
+tokens back except a finished request. Real engines evict: `recompute` drops a context and prefills
+it again, `swap` copies it over the host link and back; the scenario chooses one, with the victim
+rule separate (newest, largest context, most slack), and every cost goes through `CostModel`. `never`
+is the default and is proven invisible: every earlier golden row is unchanged, and `route_p2c` under
+`recompute` has the same fingerprint because nothing there is ever under pressure.
+
+The pressure comes from sessions. A finished turn parks its context on the replica and the next
+turn, after the think time, goes straight back to it carrying the whole context. In the tech lead's
+words, forwarded verbatim from the unit's agent:
+
+> At two sessions a second on four replicas, a load the fleet is rated to serve twenty times over,
+> parked context fills a 30k-token cache inside a minute; without eviction admission is blocked by
+> memory nobody is computing on and the replica serves one sequence at a time (late attainment 2%,
+> p99 TTFT 36 s). Swapping the same load to DRAM at 50 GB/s serves it at 95% with an 84 ms p99 TTFT
+> and 2.2 preemptions a second: demo 11. A lone running sequence is never evicted, because admission
+> let it in over the cap and evicting it would only re-admit it next step. Parked context goes before
+> a running sequence, since dropping idle context stalls nobody. Swaps are charged to the step that
+> performs them, which is why the scenario keeps contexts short: a 4k-token swap is 26 ms, and several
+> in one step breach the 80 ms inter-token SLO on their own.
+
+| Eviction | Attainment | First-token p99 | Preemptions/s |
+|---|---|---|---|
+| `never` | 2% | 36 s | 0 |
+| `swap` to DRAM, 50 GB/s | **95%** | **84 ms** | 2.2 |
+
+This is result 5's token budget seen from the other side: there the budget bound because requests were
+long, here it binds because idle context is never released, at a load twenty times below rated
+capacity. The metric that misleads is the one a load balancer would watch: the fleet is nearly idle by
+compute while it serves one sequence at a time. The full table is the report's; the numbers here are
+the unit's own, quoted rather than re-run.
+
+---
+
+## What these eight have in common
 
 Every one is a case where **the obvious metric moves the wrong way, or not at all**:
 
@@ -200,6 +237,7 @@ Every one is a case where **the obvious metric moves the wrong way, or not at al
 - More offered load produces less delivered work, in result 4.
 - The best-informed policy performs worst, in result 1.
 - The cause of a collapse is gone while the collapse continues, in result 6.
+- A fleet idle by compute serves one sequence at a time, at a twentieth of rated load, in result 8.
 
 - The same ordering with the device physics switched off, in result 7, so the effect is the queue's.
 
