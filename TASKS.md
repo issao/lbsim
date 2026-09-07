@@ -1,13 +1,15 @@
 # TASKS — things that need Issao
 
-Last updated: 2026-09-06 21:11 PDT by Claude.
+Last updated: 2026-09-07 11:17 PDT by Claude.
 
-**Stopped 21:00 PDT at your request** (*"we are approaching limit... tie up loose ends... give me a doc
-summarizing the state and most interesting outcomes with deep links and I will review and wrap up
-tomorrow"*). This file is the review list for tomorrow morning, stack ranked, each item with what
-Claude does if you say nothing. What is finished and live is in `STATUS.md`; the summary with deep
-links is `docs/wrap-up-2026-09-06.md`, the main agent's. Every agent's state is in its file; resume by
-re-spawning from `docs/agents/` (its `README.md` gives the order).
+**Resumed 2026-09-07 11:17 PDT.** The fleet stopped at 21:00 on 2026-09-06 at your request (*"we are approaching
+limit... tie up loose ends... give me a doc summarizing the state and most interesting outcomes with deep
+links and I will review and wrap up tomorrow"*) and is back this morning: the tech lead (`a0899ca58df6febdc`)
+is on U79–U83, the Cloud Run live-server fix and your product-polish pass, per main. This file is the review
+list, stack ranked, each item with what Claude does if you say nothing. What is finished and live is in
+`STATUS.md`, whose top caveat is the known issue from `docs/wrap-up-2026-09-06.md` §5b: the live server on
+Cloud Run degrades after a handful of runs, so open one tab at a time until U79 lands; replay (`?server=off`)
+is unaffected.
 
 ## 0. Read `docs/wrap-up-2026-09-06.md`
 
@@ -59,7 +61,13 @@ that list, name by name, never by prefix. Or do it yourself:
 Each of these is a unit in `docs/execution-graph.md`, the tech lead's graph, which carries its state
 and ETA; this list is the record of what was routed and why.
 
-Nothing new routed since the checkpoint; the tree scans clean (`python3 tools/inbox.py`, 20:27). Nothing
+**2026-09-07, routed to the tech lead (`a0899ca58df6febdc`):** your instruction this morning, the
+product-polish pass now running as part of U79–U83 per main. The tech lead records it verbatim in its
+`docs/execution-graph.md` entry; that entry was on no branch on `origin` and in no worktree at 11:17, so the
+verbatim text is quoted here the round after it lands rather than paraphrased now, and the tech lead has been
+asked for it. **If you say nothing:** the tech lead's reading of it in the graph stands.
+
+Nothing else routed since the checkpoint; the tree scans clean (`python3 tools/inbox.py`, 11:17 today). Nothing
 from the 17:31–17:35 checkpoints needs you: R1's findings became U54 and U55 in the graph, and its item 8
 is a crate-boundary decision for the main agent.
 
@@ -154,8 +162,8 @@ until you grant the role, and the results bucket keeps everything it is ever giv
 
 - At the wrap-up, 21:09: *"I am clicking on some of the showcase links and I am stuck in 'initializing the
   mock run'. can you look at it and fix?"* Fixed by the main agent (3e78b9a, merged 7d174d0): a refused
-  metric in the subscription wish list left the page on its placeholder forever. On `master`; the
-  deployed site carries it after the next redeploy, which is `STATUS.md`'s to record.
+  metric in the subscription wish list left the page on its placeholder forever. Deployed as `lbsim-00010-spk` at 21:11 (revision time from gcloud), on
+  <https://lbsim.ai> since.
 
 - 17:31, *"can you ask everyone to pause until usage limit resets in 2h 50min"*: every agent paused and
   checkpointed to files, resume 20:21 PDT. Nothing new here needs you.
