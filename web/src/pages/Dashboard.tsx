@@ -84,6 +84,7 @@ function ServerBanner({ run }: { run: ServerRunHandle }) {
           {run.subscriptionId ? <> ({run.subscriptionId})</> : null} &middot; {run.engine.frames.length} samples at{' '}
           {run.config.samplesPerSimSecond}/sim s &middot; speed {run.status?.realtimeFactor ?? '…'}&times;
           {run.dropped.length ? <> &middot; inert controls: {run.dropped.join(', ')}</> : null}
+          {run.unserved.length ? <> &middot; not served by this server, panels stay mock: {run.unserved.join(', ')}</> : null}
         </span>
         <span style={{ marginLeft: 'auto', color: 'var(--ink-3)' }} title={run.disabledReason}>
           load and policy changes go to the server; scrub is a local read; rewind is off: {run.disabledReason}
@@ -277,7 +278,16 @@ function DashboardBody({
 
   const frames = windowFrames(run.engine, run.cursorS);
   const frame = frames[frames.length - 1] ?? run.engine.frames[0];
-  if (!frame) return <div className="page-pad">initialising the mock run…</div>;
+  if (!frame) {
+    // No sample yet. The banner still renders, because a live run that was refused or a recording
+    // that failed to load says so there; hiding it left the page on this line forever.
+    return (
+      <div className="dash">
+        {banner}
+        <div className="page-pad">waiting for the first sample…</div>
+      </div>
+    );
+  }
 
   return (
     <div className="dash">
