@@ -231,7 +231,40 @@ which replace these when it lands.
 
 ---
 
-## What these eight have in common
+## 9. Speculative decoding pays at small batch and costs at large
+
+Scope item 16, `VISION.md` §3a's value-and-cost question (U26, 6fd648e, merged 0039c28). Scenario
+keys `spec_draft_tokens` and `spec_accept_rate`, off by default; `scenarios/spec_off.txt` against
+`spec_n4.txt`; demo 12's wiring is U26b, in flight. The gain is modelled as the expected tokens a
+step, (1 − a^(N+1))/(1 − a), through a deterministic per-sequence accumulator rather than a random
+draw, so every existing run is byte-identical and the `route_p2c` golden row proves it; a geometric
+draw from a named stream is the documented refinement. The cost is verify compute added to the step;
+the bandwidth term is untouched because the weights are read once a step either way. In the tech
+lead's words, forwarded verbatim from the unit's agent:
+
+> With N=4 drafts at α=0.7 a sequence advances 2.77 expected tokens a step. At the defaults (10.2 ms
+> step, 28,286 prefill tok/s) the verify compute B·N/prefill_tokens_per_s equals the fixed step cost
+> at B ≈ 72 sequences. Measured on one replica: batch 4 goes 392 → 1,024 tok/s (2.61×), batch 36 is
+> 1.84×, batch 72 is 1.38×, batch 144 is 0.92× (a net loss), batch 256 is 0.61×. On the route_p2c
+> fleet (effective batch 256, bandwidth term present) rated_rps moves only 234.8 → 240.2, so
+> speculation is a small-batch/latency tool, not a capacity tool.
+
+| Batch | Tokens/s, off → N=4 at α=0.7 | Ratio |
+|---|---|---|
+| 4 | 392 → 1,024 | 2.61× |
+| 36 | | 1.84× |
+| 72 | | 1.38× |
+| 144 | | 0.92× |
+| 256 | | 0.61× |
+
+The metric that misleads here is the one a serving team would reach for first: a per-sequence
+speed-up of 2.8x in expected tokens a step, which becomes a fleet capacity change of 2% because the
+fleet runs near the batch where verify compute has eaten the gain. The numbers are the unit's own,
+quoted rather than re-run; demo 12's report supersedes them when U26b lands.
+
+---
+
+## What these nine have in common
 
 Every one is a case where **the obvious metric moves the wrong way, or not at all**:
 
@@ -242,6 +275,7 @@ Every one is a case where **the obvious metric moves the wrong way, or not at al
 - The best-informed policy performs worst, in result 1.
 - The cause of a collapse is gone while the collapse continues, in result 6.
 - A fleet idle by compute serves one sequence at a time, at a twentieth of rated load, in result 8.
+- A 2.8x per-sequence speed-up is a 2% capacity change at the fleet's batch size, in result 9.
 
 - The same ordering with the device physics switched off, in result 7, so the effect is the queue's.
 
