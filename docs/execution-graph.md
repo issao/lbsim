@@ -5,14 +5,22 @@ Owned by the tech lead; updated on every spawn, merge and ETA change, in the sam
 Per Issao: *"keep an instruction graph of everything that we need to in an md file, with sections below
 of what each task entails."* A stale graph is worse than none, so the status line moves every time.
 
-**Last updated:** 2026-09-06 17:06 PDT. **Done 22 · in flight 1 · queued 22 · waiting on Issao 1.**
-**CHECKPOINT 2026-09-06 16:51 PDT:** the session restarts from files. This file plus CLAUDE.md is the tech lead's whole
-memory. Every in-flight unit has a Resume paragraph below with its branch and worktree; a fresh tech lead
-re-spawns each from its section, then continues down the queue keeping at least six units in flight.
-**Critical path to the next Issao-visible milestone (real runs in the dashboard, first deploy):**
-U17 is on master (5077a34): the pre-baked dashboard is deployable now. Deploy = `sim-run export --demos
---dir <served dir>` then `./deploy.sh` (web/README.md "Replay mode"). The heatmap follows with U23; the
-live path is U18 (in flight, no code yet) then U28.
+**Last updated:** 2026-09-06 17:35 PDT. **Done 22 · in flight 10 · queued 17 · waiting on Issao 1.**
+**Dynamics live and showcased: 0 of 10 selected.** Selected: findings 1–6, demos 7–10 (`disable_decode`,
+`least_kv_probe`, `deadline_aware`, `fair_share`); U22 makes it 11 when it lands. Live means the dynamic runs
+through the Ingress endpoint in the dashboard (U18 then U28); showcased means a walkthrough script steps
+through it (U48, then U49 for the runner). The first number moves when U18, U28, U48 and U49 are all on master;
+the goal, from Issao at 16:53: *"all selected dynamics are live demoable in the dashboard and in the showcase page."*
+**Restart 17:07 PDT:** a fresh tech lead resumed from this file. Twelve finished worktrees removed (7 GB back).
+The U18 agent from the previous session turned out to be alive and committing (f8b1683 17:11, 5c5354b 17:14),
+so it was not re-spawned; it is watched instead (see its section). Template v2 from the productivity agent
+adopted from the first spawn; profile §5 item 1 was already done by U20 (gate 40 s), so its slot went to the
+`tools/build.sh` fix in U45. Stale remote branches `claude/tl-*` from the previous session are content-merged
+(`git cherry` says so) but could not be deleted from here; `tools/sync.sh` will keep listing their two old
+markers until someone with push-delete rights removes them. Nothing in those branches is unmerged.
+**Critical path:** U18 (live agent, 2 of 3 commits) → U28 (started now against a fixture stand-in) → U49
+(walkthrough runner opens a live run) → the first "N live" number. U23 puts the heatmap on real data in
+parallel; U22 opens the dynamics fan-out. Every unit is `model: default` unless its section says `sonnet`.
 
 Legend: solid box = done; **bold** = in flight, with branch; plain = queued; dashed = waiting on Issao.
 Edge labels name the stand-in that let the downstream unit start early, or why the edge could not be broken.
@@ -40,24 +48,24 @@ flowchart TD
   U16[U16 simplify 1+2]:::done
 
   U17[U17 replay source + Frame adapter]:::done
-  U18[U18 live ingress server<br/>claude/tl-ingress-server]:::flight
+  U18[U18 live ingress server<br/>claude/tl-ingress-server, agent alive]:::flight
   U19[U19 trace wire + export]:::done
   U20[U20 arena objective + catalog append]:::done
   U21[U21 disable_decode]:::done
-  U22[U22 preemption + KV eviction: spawn first]:::queued
+  U22[U22 preemption + KV eviction<br/>claude/tl-preemption]:::flight
 
-  U23[U23 per-replica export rows + heatmap]:::queued
-  U24[U24 trace engine: spans in the step]:::queued
+  U23[U23 per-replica rows + heatmap<br/>claude/tl-replica-rows]:::flight
+  U24[U24 trace engine<br/>claude/tl-trace-engine]:::flight
   U25[U25 SLO classes]:::queued
   U26[U26 speculative decoding knob]:::queued
   U27[U27 prefix caching + sessions 9/10]:::queued
-  U28[U28 web on live transport]:::queued
+  U28[U28 web on live transport<br/>claude/tl-web-live]:::flight
   U29[U29 M3 leaf split + shard determinism]:::queued
   U30[U30 tiering 14 + disaggregation 15]:::queued
   U31[U31 failure injection + gray failure 11]:::queued
   U32[U32 autoscaling + multi-geo 12/13]:::queued
   U33[U33 M7 control analysis: Bode]:::queued
-  U34[U34 arena generator loop]:::queued
+  U34[U34 arena generator loop<br/>claude/tl-generator]:::flight
   U35[U35 M4 trace replay workload]:::queued
   U36[U36 leaf as a process]:::queued
   U37[U37 M9 scale validation]:::queued
@@ -68,6 +76,11 @@ flowchart TD
   U42[U42 SLO class targets: answered]:::done
   U44[U44 batch-class throughput over a longer window]:::queued
   U43[U43 rule-set version bump sign-off]:::blocked
+  U45[U45 build.sh: round-robin slots + timeout<br/>claude/tl-build-slots, sonnet]:::flight
+  U46[U46 tests build Scenario by struct update<br/>claude/tl-scenario-default, sonnet]:::flight
+  U47[U47 tools/api-card.sh<br/>claude/tl-api-card, sonnet]:::flight
+  U48[U48 showcase scripts for dynamics 1-10<br/>claude/tl-walkthroughs, sonnet]:::flight
+  U49[U49 walkthrough runner on replay and live runs]:::queued
 
   U01 --> U04 --> U10 & U11 & U12
   U01 --> U14 --> U22
@@ -80,9 +93,10 @@ flowchart TD
   U13 --> U18
   U13 --> U19
   U24 -. "stand-in: RequestTrace struct with fixtures" .-> U19
-  U22 --> U24 & U25 & U26 & U27
+  U22 --> U25 & U26 & U27
+  U22 -. "stand-in: Tracer in its own file, call sites only in step; second to land rebases" .-> U24
   U15 -. "could not break: Replica::step is one function" .-> U22
-  U18 --> U28
+  U18 -. "stand-in: api.ts + an in-memory fake Ingress serving fleet.jsonl fixtures" .-> U28
   U17 --> U28
   U22 --> U30 --> U39
   U31 --> U32
@@ -96,7 +110,10 @@ flowchart TD
   U42 --> U25
   U25 --> U44
   U20 --> U43
-  U40 --> U34
+  U40 -. "stand-in: a template generator writing p2c variants, with the registry header" .-> U34
+  U28 --> U49
+  U48 --> U49
+  U17 --> U48
 ```
 
 ## How to read a unit section
@@ -208,7 +225,15 @@ U05, U13, U15 (done). Downstream U28. Agent on `claude/tl-ingress-server`, workt
 `/home/agents/repo/lbsim-wt-server`. ETA ~19:30 before the checkpoint. Done: the HTTP test starts a
 run, subscribes, renews, closes, sees idle shutdown fire; `/health` untouched by run state.
 
-**Resume (checkpoint):** branch at origin/master 8cc21f2, nothing written; the design read-through is
+**17:35, watched, not re-spawned.** The previous session's agent is alive in `/home/agents/repo/lbsim-wt-server`:
+f8b1683 (17:11, lifecycle: StartRun/GetRun/ListRuns/StopRun/SetSpeed/StepForward/GetResult over TCP) and 5c5354b
+(17:14, subscriptions over SSE, leases, replay ring) are on `origin/claude/tl-ingress-server`; the idle commit is
+next. Its brief predates `tools/integrate.sh`, so when the branch stops moving with `tests/ingress_http.rs` green
+the tech lead spawns a one-line integration unit for it; if no commit lands by 18:00 the unit is re-spawned from
+the branch with this paragraph. Requirement added from the productivity agent's measurement: the HTTP test must
+terminate on its own (a shutdown handle or a deadline on the accept loop), because a hung test held a build slot
+for 600 s three times at 16:53.
+Earlier resume note kept for the record: branch at origin/master 8cc21f2, nothing written; the design read-through is
 done and these decisions are fixed: the run thread owns `Sim` (created in-thread, StartRun waits on a
 channel for `Sim::new`'s verdict); `Mutex<RunState>` plus `Condvar` per run; subscriptions keyed `s-<n>`
 with the client's `subscription_id` query parameter honoured on reconnect (api.ts already sends it); a
@@ -291,7 +316,9 @@ section; 28 golden rows added, no existing number moved. Result: the ordering ho
 18,986 tok/s. Finding 7 for docs/findings.md is owed to housekeeping (not sent at the checkpoint).
 
 ### U22 preemption and KV eviction (scope 7/8, the head of the dynamics fan-out)
-**Not spawned at the checkpoint; a fresh tech lead spawns it first.** `PreemptionPolicy` per
+**Spawned 17:35** on `claude/tl-preemption`, worktree `/home/agents/repo/lbsim-wt-preemption`, model default,
+ETA 18:00. Shares `Replica::step` and the sim-leaf loop with U24; whichever integrates second resolves the rebase.
+`PreemptionPolicy` per
 scenario.proto: never, recompute, swap-to-DRAM, swap-else-recompute, with the victim choices; sessions so
 KV fills at low qps; the death-spiral scenario and its survivor as demo 11. Upstream U14, U15, U21 (all
 done). The edge from U15 could not be broken: `Replica::step` is one function and both units rewrite it.
@@ -314,14 +341,24 @@ to housekeeping, golden updated with every moved number explained.
 ## Queued
 
 ### U23 per-replica export rows and the heatmap
-`export::replica_rows` from `RunResult.frames` (landed in U15); the dashboard heatmap on real data.
-Upstream U15, U13, U17. Small; second dashboard deploy.
+**Spawned 17:35** on `claude/tl-replica-rows`, worktree `/home/agents/repo/lbsim-wt-replica-rows`, model default,
+ETA 17:55. `export::replica_rows` from `RunResult.frames[s].replicas` (the seam at export.rs:251 is a stub):
+one `SCOPE_REPLICA` update per replica per sample with QUEUED_SEQS 23, RUNNING_SEQS 22, KV_TOKENS_RESIDENT 21,
+KV_UTILIZATION 20 as a fraction of `kv_capacity_tokens`, STEP_TIME 8; written to `runs/<group>/<run>/replicas.jsonl`
+(a new line in WIRE.md's export section); `replay.ts` loads it and `adapter.ts` fills `Frame.replicas` so the
+machine-level heatmap drops its mock tag on a replay. Tests: `replica_rows_follow_the_frames` (count = replicas ×
+samples, sums equal the fleet row's QUEUED/RUNNING) and a replay self-test case. Upstream U15, U13, U17 (all done).
 
 ### U24 trace engine
-Spans recorded in the step for a seeded, latency-stratified sample of requests (`trace_sample_rate`):
-ingress queue, routing decision with candidates and the stale view, replica queue, each prefill chunk and
-decode step with batch size, running/queued, KV resident, step time, bandwidth- or compute-bound. Fills
-U19's struct. Upstream U22 (same function). Downstream U19's export, the trace panel.
+**Spawned 17:35** on `claude/tl-trace-engine`, worktree `/home/agents/repo/lbsim-wt-trace-engine`, model default,
+ETA 18:05. Spans recorded in the step for a seeded, latency-stratified sample of requests (`trace_sample_rate`,
+default 0 = off): ingress queue, routing decision with candidates and the stale view, replica queue, each prefill
+chunk and decode step with batch size, running/queued, KV resident, step time, bandwidth- or compute-bound. Fills
+U19's struct; `sim-run export` writes real traces. The edge from U22 is broken by a stand-in: the recorder lives in
+its own file (`crates/sim-model/src/trace.rs`, engine-side events typed on sim-core only, converted to
+`sim_metrics::trace` spans in sim-leaf) and touches `Replica::step` by inserted call lines only, so U22's rewrite
+of the admission and retire loops rebases over it. Invariant: the fingerprint is byte-identical with tracing on
+or off (the sampling draw comes from its own seeded stream). Downstream U19's export, the trace panel.
 
 ### U25 SLO classes
 Per-class first-token and inter-token targets, class on every request, per-class goodput and attainment
@@ -337,7 +374,14 @@ Session model per ARCHITECTURE §14 row 9 with fork-off and merge-back rates; pr
 replica; affinity routing; the failover-cascade scenario. Upstream U22.
 
 ### U28 web on the live transport
-Mock markers removed only on wired panels; UpdateWorkload/UpdatePolicies enabled. Upstream U17, U18.
+**Spawned 17:35** on `claude/tl-web-live`, worktree `/home/agents/repo/lbsim-wt-web-live`, model default, ETA 18:00.
+`useServerRun.ts` (exists, shaped to `RunHandle`) becomes the dashboard's source when `ListRuns` answers:
+`dataModeFrom` picks `server`, the load-test page starts a run from the control panel's config, the fleet
+subscription feeds the same `adapter.ts` path replay uses, mock markers drop only on wired panels,
+UpdateWorkload/UpdatePolicies enabled, rewind refused with a reason until the server supports it. The edge from U18
+is broken by a stand-in: `web/src/lib/fakeIngress.ts`, an in-memory `FetchLike` that answers the WIRE.md RPCs and
+streams `fleet.jsonl` fixtures as SSE, drives `useServerRun`'s non-hook controller in a self-test. U49 closes the loop
+against the real server once both are on master. Upstream U17 (done), U18 (stand-in).
 
 ### U29 M3 leaf split
 Routing out of the loop through the `Leaf` trait; shard barrier; the determinism-across-shards test at
@@ -357,13 +401,50 @@ Replica lifecycle with turn-up delay, warm pools, diurnal load per cluster, casc
 Perturbation input, frequency sweep, empirical Bode plot predicting oscillation onset. Upstream U15, U32.
 
 ### U34 arena generator loop
-Policy generator writing Rust files into `sim-policy`, build, run, source hash recorded, catalog row
-appended (U20). Upstream U04, U20, U40.
+**Spawned 17:35** on `claude/tl-generator`, worktree `/home/agents/repo/lbsim-wt-generator`, model default, ETA 18:05.
+`sim-run generate`: writes a policy file into `crates/sim-policy/src/gen_<name>.rs` whose first line is the registry
+header `//! lbsim-policy: routing names=<name>` (required by the main agent: `build.rs` reads exactly that line),
+rebuilds through `tools/build.sh`, runs the round, records the source hash, appends the catalog row through
+`sim_arena::catalog::append`. The edge from U40 is broken by a stand-in: a template generator producing p2c variants
+(d = 3, 4, and least-KV keyed) so the loop is exercised end to end before forecasting families exist. Generated files
+are committed only when the generator is asked to keep them. Upstream U04, U20 (done), U40 (stand-in).
 
 ### U35 M4 trace replay workload · U36 leaf as a process · U37 M9 scale validation · U38 shaping contrast
 report · U39 model weights and MoE (17) · U40 forecasting policy families · U41 simplification cadence
 Each as named in docs/execution-plan.md and docs/scope-today.md; none started; each becomes a section
 when it is specified to the five-field standard.
+
+### U45 tools/build.sh: round-robin slots and a bounded hold (fix-once, `model: sonnet`)
+**Spawned 17:35** on `claude/tl-build-slots`, worktree `/home/agents/repo/lbsim-wt-build-slots`, ETA 17:50. From the
+productivity agent's measurement at 17:20: three agents lost 600 s each because a hung test held slot 1 and the
+fallback pinned every waiter to slot 1 while slot 2 sat free. Fix: poll the slots round-robin once a second, and exec
+cargo under `timeout -k 5 ${LBSIM_BUILD_TIMEOUT:-420}` so a hang returns 124 inside the agent's turn and releases the
+slot. Done: a shell check that a waiter takes slot 2 when slot 1 is held, and that a held run exits 124 at the bound.
+
+### U46 tests build `Scenario` by struct update (fix-once, `model: sonnet`)
+**Spawned 17:35** on `claude/tl-scenario-default`, worktree `/home/agents/repo/lbsim-wt-scenario-default`, ETA 17:50.
+Profile §4 row 1: eight test files build `Scenario` as an exhaustive literal, so every branch adding a key breaks every
+other branch at rebase. Each becomes `tests/common::small()` plus field sets, or `..Scenario::default()`. The
+exhaustive literal in `tests/scenario_parse.rs` stays: it is the round-trip guard and must name every key. Zero
+behaviour change: every test passes unchanged.
+
+### U47 `tools/api-card.sh <crate>` (fix-once, `model: sonnet`)
+**Spawned 17:35** on `claude/tl-api-card`, worktree `/home/agents/repo/lbsim-wt-api-card`, ETA 17:45. Profile §5 row 2:
+prints every `pub` item of a crate with `file:line` and its signature line, so a brief can carry excerpts cheaply.
+Done: `tools/api-card.sh sim-model` lists `Replica::step` at its line; `tools/api-card.sh sim-model step` prints the
+matching items with 12 lines of context.
+
+### U48 showcase scripts for the ten selected dynamics (`model: sonnet`)
+**Spawned 17:35** on `claude/tl-walkthroughs`, worktree `/home/agents/repo/lbsim-wt-walkthroughs`, ETA 18:00. One
+`web/public/walkthroughs/<id>.json` per selected dynamic (findings 1–6, demos 7–10), each step quoting the finding's
+numbers, with two new optional schema fields `run` and `compare` naming the exported demo run ids the step plays;
+`index.json` cards updated so every selected dynamic has a script; a self-test validates monotone `at_sim_s` and that
+every `run` id is one `sim-run export --demos` writes. Content only; the runner that opens `run` is U49.
+
+### U49 walkthrough runner on replay and live runs
+Queued behind U28 and U48. `Showcase.tsx` opens a script's `run` through the replay source or, when the Ingress
+answers, starts it live; `set` steps call UpdateWorkload/UpdatePolicies in live mode and are refused with the reason
+in replay mode. This is the unit that turns "N live and showcased" from 0 to 10.
 
 ## Waiting on Issao
 
