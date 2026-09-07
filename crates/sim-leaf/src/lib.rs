@@ -566,6 +566,16 @@ impl Sim {
     pub fn frames(&self) -> &[Frame] {
         &self.frames
     }
+    /// The frames closed since the last `drain_frames` call (or the start of the run, for the
+    /// first), handing ownership to the caller instead of leaving a second copy behind. For a
+    /// long-lived run whose driver copies each new frame into its own state as it advances, so
+    /// that state does not also grow the engine's own copy without bound. A `Sim` that drains is
+    /// then a `Sim` whose `frames()` and `into_result` see only what nothing has drained yet;
+    /// `frames()` and `into_result` alone, never mixed with this, are what a caller that keeps the
+    /// engine's copy as the record of the whole run should use instead.
+    pub fn drain_frames(&mut self) -> Vec<Frame> {
+        std::mem::take(&mut self.frames)
+    }
     /// Every record so far, warmup included; the measured selection is `into_result`'s.
     pub fn records(&self) -> &[RequestRecord] {
         &self.records
@@ -826,6 +836,11 @@ impl Sim {
 
     /// The post-run aggregation. Callable before `end` for a partial result, which is the same
     /// computation over the records so far.
+    ///
+    /// `RunResult.frames` here is whatever `self.frames` still holds: the complete run for a
+    /// caller that never called `drain_frames`, or only the frames closed since the last drain
+    /// for one that did. A caller that drains and still wants `into_result` to carry the full
+    /// sequence must reattach its own accumulated copy after this returns.
     pub fn into_result(self) -> Result<RunResult, String> {
         let sc = &self.sc;
         let measured_from = self.measured_from;
@@ -1336,4 +1351,49 @@ fn finish(
     };
     window.record(&rec);
     records.push(rec);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A small, deterministic fleet: only the structural property under test matters, not the
+    /// statistics, so there is no reason for this to be bigger than it is.
+    fn fixture() -> Scenario {
+        let mut s = Scenario::default();
+        s.name = "test_drain".into();
+        s.seed = 42;
+        s.replicas = 8;
+        s.max_batch = 16;
+        s.duration_s = 30.0;
+        s.warmup_s = 3.0;
+        s.client_timeout_s = 8.0;
+        s.routing = "p2c".into();
+        s.arrival_rps = 0.5 * s.rated_rps();
+        s
+    }
+
+    /// `drain_frames` must hand out exactly the frames `frames()` would have shown, and nothing
+    /// more or less, whatever the chunk boundaries: concatenating three drains equals one
+    /// undrained run's final `frames()`, and each drain leaves the buffer empty behind it.
+    #[test]
+    fn draining_yields_the_same_frames_as_not_draining() {
+        let sc = fixture();
+        let mut whole = Sim::new(&sc).unwrap();
+        let mut drained = Sim::new(&sc).unwrap();
+
+        let end = whole.end();
+        let chunks = [end / 3, 2 * end / 3, end];
+
+        let mut collected = Vec::new();
+        for &t in &chunks {
+            whole.advance_to(t).unwrap();
+            drained.advance_to(t).unwrap();
+            collected.extend(drained.drain_frames());
+            assert!(drained.frames().is_empty(), "drain_frames must empty the buffer behind it");
+        }
+
+        assert_eq!(collected, whole.frames());
+        assert!(!collected.is_empty(), "the fixture must produce at least one sample");
+    }
 }

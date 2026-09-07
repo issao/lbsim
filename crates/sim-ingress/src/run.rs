@@ -405,8 +405,7 @@ fn drive(run: Arc<Run>, reg: Arc<Registry>, sc: Scenario, ready: mpsc::SyncSende
                 let mut st = run.lock();
                 match outcome {
                     Ok(()) => {
-                        let have = st.frames.len();
-                        st.frames.extend_from_slice(&engine.frames()[have..]);
+                        st.frames.extend(engine.drain_frames());
                         st.sim_time = engine.now();
                         if engine.finished() {
                             st.stop_requested = true;
@@ -421,13 +420,17 @@ fn drive(run: Arc<Run>, reg: Arc<Registry>, sc: Scenario, ready: mpsc::SyncSende
                 run.changed.notify_all();
             }
             Next::Finish => {
-                let Some(engine) = sim.take() else { return };
+                let Some(mut engine) = sim.take() else { return };
                 let mut st = run.lock();
-                let have = st.frames.len();
-                st.frames.extend_from_slice(&engine.frames()[have..]);
+                st.frames.extend(engine.drain_frames());
                 st.sim_time = engine.now();
                 match engine.into_result() {
-                    Ok(r) => {
+                    Ok(mut r) => {
+                        // `into_result` only sees the frames since the last drain (the one just
+                        // above left `Sim`'s copy empty); `st.frames` is the accumulated record
+                        // of the whole run, so `GetResult` reattaches it here rather than off a
+                        // truncated `r.frames`. One clone, once, at the end of a run.
+                        r.frames = st.frames.clone();
                         st.result = Some(export::result(&r, &st.run_id));
                         st.state = State::Complete;
                     }
