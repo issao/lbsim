@@ -13,6 +13,8 @@
     "workload.longPromptMean": 16000,
     "fleet.kvTokensPerReplica": 50000
   },
+  "run": "11-preemption/kv-spiral-never",
+  "compare": "11-preemption/kv-spiral-swap",
   "steps": [
     {
       "at_sim_s": 12,
@@ -20,10 +22,10 @@
       "control_tab": "cluster",
       "observe_tab": "utilization",
       "highlight": "capacity",
-      "title": "Fifty-five requests per second, and the cache is already most of the way full",
+      "title": "Two sessions a second, four replicas, and the cache fills inside a minute",
       "body": [
         "The router is power-of-two-choices, so this is not an imbalance problem. The offered rate is well under rated capacity, so it is not a throughput problem either.",
-        "Key-value utilization is the constraint. A quarter of requests carry a 16,000-token prompt, and each of those conversations keeps its context resident between turns for as long as the user is reading, and a replica holding a few of those has no room left regardless of how few requests it is serving."
+        "Per finding 8: at two sessions a second on four replicas, parked context fills a 30k-token cache inside a minute. Each of those conversations keeps its context resident between turns for as long as the user is reading, and a replica holding a few of those has no room left regardless of how few requests it is serving."
       ],
       "look_for": "KV utilization high while the queue depths stay small. Those two facts together are the whole dynamic."
     },
@@ -33,37 +35,37 @@
       "set": { "fleet.kvTokensPerReplica": 34000 },
       "observe_tab": "utilization",
       "highlight": "preempt",
-      "title": "Take away a third of the cache",
+      "title": "Take away a third of the cache: no eviction path",
       "body": [
-        "Preemptions start. Each one either parks the sequence in host DRAM, about 20 ms each way, or discards it and pays to recompute the prefill later, about 270 ms for 4k tokens and proportionally more for 40k.",
-        "Preemption is not free capacity relief. It is capacity spent twice on the same request."
+        "This run, kv-spiral-never, never swaps a preempted sequence to DRAM. It discards the sequence and pays to recompute the prefill later, about 270 ms for 4k tokens and proportionally more for 40k.",
+        "Preemption without an eviction tier is not capacity relief. It is capacity spent twice on the same request, with no cheaper path available."
       ],
-      "look_for": "The preemption rate rising, and the DRAM path in the tier bandwidth panel starting to carry traffic."
+      "look_for": "The preemption rate rising, and the discard-and-recompute path carrying all of it, because there is no DRAM tier in this run."
     },
     {
       "at_sim_s": 58,
       "speed": 2,
       "observe_tab": "quality",
       "highlight": "goodput",
-      "title": "Throughput holds up. Goodput does not",
+      "title": "Without eviction: 2% attainment, 36 s p99 TTFT",
       "body": [
-        "The fleet is still producing tokens at a respectable rate. Fewer and fewer of them arrive inside their service objective, because every preempted sequence pays a stall its client can see.",
-        "Ranking a policy on throughput would pick this configuration. Ranking it on goodput would not, which is why goodput is the headline number."
+        "Per finding 8: without eviction, late attainment is 2% and p99 TTFT is 36 s. Throughput is not the problem the fleet is still producing tokens; almost none of them arrive inside their service objective, because every preempted sequence pays a stall its client can see.",
+        "Ranking this configuration on throughput would look fine. Ranking it on goodput would not, which is why goodput is the headline number."
       ],
       "look_for": "The two lines separating, and the wasted-GPU fraction in the Utilization tab climbing."
     },
     {
       "at_sim_s": 84,
       "speed": 2,
-      "set": { "workload.arrivalRps": 75 },
+      "control_tab": "run",
       "observe_tab": "quality",
       "highlight": "headline",
-      "title": "Raise the load and it gets worse faster than it should",
+      "title": "Swap to DRAM at 50 GB/s and the same load holds",
       "body": [
-        "Thirty-five per cent more offered load produces far less than forty per cent more work done, because the extra arrivals raise cache pressure, which raises preemption, which raises the amount of prefill being recomputed.",
-        "That is the spiral. The system spends an increasing share of its capacity redoing work it had already done."
+        "Open the A/B view with A = kv-spiral-never (this run) and B = kv-spiral-swap, DRAM at 50 GB/s, at the same offered load.",
+        "Per finding 8: swapping to DRAM at 50 GB/s serves the same load at 95% attainment, 84 ms p99 TTFT, 2.2 preemptions a second, 1,426 vs 780 tokens/s. The preemptions do not stop; the cost of each one drops enough that they stop mattering."
       ],
-      "look_for": "Attainment falling out of proportion to the load increase."
+      "look_for": "Attainment and p99 TTFT separating sharply between A and B, while both keep preempting."
     },
     {
       "at_sim_s": 110,
@@ -71,12 +73,12 @@
       "control_tab": "cluster",
       "observe_tab": "utilization",
       "highlight": "kv",
-      "title": "The fix is a sizing decision, not a policy",
+      "title": "The fix is a tiering decision, not a routing one",
       "body": [
-        "Put the cache back. No routing policy recovers from a cache too small for the context lengths being offered, which is worth knowing before spending a quarter on a better router.",
-        "The Cluster tab is where that experiment lives. Raise KV capacity per replica and watch preemptions go to zero without touching the policy."
+        "No routing policy recovers from a cache too small for the context lengths being offered, which is worth knowing before spending a quarter on a better router. What recovers it is giving preemption somewhere cheap to go.",
+        "1,426 vs 780 tokens/s at the same 95% vs 2% attainment is the DRAM swap path paying for itself: preemption stops being wasted work once discard-and-recompute is no longer the only option."
       ],
-      "look_for": "Preemptions returning to zero as the cache grows, with the routing policy unchanged."
+      "look_for": "Preemptions continuing at 2.2 a second in the swap run while attainment holds at 95%, with the routing policy unchanged."
     }
   ]
 }

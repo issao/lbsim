@@ -125,6 +125,8 @@ const EXPORTED_RUN_IDS = new Set([
   '9-fair-share/fair-share',
   '10-probes/p2c',
   '10-probes/least-kv-probe',
+  '11-preemption/kv-spiral-never',
+  '11-preemption/kv-spiral-swap',
 ]);
 
 /** U48's ten selected dynamics: every one of these must have a script with a `run` field. */
