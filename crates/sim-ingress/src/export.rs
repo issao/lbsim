@@ -624,6 +624,11 @@ pub const DEMOS: &[Demo] = &[
         files: &["route_p2c.txt", "route_least_kv_probe.txt"],
         sweep: None,
     },
+    Demo {
+        group: "11-preemption",
+        files: &["kv_spiral_never.txt", "kv_spiral_swap.txt"],
+        sweep: None,
+    },
 ];
 
 /// Set one key, through the text form so there is exactly one place that knows the key names. The

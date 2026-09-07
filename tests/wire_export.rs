@@ -271,7 +271,7 @@ fn window_counts_sum_to_the_scorecard() {
 }
 
 #[test]
-fn demos_export_writes_the_ten_groups() {
+fn demos_export_writes_every_group() {
     let dir = fresh_dir("demos");
     let overrides = vec![("duration_s".to_string(), "20".to_string()), ("warmup_s".to_string(), "5".to_string())];
     let ids = export::export_demos(&workspace().join("scenarios"), &dir, &overrides).unwrap();
@@ -287,7 +287,8 @@ fn demos_export_writes_the_ten_groups() {
     assert_eq!(count("8-admission/"), 2);
     assert_eq!(count("9-fair-share/"), 2);
     assert_eq!(count("10-probes/"), 2);
-    assert_eq!(ids.len(), 38);
+    assert_eq!(count("11-preemption/"), 2);
+    assert_eq!(ids.len(), 40);
     assert!(ids.contains(&"1-routing/round-robin".to_string()), "{ids:?}");
     assert!(ids.contains(&"2-staleness/telemetry_interval_ms=250".to_string()));
 
@@ -302,7 +303,7 @@ fn demos_export_writes_the_ten_groups() {
         assert!(scenario.contains("warmup_s = 5\n"), "{id}");
     }
     let index = read(&dir.join("runs/index.json"));
-    assert_eq!(index.lines().filter(|l| l.starts_with('{')).count(), 38);
+    assert_eq!(index.lines().filter(|l| l.starts_with('{')).count(), 40);
     assert!(index.contains(r#""scenario_file":""#));
     assert!(read(&dir.join("runs/3-chunking/step_token_budget=4096/scenario.txt")).contains("step_token_budget = 4096\n"));
 }
