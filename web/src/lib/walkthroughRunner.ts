@@ -21,6 +21,8 @@ export interface RunnerHandle {
   play(): void;
   /** Rejects (or throws) with the reason when the run refuses the change. */
   update(patch: Record<string, PatchValue>): Promise<void> | void;
+  /** True once the run has finished producing frames; no `tick()` will move the cursor further. Optional; treated as false when absent. */
+  ended?(): boolean;
 }
 
 export interface StepState {
@@ -72,17 +74,44 @@ export class WalkthroughRunner {
   /**
    * Called by the host whenever the run may have moved. Pauses at the step's timestamp; returns the
    * unchanged state object otherwise.
+   *
+   * The cursor can arrive past `at_sim_s` rather than exactly on it (a coarse poll interval, or the
+   * viewer scrubbing ahead independently). Replay can put itself back exactly, so it rewinds first;
+   * a live run stays where it is and says why, rather than visibly rewinding a live view. And a run
+   * that ends before `at_sim_s` would otherwise leave the step "advancing…" forever, so an ended
+   * handle settles with a reason instead of waiting for a cursor that will never arrive.
    */
   tick(): StepState {
-    if (this.st.advancing && this.handle.cursorS() >= this.st.step.at_sim_s) this.settle();
+    if (!this.st.advancing) return this.st;
+    const { at_sim_s } = this.st.step;
+    const cursor = this.handle.cursorS();
+    if (cursor > at_sim_s) {
+      if (this.handle.mode === 'replay') {
+        this.handle.scrubTo(at_sim_s);
+        this.settle();
+      } else {
+        this.settle('the run is already past this step');
+      }
+      return this.st;
+    }
+    if (cursor === at_sim_s) {
+      this.settle();
+      return this.st;
+    }
+    if (this.handle.ended?.()) this.settle(`the run ended at ${cursor}s before this step`);
     return this.st;
   }
 
-  /** Jump to the current step's timestamp rather than waiting for the run to get there. */
+  /**
+   * Jump to the current step's timestamp rather than waiting for the run to get there. On a live
+   * run, `scrubTo` clamps to what has been recorded so far: if the run has not reached `at_sim_s`
+   * yet, the cursor lands short and the step stays advancing rather than settling somewhere earlier
+   * than asked. `tick()` then does the rest, including its own arrived/overshot/ended handling.
+   */
   skip(): StepState {
     if (!this.st.advancing) return this.st;
     this.handle.scrubTo(this.st.step.at_sim_s);
-    this.settle();
+    this.tick();
     return this.st;
   }
 
@@ -98,18 +127,23 @@ export class WalkthroughRunner {
 
   private advance(step: WalkthroughStep): void {
     if (this.handle.mode === 'replay') {
-      // Every frame already exists, so the timestamp is a seek, not a wait.
+      // Every frame already exists, so the timestamp is a seek, not a wait; tick() below settles it
+      // (and handles the rare case where the seek itself overshoots).
       this.handle.scrubTo(step.at_sim_s);
-      this.settle();
-      return;
+    } else {
+      this.handle.setSpeed(step.speed ?? DEFAULT_SPEED[this.handle.mode]);
+      this.handle.play();
     }
-    this.handle.setSpeed(step.speed ?? DEFAULT_SPEED[this.handle.mode]);
-    this.handle.play();
     this.tick();
   }
 
-  private settle(): void {
+  private settle(reason?: string): void {
     this.handle.pause();
-    this.st = { ...this.st, advancing: false, done: this.st.index === this.script.steps.length - 1 };
+    this.st = {
+      ...this.st,
+      reason: reason ?? this.st.reason,
+      advancing: false,
+      done: this.st.index === this.script.steps.length - 1,
+    };
   }
 }
