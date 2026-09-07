@@ -25,12 +25,18 @@ fn workspace() -> &'static Path {
 /// the one thing the wire does not expose, a run's frame count) and the directory, which is where
 /// an idle checkpoint lands.
 fn start_server(name: &str, idle_threshold_ns: u64) -> (SocketAddr, Arc<Server>, PathBuf) {
+    start_server_with(name, idle_threshold_ns, sim_ingress::server::SSE_WRITE_TIMEOUT)
+}
+
+/// As `start_server`, with the SSE write timeout chosen by the test: the production 30 s is right
+/// for a browser behind a slow proxy and wrong for a test that wants to see the timeout fire.
+fn start_server_with(name: &str, idle_threshold_ns: u64, sse_write_timeout: Duration) -> (SocketAddr, Arc<Server>, PathBuf) {
     let dir = std::env::temp_dir().join(format!("lbsim-ingress-http-{}-{name}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
-    let server = Arc::new(Server::new(dir.clone(), idle_threshold_ns));
+    let server = Arc::new(Server::new(dir.clone(), idle_threshold_ns).with_sse_write_timeout(sse_write_timeout));
     let handle = Arc::clone(&server);
     std::thread::spawn(move || sim_ingress::serve_on(handle, listener));
     (addr, server, dir)
@@ -626,4 +632,108 @@ fn health_answers_without_touching_a_run() {
     assert_eq!(after.str("sim_time_unix_ns"), before.str("sim_time_unix_ns"));
     assert_eq!(after.str("state"), Some("STATE_PAUSED"));
     post(addr, "StopRun", &format!("{{\"run_id\":\"{run_id}\"}}"));
+}
+
+// ---------------------------------------------------------------------------
+// Hardening: a hostile or careless client must not take the server down with it
+// ---------------------------------------------------------------------------
+
+#[test]
+fn deep_json_nesting_is_refused_not_a_crash() {
+    let (addr, _server, _dir) = start_server("deep", 3600 * S);
+    // Twenty thousand open brackets: a recursive parser without a depth limit runs off the
+    // thread stack here, which aborts the process and every run in it.
+    let r = post(addr, "GetRun", &"[".repeat(20 * 1024));
+    assert_eq!(r.status, 400, "{}", r.body);
+    assert!(r.body.contains("nest"), "{}", r.body);
+    let r = request(addr, "GET", "/health", &[], "");
+    assert_eq!((r.status, r.body.as_str()), (200, "ok"));
+}
+
+/// Poll `probe` until it holds or the deadline passes.
+fn wait_until(what: &str, within: Duration, mut probe: impl FnMut() -> bool) {
+    let deadline = Instant::now() + within;
+    while !probe() {
+        assert!(Instant::now() < deadline, "{what}: not within {within:?}");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+#[test]
+fn a_stalled_sse_reader_does_not_pin_the_connection_slot() {
+    let (addr, server, _dir) = start_server_with("stall", 3600 * S, Duration::from_millis(500));
+    let run_id = start_run(addr, "route_p2c.txt", &[("duration_s", "60")], 0.0);
+    // A cadence far above the frame rate gives the writer tens of thousands of updates for a
+    // reader that takes none of them, so the socket buffers fill and the next write blocks; with
+    // no write timeout it would block, holding its thread and slot, for as long as the reader
+    // stayed connected.
+    let (sse, open) = subscribe(addr, &format!("run_id={run_id}&scope=SCOPE_FLEET&samples_per_sim_second=1000&lease_ns={}", 3600 * S));
+    let sid = open.str("subscription_id").unwrap().to_string();
+    assert_eq!(server.connections(), 1);
+    wait_until("the stalled writer gave its slot back", Duration::from_secs(20), || {
+        let r = request(addr, "GET", "/health", &[], "");
+        assert_eq!((r.status, r.body.as_str()), (200, "ok"), "a new connection is accepted meanwhile");
+        server.connections() == 0
+    });
+    // The reader is still connected and its lease still runs: a reconnect within it would resume.
+    assert_eq!(server.open_subscriptions(), 1);
+    assert_eq!(renew(addr, &sid, 30 * S).bool("expired"), Some(false));
+    drop(sse);
+    post(addr, "StopRun", &format!("{{\"run_id\":\"{run_id}\"}}"));
+}
+
+#[test]
+fn a_closed_sse_client_frees_its_slot_at_once_and_is_reaped_when_its_lease_runs_out() {
+    let (addr, server, _dir) = start_server("closed", 3600 * S);
+    // Paced, so the writer touches the socket every 250 ms of wall time and notices the peer is gone.
+    let run_id = start_run(addr, "route_p2c.txt", &[("duration_s", "100")], 1.0);
+    let query = format!("run_id={run_id}&scope=SCOPE_FLEET&samples_per_sim_second=4&lease_ns={}", 30 * S);
+    let (mut sse, open) = subscribe(addr, &query);
+    let sid = open.str("subscription_id").unwrap().to_string();
+    let last = sse.update().id.unwrap();
+    drop(sse);
+    wait_until("the writer of a vanished peer exited", Duration::from_secs(5), || server.connections() == 0);
+
+    // Within the lease the subscription is still there to resume from, per WIRE.md.
+    let mut sse = open_subscription(addr, &format!("{query}&subscription_id={sid}"), &[("Last-Event-ID", &last.to_string())])
+        .unwrap_or_else(|(s, b)| panic!("{s}: {b}"));
+    assert_eq!(sse.next().unwrap().event, "open");
+    assert_eq!(sse.update().id, Some(last + 1));
+    drop(sse);
+    wait_until("the second writer exited", Duration::from_secs(5), || server.connections() == 0);
+
+    // Once the lease runs out with no writer left to notice, the next request reaps the ring.
+    assert_eq!(renew(addr, &sid, 1).bool("expired"), Some(false));
+    wait_until("the expired subscription was reaped", Duration::from_secs(5), || {
+        renew(addr, &sid, 30 * S).bool("expired") == Some(true) && server.open_subscriptions() == 0
+    });
+    assert_eq!(
+        open_subscription(addr, &format!("{query}&subscription_id={sid}"), &[("Last-Event-ID", &last.to_string())]).unwrap_err().0,
+        410,
+        "a reaped subscription cannot be resumed"
+    );
+    post(addr, "StopRun", &format!("{{\"run_id\":\"{run_id}\"}}"));
+}
+
+#[test]
+fn is_final_is_sent_exactly_once() {
+    let (addr, _server, _dir) = start_server("final", 3600 * S);
+    // Paced at the recorded cadence, so the subscription reads each frame as it closes and reaches
+    // the last one before the run has aggregated its result: the window in which a final update
+    // could go out twice.
+    let run_id = start_run(addr, "route_p2c.txt", &[("duration_s", "20")], 8.0);
+    let (mut sse, _open) = subscribe(addr, &format!("run_id={run_id}&scope=SCOPE_FLEET&samples_per_sim_second=4&lease_ns={}", 60 * S));
+    let mut updates = Vec::new();
+    while let Some(ev) = sse.next() {
+        assert_eq!(ev.event, "update", "{}", ev.data);
+        assert_eq!(ev.id, Some(updates.len() as u64 + 1));
+        let u = parse_json(&ev.data).unwrap();
+        updates.push((u.u64("sim_time_unix_ns").unwrap(), u.bool("final") == Some(true)));
+    }
+    assert!(updates.len() >= 8, "{updates:?}");
+    let finals: Vec<usize> = updates.iter().enumerate().filter(|(_, (_, f))| *f).map(|(i, _)| i).collect();
+    assert_eq!(finals, vec![updates.len() - 1], "one final update, and it is the last: {updates:?}");
+    assert!(updates.windows(2).all(|w| w[0].0 < w[1].0), "no frame is sent twice: {updates:?}");
+    let status = wait_for_state(addr, &run_id, "STATE_COMPLETE", Duration::from_secs(5));
+    assert_eq!(status.str("error"), Some(""));
 }

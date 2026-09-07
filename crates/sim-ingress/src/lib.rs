@@ -20,7 +20,7 @@ pub use server::Server;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Component, Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 /// Cap on concurrent connections. A bound rather than a thread pool because the workload is a handful
@@ -44,21 +44,19 @@ pub fn serve(dir: &str, port: u16) -> Result<(), String> {
 /// server rather than read from the environment. What tests use, on an ephemeral port, keeping
 /// their own handle on the server to look at run state the wire does not expose.
 pub fn serve_on(server: Arc<Server>, listener: TcpListener) -> Result<(), String> {
-    let live = Arc::new(AtomicUsize::new(0));
     for stream in listener.incoming() {
         let Ok(stream) = stream else { continue };
-        if live.load(Ordering::Relaxed) >= MAX_CONNECTIONS {
+        if server.connections.load(Ordering::Relaxed) >= MAX_CONNECTIONS {
             // Shed rather than queue. A refused connection is a clear signal; a growing thread count
             // is the failure that looks like a hang.
             let _ = respond(stream, 503, "text/plain", b"busy");
             continue;
         }
-        live.fetch_add(1, Ordering::Relaxed);
+        server.connections.fetch_add(1, Ordering::Relaxed);
         let server = Arc::clone(&server);
-        let live2 = Arc::clone(&live);
         std::thread::spawn(move || {
             let _ = handle(stream, &server);
-            live2.fetch_sub(1, Ordering::Relaxed);
+            server.connections.fetch_sub(1, Ordering::Relaxed);
         });
     }
     Ok(())

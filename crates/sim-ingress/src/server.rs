@@ -17,6 +17,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::io::Write;
 use std::net::TcpStream;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
@@ -58,7 +59,16 @@ pub struct Server {
     pub root: PathBuf,
     pub runs: Arc<Registry>,
     subs: Mutex<BTreeMap<u64, Sub>>,
+    sse_write_timeout: Duration,
+    /// Connections being handled right now, kept by the accept loop in `lib.rs`.
+    pub(crate) connections: AtomicUsize,
 }
+
+/// How long one SSE write may block before the stream is abandoned. A reader that stops reading
+/// fills the socket buffers and then blocks the writer at the next send; without a bound that
+/// writer holds a thread, a connection slot and a lease for as long as the peer stays connected.
+/// Thirty seconds is longer than any proxy or browser hiccup and shorter than a forgotten tab.
+pub const SSE_WRITE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// A subscription's delivery state. The lease lives in the registry; this is the ring and the
 /// cursor, which survive a reconnect while the lease does.
@@ -83,7 +93,26 @@ impl Server {
             runs: Arc::new(Registry::new(root.clone(), idle_threshold_ns)),
             root,
             subs: Mutex::new(BTreeMap::new()),
+            sse_write_timeout: SSE_WRITE_TIMEOUT,
+            connections: AtomicUsize::new(0),
         }
+    }
+
+    /// Connections being handled right now. What the wire cannot show and a test about a stalled or
+    /// vanished client needs: that its handler thread is gone.
+    pub fn connections(&self) -> usize {
+        self.connections.load(Ordering::Relaxed)
+    }
+
+    /// Subscriptions holding a ring, live or waiting to be reaped.
+    pub fn open_subscriptions(&self) -> usize {
+        self.subs().len()
+    }
+
+    /// Tests lower the write timeout so a stalled reader is detected in well under a second.
+    pub fn with_sse_write_timeout(mut self, timeout: Duration) -> Server {
+        self.sse_write_timeout = timeout;
+        self
     }
 
     fn subs(&self) -> MutexGuard<'_, BTreeMap<u64, Sub>> {
@@ -92,6 +121,7 @@ impl Server {
 
     /// Route one ingress request. Anything unknown is a 404 with an `error` body, per WIRE.md rule 6.
     pub fn handle(&self, req: Request, stream: TcpStream) -> std::io::Result<()> {
+        self.reap();
         let rpc = req.path.strip_prefix(INGRESS_PREFIX).unwrap_or("");
         match (req.method.as_str(), rpc) {
             ("GET", "OpenSubscription") => self.open_subscription(&req, stream),
@@ -101,6 +131,21 @@ impl Server {
             },
             (_, "OpenSubscription") => error(stream, 405, "OpenSubscription is a GET"),
             _ => error(stream, 405, "ingress RPCs are POST"),
+        }
+    }
+
+    /// Subscriptions whose lease ran out with no writer left to notice. A stream that ended in a
+    /// write error, by timeout or because the peer vanished, keeps its ring and its lease so that
+    /// a reconnect within the lease resumes, as WIRE.md promises; nothing else would ever reclaim
+    /// them. Done on every ingress request rather than on a timer, so the cost is one map sweep
+    /// per request and there is no thread to forget.
+    fn reap(&self) {
+        let expired = self.runs.leases().expire(wall_now_ns());
+        if !expired.is_empty() {
+            let mut subs = self.subs();
+            for lease in expired {
+                subs.remove(&lease.id.0);
+            }
         }
     }
 
@@ -194,6 +239,7 @@ impl Server {
     // -----------------------------------------------------------------------
 
     fn open_subscription(&self, req: &Request, mut stream: TcpStream) -> std::io::Result<()> {
+        stream.set_write_timeout(Some(self.sse_write_timeout))?;
         let q = parse_query(&req.query);
         let get = |k: &str| q.iter().find(|(key, _)| key == k).map(|(_, v)| v.as_str()).filter(|v| !v.is_empty());
         let Some(run_id) = get("run_id") else { return error(stream, 400, "run_id is required") };
@@ -289,7 +335,9 @@ impl Server {
     /// The update loop: one event per sample at the client's cadence, replayed from the ring when
     /// the ring has something newer than `last_sent`, generated from the run's frames otherwise.
     /// Ends when the lease expires, the subscription is closed or superseded, or the final update
-    /// has gone out.
+    /// has gone out. A write error (the peer vanished, or the write timeout: a peer that stopped
+    /// reading) ends it too, freeing the thread and the connection slot at once; the subscription
+    /// itself stays for a reconnect until its lease runs out, and `reap` takes it then.
     fn stream_updates(
         &self,
         mut stream: TcpStream,
@@ -326,18 +374,12 @@ impl Server {
                     let st = run.lock();
                     let j = run::frame_index(sub.next_k, sub.samples_per_sim_second, st.sample_interval_ns());
                     let n = st.frames.len();
-                    let pick = if j <= n {
-                        Some((j - 1, st.is_terminal() && j == n))
-                    } else if st.is_terminal() {
-                        if n == 0 {
-                            drop(st);
-                            return self.finish_subscription(id);
-                        }
-                        Some((n - 1, true))
-                    } else {
-                        None
-                    };
-                    pick.and_then(|(idx, is_final)| {
+                    let ending = st.is_terminal() || st.stop_requested;
+                    if n == 0 && ending {
+                        drop(st);
+                        return self.finish_subscription(id);
+                    }
+                    pick(j, n, ending).and_then(|(idx, is_final)| {
                         let frame = &st.frames[idx];
                         let row = run::row(frame, &st.scenario, &sub.spec)?;
                         let u = SubscriptionUpdate {
@@ -389,6 +431,23 @@ impl Server {
         self.runs.leases().close(&SubscriptionId(id));
         self.subs().remove(&id);
         Ok(())
+    }
+}
+
+/// Which frame the next sample reads, as an index into `n` closed frames given the 1-based frame
+/// number `j` from `run::frame_index`, and whether that update is the final one. `ending` means no
+/// frame will follow these: the run is terminal, or a stop is requested, which the run thread sets
+/// in the same critical section as the last frames it closes. Reading `is_terminal` alone left a
+/// window between the last frame and `Complete` in which frame `n` went out once unfinal and then
+/// again, final. Past the frames while the run is ending, the final update repeats the last frame,
+/// so a viewer that had caught up still sees the end. The caller handles `n == 0`.
+fn pick(j: usize, n: usize, ending: bool) -> Option<(usize, bool)> {
+    if j <= n {
+        Some((j - 1, ending && j == n))
+    } else if ending {
+        Some((n - 1, true))
+    } else {
+        None
     }
 }
 
@@ -557,9 +616,12 @@ impl Json {
     }
 }
 
+/// Deepest JSON nesting a request may carry. A `StartRun` body is three levels deep.
+const MAX_DEPTH: usize = 64;
+
 pub fn parse_json(text: &str) -> Result<Json, String> {
     let mut p = Parser { s: text.as_bytes(), i: 0 };
-    let v = p.value()?;
+    let v = p.value(0)?;
     p.ws();
     if p.i != p.s.len() {
         return Err(format!("trailing characters at byte {}", p.i));
@@ -589,7 +651,13 @@ impl Parser<'_> {
             Err(format!("expected {:?} at byte {}", c as char, self.i))
         }
     }
-    fn value(&mut self) -> Result<Json, String> {
+    /// `depth` is the nesting level. The parser recurses once per level, so a body of nothing but
+    /// open brackets would otherwise be a stack overflow, which aborts the whole process and every
+    /// run in it rather than failing one request.
+    fn value(&mut self, depth: usize) -> Result<Json, String> {
+        if depth > MAX_DEPTH {
+            return Err(format!("nesting deeper than {MAX_DEPTH} levels at byte {}", self.i));
+        }
         self.ws();
         match self.peek() {
             Some(b'{') => {
@@ -605,7 +673,7 @@ impl Parser<'_> {
                     let k = self.string()?;
                     self.ws();
                     self.expect(b':')?;
-                    let v = self.value()?;
+                    let v = self.value(depth + 1)?;
                     fields.push((k, v));
                     self.ws();
                     match self.peek() {
@@ -627,7 +695,7 @@ impl Parser<'_> {
                     return Ok(Json::Arr(items));
                 }
                 loop {
-                    items.push(self.value()?);
+                    items.push(self.value(depth + 1)?);
                     self.ws();
                     match self.peek() {
                         Some(b',') => self.i += 1,
@@ -709,6 +777,23 @@ impl Parser<'_> {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn the_final_update_is_the_last_frame_exactly_once() {
+        assert_eq!(pick(3, 5, false), Some((2, false)));
+        assert_eq!(pick(5, 5, false), Some((4, false)), "the last frame so far, with more to come");
+        assert_eq!(pick(5, 5, true), Some((4, true)), "the last frame there will be");
+        assert_eq!(pick(6, 5, false), None, "ahead of the run: wait");
+        assert_eq!(pick(6, 5, true), Some((4, true)), "caught up when the run ended: the last frame, final");
+    }
+
+    #[test]
+    fn nesting_is_bounded() {
+        assert!(parse_json(&"[".repeat(MAX_DEPTH + 1)).unwrap_err().contains("nesting"));
+        let ok = format!("{}{}", "[".repeat(MAX_DEPTH), "]".repeat(MAX_DEPTH));
+        assert!(parse_json(&ok).is_ok());
+        assert!(parse_json(&"[".repeat(20 * 1024)).is_err(), "no stack overflow");
+    }
 
     /// Every request field this file reads. WIRE.md's rule holds both ways: what the server emits
     /// is checked in `tests/wire_export.rs` and `tests/ingress_http.rs`; what it *reads* is checked

@@ -74,6 +74,27 @@ pub struct RunState {
 }
 
 impl RunState {
+    pub fn new(run_id: String, scenario: Scenario, max_realtime_factor: f64) -> RunState {
+        let sim_end = EPOCH_BASE + (scenario.duration_s * 1e9) as Nanos;
+        RunState {
+            run_id,
+            scenario,
+            state: State::Queued,
+            paused: false,
+            idle_stopped: false,
+            realtime_factor: max_realtime_factor,
+            sim_time: EPOCH_BASE,
+            sim_end,
+            frames: Vec::new(),
+            error: String::new(),
+            result: None,
+            step_target: None,
+            stop_requested: false,
+            checkpoints: 0,
+            note: String::new(),
+        }
+    }
+
     pub fn is_terminal(&self) -> bool {
         matches!(self.state, State::Complete | State::Failed)
     }
@@ -244,31 +265,20 @@ impl Registry {
         if !(max_realtime_factor.is_finite() && max_realtime_factor >= 0.0) {
             return Err(refused(400, "max_realtime_factor must be finite and non-negative"));
         }
+        // Held until the run is registered, so the cap is exact under concurrent starts.
+        let mut runs = self.runs.lock().unwrap_or_else(|e| e.into_inner());
+        let live = runs.values().filter(|r| !r.lock().is_terminal()).count();
+        if live >= MAX_LIVE_RUNS {
+            return Err(refused(503, format!("{live} runs are live, the most this server holds; stop one first")));
+        }
         let run_id = {
             let mut n = self.next_id.lock().unwrap_or_else(|e| e.into_inner());
             let id = format!("r-{n}");
             *n += 1;
             id
         };
-        let sim_end = EPOCH_BASE + (scenario.duration_s * 1e9) as Nanos;
         let run = Arc::new(Run {
-            state: Mutex::new(RunState {
-                run_id: run_id.clone(),
-                scenario: scenario.clone(),
-                state: State::Queued,
-                paused: false,
-                idle_stopped: false,
-                realtime_factor: max_realtime_factor,
-                sim_time: EPOCH_BASE,
-                sim_end,
-                frames: Vec::new(),
-                error: String::new(),
-                result: None,
-                step_target: None,
-                stop_requested: false,
-                checkpoints: 0,
-                note: String::new(),
-            }),
+            state: Mutex::new(RunState::new(run_id.clone(), scenario.clone(), max_realtime_factor)),
             changed: Condvar::new(),
         });
         let (ready_tx, ready_rx) = mpsc::sync_channel::<Result<(), String>>(1);
@@ -282,10 +292,16 @@ impl Registry {
             Ok(Err(why)) => return Err(refused(400, why)),
             Err(_) => return Err(refused(500, "run thread exited before reporting")),
         }
-        self.runs.lock().unwrap_or_else(|e| e.into_inner()).insert(run_id.clone(), run);
+        runs.insert(run_id.clone(), run);
         Ok(run_id)
     }
 }
+
+/// How many non-terminal runs one server holds. Each is a thread and an engine, and an unpaced run
+/// is never reaped by the idle guard, so without a bound a loop of `StartRun`s is a way to fill the
+/// box. Eight is more than a handful of browser tabs and less than the reserved container CPU can
+/// keep paced; a 503 past it says "stop one" rather than slowing every run down.
+pub const MAX_LIVE_RUNS: usize = 8;
 
 /// What the run thread decided to do next, under the lock, to be done outside it.
 enum Next {
@@ -320,6 +336,9 @@ fn drive(run: Arc<Run>, reg: Arc<Registry>, sc: Scenario, ready: mpsc::SyncSende
     }
 
     loop {
+        // Built under the lock, written after it: every subscription's writer waits on this lock,
+        // so a file write inside it stalls every viewer for the duration of the write.
+        let mut pending: Option<Checkpoint> = None;
         let next = {
             let mut st = run.lock();
             let sample_iv = st.sample_interval_ns();
@@ -332,7 +351,7 @@ fn drive(run: Arc<Run>, reg: Arc<Registry>, sc: Scenario, ready: mpsc::SyncSende
             let queued = usize::from(st.step_target.is_some() || (advancing && st.realtime_factor == 0.0));
             let mut checkpointed_now = false;
             if guard.observe(now_wall, live, queued) == IdleDecision::Shutdown {
-                checkpoint(&reg.root, &st);
+                pending = Some(Checkpoint::build(&st));
                 st.checkpoints += 1;
                 checkpointed_now = true;
                 if !st.is_terminal() {
@@ -381,6 +400,10 @@ fn drive(run: Arc<Run>, reg: Arc<Registry>, sc: Scenario, ready: mpsc::SyncSende
             }
         };
 
+        if let Some(cp) = pending.take() {
+            cp.write(&reg.root);
+        }
+
         match next {
             Next::Exit => return,
             Next::Wait => {
@@ -402,21 +425,7 @@ fn drive(run: Arc<Run>, reg: Arc<Registry>, sc: Scenario, ready: mpsc::SyncSende
                 }
                 let Some(engine) = sim.as_mut() else { return };
                 let outcome = engine.advance_to(to);
-                let mut st = run.lock();
-                match outcome {
-                    Ok(()) => {
-                        st.frames.extend(engine.drain_frames());
-                        st.sim_time = engine.now();
-                        if engine.finished() {
-                            st.stop_requested = true;
-                        }
-                    }
-                    Err(why) => {
-                        st.state = State::Failed;
-                        st.error = why;
-                        st.sim_time = engine.now();
-                    }
-                }
+                absorb(&mut run.lock(), engine, outcome);
                 run.changed.notify_all();
             }
             Next::Finish => {
@@ -445,39 +454,74 @@ fn drive(run: Arc<Run>, reg: Arc<Registry>, sc: Scenario, ready: mpsc::SyncSende
     }
 }
 
+/// What the run thread folds into the state after one `advance_to`, whatever its verdict. The
+/// frames the engine closed in that chunk are kept even when the chunk failed: they are history a
+/// viewer was promised, and a failure that erases the last second before it is harder to diagnose
+/// than one that keeps it. A finished engine requests its own stop in the same critical section as
+/// its last frames, which is what lets a subscription mark the last frame final on first sight.
+fn absorb(st: &mut RunState, engine: &mut Sim, outcome: Result<(), String>) {
+    st.frames.extend(engine.drain_frames());
+    st.sim_time = engine.now();
+    match outcome {
+        Ok(()) => {
+            if engine.finished() {
+                st.stop_requested = true;
+            }
+        }
+        Err(why) => {
+            st.state = State::Failed;
+            st.error = why;
+        }
+    }
+}
+
 /// The idle checkpoint: the run as it stands, in the exact documents `export.rs` writes for a
 /// finished run, under `runs/<run_id>/` of the served directory. The engine cannot be snapshotted
 /// yet (`Leaf::snapshot` is unimplemented), so what is saved is what a viewer could have seen: the
 /// status, the scenario, every frame as a fleet-scope update, and the result once there is one.
-/// A write failure is logged and not fatal: the run is still in memory.
-fn checkpoint(root: &std::path::Path, st: &RunState) {
-    let dir = root.join("runs").join(&st.run_id);
-    let write = |name: &str, body: String| {
-        if let Err(e) = std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(dir.join(name), body)) {
-            println!("checkpoint {}: {}: {e}", st.run_id, dir.join(name).display());
+/// Built under the run lock and written outside it. A write failure is logged and not fatal: the
+/// run is still in memory.
+struct Checkpoint {
+    run_id: String,
+    docs: Vec<(&'static str, String)>,
+}
+
+impl Checkpoint {
+    fn build(st: &RunState) -> Checkpoint {
+        let mut docs = vec![
+            ("status.json", wire::run_status_json(&st.status()) + "\n"),
+            ("scenario.txt", st.scenario.to_text()),
+        ];
+        let spec = RowSpec { target: Target::Fleet, metrics: Vec::new(), percentiles: export::PERCENTILES.to_vec() };
+        let n = st.frames.len();
+        let mut lines = String::new();
+        for (i, f) in st.frames.iter().enumerate() {
+            if let Some(row) = row(f, &st.scenario, &spec) {
+                let u = SubscriptionUpdate {
+                    subscription_id: CHECKPOINT_SUBSCRIPTION_ID.to_string(),
+                    sim_time_unix_ns: f.t,
+                    realtime_factor: st.realtime_factor,
+                    row,
+                    is_final: st.is_terminal() && i + 1 == n,
+                };
+                lines.push_str(&wire::subscription_update_json(&u));
+                lines.push('\n');
+            }
         }
-    };
-    write("status.json", wire::run_status_json(&st.status()) + "\n");
-    write("scenario.txt", st.scenario.to_text());
-    let spec = RowSpec { target: Target::Fleet, metrics: Vec::new(), percentiles: export::PERCENTILES.to_vec() };
-    let n = st.frames.len();
-    let mut lines = String::new();
-    for (i, f) in st.frames.iter().enumerate() {
-        if let Some(row) = row(f, &st.scenario, &spec) {
-            let u = SubscriptionUpdate {
-                subscription_id: CHECKPOINT_SUBSCRIPTION_ID.to_string(),
-                sim_time_unix_ns: f.t,
-                realtime_factor: st.realtime_factor,
-                row,
-                is_final: st.is_terminal() && i + 1 == n,
-            };
-            lines.push_str(&wire::subscription_update_json(&u));
-            lines.push('\n');
+        docs.push(("fleet.jsonl", lines));
+        if let Some(r) = &st.result {
+            docs.push(("result.json", wire::run_result_json(r) + "\n"));
         }
+        Checkpoint { run_id: st.run_id.clone(), docs }
     }
-    write("fleet.jsonl", lines);
-    if let Some(r) = &st.result {
-        write("result.json", wire::run_result_json(r) + "\n");
+
+    fn write(&self, root: &std::path::Path) {
+        let dir = root.join("runs").join(&self.run_id);
+        for (name, body) in &self.docs {
+            if let Err(e) = std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(dir.join(name), body)) {
+                println!("checkpoint {}: {}: {e}", self.run_id, dir.join(name).display());
+            }
+        }
     }
 }
 
@@ -705,5 +749,109 @@ mod tests {
     #[test]
     fn step_cap_is_one_minute() {
         assert_eq!(STEP_CAP_NS, 60 * 1_000_000_000);
+    }
+
+    fn scenario(duration_s: &str) -> Scenario {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../scenarios/route_p2c.txt");
+        let mut sc = Scenario::parse(&std::fs::read_to_string(path).unwrap()).unwrap();
+        export::override_key(&mut sc, "duration_s", duration_s).unwrap();
+        sc
+    }
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("lbsim-run-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// One second of engine: enough closed frames to tell "kept" from "dropped".
+    fn advanced_sim() -> (Scenario, Sim) {
+        let sc = scenario("100");
+        let mut sim = Sim::new(&sc).unwrap();
+        sim.advance_to(EPOCH_BASE + 1_000_000_000).unwrap();
+        assert!(sim.frames().len() >= 4, "{}", sim.frames().len());
+        (sc, sim)
+    }
+
+    #[test]
+    fn a_failed_chunk_keeps_the_frames_it_closed() {
+        let (sc, mut sim) = advanced_sim();
+        let closed = sim.frames().len();
+        let mut st = RunState::new("r-1".into(), sc, 0.0);
+        absorb(&mut st, &mut sim, Err("the leaf refused".into()));
+        assert_eq!(st.state, State::Failed);
+        assert_eq!(st.error, "the leaf refused");
+        assert_eq!(st.frames.len(), closed);
+        assert!(sim.frames().is_empty(), "drained, not copied");
+        assert_eq!(st.sim_time, sim.now());
+        assert!(!st.stop_requested);
+    }
+
+    #[test]
+    fn a_finished_engine_requests_the_stop_with_its_last_frames() {
+        let sc = scenario("20");
+        let mut sim = Sim::new(&sc).unwrap();
+        let mut st = RunState::new("r-1".into(), sc, 0.0);
+        let outcome = sim.advance_to(st.sim_end);
+        let closed = sim.frames().len();
+        absorb(&mut st, &mut sim, outcome);
+        assert!(sim.finished());
+        assert!(st.stop_requested);
+        assert_eq!(st.state, State::Queued, "the stop is the run thread's to finish");
+        assert_eq!(st.frames.len(), closed);
+    }
+
+    #[test]
+    fn a_checkpoint_is_built_under_the_lock_and_written_after_it() {
+        let (sc, mut sim) = advanced_sim();
+        let mut st = RunState::new("r-7".into(), sc, 1.0);
+        absorb(&mut st, &mut sim, Ok(()));
+        let cp = Checkpoint::build(&st);
+        let names: Vec<&str> = cp.docs.iter().map(|(n, _)| *n).collect();
+        assert_eq!(names, ["status.json", "scenario.txt", "fleet.jsonl"], "no result until the run has one");
+        let fleet = &cp.docs[2].1;
+        assert_eq!(fleet.lines().count(), st.frames.len());
+        assert!(!fleet.contains("\"final\":true"), "a live run's checkpoint is not final");
+
+        st.state = State::Failed;
+        let cp = Checkpoint::build(&st);
+        let finals: Vec<usize> =
+            cp.docs[2].1.lines().enumerate().filter(|(_, l)| l.contains("\"final\":true")).map(|(i, _)| i).collect();
+        assert_eq!(finals, [st.frames.len() - 1], "a terminal run's last frame is final");
+
+        // Written where `export.rs` puts a finished run, from a value that owns no lock.
+        let root = temp_dir("checkpoint");
+        cp.write(&root);
+        let dir = root.join("runs").join("r-7");
+        for (name, body) in &cp.docs {
+            assert_eq!(std::fs::read_to_string(dir.join(name)).unwrap(), *body);
+        }
+    }
+
+    #[test]
+    fn the_ninth_live_run_is_refused_until_one_ends() {
+        let reg = Arc::new(Registry::new(temp_dir("cap"), 3600 * 1_000_000_000));
+        // Paced, so none of them finishes during the test.
+        let ids: Vec<String> = (0..MAX_LIVE_RUNS).map(|_| reg.start(scenario("100"), 1.0).unwrap()).collect();
+        let refused = reg.start(scenario("100"), 1.0).unwrap_err();
+        assert_eq!(refused.code, 503, "{}", refused.message);
+        assert_eq!(reg.list().len(), MAX_LIVE_RUNS, "the refused run was never registered");
+
+        let first = reg.get(&ids[0]).unwrap();
+        first.stop();
+        {
+            let mut st = first.lock();
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while !st.is_terminal() {
+                assert!(Instant::now() < deadline, "the stopped run never ended: {:?}", st.state);
+                st = first.changed.wait_timeout(st, Duration::from_millis(50)).unwrap_or_else(|e| e.into_inner()).0;
+            }
+        }
+        let ninth = reg.start(scenario("100"), 1.0).unwrap();
+        assert_eq!(reg.list().len(), MAX_LIVE_RUNS + 1, "a finished run stays listed; only live ones count");
+        for id in ids.iter().skip(1).chain([&ninth]) {
+            reg.get(id).unwrap().stop();
+        }
     }
 }
