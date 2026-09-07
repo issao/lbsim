@@ -9,7 +9,7 @@
 use lbsim::scenario::Scenario;
 
 /// Every key `parse` accepts, which is also every key `to_text` must emit.
-const KEYS: [&str; 50] = [
+const KEYS: [&str; 51] = [
     "name", "seed", "duration_s", "warmup_s", "replicas", "max_batch", "step_base_ms",
     "step_per_seq_ms", "step_per_kv_ktoken_ms", "kv_capacity_tokens", "prefill_tokens_per_s",
     "step_token_budget", "max_queue", "disable_decode", "preemption", "preemption_victim",
@@ -20,7 +20,7 @@ const KEYS: [&str; 50] = [
     "admission", "admission_headroom", "fair_share_burst", "tenants", "tenant_weights", "tenant_demand",
     "telemetry_interval_ms", "telemetry_delay_ms", "client_timeout_s", "max_attempts",
     "retry_budget_fraction", "retry_backoff_s", "ttft_slo_ms", "itl_slo_ms", "e2e_slo_s",
-    "sample_interval_ms",
+    "sample_interval_ms", "trace_sample_rate",
 ];
 
 /// A scenario in which no field holds its default value, so a field that silently falls back to the
@@ -77,6 +77,7 @@ fn all_fields_distinct() -> Scenario {
         itl_slo_ms: 65.5,
         e2e_slo_s: 22.5,
         sample_interval_ms: 125.5,
+        trace_sample_rate: 0.35,
     }
 }
 
@@ -128,6 +129,7 @@ fn to_text_then_parse_preserves_every_field() {
     assert_eq!(got.itl_slo_ms, want.itl_slo_ms);
     assert_eq!(got.e2e_slo_s, want.e2e_slo_s);
     assert_eq!(got.sample_interval_ms, want.sample_interval_ms);
+    assert_eq!(got.trace_sample_rate, want.trace_sample_rate);
 
     // And the trip is idempotent, so an archived scenario re-saved is byte-identical.
     assert_eq!(got.to_text(), want.to_text());

@@ -127,6 +127,9 @@ pub struct Scenario {
     pub e2e_slo_s: f64,
 
     pub sample_interval_ms: f64,
+    /// Fraction of arrivals whose journey is recorded span by span, drawn from a stream of its own so
+    /// the run is byte-identical with tracing on or off. Zero records nothing.
+    pub trace_sample_rate: f64,
 }
 
 impl Default for Scenario {
@@ -189,6 +192,7 @@ impl Default for Scenario {
             itl_slo_ms: 80.0,
             e2e_slo_s: 30.0,
             sample_interval_ms: 250.0,
+            trace_sample_rate: 0.0,
         }
     }
 }
@@ -248,6 +252,7 @@ impl Scenario {
                 "preemption_victim" => s.preemption_victim = v.clone(),
                 "dram_capacity_tokens" => s.dram_capacity_tokens = f("dram_capacity_tokens"),
                 "swap_gbps" => s.swap_gbps = f("swap_gbps"),
+                "trace_sample_rate" => s.trace_sample_rate = f("trace_sample_rate"),
                 "arrival_rps" => s.arrival_rps = f("arrival_rps"),
                 "prompt_mean" => s.prompt_mean = f("prompt_mean"),
                 "prompt_cv" => s.prompt_cv = f("prompt_cv"),
@@ -402,7 +407,7 @@ impl Scenario {
              telemetry_interval_ms = {}\ntelemetry_delay_ms = {}\n\
              client_timeout_s = {}\nmax_attempts = {}\nretry_budget_fraction = {}\n\
              retry_backoff_s = {}\nttft_slo_ms = {}\nitl_slo_ms = {}\ne2e_slo_s = {}\n\
-             sample_interval_ms = {}\n",
+             sample_interval_ms = {}\ntrace_sample_rate = {}\n",
             self.name, self.seed, self.duration_s, self.warmup_s, self.replicas, self.max_batch,
             self.step_base_ms, self.step_per_seq_ms, self.step_per_kv_ktoken_ms,
             self.kv_capacity_tokens, self.prefill_tokens_per_s,
@@ -419,7 +424,7 @@ impl Scenario {
             self.telemetry_interval_ms, self.telemetry_delay_ms,
             self.client_timeout_s, self.max_attempts, self.retry_budget_fraction,
             self.retry_backoff_s, self.ttft_slo_ms, self.itl_slo_ms, self.e2e_slo_s,
-            self.sample_interval_ms
+            self.sample_interval_ms, self.trace_sample_rate,
         )
     }
 }

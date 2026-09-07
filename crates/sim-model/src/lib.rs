@@ -23,6 +23,9 @@ use sim_scenario::Scenario;
 use sim_workload::Request;
 use std::collections::VecDeque;
 
+pub mod trace;
+use trace::{ResourceSnapshot, Tracer};
+
 struct Seq {
     req: Request,
     prefill_left: u32,
@@ -129,6 +132,8 @@ pub struct Replica {
     last_step_ns: Nanos,
     completed: u64,
     preemptions: u64,
+    /// Records what happens to the sequences the loop asked to trace; inert otherwise.
+    tracer: Tracer,
 }
 
 /// A sequence that emitted its last token this step, with what the record needs. The SLO verdict is
@@ -331,6 +336,7 @@ impl Replica {
                         swapped: false,
                         req,
                     });
+                    r.tracer.admitted(r.running[r.running.len() - 1].req.id);
                 }
                 None => break,
             }
@@ -354,6 +360,7 @@ impl Replica {
                 s.prefill_left -= take;
                 budget -= take;
                 prefill_tokens += take;
+                r.tracer.prefill_chunk(s.req.id, take);
             }
         }
         let mut decoding = r.running.iter().filter(|s| s.prefill_left == 0).count();
@@ -378,6 +385,7 @@ impl Replica {
         let step_ns = cost.step_ns(decoding, r.kv_tokens, prefill_tokens) + extra_ns;
         let token_at = now + step_ns;
         r.last_step_ns = step_ns;
+        r.tracer.snapshot(ResourceSnapshot { start: now, end: token_at, batch_size: r.running.len() as u32, running: r.running.len() as u32, queued: r.queue.len() as u32, kv_tokens: r.kv_tokens, decoding: decoding as u32, prefill_tokens, step_ns });
 
         let mut finished: Vec<usize> = Vec::new();
         for (idx, s) in r.running.iter_mut().enumerate() {
@@ -393,6 +401,7 @@ impl Replica {
                 s.itl_count += 1;
             }
             s.last_token_at = token_at;
+            r.tracer.decode_step(s.req.id);
             s.output_left = s.output_left.saturating_sub(1);
             if s.output_left == 0 {
                 finished.push(idx);
@@ -407,6 +416,7 @@ impl Replica {
                 .kv_tokens
                 .saturating_sub(s.req.prompt as u64 + s.req.output as u64);
             r.completed += 1;
+            r.tracer.retired(s.req.id);
             let mean_itl = if s.itl_count > 0 { s.itl_sum / s.itl_count as Nanos } else { 0 };
             retired.push(FinishedSeq {
                 req: s.req,
@@ -503,5 +513,9 @@ impl Replica {
     }
     pub fn completed(&self) -> u64 {
         self.completed
+    }
+    /// The loop's handle on what this replica records about traced sequences.
+    pub fn tracer_mut(&mut self) -> &mut Tracer {
+        &mut self.tracer
     }
 }
