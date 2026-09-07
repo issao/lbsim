@@ -126,7 +126,9 @@ impl Tracer {
     }
 
     /// Everything recorded for `id`, in order, with the step each event ran in; and stop tracking it.
-    /// Storage is released once nothing is tracked, which with a sampled workload is most of the time.
+    /// Snapshots below the oldest step any remaining event still points at are dropped and the
+    /// survivors rebased onto the shrunk vector, so a continuously busy replica carries only the span
+    /// of steps its still-tracked requests actually cover, not the whole run's history.
     pub fn take(&mut self, id: u64) -> Vec<(StepEvent, ResourceSnapshot)> {
         let mut out = Vec::new();
         if let Some(pos) = self.tracked.iter().position(|&x| x == id) {
@@ -146,14 +148,23 @@ impl Tracer {
             out.push((ev, snap));
             false
         });
-        if self.tracked.is_empty() {
-            self.events.clear();
-            self.steps.clear();
+        let cut = self.events.iter().map(|&(_, _, step)| step).min().unwrap_or(self.steps.len());
+        if cut > 0 {
+            self.steps.drain(0..cut);
+            for ev in &mut self.events {
+                ev.2 -= cut;
+            }
         }
         out
     }
 
     pub fn tracking(&self) -> usize {
         self.tracked.len()
+    }
+
+    /// Snapshots currently held. Test-only window into the growth `take` is meant to bound.
+    #[doc(hidden)]
+    pub fn snapshot_len(&self) -> usize {
+        self.steps.len()
     }
 }

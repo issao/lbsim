@@ -114,6 +114,91 @@ fn a_traced_request_has_queue_route_prefill_and_decode_spans_in_order() {
     }
 }
 
+/// Drives the `Tracer` directly (not through a full simulation) with continuous load: the replica
+/// never has zero tracked requests, which is exactly the condition U65 flagged — before the fix,
+/// `steps` grows one entry per step for as long as that holds. `batch_size` is set to the driving
+/// step's own index, so a returned `ResourceSnapshot`'s `batch_size` doubles as a check that `take`
+/// still hands back the snapshot belonging to the right step, not just that memory is bounded.
+#[test]
+fn snapshots_are_bounded_by_the_oldest_tracked_request() {
+    use sim_model::trace::{ResourceSnapshot, StepEvent, Tracer};
+
+    const STEPS: u32 = 10_000;
+    const CONCURRENCY: u64 = 5;
+    const LIFETIME: u32 = 7;
+
+    let mut tracer = Tracer::default();
+    let mut next_id = 0u64;
+    // id -> (admitted_step, decode steps seen).
+    let mut active: Vec<(u64, u32, u32)> = Vec::new();
+    for _ in 0..CONCURRENCY {
+        let id = next_id;
+        next_id += 1;
+        tracer.track(id);
+        active.push((id, 0, 0));
+    }
+
+    for step in 0..STEPS {
+        for &(id, admitted_at, _) in &active {
+            if admitted_at == step {
+                tracer.admitted(id);
+            }
+        }
+        tracer.snapshot(ResourceSnapshot { batch_size: step, ..Default::default() });
+        for slot in &mut active {
+            tracer.decode_step(slot.0);
+            slot.2 += 1;
+        }
+
+        // Retire whichever ids have lived out their lifetime, verify what `take` hands back, then
+        // immediately backfill so the replica stays continuously busy.
+        let due: Vec<usize> = active
+            .iter()
+            .enumerate()
+            .filter(|&(_, &(_, admitted_at, decodes))| decodes >= LIFETIME && admitted_at <= step)
+            .map(|(i, _)| i)
+            .collect();
+        for i in due {
+            let (id, admitted_at, decodes) = active[i];
+            tracer.retired(id);
+            let events = tracer.take(id);
+            // Admitted, one decode per step lived, then retired: `decodes` counts this step's decode
+            // too, so that many `DecodeStep`s plus the bookends.
+            assert_eq!(events.len() as u32, decodes + 2, "request {id}: wrong event count");
+            assert!(matches!(events[0].0, StepEvent::Admitted { id: eid, .. } if eid == id));
+            assert_eq!(events[0].1.batch_size, admitted_at, "request {id}: admitted snapshot is stale");
+            for (j, ev) in events[1..events.len() - 1].iter().enumerate() {
+                assert!(matches!(ev.0, StepEvent::DecodeStep { id: eid, .. } if eid == id));
+                assert_eq!(ev.1.batch_size, admitted_at + j as u32, "request {id}: decode snapshot is stale");
+            }
+            let last = events.last().unwrap();
+            assert!(matches!(last.0, StepEvent::Retired { id: eid, .. } if eid == id));
+            assert_eq!(last.1.batch_size, step, "request {id}: retired snapshot is stale");
+
+            let new_id = next_id;
+            next_id += 1;
+            tracer.track(new_id);
+            active[i] = (new_id, step + 1, 0);
+        }
+
+        // The recorder must never carry more than the span still owed to the oldest tracked request,
+        // which on this continuously-busy replica is a handful of steps, never the whole run.
+        let oldest = active.iter().map(|&(_, admitted_at, _)| admitted_at).min().unwrap();
+        let bound = (step - oldest.min(step) + 1) as usize;
+        assert!(
+            tracer.snapshot_len() <= bound,
+            "step {step}: {} snapshots held, only {bound} steps are still owed",
+            tracer.snapshot_len()
+        );
+    }
+
+    assert!(
+        tracer.snapshot_len() < 100,
+        "10,000 steps of continuous load left {} snapshots; growth was not bounded",
+        tracer.snapshot_len()
+    );
+}
+
 fn ids(r: &RunResult) -> Vec<(u64, TraceBucket)> {
     r.traces.iter().map(|t| (t.record.id, t.bucket)).collect()
 }
