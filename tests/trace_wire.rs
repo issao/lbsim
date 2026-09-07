@@ -77,8 +77,14 @@ fn trace_field_names_exist_in_metrics_proto() {
 
     let traces = fixtures::sample_traces(30);
     let mut offenders = BTreeSet::new();
+    // The union across the whole fixture, not just one trace: a single trace is not guaranteed to
+    // carry a RoutingDecision span (candidates, stale_view_age_ns) and a DecodeStep span alongside
+    // each other, but the fixture as a whole is.
+    let mut all_keys = BTreeSet::new();
     for t in &traces {
-        for key in json_keys(&trace_wire::request_trace_json(t)) {
+        let keys = json_keys(&trace_wire::request_trace_json(t));
+        all_keys.extend(keys.iter().cloned());
+        for key in keys {
             if !allowed.contains(&key) {
                 offenders.insert(key);
             }
@@ -93,13 +99,15 @@ fn trace_field_names_exist_in_metrics_proto() {
     assert!(offenders.is_empty(), "field names not in any proto: {offenders:?}");
 
     // And the fields that matter are all present, not merely all valid.
-    let keys = json_keys(&trace_wire::request_trace_json(&traces[0]));
     for want in [
         "record", "spans", "id", "tenant_id", "outcome", "arrived_at_unix_ns", "finished_at_unix_ns",
         "prompt_tokens", "output_tokens", "replica_id", "start_unix_ns", "end_unix_ns", "component",
         "operation", "concurrent_seqs", "kv_utilization", "tokens_processed", "kv_tier", "e2e_ns",
+        // The fields added at f5eddf1 (U51): the resource state and the routing spans' detail.
+        "bucket", "batch_size", "queued", "kv_tokens_resident", "kv_capacity", "step_ns", "bound",
+        "candidates", "stale_view_age_ns",
     ] {
-        assert!(keys.contains(want), "{want} missing from the trace document");
+        assert!(all_keys.contains(want), "{want} missing from the trace fixture");
     }
 }
 
@@ -154,6 +162,32 @@ fn uint64_and_enum_encoding_follows_wire_rules() {
     let spans = first.split(r#""spans":["#).nth(1).unwrap();
     let gateway = spans.split('}').next().unwrap();
     assert!(gateway.contains(r#""component":"gateway""#) && !gateway.contains("replica_id"), "{gateway}");
+}
+
+/// Rule 3 for the two enums added at f5eddf1 (U51): `TraceSpan.bound` and `RequestTrace.bucket`
+/// are emitted as `metrics.proto` enumerator names, never the engine's own `BandwidthOrCompute` or
+/// `TraceBucket` debug spelling.
+#[test]
+fn bound_and_bucket_are_proto_enum_names() {
+    let traces = fixtures::sample_traces(30);
+    let bounds = proto_enum_values("metrics.proto", "STEP_BOUND_");
+    let buckets = proto_enum_values("metrics.proto", "TRACE_BUCKET_");
+
+    let mut saw_bound = false;
+    let mut saw_bucket = false;
+    for t in &traces {
+        let text = trace_wire::request_trace_json(t);
+        for value in text.split(r#""bound":""#).skip(1).map(|r| r.split('"').next().unwrap()) {
+            assert!(bounds.contains(value), "{value} is not a metrics.proto StepBound");
+            saw_bound = true;
+        }
+        for value in text.split(r#""bucket":""#).skip(1).map(|r| r.split('"').next().unwrap()) {
+            assert!(buckets.contains(value), "{value} is not a metrics.proto TraceBucket");
+            saw_bucket = true;
+        }
+    }
+    assert!(saw_bound, "no span carried a bound in the fixture");
+    assert!(saw_bucket, "no trace carried a bucket in the fixture");
 }
 
 #[test]

@@ -1,15 +1,15 @@
 //! `RequestTrace` on the wire, and the `GetTraces` RPC's filters, per `WIRE.md`.
 //!
-//! The encoder emits exactly the proto's fields. `sim_metrics::trace` holds more than the proto does
-//! today (`ResourceState`: queue depth, step time, which roofline, KV capacity, routing candidates),
-//! and the dashboard's `RequestTrace` type asks for some of it. None of that crosses this hop until
-//! the proto carries it, because the test in `tests/trace_wire.rs` holds every emitted key to
-//! `metrics.proto`, `request.proto` and `common.proto`, and a field that exists only in a JSON
-//! document is the drift the rule exists to prevent. What is lost is derived where possible:
-//! `kv_utilization` from the resident and capacity counts, `concurrent_seqs` from the in-flight count.
+//! The encoder emits exactly the proto's fields, no more: the test in `tests/trace_wire.rs` holds
+//! every emitted key to `metrics.proto`, `request.proto` and `common.proto`, and a field that exists
+//! only in a JSON document is the drift the rule exists to prevent. `ResourceState`'s queue depth,
+//! step time, roofline, KV capacity and routing candidates now cross this hop (`metrics.proto` at
+//! f5eddf1); a zero resource field is the proto's default and is omitted, same as `replica_id`.
+//! What is still derived rather than carried structurally: `kv_utilization` from the resident and
+//! capacity counts, `concurrent_seqs` from the in-flight count.
 
 use crate::wire::Json;
-use sim_metrics::trace::{RequestTrace, TraceSpan};
+use sim_metrics::trace::{BandwidthOrCompute, RequestTrace, SpanKind, TraceBucket, TraceSpan};
 use sim_metrics::Outcome;
 
 /// `common.proto` `Outcome` names by the engine's outcome, for the `outcome` field and the filter.
@@ -20,6 +20,26 @@ pub fn outcome_name(o: Outcome) -> &'static str {
         Outcome::Rejected => "OUTCOME_REJECTED",
         Outcome::TimeoutQueued => "OUTCOME_TIMEOUT_QUEUED",
         Outcome::TimeoutRunning => "OUTCOME_TIMEOUT_RUNNING",
+    }
+}
+
+/// `metrics.proto` `StepBound` names by `BandwidthOrCompute`. The proto's zero, `STEP_BOUND_UNSPECIFIED`,
+/// has no counterpart on the engine side: every step the engine models is bandwidth- or compute-bound.
+pub fn step_bound_name(b: BandwidthOrCompute) -> &'static str {
+    match b {
+        BandwidthOrCompute::Bandwidth => "STEP_BOUND_BANDWIDTH",
+        BandwidthOrCompute::Compute => "STEP_BOUND_COMPUTE",
+    }
+}
+
+/// `metrics.proto` `TraceBucket` names by `sim_metrics::trace::TraceBucket`. Mirrors `TraceBucket::label()`,
+/// but the proto's enumerator names rather than the dashboard's short labels.
+pub fn trace_bucket_name(b: TraceBucket) -> &'static str {
+    match b {
+        TraceBucket::P50 => "TRACE_BUCKET_P50",
+        TraceBucket::P90 => "TRACE_BUCKET_P90",
+        TraceBucket::P99 => "TRACE_BUCKET_P99",
+        TraceBucket::P999 => "TRACE_BUCKET_P999",
     }
 }
 
@@ -107,14 +127,44 @@ pub fn trace_span(j: &mut Json, s: &TraceSpan) {
     j.field_int("concurrent_seqs", s.resource.running as i64)
         .field_f64("kv_utilization", s.resource.kv_utilization())
         .field_int("tokens_processed", s.kind.tokens_processed() as i64)
-        .field_str("kv_tier", s.kv_tier.name())
-        .end_object();
+        .field_str("kv_tier", s.kv_tier.name());
+    // The resource state added at f5eddf1. Zero is the proto's default and is omitted, per WIRE.md
+    // rule 5, the same as `replica_id` above.
+    if s.resource.batch_size != 0 {
+        j.field_int("batch_size", s.resource.batch_size as i64);
+    }
+    if s.resource.queued != 0 {
+        j.field_int("queued", s.resource.queued as i64);
+    }
+    if s.resource.kv_tokens_resident != 0 {
+        j.field_u64("kv_tokens_resident", s.resource.kv_tokens_resident);
+    }
+    if s.resource.kv_capacity != 0 {
+        j.field_u64("kv_capacity", s.resource.kv_capacity);
+    }
+    if s.resource.step_ns != 0 {
+        j.field_u64("step_ns", s.resource.step_ns);
+    }
+    j.field_str("bound", step_bound_name(s.resource.bound));
+    // Routing spans only: which replicas the router looked at and how stale its view was.
+    if let SpanKind::RoutingDecision { candidates, stale_view_age } = &s.kind {
+        j.key("candidates").begin_array();
+        for c in candidates {
+            j.u64_str(*c);
+        }
+        j.end_array();
+        if *stale_view_age != 0 {
+            j.field_u64("stale_view_age_ns", *stale_view_age);
+        }
+    }
+    j.end_object();
 }
 
 /// `metrics.proto` `RequestTrace`.
 pub fn request_trace(j: &mut Json, t: &RequestTrace) {
     j.begin_object().key("record");
     request_record(j, t);
+    j.field_str("bucket", trace_bucket_name(t.bucket));
     j.key("spans").begin_array();
     for s in &t.spans {
         trace_span(j, s);
