@@ -141,3 +141,49 @@ from `git log --merges --format=%ct` on `origin/master` matched by branch name. 
 `date +%s%N` around each command in a fresh worktree on `origin/master`, one build at a time through
 `tools/build.sh`, and `/sys/fs/cgroup/memory.{current,peak}`. The scripts are not committed; they were
 ~150 lines of Python and shell in the job's scratch directory.
+
+## 2026-09-06 17:12 PDT — baseline before the new tech lead's first wave
+
+The productivity agent (a09d1073) now continues this file every 20 minutes; the parser is
+`~/.prod/profile.py`, same method as §6. This section is the baseline the first delta is measured
+against: the four units the old tech lead spawned at 16:40, none of them with the brief template
+(v1 landed at 16:56), all four merged at the 17:04–17:06 checkpoint by main rather than through
+`tools/integrate.sh`, so there is no report→merge figure for them.
+
+| Unit | Wall min | Turns | Ctx k/turn | Model % | Bash out KB | First edit min | Files read before it | Full/partial tests | Failures |
+|---|---|---|---|---|---|---|---|---|---|
+| ingress-server (a77e7ce) | 22.8+ | 30 | 116 | 52 | 104 | 7.1 | 26 | 0 / 2 (607 s) | one 603 s hang |
+| arena-rules (a973e61) | 23.4 | 39 | 84 | 26 | 125 | 7.0 | 19 | 1 / 5 (261 s) | 2 test failures, one 603 s hang |
+| trace-wire (aababe7) | 25.3 | 46 | 120 | 44 | 205 | 4.8 | 21 | 1 (604 s) / 7 (171 s) | 3 compile, 2 test failures |
+| replay (af6eac7, web) | 23.4 | 112 | 212 | 82 | 380 | 7.2 | 30 | web only | 2 NaN render errors |
+| **mean** | **23.7** | 57 | 133 | 51 | 204 | **6.5** | **24** | | |
+
+Against §2's ten units (13.8 min, 4.7 min to first edit, 15 files read before it, 68% model time):
+these four are bigger units, and every setup number is worse. All four read `tools/build.sh`,
+`check-fingerprints.sh`, `.cargo/config.toml` and `tests/layering.rs` again, which the template's
+"do not read" line exists to stop; `crates/sim-ingress/src/lib.rs` and `sim-leaf/src/lib.rs` were
+read whole, repeatedly. Model share dropped to 51% for one reason:
+
+**Three of the four Rust units lost ten minutes each to a single hung test.** At 16:52:57,
+16:53:01 and 16:53:10 three agents ran `tools/build.sh test ...` and all three returned at 17:03,
+at the Bash tool's 600 s limit. The cause is `tests/ingress_http.rs`, the ingress-server unit's
+own test: it starts the HTTP server and never exits. It held build slot 1, and `tools/build.sh`'s
+fallback ("every slot busy: wait on the first one") queued the other two agents behind it, on the
+slot that would never free, while slot 2 sat idle. The same thing is happening as this is written:
+`ingress_http-1b347def` has run 241 s under a `timeout 400` the agent added by hand, and the cloud
+agent's `build --release` has waited 161 s on slot 1 with slot 2 free. 30 agent-minutes lost to
+the first occurrence; every build on the machine is serialised to one slot until the test is
+fixed. Two fix-once proposals go to the tech lead with this section: `build.sh` waits round-robin
+(`flock -w 1` over both slots in a loop) instead of pinning to slot 1, and it wraps cargo in
+`timeout -k 5 ${LBSIM_BUILD_TIMEOUT:-420}` so a hang returns an error inside the agent's turn
+instead of a silent tool timeout that leaves the process running. The ingress test itself needs a
+deadline in the test (a `recv_timeout`, or a server built with a shutdown handle).
+
+Smaller items seen in this wave. The arena unit ran the full arena round in debug three times
+(80–92 s each) before its 603 s loss, which §5 item 1 addresses and which the tech lead's
+`arena-rules` merge ("fast arena tests") may already have. The trace-wire unit ran the workspace
+tests itself before reporting, which the template now forbids. Context per turn is 84–212k; the
+replay unit's 112 turns pulled 380 KB of Bash output into context, mostly whole-file `cat`s.
+
+Next section: the first wave under brief template v1, spawned by tech lead a86e5fcc (17:07), at
+about 17:40.
