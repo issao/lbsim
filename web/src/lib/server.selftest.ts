@@ -281,7 +281,8 @@ await checkAsync('(e) update sends UpdateWorkload / UpdatePolicies and lastUpdat
   // banner that prints a reason, or the 501 is swallowed on screen.
   ok((notYet.engine.refused ?? '').includes(SERVER_NOT_YET), `refused names the 501: ${notYet.engine.refused}`);
   ok((notYet.engine.refused ?? '').includes(label), 'refused names the field');
-  eq(notYet.engine.config.workload.arrivalRps, 90, 'the control keeps its value');
+  // The update was refused, so the control must not keep showing a value the fleet never took.
+  eq(notYet.engine.config.workload.arrivalRps, BASE.workload.arrivalRps, 'a refusal restores the pre-update value');
   notYet.engine.dispose();
 
   // A server that honours the call: the echo lands on lastUpdate.
@@ -389,6 +390,53 @@ await checkAsync('(g) the fake\'s remaining answers decode: GetResult, 410, 501,
   const renew = await client.renewSubscription('s-9', 1n);
   eq(renew.expired, true, 'renewing an unknown subscription says expired');
   return 'GetResult, 410 outside the ring, resume inside it, Rewind 501, ListRuns limit, renew of unknown expired';
+});
+
+// ---------------------------------------------------------------------------
+// (h) restart() revives nothing when dispose lands while StopRun is still in flight
+// ---------------------------------------------------------------------------
+
+await checkAsync('(h) restart_after_dispose_starts_nothing', async () => {
+  const { fake, engine } = rig();
+  const id = await engine.start();
+  eq(id, 'r-1', 'the first run starts');
+  eq(calls(fake, 'OpenSubscription').length, 1, 'one subscription so far');
+  const next = cloneConfig(BASE);
+  next.workload.arrivalRps = 55;
+  const p = engine.restart(next);
+  // Unmount (dispose) races the pending StopRun for the old run: it lands in the same tick,
+  // before the fake's StopRun promise has a chance to settle and restart() to resume.
+  engine.dispose();
+  await p;
+  eq(calls(fake, 'StartRun').length, 1, 'no second StartRun for a restart that lost its owner');
+  eq(calls(fake, 'OpenSubscription').length, 1, 'no new subscription opened for it');
+  eq(calls(fake, 'StopRun').length, 1, 'the original run is stopped exactly once');
+  eq(engine.runId, null, 'the engine ends up owning no run');
+  eq(fake.openStreams(), 0, 'no stream left open');
+  return 'dispose during a pending restart starts nothing: 1 StartRun, 1 StopRun, no orphaned subscription';
+});
+
+// ---------------------------------------------------------------------------
+// (i) a refused update restores the config it never applied
+// ---------------------------------------------------------------------------
+
+await checkAsync('(i) a_refused_update_restores_the_config', async () => {
+  const { fake, engine } = rig();
+  await engine.start();
+  const before = engine.config.workload.arrivalRps;
+  const revBefore = engine.revision;
+  const hotter = cloneConfig(engine.config);
+  hotter.workload.arrivalRps = 123;
+  await engine.update(hotter);
+  eq(engine.lastUpdate?.accepted, false, 'the first server answers 501');
+  eq(engine.config.workload.arrivalRps, before, 'config equals the pre-update config');
+  ok(engine.revision > revBefore, 'revision advanced');
+  const revAfterRefusal = engine.revision;
+  await engine.update(hotter);
+  eq(calls(fake, 'UpdateWorkload').length, 2, 'the same value diffs to something and is sent again');
+  ok(engine.revision > revAfterRefusal, 'revision advances again on the resend');
+  engine.dispose();
+  return `refused update restores arrivalRps to ${before}; resubmitting the same value sends UpdateWorkload again`;
 });
 
 // ---------------------------------------------------------------------------
