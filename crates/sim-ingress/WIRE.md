@@ -164,6 +164,15 @@ them until a lease or a step arrives. A run with no live lease and no queued wor
 `IDLE_SHUTDOWN_SECONDS` (default 300) checkpoints and stops advancing, so a Cloud Run instance can be
 reaped; `GetRun` on such a run reports `STATE_PAUSED` with `error` empty.
 
+On Cloud Run the same rule applies sooner, and by a different mechanism: the container's CPU is
+request-scoped, throttled to nothing when no request is in flight, so a paced run advances only while
+some request is open. An SSE subscription is such a request, which is why the dashboard case works: the
+run advances for as long as its viewer is connected. A paced run left with no subscriber stands still,
+and `GetRun` shows `sim_time_unix_ns` not moving until someone reconnects; that is the intended idle
+behaviour, the paragraph above applied by the platform rather than the guard, not a fault to report. A
+fire-and-forget result comes from an unpaced run, `StartRun` without `max_realtime_factor`, which is
+busy in its own right and finishes whether or not anyone watches.
+
 The checkpoint is the same four documents `sim-run export` writes under `runs/<run_id>/` —
 `status.json`, `scenario.txt`, `fleet.jsonl`, `result.json` — not a resumable engine snapshot:
 `Leaf::snapshot` is unimplemented. Reopening a subscription resumes the run from the in-memory `Sim`
