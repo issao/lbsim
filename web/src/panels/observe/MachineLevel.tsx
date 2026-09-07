@@ -8,8 +8,28 @@ import { Sparkline } from '../../components/charts/Sparkline';
 import { fmtMs, fmtNum, fmtPct, fmtTokens } from '../../lib/format';
 import { useRegistryStats, useSubscriptions } from '../../lib/useSubscriptions';
 import { Metric, type Target } from '../../lib/types';
+import { realness } from '../../lib/wired';
 
 const PAGE_SIZES = [10, 20, 50];
+
+// Fields this panel reads off Frame / ReplicaSample. Keep these lists honest: they drive the mock
+// tag on every Panel below. `weight` is read only via the sort-value switch below, reachable when a
+// viewer sorts by that column, but the tag is a static claim about the panel, not the current sort.
+const FRAME_READS: (keyof Frame)[] = ['loadImbalanceCv', 'replicas'];
+const REPLICA_READS: (keyof ReplicaSample)[] = [
+  'id',
+  'present',
+  'state',
+  'queuedSeqs',
+  'batchSize',
+  'kvTokensResident',
+  'kvUtilization',
+  'stepTimeMs',
+  'prefixHitRate',
+  'ttftMeanMs',
+  'trueSpeedMultiplier',
+  'weight',
+];
 
 /**
  * The machine-level view, paginated client-side over subscriptions, per docs/ui-spec.md section 2.
@@ -38,6 +58,7 @@ export function MachineLevel({
   const [pageSize, setPageSize] = useState(20);
   const [heatMetric, setHeatMetric] = useState<'queuedSeqs' | 'kvUtilization' | 'batchSize'>('queuedSeqs');
 
+  const data = realness(frame, FRAME_READS, REPLICA_READS);
   const present = frame.replicas.filter((r) => r.present);
   const sorted = useMemo(() => {
     const rows = [...present];
@@ -124,6 +145,7 @@ export function MachineLevel({
         bodyClass="tight"
         highlight={highlight === 'replicas'}
         id="replicas"
+        data={data}
         right={
           <span className="note">
             <b className="num">{stats.byOwner['machine-level'] ?? 0}</b> open subscriptions
@@ -194,6 +216,7 @@ export function MachineLevel({
       <Panel
         title="Per-replica over time"
         sub="from the cluster summary, not from the row subscriptions"
+        data={data}
         highlight={highlight === 'heatmap'}
         id="heatmap"
         right={

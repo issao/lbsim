@@ -6,6 +6,18 @@ import { LineChart } from '../../components/charts/LineChart';
 import { fmtNum, fmtPct } from '../../lib/format';
 import { useSubscriptions } from '../../lib/useSubscriptions';
 import { Metric } from '../../lib/types';
+import { realness } from '../../lib/wired';
+
+// Fields this panel reads off Frame. Keep this list honest: it drives the mock tag on every Panel below.
+const FRAME_READS: (keyof Frame)[] = [
+  'kvUtilization',
+  'wastedGpuFraction',
+  'preemptionsPerS',
+  'prefixHitRate',
+  'tierUtilization',
+  'tierBandwidth',
+  'rejectedRps',
+];
 
 export function Utilization({
   frames,
@@ -32,10 +44,11 @@ export function Utilization({
     config.samplesPerSimSecond
   );
   const x = xs(frames);
+  const data = realness(frame, FRAME_READS);
 
   return (
     <div className="grid c2">
-      <Panel title="Where the capacity goes" highlight={highlight === 'capacity'} id="capacity">
+      <Panel title="Where the capacity goes" highlight={highlight === 'capacity'} id="capacity" data={data}>
         <div className="grid c4" style={{ gap: 6 }}>
           <Tile
             label="kv utilization"
@@ -59,7 +72,7 @@ export function Utilization({
         </p>
       </Panel>
 
-      <Panel title="Key-value cache utilization" sub="fleet mean" highlight={highlight === 'kv'} id="kv">
+      <Panel title="Key-value cache utilization" sub="fleet mean" highlight={highlight === 'kv'} id="kv" data={data}>
         <LineChart
           xs={x}
           series={[
@@ -72,7 +85,7 @@ export function Utilization({
         />
       </Panel>
 
-      <Panel title="Memory-tier occupancy" sub="HBM on the replica, DRAM and SSD cluster-pooled" highlight={highlight === 'tiers'} id="tiers">
+      <Panel title="Memory-tier occupancy" sub="HBM on the replica, DRAM and SSD cluster-pooled" highlight={highlight === 'tiers'} id="tiers" data={data}>
         <LineChart
           xs={x}
           series={[
@@ -86,7 +99,7 @@ export function Utilization({
         />
       </Panel>
 
-      <Panel title="Tier bandwidth" sub="the shared path that inverts the swap-vs-recompute tradeoff" highlight={highlight === 'bandwidth'} id="bandwidth">
+      <Panel title="Tier bandwidth" sub="the shared path that inverts the swap-vs-recompute tradeoff" highlight={highlight === 'bandwidth'} id="bandwidth" data={data}>
         <LineChart
           xs={x}
           series={[
@@ -103,7 +116,7 @@ export function Utilization({
         </p>
       </Panel>
 
-      <Panel title="Preemptions and shed load" sub="the expensive failures" highlight={highlight === 'preempt'} id="preempt">
+      <Panel title="Preemptions and shed load" sub="the expensive failures" highlight={highlight === 'preempt'} id="preempt" data={data}>
         <LineChart
           xs={x}
           series={[
@@ -116,7 +129,7 @@ export function Utilization({
         />
       </Panel>
 
-      <Panel title="Wasted GPU fraction" sub="cumulative over the run" highlight={highlight === 'wasted'} id="wasted">
+      <Panel title="Wasted GPU fraction" sub="cumulative over the run" highlight={highlight === 'wasted'} id="wasted" data={data}>
         <LineChart
           xs={x}
           series={[{ key: 'w', label: 'wasted', color: 'var(--series-2)', points: series(frames, (f) => f.wastedGpuFraction) }]}

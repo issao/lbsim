@@ -4,12 +4,19 @@ import type { ReactNode } from 'react';
  * Every panel carries this. Per docs/ui-spec.md section 5: a dashboard that looks real while
  * showing invented numbers is how someone ends up trusting a chart that was never connected.
  */
-export function MockTag({ what = 'mock' }: { what?: string }) {
+export function MockTag({ what = 'mock', fields }: { what?: string; fields?: string[] }) {
+  const title = fields && fields.length > 0 ? `mock: ${fields.join(', ')}` : 'Generated in the browser. Not connected to sim-ingress.';
   return (
-    <span className="mock-tag" title="Generated in the browser. Not connected to sim-ingress.">
+    <span className="mock-tag" title={title}>
       {what}
     </span>
   );
+}
+
+/** What a panel may claim about the frame it drew, from `realness()` in lib/wired.ts. */
+export interface PanelData {
+  kind: 'mock' | 'partial' | 'real';
+  mockFields: string[];
 }
 
 export function Panel({
@@ -20,6 +27,7 @@ export function Panel({
   bodyClass = '',
   highlight = false,
   id,
+  data,
 }: {
   title: string;
   sub?: ReactNode;
@@ -28,6 +36,9 @@ export function Panel({
   bodyClass?: string;
   highlight?: boolean;
   id?: string;
+  /** Whether the frame behind this panel is mock, partially wired, or real. Absent means unknown: the
+   *  tag shows unconditionally, same as before this prop existed, so no panel regresses by omission. */
+  data?: PanelData;
 }) {
   return (
     <section className={`panel${highlight ? ' highlight' : ''}`} id={id} data-panel={id}>
@@ -36,7 +47,7 @@ export function Panel({
         {sub ? <span className="panel-sub">{sub}</span> : null}
         <span className="panel-head-right">
           {right}
-          <MockTag />
+          {data?.kind === 'real' ? null : <MockTag fields={data?.kind === 'partial' ? data.mockFields : undefined} />}
         </span>
       </header>
       <div className={`panel-body ${bodyClass}`}>{children}</div>

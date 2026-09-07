@@ -10,8 +10,13 @@ import { HistogramChart } from '../../components/charts/Histogram';
 import { fmtMs, fmtNum, fmtPct } from '../../lib/format';
 import { useSubscriptions } from '../../lib/useSubscriptions';
 import { Metric } from '../../lib/types';
+import { realness } from '../../lib/wired';
 
 const PCTS = [50, 90, 99, 99.9];
+
+// Fields this panel reads off Frame, directly and via attainment()/goodput() which only touch the
+// histograms already listed here. Keep this list honest: it drives the mock tag on every Panel below.
+const FRAME_READS: (keyof Frame)[] = ['outputTokensPerS', 'ttft', 'itl', 'e2e'];
 
 export function ServiceQuality({
   frames,
@@ -32,6 +37,7 @@ export function ServiceQuality({
   );
 
   const x = xs(frames);
+  const data = realness(frame, FRAME_READS);
   const att = attainment(frame, config.slo);
   const gp = goodput(frame, config.slo);
   const tp = frame.outputTokensPerS;
@@ -52,6 +58,7 @@ export function ServiceQuality({
         sub={`over the ${config.slo.ttftMs} ms / ${config.slo.itlMs} ms / ${config.slo.e2eS} s targets`}
         highlight={highlight === 'headline'}
         id="headline"
+        data={data}
       >
         <div className="grid c4" style={{ gap: 6 }}>
           <Tile
@@ -76,7 +83,7 @@ export function ServiceQuality({
         </p>
       </Panel>
 
-      <Panel title="Goodput against throughput" sub="same unit, same axis" highlight={highlight === 'goodput'} id="goodput">
+      <Panel title="Goodput against throughput" sub="same unit, same axis" highlight={highlight === 'goodput'} id="goodput" data={data}>
         <LineChart
           xs={x}
           series={[
@@ -89,7 +96,7 @@ export function ServiceQuality({
         />
       </Panel>
 
-      <Panel title="Time to first token" sub="percentiles, requested [50, 90, 99, 99.9]" highlight={highlight === 'ttft'} id="ttft">
+      <Panel title="Time to first token" sub="percentiles, requested [50, 90, 99, 99.9]" highlight={highlight === 'ttft'} id="ttft" data={data}>
         <LineChart
           xs={x}
           series={PCTS.map((p, i) => ({
@@ -105,7 +112,7 @@ export function ServiceQuality({
         />
       </Panel>
 
-      <Panel title="Inter-token latency" sub="percentiles; step time is the floor" highlight={highlight === 'itl'} id="itl">
+      <Panel title="Inter-token latency" sub="percentiles; step time is the floor" highlight={highlight === 'itl'} id="itl" data={data}>
         <LineChart
           xs={x}
           series={PCTS.map((p, i) => ({
@@ -126,6 +133,7 @@ export function ServiceQuality({
         sub="merged bucket-wise from the recorded histograms"
         highlight={highlight === 'dist'}
         id="dist"
+        data={data}
       >
         <p className="section-label" style={{ marginBottom: 2 }}>time to first token</p>
         <HistogramChart hist={merged.ttft} threshold={config.slo.ttftMs} thresholdLabel="ttft slo" marks={[50, 99]} height={86} />
@@ -133,7 +141,7 @@ export function ServiceQuality({
         <HistogramChart hist={merged.itl} threshold={config.slo.itlMs} thresholdLabel="itl slo" marks={[50, 99]} height={86} />
       </Panel>
 
-      <Panel title="Percentile table" sub="window merged" bodyClass="tight" highlight={highlight === 'table'} id="table">
+      <Panel title="Percentile table" sub="window merged" bodyClass="tight" highlight={highlight === 'table'} id="table" data={data}>
         <table className="data">
           <thead>
             <tr>
