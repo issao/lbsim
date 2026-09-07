@@ -269,6 +269,7 @@ fn synthetic_records(n: u64, seed: u64) -> Vec<RequestRecord> {
                 outcome,
                 max_itl: 30_000_000,
                 mean_itl: 25_000_000,
+                class: 0,
             }
         })
         .collect()

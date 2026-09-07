@@ -398,6 +398,8 @@ pub struct RequestRecord {
     /// mean hides it entirely.
     pub max_itl: Nanos,
     pub mean_itl: Nanos,
+    /// SLO class the outcome was judged against; zero when the scenario has no classes.
+    pub class: u8,
 }
 
 impl RequestRecord {

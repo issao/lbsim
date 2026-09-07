@@ -147,6 +147,50 @@ pub struct Scenario {
     /// Probability the big model accepts each draft token, so a sequence advances an expected
     /// (1 - a^(N+1)) / (1 - a) tokens a step. The formula is `CostModel::spec_tokens_per_step`.
     pub spec_accept_rate: f64,
+    // -- SLO classes ---------------------------------------------------------
+    /// Class shares of arrivals, `interactive:0.7,agent:0.2,batch:0.1`. Empty means no classes: the
+    /// `*_slo_*` keys above apply to everyone. With classes on, each request is judged against its
+    /// class's fixed targets (see `SloClass`) and those keys are ignored, because a fleet serving an
+    /// agent loop and a batch job is not one SLO with two workloads, it is two SLOs.
+    pub slo_classes: String,
+}
+
+/// The per-class service targets. Constants rather than keys: the classes are a vocabulary shared
+/// across scenarios so that "batch attainment" means the same thing in every report.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SloClass {
+    pub name: &'static str,
+    pub ttft_slo_ms: f64,
+    /// Infinite for a class with no inter-token target: a batch job cares when it finishes, not
+    /// how evenly.
+    pub itl_slo_ms: f64,
+    pub e2e_slo_s: f64,
+}
+
+/// Class ids are fixed by this table, not by position in `slo_classes`, so a record's class means the
+/// same thing whichever subset a scenario enables. Id 0 is reserved for "no class".
+pub const SLO_CLASSES: [SloClass; 3] = [
+    SloClass { name: "interactive", ttft_slo_ms: 2000.0, itl_slo_ms: 80.0, e2e_slo_s: 30.0 },
+    SloClass { name: "agent", ttft_slo_ms: 5000.0, itl_slo_ms: 150.0, e2e_slo_s: 30.0 },
+    SloClass { name: "batch", ttft_slo_ms: 60_000.0, itl_slo_ms: f64::INFINITY, e2e_slo_s: 60.0 },
+];
+
+/// Parses `name:share,...` into `(class id, share)` pairs, unnormalised. `Err` names the bad part.
+pub fn parse_slo_classes(text: &str) -> Result<Vec<(u8, f64)>, String> {
+    let mut out = Vec::new();
+    for part in text.split(',').map(str::trim).filter(|p| !p.is_empty()) {
+        let (name, share) = part.split_once(':').ok_or_else(|| format!("{part:?} is not name:share"))?;
+        let id = SLO_CLASSES
+            .iter()
+            .position(|c| c.name == name.trim())
+            .ok_or_else(|| format!("{name:?} is not an SLO class"))?;
+        let share: f64 = share.trim().parse().map_err(|_| format!("{part:?}: share is not a number"))?;
+        if share < 0.0 {
+            return Err(format!("{part:?}: share is negative"));
+        }
+        out.push((id as u8 + 1, share));
+    }
+    Ok(out)
 }
 
 /// What a live change to a key means for a run that is under way.
@@ -226,6 +270,7 @@ impl Default for Scenario {
             trace_file: String::new(),
             spec_draft_tokens: 0,
             spec_accept_rate: 0.0,
+            slo_classes: String::new(),
         }
     }
 }
@@ -334,6 +379,10 @@ impl Scenario {
                 "sample_interval_ms" => s.sample_interval_ms = f("sample_interval_ms"),
                 "workload" => s.workload = v.clone(),
                 "trace_file" => s.trace_file = v.clone(),
+                "slo_classes" => match parse_slo_classes(v) {
+                    Ok(_) => s.slo_classes = v.clone(),
+                    Err(e) => malformed.push(format!("{k} = {v:?} ({e})")),
+                },
                 other => unknown.push(other.to_string()),
             }
         }
@@ -469,6 +518,27 @@ impl Scenario {
         }
     }
 
+    /// The targets a request of `class` is judged against: the class table when classes are on, the
+    /// scenario's own keys for class 0. Returned as `(ttft_ms, itl_ms, e2e_s)`.
+    pub fn slo_for(&self, class: u8) -> (f64, f64, f64) {
+        match SLO_CLASSES.get((class as usize).wrapping_sub(1)) {
+            Some(c) => (c.ttft_slo_ms, c.itl_slo_ms, c.e2e_slo_s),
+            None => (self.ttft_slo_ms, self.itl_slo_ms, self.e2e_slo_s),
+        }
+    }
+
+    /// Normalised `(class id, share)` pairs; empty when classes are off. `parse` already rejected a
+    /// malformed string, so a bad one here can only come from a struct built by hand, and it is
+    /// treated as off rather than as a panic in the workload loop.
+    pub fn slo_class_shares(&self) -> Vec<(u8, f64)> {
+        let raw = parse_slo_classes(&self.slo_classes).unwrap_or_default();
+        let total: f64 = raw.iter().map(|(_, w)| w).sum();
+        if total <= 0.0 {
+            return Vec::new();
+        }
+        raw.into_iter().map(|(c, w)| (c, w / total)).collect()
+    }
+
     pub fn to_text(&self) -> String {
         format!(
             "name = {}\nseed = {}\nduration_s = {}\nwarmup_s = {}\nreplicas = {}\nmax_batch = {}\n\
@@ -486,7 +556,7 @@ impl Scenario {
              client_timeout_s = {}\nmax_attempts = {}\nretry_budget_fraction = {}\n\
              retry_backoff_s = {}\nttft_slo_ms = {}\nitl_slo_ms = {}\ne2e_slo_s = {}\n\
              sample_interval_ms = {}\ntrace_sample_rate = {}\nworkload = {}\ntrace_file = {}\n\
-             spec_draft_tokens = {}\nspec_accept_rate = {}\n",
+             spec_draft_tokens = {}\nspec_accept_rate = {}\nslo_classes = {}\n",
             self.name, self.seed, self.duration_s, self.warmup_s, self.replicas, self.max_batch,
             self.step_base_ms, self.step_per_seq_ms, self.step_per_kv_ktoken_ms,
             self.kv_capacity_tokens, self.prefill_tokens_per_s,
@@ -504,7 +574,7 @@ impl Scenario {
             self.client_timeout_s, self.max_attempts, self.retry_budget_fraction,
             self.retry_backoff_s, self.ttft_slo_ms, self.itl_slo_ms, self.e2e_slo_s,
             self.sample_interval_ms, self.trace_sample_rate, self.workload, self.trace_file,
-            self.spec_draft_tokens, self.spec_accept_rate
+            self.spec_draft_tokens, self.spec_accept_rate, self.slo_classes
         )
     }
 }
