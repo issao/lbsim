@@ -914,4 +914,151 @@ mod tests {
         assert_eq!(open_json(7, 5, ""), r#"{"subscription_id":"s-7","lease_expires_at_wall_ns":"5"}"#);
         assert_eq!(open_json(0, 0, "no"), r#"{"rejected_reason":"no"}"#);
     }
+
+    // -----------------------------------------------------------------------
+    // The stream must end, never park. Two paths used to relock `subs` inside the block that
+    // holds it; on Linux a std Mutex relocked by its holder parks forever, and that one parked
+    // thread then blocks every later `reap` and every fresh `OpenSubscription` on the public
+    // instance (docs/wrap-up-2026-09-06.md section 5b).
+    // -----------------------------------------------------------------------
+
+    use std::io::{BufRead, BufReader, Read as _};
+    use std::net::{SocketAddr, TcpListener};
+    use std::sync::mpsc;
+
+    fn start_server(name: &str) -> (SocketAddr, Arc<Server>) {
+        let dir = std::env::temp_dir().join(format!("lbsim-server-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = Arc::new(Server::new(dir, 3600 * 1_000_000_000));
+        let handle = Arc::clone(&server);
+        std::thread::spawn(move || crate::serve_on(handle, listener));
+        (addr, server)
+    }
+
+    /// One unary RPC over the wire: status and body.
+    fn post(addr: SocketAddr, rpc: &str, body: &str) -> (u16, String) {
+        let mut stream = TcpStream::connect(addr).unwrap();
+        stream.set_read_timeout(Some(Duration::from_secs(30))).unwrap();
+        write!(stream, "POST /v1/ingress/{rpc} HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\n\r\n{body}", body.len())
+            .unwrap();
+        let mut reader = BufReader::new(stream);
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        let status: u16 = line.split_whitespace().nth(1).expect("status line").parse().unwrap();
+        let mut length = 0usize;
+        loop {
+            line.clear();
+            reader.read_line(&mut line).unwrap();
+            if line == "\r\n" || line.is_empty() {
+                break;
+            }
+            if let Some(v) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                length = v.trim().parse().unwrap();
+            }
+        }
+        let mut body = vec![0u8; length];
+        reader.read_exact(&mut body).unwrap();
+        (status, String::from_utf8(body).unwrap())
+    }
+
+    fn start_run_json(max_realtime_factor: f64) -> String {
+        let text = read("../../scenarios/route_p2c.txt");
+        let escaped = text.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n");
+        format!("{{\"scenario\":{{\"text\":\"{escaped}\"}},\"max_realtime_factor\":{max_realtime_factor}}}")
+    }
+
+    /// Read a socket to EOF on a helper thread; `Some(bytes)` if it ended within `within`.
+    fn read_to_eof_within(mut stream: TcpStream, within: Duration) -> Option<Vec<u8>> {
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let mut out = Vec::new();
+            let _ = stream.read_to_end(&mut out);
+            let _ = tx.send(out);
+        });
+        rx.recv_timeout(within).ok()
+    }
+
+    #[test]
+    fn a_stop_before_the_first_frame_ends_the_stream_instead_of_parking_the_server() {
+        let (addr, server) = start_server("stop-before-frame");
+        // Paced so slowly that the first 250 ms frame is 25 s of wall time away: the stop lands
+        // with `frames` empty, the `n == 0 && ending` path.
+        let (status, body) = post(addr, "StartRun", &start_run_json(0.01));
+        assert_eq!(status, 200, "{body}");
+        let run_id = parse_json(&body).unwrap().str("run_id").unwrap().to_string();
+
+        let mut stream = TcpStream::connect(addr).unwrap();
+        stream.set_read_timeout(Some(Duration::from_secs(30))).unwrap();
+        write!(
+            stream,
+            "GET /v1/ingress/OpenSubscription?run_id={run_id}&scope=SCOPE_FLEET&samples_per_sim_second=4 HTTP/1.1\r\n\
+             Host: localhost\r\n\r\n"
+        )
+        .unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        assert!(line.starts_with("HTTP/1.1 200"), "{line}");
+        // Up to and including the `open` event, which is the first blank-line-terminated event.
+        let mut seen_open = false;
+        while !seen_open {
+            line.clear();
+            assert!(reader.read_line(&mut line).unwrap() > 0, "stream ended before the open event");
+            seen_open = line.starts_with("event: open");
+        }
+        assert_eq!(server.open_subscriptions(), 1);
+
+        let (status, body) = post(addr, "StopRun", &format!("{{\"run_id\":\"{run_id}\"}}"));
+        assert_eq!(status, 200, "{body}");
+        let rest = read_to_eof_within(stream, Duration::from_secs(5))
+            .expect("the stream did not end within 5 s of the stop: the writer is parked");
+        assert!(!String::from_utf8_lossy(&rest).contains("\"final\":true"), "nothing to send for a run with no frame");
+        assert_eq!(server.open_subscriptions(), 0, "the subscription was finished, not left behind");
+        // The proof that nothing is parked holding `subs`: a later request that has to sweep it answers.
+        let (status, _) = post(addr, "GetRun", &format!("{{\"run_id\":\"{run_id}\"}}"));
+        assert_eq!(status, 200);
+    }
+
+    #[test]
+    fn a_reconnect_at_the_final_sequence_ends_instead_of_parking_the_server() {
+        // A subscription whose final update went out but whose sub survived (the write failed after
+        // `finished` was set, so a reconnect within the lease is allowed), resumed at the final id:
+        // the ring has nothing newer, `finished` is set, and the stream must end, not park.
+        let (_addr, server) = start_server("reconnect-at-final");
+        let sc = Scenario::parse(&read("../../scenarios/route_p2c.txt")).unwrap();
+        let run = Arc::new(Run {
+            state: Mutex::new(run::RunState::new("r-1".into(), sc, 1.0)),
+            changed: std::sync::Condvar::new(),
+        });
+        let lease = server.runs.leases().open("r-1", DEFAULT_LEASE_NS, wall_now_ns());
+        let id = lease.id.0;
+        server.subs().insert(
+            id,
+            Sub {
+                spec: RowSpec { target: Target::Fleet, metrics: Vec::new(), percentiles: Vec::new() },
+                samples_per_sim_second: 4.0,
+                next_seq: 4,
+                next_k: 4,
+                ring: VecDeque::from(vec![(3, "{}".to_string(), true)]),
+                generation: 1,
+                finished: true,
+            },
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (socket, _) = listener.accept().unwrap();
+        let (tx, rx) = mpsc::channel();
+        let writer = Arc::clone(&server);
+        std::thread::spawn(move || {
+            let _ = tx.send(writer.stream_updates(socket, run, id, 1, 3));
+        });
+        let out = rx.recv_timeout(Duration::from_secs(5)).expect("the writer did not return within 5 s: it is parked");
+        assert_eq!(out.unwrap(), "final");
+        assert_eq!(server.open_subscriptions(), 0);
+        assert!(server.runs.leases().get(&SubscriptionId(id)).is_none(), "the lease was closed with the stream");
+        drop(client);
+    }
 }
