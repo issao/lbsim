@@ -5,7 +5,7 @@ Owned by the tech lead; updated on every spawn, merge and ETA change, in the sam
 Per Issao: *"keep an instruction graph of everything that we need to in an md file, with sections below
 of what each task entails."* A stale graph is worse than none, so the status line moves every time.
 
-**Last updated:** 2026-09-06 17:45 PDT. **Done 23 · in flight 11 · queued 17 · waiting on Issao 1.**
+**Last updated:** 2026-09-06 17:58 PDT. **Done 26 · in flight 10 · queued 17 · waiting on Issao 1.** Review R1 running over the first four code merges.
 **Dynamics live and showcased: 0 of 10 selected.** Selected: findings 1–6, demos 7–10 (`disable_decode`,
 `least_kv_probe`, `deadline_aware`, `fair_share`); U22 makes it 11 when it lands. Live means the dynamic runs
 through the Ingress endpoint in the dashboard (U18 then U28); showcased means a walkthrough script steps
@@ -20,6 +20,7 @@ adopted from the first spawn; profile §5 item 1 was already done by U20 (gate 4
 markers until someone with push-delete rights removes them. Nothing in those branches is unmerged.
 **17:45:** U18 landed (c0e9ea8, 38 unit + 8 HTTP tests, fingerprints PASS); U50 records its nine server decisions in
 WIRE.md and U51 makes the trace encoder emit the TraceSpan fields the main agent added to metrics.proto at f5eddf1.
+**17:58:** U23 landed (ede7b1f: replicas.jsonl, heatmap data real; it found the mock tag is unconditional in `Panel`, now U52), U45 (35c7918: build.sh round-robin slots, 420 s bound; 0.01 s / 3.01 s / exit 124 measured), U46 (072aa03: struct-update Scenario in eight tests, zero behaviour change). U53 spawned so the exporter covers demos 7–10, which U48's scripts need for run ids. Review agent R1 spawned over c0e9ea8, ede7b1f, 35c7918, 072aa03; its findings become units. Brief gaps fed back: web worktrees lack `node_modules` (symlink line now in web briefs); `cd` out of the worktree before integrate.sh (harmless getcwd noise otherwise).
 **Critical path:** U18 done → U28 (in flight; can now be checked against `sim-run serve` on master) → U49
 (walkthrough runner opens a live run) → the first "N live" number. U23 puts the heatmap on real data in
 parallel; U22 opens the dynamics fan-out. Every unit is `model: default` unless its section says `sonnet`.
@@ -56,7 +57,7 @@ flowchart TD
   U21[U21 disable_decode]:::done
   U22[U22 preemption + KV eviction<br/>claude/tl-preemption]:::flight
 
-  U23[U23 per-replica rows + heatmap<br/>claude/tl-replica-rows]:::flight
+  U23[U23 per-replica rows + heatmap]:::done
   U24[U24 trace engine<br/>claude/tl-trace-engine]:::flight
   U25[U25 SLO classes]:::queued
   U26[U26 speculative decoding knob]:::queued
@@ -78,14 +79,19 @@ flowchart TD
   U42[U42 SLO class targets: answered]:::done
   U44[U44 batch-class throughput over a longer window]:::queued
   U43[U43 rule-set version bump sign-off]:::blocked
-  U45[U45 build.sh: round-robin slots + timeout<br/>claude/tl-build-slots, sonnet]:::flight
-  U46[U46 tests build Scenario by struct update<br/>claude/tl-scenario-default, sonnet]:::flight
+  U45[U45 build.sh: round-robin slots + timeout]:::done
+  U46[U46 tests build Scenario by struct update]:::done
   U47[U47 tools/api-card.sh<br/>claude/tl-api-card, sonnet]:::flight
   U48[U48 showcase scripts for dynamics 1-10<br/>claude/tl-walkthroughs, sonnet]:::flight
   U49[U49 walkthrough runner on replay and live runs]:::queued
   U50[U50 WIRE.md: the server's nine decisions<br/>claude/tl-wire-decisions, sonnet]:::flight
   U51[U51 trace encoder: new TraceSpan fields<br/>claude/tl-trace-fields, sonnet]:::flight
   U18 --> U50
+  U52[U52 mode-aware mock tags<br/>claude/tl-mock-tags, sonnet]:::flight
+  U53[U53 exporter covers demos 7-10<br/>claude/tl-export-demos, sonnet]:::flight
+  U23 --> U52
+  U21 --> U53 --> U48
+  U52 --> U49
   U19 --> U51
 
   U01 --> U04 --> U10 & U11 & U12
@@ -347,8 +353,8 @@ to housekeeping, golden updated with every moved number explained.
 
 ## Queued
 
-### U23 per-replica export rows and the heatmap
-**Spawned 17:35** on `claude/tl-replica-rows`, worktree `/home/agents/repo/lbsim-wt-replica-rows`, model default,
+### U23 per-replica export rows and the heatmap (done, ede7b1f)
+**Landed 17:50** as ede7b1f: `replica_rows` from `frames[s].replicas`, `replicas.jsonl`, STEP_TIME and KV_TOKENS_RESIDENT constants, `replica_rows_follow_the_frames`, `loadRun` optional fetch, 17/17 web self-tests; frames align with the fleet series exactly. Finding: `MockTag` is rendered unconditionally by `Panel` (ui.tsx:39), so no panel can drop it; that is U52. Originally: **Spawned 17:35** on `claude/tl-replica-rows`, worktree `/home/agents/repo/lbsim-wt-replica-rows`, model default,
 ETA 17:55. `export::replica_rows` from `RunResult.frames[s].replicas` (the seam at export.rs:251 is a stub):
 one `SCOPE_REPLICA` update per replica per sample with QUEUED_SEQS 23, RUNNING_SEQS 22, KV_TOKENS_RESIDENT 21,
 KV_UTILIZATION 20 as a fraction of `kv_capacity_tokens`, STEP_TIME 8; written to `runs/<group>/<run>/replicas.jsonl`
@@ -421,15 +427,15 @@ report · U39 model weights and MoE (17) · U40 forecasting policy families · U
 Each as named in docs/execution-plan.md and docs/scope-today.md; none started; each becomes a section
 when it is specified to the five-field standard.
 
-### U45 tools/build.sh: round-robin slots and a bounded hold (fix-once, `model: sonnet`)
-**Spawned 17:35** on `claude/tl-build-slots`, worktree `/home/agents/repo/lbsim-wt-build-slots`, ETA 17:50. From the
+### U45 tools/build.sh: round-robin slots and a bounded hold (fix-once, `model: sonnet`, done 35c7918)
+**Landed 17:52** as 35c7918 with `tools/build-slots.test.sh`: slot 2 taken in 0.01 s while slot 1 is held, a two-slot wait resolves in 3.01 s, a bounded run exits 124 at 2 s. Originally: **Spawned 17:35** on `claude/tl-build-slots`, worktree `/home/agents/repo/lbsim-wt-build-slots`, ETA 17:50. From the
 productivity agent's measurement at 17:20: three agents lost 600 s each because a hung test held slot 1 and the
 fallback pinned every waiter to slot 1 while slot 2 sat free. Fix: poll the slots round-robin once a second, and exec
 cargo under `timeout -k 5 ${LBSIM_BUILD_TIMEOUT:-420}` so a hang returns 124 inside the agent's turn and releases the
 slot. Done: a shell check that a waiter takes slot 2 when slot 1 is held, and that a held run exits 124 at the bound.
 
-### U46 tests build `Scenario` by struct update (fix-once, `model: sonnet`)
-**Spawned 17:35** on `claude/tl-scenario-default`, worktree `/home/agents/repo/lbsim-wt-scenario-default`, ETA 17:50.
+### U46 tests build `Scenario` by struct update (fix-once, `model: sonnet`, done 072aa03)
+**Landed 17:55** as 072aa03; eight files, pass counts unchanged. Originally: **Spawned 17:35** on `claude/tl-scenario-default`, worktree `/home/agents/repo/lbsim-wt-scenario-default`, ETA 17:50.
 Profile §4 row 1: eight test files build `Scenario` as an exhaustive literal, so every branch adding a key breaks every
 other branch at rebase. Each becomes `tests/common::small()` plus field sets, or `..Scenario::default()`. The
 exhaustive literal in `tests/scenario_parse.rs` stays: it is the round-trip guard and must name every key. Zero
@@ -460,6 +466,15 @@ one-sample distribution; StopRun finalises COMPLETE; lease default 60 s, 0 dead;
 (batch_size 14 … stale_view_age_ns 21, `StepBound bound`) and RequestTrace a `bucket`; `trace_wire.rs` emits them
 and `tests/trace_wire.rs` checks the names against the proto. `web/src/lib/types.ts` follows in U49 or the trace
 panel unit. U19's section stands; U24 fills the values.
+
+### U52 mode-aware mock tags (`model: sonnet`)
+**Spawned 17:58** on `claude/tl-mock-tags`, ETA 18:15. `web/src/lib/wired.ts` names the Frame and ReplicaSample fields
+the engine supplies; each observe panel declares what it reads and passes `realness()` to `Panel`, which hides the tag
+when everything read is wired and titles it with the still-mock fields when partial. Files disjoint from U28's.
+
+### U53 exporter covers demos 7–10 (`model: sonnet`)
+**Spawned 17:58** on `claude/tl-export-demos`, ETA 18:10. Four `Demo` entries mirroring run-demos.sh, guarded by a
+test that parses run-demos.sh so the two cannot drift; the eight new run ids go to U48's scripts.
 
 ### U49 walkthrough runner on replay and live runs
 Queued behind U28 and U48. `Showcase.tsx` opens a script's `run` through the replay source or, when the Ingress
