@@ -25,7 +25,14 @@ export function StatusBar({ run }: { run: RunHandle }) {
           .join(' · ') || 'none'}
       </span>
       <span style={{ marginLeft: 'auto' }}>
-        {run.source?.kind === 'replay' ? (
+        {run.source?.kind === 'server' ? (
+          <>
+            mode <b>live</b> &middot; frames streamed <b>{run.engine.frames.length}</b> from the Ingress server
+            {run.source.runId ? <> (run <code>{run.source.runId}</code>)</> : null} &middot; sample rate{' '}
+            <b>{run.config.samplesPerSimSecond}/sim s</b> &middot; nothing is generated in this browser; the counts on
+            the left are the stand-in registry's, not the server's
+          </>
+        ) : run.source?.kind === 'replay' ? (
           <>
             mode <b>replay</b> &middot; frames loaded <b>{run.engine.frames.length}</b> from{' '}
             <code>runs/{run.source.runId}/fleet.jsonl</code> &middot; sample rate{' '}

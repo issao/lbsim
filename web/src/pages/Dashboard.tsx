@@ -1,6 +1,7 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import type { ScenarioConfig } from '../lib/config';
-import { useReplayCatalogue, useReplayRun, useRun, type ReplayRunHandle, type RunHandle } from '../lib/useRun';
+import { useDataSource, useReplayRun, useRun, type ReplayRunHandle, type RunHandle } from '../lib/useRun';
+import { useServerRun, type ServerRunHandle } from '../lib/useServerRun';
 import { windowFrames } from '../lib/derive';
 import { setActiveMode } from '../lib/mode';
 import { groupRuns, loadRun, runDurationS, type LoadedRun, type RunIndexEntry } from '../lib/replay';
@@ -24,8 +25,9 @@ interface DashboardProps {
   tabHint?: TabHint;
   overlay?: ReactNode;
   /**
-   * `auto` plays recorded runs when `runs/index.json` is served and the mock otherwise; `mock`
-   * never probes. The showcase asks for `mock` because its scripts drive the mock's dynamics.
+   * `auto` runs on the Ingress server when one answers, plays recorded runs when `runs/index.json`
+   * is served, and the mock otherwise; `mock` never probes. The showcase asks for `mock` because
+   * its scripts drive the mock's dynamics.
    */
   data?: 'auto' | 'mock';
 }
@@ -36,17 +38,66 @@ interface DashboardProps {
  * hand -- the walkthrough is content, not a second interface.
  *
  * The surface is one component, `DashboardBody`, over one `RunHandle`. What differs is only where
- * the handle comes from: the mock engine, or a recorded run picked from the served index.
+ * the handle comes from: the mock engine, a recorded run picked from the served index, or a run
+ * started on the Ingress server.
  */
 export function Dashboard(props: DashboardProps) {
   const auto = (props.data ?? 'auto') === 'auto';
-  const cat = useReplayCatalogue(auto);
+  const src = useDataSource(auto);
   useEffect(() => {
-    if (cat.state === 'mock') setActiveMode('mock');
-  }, [cat.state]);
-  if (cat.state === 'probing') return <div className="page-pad">looking for recorded runs…</div>;
-  if (cat.state === 'replay') return <ReplayDashboard {...props} runs={cat.runs} />;
+    if (src.state === 'mock') setActiveMode('mock');
+  }, [src.state]);
+  if (src.state === 'probing') return <div className="page-pad">looking for a server or recorded runs…</div>;
+  if (src.state === 'server') return <ServerDashboard {...props} />;
+  if (src.state === 'replay') return <ReplayDashboard {...props} runs={src.runs} />;
   return <MockDashboard {...props} />;
+}
+
+// ---------------------------------------------------------------------------
+// Live: a run started on the Ingress server, streamed as it advances
+// ---------------------------------------------------------------------------
+
+function ServerDashboard({ initial, autoplay = true, ...rest }: DashboardProps) {
+  const run = useServerRun(initial, { autoplay });
+  useEffect(() => {
+    setActiveMode('server', run.runId ?? undefined);
+  }, [run.runId]);
+  return <DashboardBody run={run} banner={<ServerBanner run={run} />} {...rest} />;
+}
+
+/** Says where the numbers come from, what the server cannot do yet, and names what it refused. */
+function ServerBanner({ run }: { run: ServerRunHandle }) {
+  return (
+    <>
+      <div className="banner">
+        <span className="tagline">live</span>
+        <span>
+          run <code>{run.runId ?? '…'}</code> &middot; stream {run.connection}
+          {run.subscriptionId ? <> ({run.subscriptionId})</> : null} &middot; {run.engine.frames.length} samples at{' '}
+          {run.config.samplesPerSimSecond}/sim s &middot; speed {run.status?.realtimeFactor ?? '…'}&times;
+          {run.dropped.length ? <> &middot; inert controls: {run.dropped.join(', ')}</> : null}
+        </span>
+        <span style={{ marginLeft: 'auto', color: 'var(--ink-3)' }} title={run.disabledReason}>
+          load and policy changes go to the server; scrub is a local read; rewind is off: {run.disabledReason}
+        </span>
+      </div>
+      {run.error ? (
+        <div className="banner">
+          <span className="tagline">server</span>
+          <span style={{ color: 'var(--critical)' }}>{run.error}</span>
+        </div>
+      ) : null}
+      {run.refused ? (
+        <div className="banner">
+          <span className="tagline">not applied</span>
+          <span style={{ color: 'var(--serious)' }}>{run.refused}</span>
+          <button className="btn" onClick={run.dismissRefused}>
+            dismiss
+          </button>
+        </div>
+      ) : null}
+    </>
+  );
 }
 
 function MockDashboard({ initial, autoplay = true, ...rest }: DashboardProps) {
