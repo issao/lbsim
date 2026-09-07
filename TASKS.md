@@ -1,6 +1,6 @@
 # TASKS — things that need Issao
 
-Last updated: 2026-09-06 21:02 PDT by Claude.
+Last updated: 2026-09-06 21:11 PDT by Claude.
 
 **Stopped 21:00 PDT at your request** (*"we are approaching limit... tie up loose ends... give me a doc
 summarizing the state and most interesting outcomes with deep links and I will review and wrap up
@@ -151,6 +151,11 @@ until you grant the role, and the results bucket keeps everything it is ever giv
 ---
 
 ## Answered, kept for the record
+
+- At the wrap-up, 21:09: *"I am clicking on some of the showcase links and I am stuck in 'initializing the
+  mock run'. can you look at it and fix?"* Fixed by the main agent (3e78b9a, merged 7d174d0): a refused
+  metric in the subscription wish list left the page on its placeholder forever. On `master`; the
+  deployed site carries it after the next redeploy, which is `STATUS.md`'s to record.
 
 - 17:31, *"can you ask everyone to pause until usage limit resets in 2h 50min"*: every agent paused and
   checkpointed to files, resume 20:21 PDT. Nothing new here needs you.
