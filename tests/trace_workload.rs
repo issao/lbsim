@@ -121,3 +121,69 @@ fn synthetic_mode_is_byte_identical_with_the_new_keys() {
     explicit.trace_file = SAMPLE.into();
     assert_eq!(sim::run(&explicit).unwrap().fingerprint, SMALL_FINGERPRINT_BEFORE);
 }
+
+/// R3 finding on U35: rows are not required to arrive sorted, and anchoring on row 0's time
+/// underflows (Nanos is u64) if an earlier row follows it. Input here is exactly that: `5.0` before
+/// `4.0`. The loader must sort before anchoring, so the earlier row replays first, at offset 0.
+#[test]
+fn unsorted_rows_are_replayed_in_time_order() {
+    let path = std::env::temp_dir().join(format!("lbsim_unsorted_trace_{}.csv", std::process::id()));
+    std::fs::write(&path, "t_s,prompt_tokens,output_tokens,tenant\n5.0,100,50,0\n4.0,200,60,0\n")
+        .expect("failed to write the scratch trace file");
+
+    let mut sc = small();
+    sc.workload = "trace".into();
+    sc.trace_file = path.to_str().unwrap().into();
+
+    let mut w = Workload::new(&Streams::new(sc.seed));
+    let start = EPOCH_BASE;
+    let mut now = start;
+    let mut got = Vec::new();
+    for _ in 0..2 {
+        let elapsed = (now - start) as f64 / 1e9;
+        let req = w.make(&sc, now);
+        got.push((now - start, req.prompt));
+        let gap = w.next_gap_ns(&sc, elapsed);
+        now += gap.max(1);
+    }
+    let _ = std::fs::remove_file(&path);
+
+    assert_eq!(got.len(), 2, "both rows must be replayed");
+    assert_eq!(got[0], (0, 200), "the 4.0s row is earlier and must be replayed first, at offset 0");
+    assert_eq!(got[1], (lbsim::SECOND, 100), "the 5.0s row follows one second behind the first");
+}
+
+/// R3 finding on U35: `Frame.offered_rps` was `Workload::rate_at`, the synthetic arrival rate, even
+/// in trace mode, where there is no such rate — the dashboard's offered-load curve was fiction. It
+/// must instead reflect what the CSV recorded: high across sample.csv's 12-14s burst, and exactly
+/// zero across the gap from 19.70s to 20.77s.
+#[test]
+fn offered_rps_in_trace_mode_follows_the_rows() {
+    let sc = trace_scenario();
+    let r = sim::run(&sc).unwrap();
+    assert!(!r.frames.is_empty(), "no frames were sampled");
+    let start = EPOCH_BASE;
+
+    // sample.csv packs 64 of its ~195 rows into 12-14s: any window closing in that range must show a
+    // rate far above the trace's overall average of about 6.5 rows/s, never the synthetic scenario's
+    // arrival_rps.
+    let burst_max = r
+        .frames
+        .iter()
+        .filter(|f| {
+            let elapsed = f.t - start;
+            elapsed > 12 * lbsim::SECOND && elapsed <= 14 * lbsim::SECOND
+        })
+        .map(|f| f.offered_rps)
+        .fold(0.0_f64, f64::max);
+    assert!(burst_max > 20.0, "the 12-14s burst does not show up in offered_rps (max was {burst_max})");
+
+    // The window closing exactly at 20.0s falls entirely inside that gap, so it has no rows and must
+    // show zero, not the synthetic default rate.
+    let quiet = r
+        .frames
+        .iter()
+        .find(|f| f.t - start == 20 * lbsim::SECOND)
+        .unwrap_or_else(|| panic!("no frame closes at exactly 20s (sample interval assumption changed)"));
+    assert_eq!(quiet.offered_rps, 0.0, "a window with no rows must show zero offered load");
+}

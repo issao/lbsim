@@ -912,7 +912,9 @@ impl Sim {
                     self.fleet_queue.push(now, tq);
                     self.fleet_running.push(now, tr);
                     self.fleet_kv.push(now, 100.0 * tkv / sc.replicas as f64);
-                    let rate = Workload::rate_at(sc, (now - start) as f64 / 1e9);
+                    let window_end_ns = now - start;
+                    let window_start_ns = window_end_ns.saturating_sub(self.sample_iv);
+                    let rate = self.workload.offered_rps(sc, window_start_ns, window_end_ns);
                     self.offered.push(now, rate);
                     self.frames.push(self.window.close(now, rate, &self.replicas));
                     self.q.schedule_prio(now + self.sample_iv, PRIO_OBSERVE, Ev::Sample);
