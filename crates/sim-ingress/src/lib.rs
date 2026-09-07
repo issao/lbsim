@@ -12,6 +12,7 @@
 pub mod export;
 pub mod idle;
 pub mod lease;
+pub mod trace_wire;
 pub mod wire;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};

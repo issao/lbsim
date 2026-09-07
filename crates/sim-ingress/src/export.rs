@@ -14,14 +14,19 @@
 //! runs/<run_id>/scenario.txt      the resolved scenario, as `sim-run run` reads it
 //! runs/<run_id>/result.json       RunResult: the scorecard
 //! runs/<run_id>/fleet.jsonl       SubscriptionUpdate per sample instant, SCOPE_FLEET
+//! runs/<run_id>/traces.jsonl      RequestTrace per line, when the run recorded traces
+//! runs/<run_id>/manifest.json     how many traces were kept of how many, when traces.jsonl exists
 //! ```
 //!
-//! `index.json` is the one document with no proto message behind it; WIRE.md names it as the
-//! deviation. Everything else uses proto field names verbatim, and `tests/wire_export.rs` checks that.
+//! `index.json` and `manifest.json` are the documents with no proto message behind them; WIRE.md
+//! names the index as the deviation. Everything else uses proto field names verbatim, and
+//! `tests/wire_export.rs` and `tests/trace_wire.rs` check that.
 
+use crate::trace_wire;
 use crate::wire::{self, Distribution, MetricRow, RunStatus, State, SubscriptionUpdate, Target};
 use sim_core::Nanos;
 use sim_leaf::RunResult;
+use sim_metrics::trace::RequestTrace;
 use sim_metrics::Outcome;
 use sim_scenario::Scenario;
 use std::path::{Path, PathBuf};
@@ -311,6 +316,129 @@ pub fn export_run_from(
 
     merge_index(&dir.join("runs").join("index.json"), &index_entry(r, run_id, scenario_file))?;
     Ok(run_dir)
+}
+
+/// `export_run_from`, plus the run's sampled traces as `traces.jsonl`, within `trace_budget_bytes`.
+///
+/// The traces travel beside the result rather than inside it because `sim_leaf::RunResult` does not
+/// carry them yet. Seam for the engine: once `RunResult` holds a `traces` field, `export_run_from`
+/// calls this with it and this signature goes away.
+pub fn export_run_with_traces(
+    r: &RunResult,
+    traces: &[RequestTrace],
+    run_id: &str,
+    scenario_file: Option<&str>,
+    dir: &Path,
+    trace_budget_bytes: u64,
+) -> Result<PathBuf, String> {
+    let run_dir = export_run_from(r, run_id, scenario_file, dir)?;
+    export_traces(traces, &run_dir, trace_budget_bytes)?;
+    Ok(run_dir)
+}
+
+/// Bytes `traces.jsonl` may take per run when the caller does not say. `sim_report::dump` gives a
+/// run 100 MB by default and allots 65% to requests and 30% to series; the traces take the 5% it
+/// left unallocated, so a run's telemetry stays inside the budget it was already held to.
+pub const DEFAULT_TRACE_BUDGET_BYTES: u64 = 5 * 1024 * 1024;
+
+/// What `export_traces` wrote, and the `manifest.json` beside it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TraceManifest {
+    pub kept: usize,
+    pub available: usize,
+    pub bytes: u64,
+    pub budget_bytes: u64,
+    /// `complete`, `failures only`, or `1 in N by latency stride, all failures kept`.
+    pub sampling: String,
+}
+
+/// Write `traces.jsonl` into `run_dir`, stratified to fit `budget_bytes` the way `sim_report::dump`
+/// stratifies `requests.csv`: every failure is kept, since failures are rare and are what a reader
+/// opens the traces to find, and successes are sorted by latency and taken at an even stride, so the
+/// tail survives. Uniform sampling would keep almost nothing above p99, which is the part worth
+/// reading. `manifest.json` records how many were kept of how many, so nobody downstream mistakes
+/// the sample for the population.
+pub fn export_traces(traces: &[RequestTrace], run_dir: &Path, budget_bytes: u64) -> Result<TraceManifest, String> {
+    let write = |name: &str, body: &str| -> Result<(), String> {
+        let p = run_dir.join(name);
+        std::fs::write(&p, body).map_err(|e| format!("{}: {e}", p.display()))
+    };
+    let (lines, manifest) = stratify_traces(traces, budget_bytes);
+    write("traces.jsonl", &lines)?;
+    let mut j = wire::Json::new();
+    j.begin_object()
+        .field_str("file", "traces.jsonl")
+        .field_int("kept", manifest.kept as i64)
+        .field_int("available", manifest.available as i64)
+        .field_u64("bytes", manifest.bytes)
+        .field_u64("budget_bytes", manifest.budget_bytes)
+        .field_str("sampling", &manifest.sampling)
+        .end_object();
+    write("manifest.json", &(j.finish() + "\n"))?;
+    Ok(manifest)
+}
+
+/// The body of `traces.jsonl` and its manifest. Lines keep the input order, so the file reads in
+/// completion order whatever was dropped.
+fn stratify_traces(traces: &[RequestTrace], budget_bytes: u64) -> (String, TraceManifest) {
+    let encoded: Vec<String> = traces.iter().map(|t| trace_wire::request_trace_json(t) + "\n").collect();
+    let size = |i: &usize| encoded[*i].len() as u64;
+
+    let (failures, mut successes): (Vec<usize>, Vec<usize>) =
+        (0..traces.len()).partition(|i| !traces[*i].record.outcome.is_success());
+    let mut chosen: Vec<usize> = Vec::new();
+    let mut used = 0u64;
+    for i in failures {
+        if used + size(&i) > budget_bytes {
+            break;
+        }
+        used += size(&i);
+        chosen.push(i);
+    }
+    let room = budget_bytes - used;
+    let success_bytes: u64 = successes.iter().map(size).sum();
+
+    let sampling = if success_bytes <= room {
+        chosen.extend(successes.iter().copied());
+        "complete".to_string()
+    } else {
+        // Slowest first, so the stride is anchored at the far tail: whatever else is dropped, the
+        // worst request a reader would want to open is in the file.
+        successes.sort_by_key(|i| std::cmp::Reverse(traces[*i].latency_ns()));
+        // The stride that fits by average size, then widened until the chosen lines actually fit,
+        // since a tail trace with more spans is longer than a median one.
+        let mean = success_bytes / successes.len() as u64;
+        let mut stride = successes.len().div_ceil((room / mean.max(1)).max(1) as usize).max(1);
+        let picked = loop {
+            let picked: Vec<usize> = successes.iter().step_by(stride).copied().collect();
+            let bytes: u64 = picked.iter().map(size).sum();
+            if bytes <= room || picked.len() <= 1 {
+                break if bytes <= room { picked } else { Vec::new() };
+            }
+            stride += 1;
+        };
+        let label = if picked.is_empty() {
+            "failures only".to_string()
+        } else {
+            format!("1 in {stride} by latency stride, all failures kept")
+        };
+        chosen.extend(picked);
+        label
+    };
+    chosen.sort_unstable();
+
+    let mut body = String::new();
+    for i in &chosen {
+        body.push_str(&encoded[*i]);
+    }
+    let manifest = TraceManifest {
+        kept: chosen.len(),
+        available: traces.len(),
+        bytes: body.len() as u64,
+        budget_bytes,
+        sampling,
+    };
+    (body, manifest)
 }
 
 // ---------------------------------------------------------------------------
