@@ -114,7 +114,7 @@ Scopes: `SCOPE_FLEET` and `SCOPE_REPLICA`. Everything else returns `rejected_rea
 | `METRIC_OUTPUT_TOKENS_PER_S` 44, `METRIC_GOODPUT_TOKENS_PER_S` 45 | yes | | tokens of completions per window, all / within SLO |
 | `METRIC_QUEUED_SEQS` 23, `METRIC_RUNNING_SEQS` 22 | sum | yes | replica queue and batch |
 | `METRIC_KV_UTILIZATION` 20, `METRIC_KV_TOKENS_RESIDENT` 21 | mean / sum | yes | replica KV |
-| `METRIC_STEP_TIME` 8 | | yes | last step duration |
+| `METRIC_STEP_TIME` 8 | | yes | last step duration, seconds as a double like every other duration gauge |
 | `METRIC_LOAD_IMBALANCE_CV` 64 | yes | | CV of per-replica load at the sample |
 | `METRIC_SLO_ATTAINMENT` 66 | yes | | window completions within SLO / all window completions |
 | `METRIC_TTFT` 1, `METRIC_ITL` 2, `METRIC_E2E` 3, `METRIC_QUEUE_WAIT` 4 | yes | | window histograms |
@@ -147,6 +147,8 @@ runs/<group>/<run>/scenario.txt      the resolved flat scenario
 runs/<group>/<run>/result.json       metrics.proto RunResult, verbatim: run_id, seed, event_count,
                                      state_checksum (the fingerprint), overall Scorecard
 runs/<group>/<run>/fleet.jsonl       one SubscriptionUpdate per sample instant, SCOPE_FLEET, last has final
+runs/<group>/<run>/replicas.jsonl    one SubscriptionUpdate per replica per sample, SCOPE_REPLICA, ordered by
+                                     sample then replica_id, same instants as fleet.jsonl, last has final
 ```
 
 Settled while building it, and binding on the server too:
@@ -160,5 +162,6 @@ Settled while building it, and binding on the server too:
 - Whole-run distributions in `result.json` carry `from_merged_histogram: true` (bucketed, accurate);
   windowed ones in `fleet.jsonl` are exact and carry `false`.
 - `subscription_id` is `"export"` and `realtime_factor` is `0` in exported rows; the live server fills both.
-- Per-replica rows (`SCOPE_REPLICA`) come from `RunResult.frames[].replicas`, which exists since the
-  engine-core unit; the exporter's `replica_rows` seam is where they are emitted.
+- Per-replica rows (`SCOPE_REPLICA`) come from `RunResult.frames[].replicas` and go to `replicas.jsonl`,
+  a file of their own so a reader that wants only the fleet charts never parses them. Absent in exports
+  older than U23; a dashboard treats that as a run with no replica breakdown, not an error.

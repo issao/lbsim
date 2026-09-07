@@ -91,7 +91,7 @@ fn emitted_field_names_exist_in_the_protos() {
     allowed.extend(proto_field_names("metrics.proto"));
 
     let mut offenders = Vec::new();
-    for doc in ["status.json", "result.json", "fleet.jsonl"] {
+    for doc in ["status.json", "result.json", "fleet.jsonl", "replicas.jsonl"] {
         for key in json_keys(&read(&run_dir.join(doc))) {
             // Enum-keyed maps use the enum number as the key; WIRE.md rule 4.
             if key.chars().all(|c| c.is_ascii_digit()) {
@@ -126,7 +126,14 @@ fn export_is_byte_identical_on_rerun() {
     // index merge, which replaces rather than appends.
     export::export_run(&r, "x/y", &a).unwrap();
 
-    for name in ["index.json", "x/y/status.json", "x/y/scenario.txt", "x/y/result.json", "x/y/fleet.jsonl"] {
+    for name in [
+        "index.json",
+        "x/y/status.json",
+        "x/y/scenario.txt",
+        "x/y/result.json",
+        "x/y/fleet.jsonl",
+        "x/y/replicas.jsonl",
+    ] {
         let pa = a.join("runs").join(name);
         let pb = b.join("runs").join(name);
         assert_eq!(fs::read(&pa).unwrap(), fs::read(&pb).unwrap(), "{name} differs between exports");
@@ -152,13 +159,65 @@ fn fleet_rows_have_one_line_per_sample_and_a_final_flag() {
         assert!(line.contains(r#""target":{"scope":"SCOPE_FLEET"}"#));
         assert!(!line.contains("NaN") && !line.contains("inf"), "non-finite number on the wire: {line}");
     }
-    // Replica scope waits for per-replica frames; the seam is empty by design today.
-    assert!(export::replica_rows(&r, 0).is_empty());
 
     let status = read(&run_dir.join("status.json"));
     assert!(status.contains(r#""state":"STATE_COMPLETE""#));
     assert!(status.contains(&format!(r#""sim_end_unix_ns":"{}""#, r.measured_to)));
     assert_eq!(read(&run_dir.join("scenario.txt")), r.scenario.to_text());
+}
+
+/// A metric's value on one `SubscriptionUpdate` line, or None when the row omitted it.
+fn metric_value(line: &str, metric: i32) -> Option<f64> {
+    let key = format!(r#""{metric}":"#);
+    let start = line.find(&key)? + key.len();
+    let rest = &line[start..];
+    let end = rest.find([',', '}']).unwrap_or(rest.len());
+    Some(rest[..end].parse().unwrap_or_else(|e| panic!("{}: {e}", &rest[..end])))
+}
+
+#[test]
+fn replica_rows_follow_the_frames() {
+    let dir = fresh_dir("replicas");
+    let r = small_run();
+    let run_dir = export::export_run_from(&r, "replicas", None, &dir).unwrap();
+    let fleet: Vec<String> = read(&run_dir.join("fleet.jsonl")).lines().map(String::from).collect();
+    let lines: Vec<String> = read(&run_dir.join("replicas.jsonl")).lines().map(String::from).collect();
+
+    // The replica rows index frames by sample; that is only right while the two are the same
+    // series of instants.
+    assert_eq!(r.frames.len(), r.fleet_queue.t.len(), "one frame per fleet sample");
+    for (s, f) in r.frames.iter().enumerate() {
+        assert_eq!(f.t, r.fleet_queue.t[s], "frame {s} closes at the fleet sample's instant");
+    }
+    let replicas = r.scenario.replicas as usize;
+    assert!(replicas > 1, "the small scenario has a fleet to break down");
+    assert_eq!(lines.len(), replicas * fleet.len(), "replicas x samples lines");
+
+    for (s, fleet_line) in fleet.iter().enumerate() {
+        let t = format!(r#""sim_time_unix_ns":"{}""#, r.fleet_queue.t[s]);
+        let (mut queued, mut running) = (0.0, 0.0);
+        for id in 0..replicas {
+            let line = &lines[s * replicas + id];
+            assert!(line.contains(&t), "sample {s} replica {id}: {line}");
+            assert!(
+                line.contains(&format!(r#""target":{{"scope":"SCOPE_REPLICA","replica_id":"{id}"}}"#)),
+                "sample {s} replica {id}: {line}"
+            );
+            queued += metric_value(line, wire::METRIC_QUEUED_SEQS).unwrap();
+            running += metric_value(line, wire::METRIC_RUNNING_SEQS).unwrap();
+            let kv = metric_value(line, wire::METRIC_KV_UTILIZATION).unwrap();
+            assert!((0.0..=1.0).contains(&kv), "sample {s} replica {id}: kv {kv}");
+            assert!(metric_value(line, wire::METRIC_KV_TOKENS_RESIDENT).is_some());
+            assert!(metric_value(line, wire::METRIC_STEP_TIME).unwrap() >= 0.0);
+            assert!(!line.contains("NaN") && !line.contains("inf"), "non-finite number on the wire: {line}");
+        }
+        assert_eq!(queued, metric_value(fleet_line, wire::METRIC_QUEUED_SEQS).unwrap(), "sample {s}: queued");
+        assert_eq!(running, metric_value(fleet_line, wire::METRIC_RUNNING_SEQS).unwrap(), "sample {s}: running");
+    }
+    for (i, line) in lines.iter().enumerate() {
+        let last = i + 1 == lines.len();
+        assert!(line.ends_with(if last { r#","final":true}"# } else { r#","final":false}"# }), "line {i}: {line}");
+    }
 }
 
 #[test]

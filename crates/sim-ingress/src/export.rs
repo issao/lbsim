@@ -242,14 +242,33 @@ pub fn fleet_rows(r: &RunResult) -> Vec<SubscriptionUpdate> {
     out
 }
 
-/// The per-replica rows for sample `s`, one `SCOPE_REPLICA` update per replica.
+/// The per-replica rows for sample `s`, one `SCOPE_REPLICA` update per replica, in replica order.
 ///
-/// Empty today. `RunResult::replica_load` holds only queued-plus-running per replica, which is not
-/// enough for a replica row worth streaming; the engine is growing `frames` with per-replica queued,
-/// running, KV and step time, and this fills in from those when they land. The seam is here so the
-/// exporter and the live server gain replica scope in one place.
-pub fn replica_rows(_r: &RunResult, _s: usize) -> Vec<SubscriptionUpdate> {
-    Vec::new()
+/// The instant is the fleet row's, so a client can join the two streams on `sim_time_unix_ns`
+/// alone. `frames[s]` is the same sample as `fleet_queue.t[s]`: the engine closes both at once, and
+/// `tests/wire_export.rs` holds it to that. Step time crosses as seconds like every other duration
+/// gauge, and KV as the same fraction the fleet row carries, so one threshold serves both scopes.
+pub fn replica_rows(r: &RunResult, s: usize) -> Vec<SubscriptionUpdate> {
+    let frame = &r.frames[s];
+    let last_sample = s + 1 == r.frames.len();
+    let n = frame.replicas.len();
+    let mut out = Vec::with_capacity(n);
+    for (id, rep) in frame.replicas.iter().enumerate() {
+        let mut row = MetricRow::new(Target::Replica(id as u64));
+        row.value(wire::METRIC_QUEUED_SEQS, rep.queued as f64);
+        row.value(wire::METRIC_RUNNING_SEQS, rep.running as f64);
+        row.value(wire::METRIC_KV_TOKENS_RESIDENT, rep.kv_tokens as f64);
+        row.value(wire::METRIC_KV_UTILIZATION, rep.kv_tokens as f64 / r.scenario.kv_capacity_tokens);
+        row.value(wire::METRIC_STEP_TIME, rep.last_step_ns as f64 / 1e9);
+        out.push(SubscriptionUpdate {
+            subscription_id: EXPORT_SUBSCRIPTION_ID.to_string(),
+            sim_time_unix_ns: r.fleet_queue.t[s],
+            realtime_factor: 0.0,
+            row,
+            is_final: last_sample && id + 1 == n,
+        });
+    }
+    out
 }
 
 /// A filesystem- and URL-safe run id from a scenario name: lowercase, runs of anything but
@@ -313,6 +332,18 @@ pub fn export_run_from(
         lines.push('\n');
     }
     write("fleet.jsonl", &lines)?;
+
+    // A separate file rather than interleaved rows: the dashboard reads the fleet stream for every
+    // chart and the replica stream only for the heatmap, and an older export without this file is
+    // still a complete run.
+    let mut lines = String::new();
+    for s in 0..r.frames.len() {
+        for u in replica_rows(r, s) {
+            lines.push_str(&wire::subscription_update_json(&u));
+            lines.push('\n');
+        }
+    }
+    write("replicas.jsonl", &lines)?;
 
     merge_index(&dir.join("runs").join("index.json"), &index_entry(r, run_id, scenario_file))?;
     Ok(run_dir)

@@ -239,7 +239,7 @@ check('fields the engine does not simulate are NaN or empty, never a number that
   eq(f.warmingReplicas, 0, 'warming: the fleet is static, so zero is true');
   eq(f.drainingReplicas, 0, 'draining');
   eq(f.ejectedReplicas, 0, 'ejected');
-  eq(f.replicas.length, 0, 'per-replica rows arrive with U23');
+  eq(f.replicas.length, 0, 'no replica rows given, none invented');
   eq(f.events.length, 0, 'no failure injection, no events');
   return 'preemptions, wasted, prefix, tiers NaN; lifecycle counts 0; replicas []';
 });
@@ -382,7 +382,8 @@ await checkAsync('loadRun fetches the four documents relative to runs/ and decod
   });
   const entry = replay.decodeRunIndex(JSON.parse(INDEX))[0];
   const run = await replay.loadRun(entry, f, base);
-  eq(calls.length, 4, 'four GETs');
+  eq(calls.length, 5, 'five GETs: the four documents and the optional replicas.jsonl');
+  eq(run.frames[1].replicas.length, 0, 'an export without replicas.jsonl has no replica breakdown');
   eq(run.status.state, 'STATE_COMPLETE', 'status');
   eq(run.status.simTimeUnixNs, 1767225720000000000n, 'status instant');
   eq(run.result.seed, 20260906n, 'result seed');
@@ -403,6 +404,67 @@ await checkAsync('loadRun fetches the four documents relative to runs/ and decod
   ok(run.unmapped.includes('admission = accept_all'), `admission reported as unmapped: ${run.unmapped.join(', ')}`);
   ok(!run.unmapped.some((u) => u.startsWith('routing')), 'routing was mapped');
   return `4 documents, 2 frames, config ${run.config.routing.kind} at ${run.config.workload.arrivalRps} rps`;
+});
+
+check('replicas.jsonl fills Frame.replicas: ids and values from the wire, NaN where it is silent', () => {
+  const rep = (t: bigint, id: number, queued: number, running: number, kv: number, util: number, step: number, final = false) =>
+    `{"subscription_id":"export","sim_time_unix_ns":"${t}","realtime_factor":0,"row":{"target":{"scope":"SCOPE_REPLICA","replica_id":"${id}"},"values":{"8":${step},"20":${util},"21":${kv},"22":${running},"23":${queued}},"distributions":{}},"final":${final}}`;
+  const t0 = 1767225600250000000n;
+  const t1 = 1767225625000000000n;
+  const text = [
+    rep(t0, 0, 0, 5, 1200, 0.01, 0.031),
+    rep(t0, 1, 0, 6, 1500, 0.0125, 0.032),
+    rep(t0, 2, 0, 6, 1400, 0.0117, 0.03),
+    rep(t1, 0, 1, 100, 60000, 0.5, 0.045),
+    rep(t1, 1, 0, 105, 66000, 0.55, 0.046),
+    rep(t1, 2, 0, 110, 72000, 0.6, 0.047, true),
+  ].join('\n') + '\n';
+  const groups = replay.parseReplicasJsonl(text);
+  eq(groups.size, 2, 'two instants');
+  eq(groups.get(t1)?.length, 3, 'three replicas at 25 s');
+  const fleet = [ROW_EMPTY, rowAt(ROW_25S, t1)].join('\n') + '\n';
+  const frames = replay.parseFleetJsonl(fleet, origin, groups);
+  eq(frames.length, 2, 'frames');
+  eq(frames[0].replicas.map((r) => r.id), [0, 1, 2], 'ids at 0.25 s');
+  eq(frames[1].replicas.map((r) => r.id), [0, 1, 2], 'ids at 25 s');
+  const r1 = frames[1].replicas[1];
+  eq(r1.present, true, 'present');
+  eq(r1.state, 'READY', 'ready: no lifecycle in the engine');
+  eq(r1.weight, 1, 'weight');
+  eq(r1.queuedSeqs, 0, 'queued');
+  eq(r1.runningSeqs, 105, 'running');
+  eq(r1.batchSize, 105, 'batch is the running count');
+  eq(r1.kvTokensResident, 66000, 'kv tokens');
+  eq(r1.kvUtilization, 0.55, 'kv utilization is the wire fraction, untouched');
+  near(r1.stepTimeMs, 46, 1e-9, 'step time, s -> ms');
+  eq(frames[1].replicas[0].queuedSeqs, 1, 'replica 0 queued');
+  eq(frames[0].replicas[2].stepTimeMs, 30, 'replica 2 step at 0.25 s');
+  for (const k of ['queueWaitMs', 'ttftMeanMs', 'itlMeanMs', 'prefixHitRate', 'admittedRps', 'completedRps', 'preemptionsPerS', 'trueSpeedMultiplier', 'telemetryStalenessMs'] as const) {
+    eq(r1[k], NaN, `${k} is NaN, never a zero that looks measured`);
+  }
+  const lone = replay.parseFleetJsonl(fleet, origin, new Map([[t0, groups.get(t0) ?? []]]));
+  eq(lone[1].replicas.length, 0, 'an instant with no replica rows gets none, not the previous instant\'s');
+  return '3 replicas x 2 samples; ids 0..2; wire values through, the rest NaN';
+});
+
+await checkAsync('loadRun takes replicas.jsonl when it is there, and a dev server\'s HTML shell as absent', async () => {
+  const base = '/runs/';
+  const t1 = 1767225625000000000n;
+  const rep = (id: number) =>
+    `{"subscription_id":"export","sim_time_unix_ns":"${t1}","realtime_factor":0,"row":{"target":{"scope":"SCOPE_REPLICA","replica_id":"${id}"},"values":{"8":0.04,"20":0.5,"21":60000,"22":100,"23":0},"distributions":{}},"final":false}`;
+  const docs = {
+    [`${base}1-routing/p2c/status.json`]: STATUS,
+    [`${base}1-routing/p2c/fleet.jsonl`]: rowAt(ROW_25S, t1) + '\n',
+    [`${base}1-routing/p2c/result.json`]: RESULT,
+    [`${base}1-routing/p2c/scenario.txt`]: SCENARIO,
+  };
+  const entry = replay.decodeRunIndex(JSON.parse(INDEX))[0];
+  const withRows = await replay.loadRun(entry, stubFetch({ ...docs, [`${base}1-routing/p2c/replicas.jsonl`]: [rep(0), rep(1)].join('\n') }).f, base);
+  eq(withRows.frames[0].replicas.map((r) => r.id), [0, 1], 'replica ids from replicas.jsonl');
+  eq(withRows.frames[0].replicas[1].kvTokensResident, 60000, 'replica value');
+  const shell = await replay.loadRun(entry, stubFetch(docs, true).f, base);
+  eq(shell.frames[0].replicas.length, 0, 'the HTML shell is an absent file');
+  return 'present: 2 replicas; shell: none';
 });
 
 await checkAsync('probeRunIndex answers null for a 404, for a dev server HTML shell, and for an empty index', async () => {

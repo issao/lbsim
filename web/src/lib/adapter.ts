@@ -24,7 +24,7 @@
 // decoder. A window with no completions has no distribution at all: the histogram stays empty and
 // `exact` stays absent, which `latencyMs` reports as NaN. Zero would be a lie.
 
-import type { Frame } from './engine';
+import type { Frame, ReplicaSample } from './engine';
 import type { MetricName, SubscriptionUpdate, WireDistribution } from './api';
 import { relSeconds } from './api';
 import { type Histogram, HIST_BUCKETS, newHistogram, record } from './hist';
@@ -65,8 +65,49 @@ const LATENCY_METRIC: Record<LatencyKind, MetricName> = {
 
 const NS_PER_MS = 1e6;
 
-/** One fleet-scope update as a frame. `tick` is the row's index in the run, `originUnixNs` the run's start. */
-export function frameFromUpdate(u: SubscriptionUpdate, originUnixNs: bigint, tick: number): ReplayFrame {
+/**
+ * One replica-scope update as the heatmap's row. The engine records queued, running, KV and the last
+ * step; everything else the interface has is NaN, so a column the wire never carried reads as
+ * missing rather than as a measured zero. `present` and `state` are what a static fleet is: there
+ * is no lifecycle in the engine yet, so every replica in the row exists and is ready.
+ */
+export function replicaFromUpdate(u: SubscriptionUpdate): ReplicaSample {
+  const v = (m: MetricName): number => u.row.values[m] ?? NaN;
+  const runningSeqs = v('METRIC_RUNNING_SEQS');
+  const stepTimeS = v('METRIC_STEP_TIME');
+  return {
+    id: Number(u.row.target.replicaId ?? -1n),
+    present: true,
+    state: 'READY',
+    weight: 1,
+    queuedSeqs: v('METRIC_QUEUED_SEQS'),
+    runningSeqs,
+    batchSize: runningSeqs,
+    kvTokensResident: v('METRIC_KV_TOKENS_RESIDENT'),
+    kvUtilization: v('METRIC_KV_UTILIZATION'),
+    stepTimeMs: stepTimeS * 1000,
+    queueWaitMs: NaN,
+    ttftMeanMs: NaN,
+    itlMeanMs: NaN,
+    prefixHitRate: NaN,
+    admittedRps: NaN,
+    completedRps: NaN,
+    preemptionsPerS: NaN,
+    trueSpeedMultiplier: NaN,
+    telemetryStalenessMs: NaN,
+  };
+}
+
+/**
+ * One fleet-scope update as a frame. `tick` is the row's index in the run, `originUnixNs` the run's
+ * start, `replicas` the SCOPE_REPLICA updates recorded at the same instant, when the export has them.
+ */
+export function frameFromUpdate(
+  u: SubscriptionUpdate,
+  originUnixNs: bigint,
+  tick: number,
+  replicas: readonly SubscriptionUpdate[] = []
+): ReplayFrame {
   const v = (m: MetricName): number => u.row.values[m] ?? NaN;
   const dist = (k: LatencyKind): { hist: Histogram; exact?: ExactPercentiles } => {
     const d = u.row.distributions[LATENCY_METRIC[k]];
@@ -113,7 +154,7 @@ export function frameFromUpdate(u: SubscriptionUpdate, originUnixNs: bigint, tic
     e2e: e2e.hist,
     queueWait: queueWait.hist,
     exact,
-    replicas: [],
+    replicas: replicas.map(replicaFromUpdate),
     events: [],
   };
 }
