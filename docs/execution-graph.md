@@ -5,7 +5,8 @@ Owned by the tech lead; updated on every spawn, merge and ETA change, in the sam
 Per Issao: *"keep an instruction graph of everything that we need to in an md file, with sections below
 of what each task entails."* A stale graph is worse than none, so the status line moves every time.
 
-**Last updated:** 2026-09-06 20:35 PDT. **RESUMED 20:26 PDT** after the 17:35–20:21 pause; a fresh tech lead (aa236236554a3edd1) restarted from this file. **Done 33 · in flight 10 · queued 14 · paused 1 (S3) · waiting on Issao 1.**
+**Last updated:** 2026-09-06 20:41 PDT. **RESUMED 20:26 PDT** after the 17:35–20:21 pause; a fresh tech lead (aa236236554a3edd1) restarted from this file. **Done 34 · in flight 10 (incl. review R2) · queued 14 · paused 1 (S3) · waiting on Issao 1.**
+**20:41:** U48 landed (a98d618): all ten selected dynamics have a walkthrough script with `run`/`compare` filled and checked against the export's ids; two latent bugs fixed on the way (walkthrough.ts read `import.meta.env` at module scope, so it could not be imported under node; the self-test's static `.ts` imports). U49 told to drop its stand-in on rebase. U52 landed (c90bf35, 20:36). Review R2 spawned over dcf77c8, 595ea7e, c90bf35, a98d618 (fourth code merge). U57 spawned 20:38 (`claude/tl-update-banner`, sonnet): `UpdateBanner` printed "nothing was re-simulated" for a refused update, found by U28 outside its files. Critical path is now U49 alone.
 **Resume 20:26–20:29:** twelve units spawned in one wave. The five worktrees holding uncommitted work from agents killed by the rate limit (forecast-latency, forecast-load, mock-tags, walkthroughs, web-live) were resumed *in place*: each brief opens with `git status`, commits the recovered edits as a WIP checkpoint, rebases, and continues; U22 and U24 resumed from their pushed branches with their one-file fixes; U35 from its clean branch. Template v3 pasted verbatim except the Setup block, which for a resume names the existing worktree instead of `worktree add` (deviation recorded here, not in the template). Then the queue: U49 started now against two stand-ins (the `run`/`compare` schema fields as prose from schema.md, read through a local type until U48's walkthrough.ts lands; the live controller as it is on master), U54 and U55 from R1, and U56 from the main agent's decision on R1 item 8. Models: sonnet for U40a, U40b, U48, U52, U55, U56; default for the rest. `lbsim-integ-queue` was reset (three stale log files from the interrupted 17:35 run). The three units that add scenario keys (U22, U24, U35) each refresh the 20 `html_md5` rows because reports embed `Scenario::to_text`; every brief says to stop if anything but html_md5 moves.
 **Dynamics live and showcased: 0 of 11 selected.** Selected: findings 1–6, demos 7–10 (`disable_decode`,
 `least_kv_probe`, `deadline_aware`, `fair_share`); U22 landed at 20:33 (demo 11), so 11 are selected. Live means the dynamic runs
@@ -89,12 +90,14 @@ flowchart TD
   U45[U45 build.sh: round-robin slots + timeout]:::done
   U46[U46 tests build Scenario by struct update]:::done
   U47[U47 tools/api-card.sh]:::done
-  U48[U48 showcase scripts for dynamics 1-10<br/>claude/tl-walkthroughs, sonnet]:::flight
+  U48[U48 showcase scripts for dynamics 1-10]:::done
   U49[U49 walkthrough runner<br/>claude/tl-runner]:::flight
   U50[U50 WIRE.md: the server's nine decisions]:::done
   U51[U51 trace encoder: new TraceSpan fields]:::done
   U18 --> U50
-  U52[U52 mode-aware mock tags<br/>claude/tl-mock-tags, sonnet]:::flight
+  U52[U52 mode-aware mock tags]:::done
+  U57[U57 UpdateBanner names a refused update<br/>claude/tl-update-banner, sonnet]:::flight
+  U28 --> U57
   U53[U53 exporter covers demos 7-10]:::done
   U54[U54 server hardening from review R1<br/>claude/tl-hardening]:::flight
   U55[U55 small fixes from R1 and cloud: STEP_TIME live value, kv cap, jsonl type<br/>claude/tl-small-fixes, sonnet]:::flight
@@ -404,6 +407,7 @@ Session model per ARCHITECTURE §14 row 9 with fork-off and merge-back rates; pr
 replica; affinity routing; the failover-cascade scenario. Upstream U22.
 
 ### U28 web on the live transport
+**Report, 20:37:** the seven self-test cases were already written; the build was red on a runtime-module type import, fixed; one real gap fixed test-first (a rejected update was mirrored onto `refused` so `ServerBanner` shows "not applied: reason"); `useServerRun.ts` is 633 lines, not 443 (brief error). Left for U57: `UpdateBanner` in PlaybackBar.tsx.
 **Landed 20:34** as 595ea7e (resumed 20:29 in place from eight uncommitted files: the live path is checked end to end through the fake Ingress, and a refused update is visible). Report pending; details follow in the next graph update.
 **Spawned 17:35** on `claude/tl-web-live`, worktree `/home/agents/repo/lbsim-wt-web-live`, model default, ETA 18:00.
 **Paused 17:35.** Branch `claude/tl-web-live`, worktree `/home/agents/repo/lbsim-wt-web-live`; a "WIP: U28 pause checkpoint" commit was requested; the agent had been told U18 is on master, the nine server decisions, and to rebase over U23's adapter change. **Resume:** from the WIP commit, finish the six self-test cases, `npm run build`, integrate.
@@ -475,6 +479,7 @@ Done: `tools/api-card.sh sim-model` lists `Replica::step` at its line; `tools/ap
 matching items with 12 lines of context.
 
 ### U48 showcase scripts for the ten selected dynamics (`model: sonnet`)
+**Landed 20:41** as a98d618: the four demo 7–10 scripts already carried the right ids; the agent removed the self-test's pending-id skip so all ten scripts get the strict allow-list check (68/68), and fixed two latent bugs (module-scope `import.meta.env`, static `.ts` imports) that had stopped the self-test and the build from running.
 **Re-spawned 20:29** in place from 14 uncommitted files; the demo 7–10 ids and the slug rule are in the brief.
 **Spawned 17:35** on `claude/tl-walkthroughs`, worktree `/home/agents/repo/lbsim-wt-walkthroughs`, ETA 18:00. **Paused 17:35.** Branch `claude/tl-walkthroughs`, worktree `/home/agents/repo/lbsim-wt-walkthroughs`; WIP checkpoint requested. The demo 7–10 run ids now exist (U53): `7-no-decode/round-robin-no-decode`, `7-no-decode/p2c-no-decode`, `8-admission/accept-all`, `8-admission/deadline-aware`, `9-fair-share/tenants-accept-all`, `9-fair-share/fair-share`, `10-probes/p2c`, `10-probes/least-kv-probe`. **Resume:** from the WIP commit, fill those ids into the four scripts, run the self-test and `npm run build`, integrate. One
 `web/public/walkthroughs/<id>.json` per selected dynamic (findings 1–6, demos 7–10), each step quoting the finding's
@@ -496,6 +501,7 @@ and `tests/trace_wire.rs` checks the names against the proto. `web/src/lib/types
 panel unit. U19's section stands; U24 fills the values.
 
 ### U52 mode-aware mock tags (`model: sonnet`)
+**Landed 20:36** as c90bf35: `wired.ts`, `realness()` in `Panel`, four panels declaring their reads; `replicas[].state` kept mock; 7/7 self-test.
 **Re-spawned 20:29** in place from seven uncommitted files.
 **Spawned 17:58** on `claude/tl-mock-tags`, ETA 18:15. **Paused 17:35.** Branch `claude/tl-mock-tags`, worktree `/home/agents/repo/lbsim-wt-mock-tags`; WIP checkpoint requested. **Resume:** from the WIP commit, per the brief. `web/src/lib/wired.ts` names the Frame and ReplicaSample fields
 the engine supplies; each observe panel declares what it reads and passes `realness()` to `Panel`, which hides the tag
@@ -524,6 +530,11 @@ in replay mode. This is the unit that turns "N live and showcased" from 0 to 10.
 
 ### U56 `Sim::drain_frames` (from R1 item 8, decided by the main agent 20:28; `model: sonnet`)
 **Spawned 20:29** on `claude/tl-frame-drain`, worktree `/home/agents/repo/lbsim-wt-frame-drain`, ETA 20:45. The run thread clones every new frame out of `engine.frames()` and the engine keeps its own copy, so a live run holds every frame twice, unbounded. `pub fn drain_frames(&mut self) -> Vec<Frame>` on `Sim`, used at run.rs 409/427; `RunResult.frames` stays complete for a drained run (the agent picks the smaller of two ways and reports which); `frames()` stays for the export path so the golden file proves nothing moved. The `Leaf` trait is not touched; if it had to be, that goes back to the main agent. Test: `draining_yields_the_same_frames_as_not_draining`.
+### U57 `UpdateBanner` names a refused update (`model: sonnet`)
+**Spawned 20:38** on `claude/tl-update-banner`, worktree `/home/agents/repo/lbsim-wt-update-banner`, ETA 20:50. Found by U28: `UpdateBanner` reads only `requiredResimulation`, so a 501 or a replay refusal renders as "nothing was re-simulated". A pure `updateBannerText(u)` in `web/src/lib/updateBanner.ts` with a self-test (rejected / resim / applied), rendered with a `rejected` class.
+
+### R2 review of the resume's first four code merges (read-only)
+**Spawned 20:41** over dcf77c8 (U22), 595ea7e (U28), c90bf35 (U52), a98d618 (U48): determinism first, then concrete-input bugs, live-path leaks, unsupported claims. Findings become units.
 
 ## Waiting on Issao
 
