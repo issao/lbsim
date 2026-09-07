@@ -406,6 +406,7 @@ table.data caption { caption-side: bottom; text-align: left; padding: 5px 6px; f
 .home ul.surfaces a { font-size: 13px; font-weight: 550; }
 .home ul.surfaces p { margin: 0; color: var(--ink-2); }
 .home ul.surfaces code { font-family: var(--mono); font-size: 10.5px; color: var(--ink-3); }
+.home ul.surfaces .tag-line { font-size: 10.5px; color: var(--ink-3); }
 .home .footnote { margin-top: 26px; color: var(--ink-3); font-size: 11px; }
 .home .footnote h2 { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-2); margin: 0 0 4px; }
 
@@ -443,6 +444,7 @@ table.data caption { caption-side: bottom; text-align: left; padding: 5px 6px; f
 }
 .walkthrough .wt-head { display: flex; align-items: center; gap: 8px; padding: 6px 9px; border-bottom: 1px solid var(--line); }
 .walkthrough .wt-step { font-family: var(--mono); font-size: 10px; color: var(--ink-3); }
+.walkthrough .wt-mode { font-size: 10px; color: var(--ink-3); margin: 0 6px; }
 .walkthrough .wt-title { font-size: 12px; font-weight: 600; }
 .walkthrough .wt-body { padding: 8px 9px; font-size: 11.5px; color: var(--ink-2); }
 .walkthrough .wt-body p { margin: 0 0 6px; }
