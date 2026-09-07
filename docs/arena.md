@@ -201,9 +201,12 @@ usually handle heterogeneous rounds. The implementation reports the first as a d
 raw objective, and deliberately did not change the objective, because that was Issao's call.
 
 Issao, 16:12: *"You can remove this, I agreed with this."* So the objective is the minimum over loads
-of goodput as a **share of offered work**. Making it the score rather than the diagnostic is routed to
-the tech lead, and every score records the rule-set version it was earned under, so rounds before and
-after the change are never compared.
+of goodput as a **share of offered work**. Done at f6a87a9: the share is the score, absolute goodput is
+the diagnostic beside it, the two swapped roles and neither was dropped. Every `RunScore` carries the
+rule set it was earned under, `RULE_SET` in `crates/sim-arena/src/lib.rs`, today *"v2: cap 0.95
+default, min over in-scope loads of gated goodput share"*, and `round_text` prints it, so rounds before
+and after the change are never compared. Under v2 the ranking keeps its order and the minimum moves to
+the hardest load, as this section predicted; the measured round is `docs/arena-implementation.md` §3.
 
 ### A 99.9% cap and a length-independent first-token target cannot both hold
 

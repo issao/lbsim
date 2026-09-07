@@ -72,10 +72,28 @@ than edits to this one.
 
 ## 3. The measured round
 
-Five policies × eight loads, 41 runs, seed 20260906 for every policy, engine at commit `283265c`.
-Determinism replay: identical fingerprint. Realism envelope: all eight loads inside every bound.
+Five policies × eight loads, 41 runs, seed 20260906 for every policy, engine at commit `283265c`;
+re-run at `907f3a1` under rule set v2 (f6a87a9) with every absolute number identical. Determinism
+replay: identical fingerprint. Realism envelope: all eight loads inside every bound.
 
-**Payoff matrix — goodput, output tokens/s within SLO.** This is the raw number, before the gate.
+**Payoff matrix under rule set v2 — goodput as a share of offered output tokens.** This is the objective
+since f6a87a9, per Issao at 16:12 on §5b's first flaw (*"You can remove this, I agreed with this."*),
+before the gate. The rule set is recorded in every score: *"v2: cap 0.95 default, min over in-scope
+loads of gated goodput share"*.
+
+| load | round_robin | random | least_requests | least_queue_tokens | p2c |
+|---|---|---|---|---|---|
+| h1-light-chat | 0.932 | 0.933 | 0.661 | 0.661 | **0.934** |
+| h2-near-rated-chat | 0.874 | 0.855 | 0.148 | 0.173 | **0.886** |
+| h3-over-rated-chat | 0.070 | **0.072** | 0.010 | 0.010 | 0.057 |
+| h4-long-prompt-mixture | 0.732 | 0.705 | 0.621 | 0.621 | **0.762** |
+| h5-bursty-step | 0.923 | 0.911 | 0.265 | 0.273 | **0.930** |
+| h6-low-rate-heavy-context | 0.874 | 0.856 | 0.786 | 0.786 | **0.880** |
+| h7-code-completion | **0.923** | 0.893 | 0.096 | 0.096 | 0.891 |
+| h8-retry-storm | **0.822** | 0.813 | 0.473 | 0.473 | 0.819 |
+
+**Absolute goodput, output tokens/s within SLO.** The v1 objective, kept as the diagnostic beside the
+share; the two swapped roles and neither was dropped.
 
 | load | round_robin | random | least_requests | least_queue_tokens | p2c |
 |---|---|---|---|---|---|
@@ -101,8 +119,24 @@ Determinism replay: identical fingerprint. Realism envelope: all eight loads ins
 | h7-code-completion | **0.9962** | 0.9705 | 0.1073 | 0.1073 | 0.9637 |
 | h8-retry-storm | 0.9609 | 0.9582 | 0.5964 | 0.5964 | **0.9617** |
 
-**Ranking.** The score is the minimum gated goodput over in-scope loads. h3 is out of scope for every
-policy (460 rps offered against 328 rated), so seven of eight loads count.
+**Ranking under rule set v2.** The score is the minimum over in-scope loads of the gated goodput share.
+h3 is out of scope for every policy (460 rps offered against 328 rated), so seven of eight loads count.
+
+| # | policy | score | mean share | mean tok/s | breaches | worst load |
+|---|---|---|---|---|---|---|
+| 1 | p2c | **0.762** | 0.872 | 5892 | 1 | h4-long-prompt-mixture |
+| 2 | round_robin | **0.732** | 0.868 | 5848 | 1 | h4-long-prompt-mixture |
+| 3 | random | **0.705** | 0.852 | 5742 | 1 | h4-long-prompt-mixture |
+| 4 | least_queue_tokens | 0 | 0 | 2212 | 8 | h1-light-chat |
+| 5 | least_requests | 0 | 0 | 2134 | 8 | h1-light-chat |
+
+The order is unchanged from v1, p2c > round_robin > random > {least_queue_tokens, least_requests}, and
+the worst load is now h4, the long-prompt mixture, for all three: the minimum lands on the hardest load
+rather than the smallest, which is the inversion §5b of `docs/arena.md` predicted and the reason for
+the change.
+
+**Ranking under rule set v1**, absolute gated goodput, kept for the record; never compare a v1 score
+with a v2 one:
 
 | cap | 1st | 2nd | 3rd | 4th | 5th |
 |---|---|---|---|---|---|
@@ -110,11 +144,10 @@ policy (460 rps offered against 328 rated), so seven of eight loads count.
 | **0.99** | p2c **0** | round_robin 0 | random 0 | least_queue_tokens 0 | least_requests 0 |
 | **0.95** | p2c **2652** | round_robin **2632** | random **2546** | least_queue_tokens 0 | least_requests 0 |
 
-At 0.95 the order is p2c > round_robin > random > {least_queue_tokens, least_requests}, each of the top
-three breaching on exactly one load (h3, which does not count) and each scoring its minimum on
-h6 or h4. At 0.99 every candidate is gated to zero; the ranking there is broken by mean gated goodput
-(p2c 1848, round_robin 1023, random 548) and then by mean ungated goodput, and the report prints both
-so a degenerate round cannot masquerade as a result.
+At 0.95 under v1 each of the top three breached on exactly one load (h3, which does not count) and
+scored its minimum on h6 or h4, the two lightest loads. At 0.99 every candidate is gated to zero; the
+ranking there is broken by mean gated goodput (p2c 1848, round_robin 1023, random 548) and then by mean
+ungated goodput, and the report prints both so a degenerate round cannot masquerade as a result.
 
 **Load difficulty** against the best policy at cap 0.95, per §4 step 6: h6 0.838, h4 0.831,
 h7 0.803, h3 0.800, h8 0.794, h1 0.765, h5 0.442, h2 0.000. That ordering is an artefact, not a
