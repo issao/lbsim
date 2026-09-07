@@ -50,7 +50,11 @@ RUN mkdir -p site/reports \
  && ./target/release/sim-run compare scenarios/admit_tenants_accept_all.txt \
       scenarios/admit_fair_share.txt --out site/reports/9-fair-share.html \
  && ./target/release/sim-run compare scenarios/route_p2c.txt \
-      scenarios/route_least_kv_probe.txt --out site/reports/10-probes.html
+      scenarios/route_least_kv_probe.txt --out site/reports/10-probes.html \
+ && ./target/release/sim-run compare scenarios/kv_spiral_never.txt \
+      scenarios/kv_spiral_swap.txt --out site/reports/11-preemption.html \
+ && ./target/release/sim-run compare scenarios/spec_off.txt \
+      scenarios/spec_n4.txt --out site/reports/12-spec-decode.html
 # The recorded runs the dashboard replays (web/README.md, "Replay mode"): runs/index.json and one
 # directory per run, written into site/ so the same stage owns everything the image serves. The
 # dashboard fetches /runs/index.json relative to its own origin, so these have to sit beside the app
