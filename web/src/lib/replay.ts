@@ -17,10 +17,12 @@
 import {
   type Json,
   type RunResult,
+  type WireRequestTrace,
   type RunStatus,
   type SubscriptionUpdate,
   EXTRA_KEYS,
   ROUTING_TO_ENGINE,
+  decodeRequestTrace,
   decodeRunResult,
   decodeRunStatus,
   decodeSubscriptionUpdate,
@@ -189,6 +191,32 @@ export async function loadRun(entry: RunIndexEntry, f: FetchLike = defaultFetch(
   const frames = parseFleetJsonl(fleetText, entry.simStartUnixNs, replicas);
   if (frames.length === 0) throw new Error(`${entry.runId}/fleet.jsonl: no samples`);
   return { entry, status, result, scenarioText, config, unmapped, frames };
+}
+
+/**
+ * `runs/<id>/traces.jsonl`: one RequestTrace per line, the journeys the export kept of what the run
+ * sampled (`manifest.json` beside it says how many of how many). Loaded apart from `loadRun`, and
+ * only by the Traces tab when it mounts, because it is the one document a dashboard can be shown
+ * without; `null` when the export predates traces, which the tab says in words.
+ */
+export async function loadTraces(runId: string, f: FetchLike = defaultFetch(), base = runsBase()): Promise<WireRequestTrace[] | null> {
+  const text = await getOptionalText(`${base}${runId}/traces.jsonl`, f);
+  if (text === null) return null;
+  const out: WireRequestTrace[] = [];
+  let lineNo = 0;
+  for (const raw of text.split('\n')) {
+    lineNo++;
+    const line = raw.trim();
+    if (line === '') continue;
+    let parsed: Json;
+    try {
+      parsed = JSON.parse(line) as Json;
+    } catch {
+      throw new Error(`${runId}/traces.jsonl line ${lineNo}: not JSON`);
+    }
+    out.push(decodeRequestTrace(parsed, `${runId}/traces.jsonl line ${lineNo}`));
+  }
+  return out;
 }
 
 /** Every SubscriptionUpdate in a `.jsonl` document, blank lines skipped, in file order. */

@@ -123,9 +123,18 @@ counterpart as bit-identical merely because both describe the same window.
 ## What the first server supports
 
 The live server serves `StartRun`, `StopRun`, `GetRun`, `ListRuns`, `SetSpeed`, `StepForward`,
-`UpdateWorkload`, `UpdatePolicies`, `RenewSubscription`, `CloseSubscription`, `GetResult`, and
-`OpenSubscription` today, while `Rewind` and `GetTraces` (until U24 lands) answer **HTTP 501 Not
-Implemented** rather than 404, so a client can tell "not built yet" apart from "wrong path".
+`UpdateWorkload`, `UpdatePolicies`, `RenewSubscription`, `CloseSubscription`, `GetResult`,
+`GetTraces`, and `OpenSubscription` today, while `Rewind` answers **HTTP 501 Not Implemented** rather
+than 404, so a client can tell "not built yet" apart from "wrong path".
+
+`GetTraces` answers at any state of the run, newest first by the instant the request ended, from the newest 2,000 sampled journeys (or
+5 MiB of them encoded, whichever bound trips first) the run thread drains from the engine after every
+chunk; it filters by `outcome` (name or number; the proto's zero is "any", and an outcome the engine
+never produces, cancelled or failed, gives an empty list), by `min_e2e_ns` against the request's
+latency to whatever ended it, and by `tenant_id` (zero is "any"), and returns at most `limit` traces,
+100 when unset. `StartRun { record_traces: true }` sets a 5 % sample (`trace_sample_rate = 0.05`)
+when the scenario names none, and a scenario with its own rate keeps it; a run that recorded nothing
+answers an empty list, not an error.
 
 Scopes: `SCOPE_FLEET` and `SCOPE_REPLICA`. Everything else returns `rejected_reason`.
 

@@ -249,6 +249,24 @@ export const MEMORY_TIER_NUMBER = {
 export type MemoryTierName = keyof typeof MEMORY_TIER_NUMBER;
 const MEMORY_TIER_NAME: Record<number, MemoryTierName> = invert(MEMORY_TIER_NUMBER);
 
+export const STEP_BOUND_NUMBER = {
+  STEP_BOUND_UNSPECIFIED: 0,
+  STEP_BOUND_BANDWIDTH: 1,
+  STEP_BOUND_COMPUTE: 2,
+} as const;
+export type StepBoundName = keyof typeof STEP_BOUND_NUMBER;
+const STEP_BOUND_NAME: Record<number, StepBoundName> = invert(STEP_BOUND_NUMBER);
+
+export const TRACE_BUCKET_NUMBER = {
+  TRACE_BUCKET_UNSPECIFIED: 0,
+  TRACE_BUCKET_P50: 1,
+  TRACE_BUCKET_P90: 2,
+  TRACE_BUCKET_P99: 3,
+  TRACE_BUCKET_P999: 4,
+} as const;
+export type TraceBucketName = keyof typeof TRACE_BUCKET_NUMBER;
+const TRACE_BUCKET_NAME: Record<number, TraceBucketName> = invert(TRACE_BUCKET_NUMBER);
+
 /** policy.proto RefereeVerdict, the key of `RunResult.referee_violations`. */
 export const REFEREE_VERDICT_NUMBER = {
   REFEREE_VERDICT_UNSPECIFIED: 0,
@@ -601,6 +619,17 @@ export interface WireTraceSpan {
   kvUtilization: number;
   tokensProcessed: number;
   kvTier: MemoryTierName;
+  // The resource while the span ran (metrics.proto fields 14-21). The server omits a zero, so a
+  // zero here is either "none" or "not carried": the panel says which by the span's component.
+  batchSize: number;
+  queued: number;
+  kvTokensResident: bigint;
+  kvCapacity: bigint;
+  stepNs: bigint;
+  bound: StepBoundName;
+  /** Routing spans only: the replicas the router looked at. */
+  candidates: bigint[];
+  staleViewAgeNs: bigint;
 }
 
 export function decodeTraceSpan(v: Json, where = 'TraceSpan'): WireTraceSpan {
@@ -615,6 +644,14 @@ export function decodeTraceSpan(v: Json, where = 'TraceSpan'): WireTraceSpan {
     kvUtilization: dbl(rd(o, 'kv_utilization'), `${where}.kv_utilization`),
     tokensProcessed: i32(rd(o, 'tokens_processed'), `${where}.tokens_processed`),
     kvTier: enumName(rd(o, 'kv_tier'), MEMORY_TIER_NUMBER, MEMORY_TIER_NAME, 'MEMORY_TIER_UNSPECIFIED', `${where}.kv_tier`),
+    batchSize: i32(rd(o, 'batch_size'), `${where}.batch_size`),
+    queued: i32(rd(o, 'queued'), `${where}.queued`),
+    kvTokensResident: u64(rd(o, 'kv_tokens_resident'), `${where}.kv_tokens_resident`),
+    kvCapacity: u64(rd(o, 'kv_capacity'), `${where}.kv_capacity`),
+    stepNs: u64(rd(o, 'step_ns'), `${where}.step_ns`),
+    bound: enumName(rd(o, 'bound'), STEP_BOUND_NUMBER, STEP_BOUND_NAME, 'STEP_BOUND_UNSPECIFIED', `${where}.bound`),
+    candidates: arr(rd(o, 'candidates'), `${where}.candidates`).map((x, i) => u64(x, `${where}.candidates[${i}]`)),
+    staleViewAgeNs: u64(rd(o, 'stale_view_age_ns'), `${where}.stale_view_age_ns`),
   };
 }
 
@@ -674,6 +711,8 @@ export function decodeRequestRecord(v: Json, where = 'RequestRecord'): WireReque
 export interface WireRequestTrace {
   record: WireRequestRecord;
   spans: WireTraceSpan[];
+  /** Which latency bucket the sampler placed the request in. */
+  bucket: TraceBucketName;
 }
 
 export function decodeRequestTrace(v: Json, where = 'RequestTrace'): WireRequestTrace {
@@ -681,6 +720,7 @@ export function decodeRequestTrace(v: Json, where = 'RequestTrace'): WireRequest
   return {
     record: decodeRequestRecord(rd(o, 'record'), `${where}.record`),
     spans: arr(rd(o, 'spans'), `${where}.spans`).map((s, i) => decodeTraceSpan(s, `${where}.spans[${i}]`)),
+    bucket: enumName(rd(o, 'bucket'), TRACE_BUCKET_NUMBER, TRACE_BUCKET_NAME, 'TRACE_BUCKET_UNSPECIFIED', `${where}.bucket`),
   };
 }
 

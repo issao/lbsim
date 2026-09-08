@@ -404,9 +404,8 @@ pub fn export_run_from(
 
 /// `export_run_from`, plus the run's sampled traces as `traces.jsonl`, within `trace_budget_bytes`.
 ///
-/// The traces travel beside the result rather than inside it because `sim_leaf::RunResult` does not
-/// carry them yet. Seam for the engine: once `RunResult` holds a `traces` field, `export_run_from`
-/// calls this with it and this signature goes away.
+/// The traces are a parameter rather than read off `r.traces` because a live run drains them from
+/// the engine as it goes (`run.rs`), so at the end `RunResult` holds only what nothing drained.
 pub fn export_run_with_traces(
     r: &RunResult,
     traces: &[RequestTrace],
@@ -751,6 +750,13 @@ pub fn export_demos(
             let path = scenarios_dir.join(file);
             let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
             let mut base = Scenario::parse(&text)?;
+            // Replay's Traces tab reads `traces.jsonl`, so every demo samples at the same rate a
+            // live `StartRun { record_traces: true }` does. Before the overrides, so a caller can
+            // still turn it off. The fingerprints are `run-demos.sh`'s, not this export's, and
+            // tracing draws from its own stream: nothing here moves them.
+            if base.trace_sample_rate == 0.0 {
+                base.trace_sample_rate = trace_wire::RECORD_TRACES_SAMPLE_RATE;
+            }
             for (k, v) in overrides {
                 override_key(&mut base, k, v)?;
             }
@@ -759,7 +765,7 @@ pub fn export_demos(
                 None => {
                     let id = format!("{}/{}", demo.group, slug(&base.name));
                     let r = sim_leaf::run(&base)?;
-                    export_run_from(&r, &id, Some(&source), dir)?;
+                    export_run_with_traces(&r, &r.traces, &id, Some(&source), dir, DEFAULT_TRACE_BUDGET_BYTES)?;
                     ids.push(id);
                 }
                 Some((key, values)) => {
@@ -771,7 +777,7 @@ pub fn export_demos(
                         sc.name = format!("{key} = {v}");
                         let id = format!("{}/{key}={v}", demo.group);
                         let r = sim_leaf::run(&sc)?;
-                        export_run_from(&r, &id, Some(&source), dir)?;
+                        export_run_with_traces(&r, &r.traces, &id, Some(&source), dir, DEFAULT_TRACE_BUDGET_BYTES)?;
                         ids.push(id);
                     }
                 }
