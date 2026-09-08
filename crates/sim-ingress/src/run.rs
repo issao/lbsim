@@ -688,6 +688,7 @@ pub const FLEET_METRICS: &[i32] = &[
     wire::METRIC_READY_REPLICAS,
     wire::METRIC_GPU_UTILIZATION,
     wire::METRIC_GPU_COMPUTE_BOUND_FRACTION,
+    wire::METRIC_TRUE_SPEED_MULTIPLIER,
 ];
 pub const REPLICA_METRICS: &[i32] = &[
     wire::METRIC_QUEUED_SEQS,
@@ -697,6 +698,9 @@ pub const REPLICA_METRICS: &[i32] = &[
     METRIC_STEP_TIME,
     wire::METRIC_GPU_UTILIZATION,
     wire::METRIC_GPU_COMPUTE_BOUND_FRACTION,
+    wire::METRIC_REPLICA_STATE,
+    wire::METRIC_TRUE_SPEED_MULTIPLIER,
+    wire::METRIC_TTFT,
 ];
 
 // Two metric numbers `wire.rs` does not name; the same table, and `metric_numbers_are_in_the_table`
@@ -771,11 +775,33 @@ pub fn row(f: &Frame, sc: &Scenario, spec: &RowSpec) -> Option<MetricRow> {
             let window_ns = (sc.sample_interval_ms * 1e6).max(1e-9);
             value(wire::METRIC_GPU_UTILIZATION, (r.busy_ns as f64 / window_ns).min(1.0));
             value(wire::METRIC_GPU_COMPUTE_BOUND_FRACTION, r.compute_ns as f64 / r.busy_ns as f64);
+            value(wire::METRIC_REPLICA_STATE, r.state as f64);
+            value(wire::METRIC_TRUE_SPEED_MULTIPLIER, r.speed);
             // Seconds as a double, like every other duration gauge and like export.rs's replica
             // row — not a distribution. Zero means the replica has not stepped yet, and a
-            // duration of nothing is a gap.
+            // duration of nothing is a gap. Raw `row.value` rather than the closure: this is the
+            // closure's last use above, and a borrow of `row` through it must not still be live
+            // when the direct calls below borrow `row` again.
             if spec.wants(METRIC_STEP_TIME) && r.last_step_ns > 0 {
                 row.value(METRIC_STEP_TIME, r.last_step_ns as f64 / 1e9);
+            }
+            // A distribution rather than a value so the client's histogram code path serves both;
+            // a mean of one bucket, no percentiles, `from_merged_histogram: false` because it was
+            // never a histogram. Omitted, not zero, when nothing in the replica got a first token
+            // this window: a mean of nothing is a gap, not 0 ns.
+            if spec.wants(wire::METRIC_TTFT) && r.ttft_count > 0 {
+                row.distribution(
+                    wire::METRIC_TTFT,
+                    Distribution {
+                        count: r.ttft_count,
+                        mean: r.ttft_sum_ns as f64 / r.ttft_count as f64,
+                        min: 0.0,
+                        max: 0.0,
+                        percentile: Vec::new(),
+                        value: Vec::new(),
+                        from_merged_histogram: false,
+                    },
+                );
             }
         }
         Target::Fleet => {
@@ -808,6 +834,7 @@ pub fn row(f: &Frame, sc: &Scenario, spec: &RowSpec) -> Option<MetricRow> {
                 if ended == 0 { f64::NAN } else { f.within_slo as f64 / ended as f64 },
             );
             value(wire::METRIC_READY_REPLICAS, f.replicas.len() as f64);
+            value(wire::METRIC_TRUE_SPEED_MULTIPLIER, f.replicas.iter().map(|r| r.speed).sum::<f64>() / n);
             // GPU utilization and the KV-utilization band: the mean is never the interesting
             // number, it is how many replicas sit idle while others saturate. Same percentiles as
             // the latency distributions below, falling back to 50/90/99 when the spec asked for
