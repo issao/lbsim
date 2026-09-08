@@ -398,6 +398,42 @@ const finalLine = extraFail => {
     await stopRuns();
   }
 
+  // i. app shell (U107). Issao: "the scrolling of control seems wrong, i think it should scroll
+  // inside the panel, not the whole page, otherwise the 'subscriptions open...' line at the bottom
+  // stays over it." The document never scrolls on the dashboard; the control panel's body is its
+  // own scroll container; the status bar is a row below it, not a bar over it.
+  {
+    const { page, body, until } = await fresh('#/dashboard');
+    // At 1400x900 the Cluster tab fits and the checks would pass without scrolling anything.
+    await page.setViewportSize({ width: 1280, height: 720 });
+    await until(async () => !/waiting for the first sample/i.test(await body()), 12000);
+    const tab = await page.$('button[data-tab="control:cluster"]');
+    if (tab) await tab.click();
+    await sleep(400);
+    const doc = await page.evaluate(() => ({ sh: document.scrollingElement.scrollHeight, ih: window.innerHeight }));
+    check('shell: page does not scroll (U107)', doc.sh <= doc.ih + 1, `document ${doc.sh}px tall in a ${doc.ih}px window`);
+    const box = await page.$eval('#control .panel-body', el => {
+      const r = el.getBoundingClientRect();
+      return { x: r.x + r.width / 2, y: r.y + r.height / 2, sh: el.scrollHeight, ch: el.clientHeight };
+    }).catch(() => null);
+    if (box) { await page.mouse.move(box.x, box.y); await page.mouse.wheel(0, 400); await sleep(400); }
+    const after = box ? await page.evaluate(() => ({ top: document.querySelector('#control .panel-body').scrollTop, y: window.scrollY })) : null;
+    check('shell: control panel scrolls inside itself (U107)', Boolean(box && box.sh > box.ch && after.top > 0 && after.y === 0),
+      box ? `body ${box.sh}px in ${box.ch}px; after a 400px wheel: panel scrollTop ${after.top}, window scrollY ${after.y}` : 'no #control .panel-body');
+    const gap = await page.evaluate(() => {
+      const b = document.querySelector('#control .panel-body');
+      const bar = document.querySelector('.statusbar');
+      if (!b || !bar) return null;
+      b.scrollTop = b.scrollHeight;
+      const controls = b.querySelectorAll('input, select, button');
+      const last = controls[controls.length - 1];
+      return last ? { last: last.getBoundingClientRect().bottom, bar: bar.getBoundingClientRect().top } : null;
+    });
+    check('shell: status bar does not overlap the last control (U107)', Boolean(gap && gap.last <= gap.bar + 0.5),
+      gap ? `last control ends at ${gap.last.toFixed(0)}px, status bar starts at ${gap.bar.toFixed(0)}px` : 'no last control or no status bar');
+    await page.close();
+  }
+
   await stopRuns();
   // Best effort: the server's own view of what the harness left running.
   try {

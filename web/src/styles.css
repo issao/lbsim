@@ -116,6 +116,17 @@ a:hover { text-decoration: underline; }
 
 .app { display: flex; flex-direction: column; height: 100%; min-height: 100%; }
 
+/* Shell routes (dashboard, A/B, showcase): the header, playback bar and status bar stay put and
+ * only the panels scroll. Issao: "the scrolling of control seems wrong, i think it should scroll
+ * inside the panel, not the whole page, otherwise the 'subscriptions open...' line at the bottom
+ * stays over it. In general the full screen shouldn't scroll, just individual panels." The router
+ * sets the class on <html>, so Home and the reports keep ordinary page scrolling. */
+html.shell, html.shell body { overflow: hidden; }
+html.shell .app { height: 100vh; height: 100dvh; min-height: 0; }
+html.shell .page { overflow: hidden; min-height: 0; display: flex; flex-direction: column; }
+/* A padded page under the shell (the showcase's card list) scrolls inside the header, not with it. */
+html.shell .page > .page-pad { flex: 1 1 auto; min-height: 0; overflow: auto; }
+
 .topbar {
   display: flex; align-items: center; gap: 14px;
   padding: 0 12px; height: 34px; flex: 0 0 auto;
@@ -300,14 +311,21 @@ fieldset.dropped .dropped-why { display: block; color: var(--ink-3); font-family
 
 /* ---------------------------------------------------------------- dashboard layout */
 
-.dash { display: flex; flex-direction: column; height: 100%; min-height: 0; }
-.dash-body { flex: 1 1 auto; min-height: 0; display: grid; grid-template-columns: 292px minmax(0, 1fr); gap: 8px; padding: 8px; }
-@media (max-width: 1000px) { .dash-body { grid-template-columns: minmax(0, 1fr); } }
+.dash { display: flex; flex-direction: column; flex: 1 1 auto; height: 100%; min-height: 0; }
+/* `minmax(0, 1fr)` on the row is what lets the panels be shorter than their content; a plain
+ * `auto` row grows to the tallest panel and hands the overflow to the page. */
+.dash-body { flex: 1 1 auto; min-height: 0; overflow: hidden; display: grid; grid-template-columns: 292px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); gap: 8px; padding: 8px; }
+@media (max-width: 1000px) { .dash-body { grid-template-columns: minmax(0, 1fr); grid-template-rows: none; overflow: auto; } }
+/* The A/B page: one scroll container for both sides, so a row in A sits beside the same row in B
+ * at any scroll offset. */
+.dash-body.ab-body { display: flex; flex-direction: column; overflow: auto; }
+.dash-body.ab-body > * { flex: 0 0 auto; }
 
-.control-panel { display: flex; flex-direction: column; min-height: 0; }
+.control-panel { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+.control-panel > .panel { flex: 1 1 auto; min-height: 0; }
 .control-panel .panel-body { overflow: auto; flex: 1 1 auto; min-height: 0; }
-.observe-panel { display: flex; flex-direction: column; min-height: 0; }
-.observe-panel .panel-body { overflow: auto; flex: 1 1 auto; }
+.observe-panel { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+.observe-panel .panel-body { overflow: auto; flex: 1 1 auto; min-height: 0; }
 
 .grid { display: grid; gap: 8px; }
 .grid.c2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -460,6 +478,7 @@ table.data caption { caption-side: bottom; text-align: left; padding: 5px 6px; f
 
 .walkthrough {
   position: fixed; right: 16px; bottom: 16px; width: 340px; z-index: 40;
+  max-height: calc(100vh - 32px); max-height: calc(100dvh - 32px); overflow: auto;
   background: var(--surface-1); border: 1px solid var(--accent-line); border-radius: var(--r);
   box-shadow: var(--shadow);
 }

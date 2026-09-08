@@ -37,6 +37,13 @@ export function App() {
     setActiveMode('none');
   }, []);
 
+  // The shell routes pin the header and bars and let only the panels scroll; Home and the reports
+  // keep ordinary page scrolling. The class lives on <html> because that is where the overflow rule
+  // has to sit, and a layout effect so the first paint of a route is already in the right mode.
+  useLayoutEffect(() => {
+    document.documentElement.classList.toggle('shell', route !== '/');
+  }, [route]);
+
   useEffect(() => {
     const onHash = () => {
       setActiveMode('none');

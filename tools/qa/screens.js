@@ -113,7 +113,14 @@ setTimeout(() => { console.log('screens: global timeout'); process.exit(1); }, 5
       const page = await open('#/dashboard', 500);
       await untilSamples(page, 15000);
       await sleep(3000);
-      await shot(page, 'dashboard');
+      // Two sizes: the shell layout has to hold where the control panel overflows (720 tall), not
+      // only where it fits.
+      await shot(page, 'dashboard-1400x900');
+      await page.setViewportSize({ width: 1280, height: 720 });
+      await sleep(400);
+      await shot(page, 'dashboard-1280x720');
+      await page.setViewportSize({ width: 1400, height: 900 });
+      await sleep(400);
       for (const tab of CONTROL_TABS) {
         await page.click(`[data-tab="control:${tab}"]`);
         await sleep(400);
