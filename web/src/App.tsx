@@ -4,7 +4,7 @@ import { LoadTest } from './pages/LoadTest';
 import { Compare } from './pages/Compare';
 import { Showcase } from './pages/Showcase';
 import { useLeaseLifecycle } from './lib/useSubscriptions';
-import { activeMode, dataModeBanner, subscribeActiveMode } from './lib/mode';
+import { activeMode, badgeText, badgeTitle, setActiveMode, subscribeActiveMode } from './lib/mode';
 
 type Route = '/' | '/dashboard' | '/ab' | '/showcase';
 
@@ -25,11 +25,16 @@ function currentRoute(): Route {
 export function App() {
   const [route, setRoute] = useState<Route>(currentRoute);
   useLeaseLifecycle();
-  // The dashboard resolves its source after a probe; the badge follows it, and says mock until then.
+  // The dashboard resolves its source after a probe; the badge follows it, and says nothing until
+  // then, so it never shows a claim left over from whatever page was on screen before this one.
   const mode = useSyncExternalStore(subscribeActiveMode, activeMode, activeMode);
 
   useEffect(() => {
-    const onHash = () => setRoute(currentRoute());
+    setActiveMode('none');
+    const onHash = () => {
+      setActiveMode('none');
+      setRoute(currentRoute());
+    };
     window.addEventListener('hashchange', onHash);
     return () => window.removeEventListener('hashchange', onHash);
   }, []);
@@ -38,7 +43,7 @@ export function App() {
     <div className="app">
       <header className="topbar">
         <span className="brand">
-          lbsim <span>stand-in dashboard</span>
+          lbsim <span>inference fleet simulator</span>
         </span>
         <nav className="navlinks">
           {LINKS.map((l) => (
@@ -48,15 +53,8 @@ export function App() {
           ))}
         </nav>
         <div className="topbar-right">
-          <span
-            className="mock-global"
-            title={
-              mode.mode === 'replay'
-                ? 'A recorded run served as static files. The load, throughput, latency, imbalance and KV panels show engine numbers; panels still marked mock are not simulated yet.'
-                : 'Nothing here is connected to sim-ingress. Every number is generated in this browser.'
-            }
-          >
-            {dataModeBanner(mode.mode, undefined, mode.runId)}
+          <span className="mock-global" title={badgeTitle(mode)}>
+            {badgeText(mode)}
           </span>
         </div>
       </header>

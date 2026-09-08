@@ -1,5 +1,6 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { BASE, cloneConfig, comparability, FIELD_LABEL, PRESETS, ROUTING_LABEL, type ScenarioConfig } from '../lib/config';
+import { setActiveMode } from '../lib/mode';
 import type { RoutingKind } from '../lib/types';
 import { useRun, type RunHandle } from '../lib/useRun';
 import { windowFrames, attainment, goodput, percentileSeries, series, xs } from '../lib/derive';
@@ -33,6 +34,7 @@ const B0: ScenarioConfig = (() => {
  * and names the fields, rather than letting someone draw a conclusion from two unlike runs.
  */
 export function Compare() {
+  useEffect(() => setActiveMode('mock'), []);
   const a = useRun(A0, true);
   const b = useRun(B0, true);
   const [drift, setDrift] = useState(false);

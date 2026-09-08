@@ -1,9 +1,9 @@
 // Which data the dashboard is showing: frames generated in this browser, or the Ingress server's.
 //
-// Mock stays the default, and the mock markers stay with it. The stand-in exists so the layout can
-// be criticised before anything is wired, and a build that quietly pointed at a server that is not
-// running would look like a broken dashboard rather than an absent one. In mock mode nothing in
-// api.ts or useServerRun.ts executes.
+// Mock stays the default, and the mock markers stay with it. Mock is a data source, not a stand-in
+// build: this is the product, and mock lets its layout be judged before anything is wired, so a
+// build that quietly pointed at a server that is not running would look like a broken dashboard
+// rather than an absent one. In mock mode nothing in api.ts or useServerRun.ts executes.
 //
 // Three ways to turn the server on, in precedence order, because they answer different questions.
 // `?server=` on the URL points one tab at a server while every other tab keeps showing mock data,

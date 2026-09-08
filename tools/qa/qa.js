@@ -79,6 +79,7 @@ const finalLine = extraFail => {
   };
   const cardCount = page => page.$$eval('button.card', els => els.length);
   const hasWt = page => page.$('.wt-mode').then(Boolean);
+  const badge = page => page.$eval('.mock-global', el => el.textContent.trim()).catch(() => null);
 
   // a. home
   {
@@ -93,6 +94,10 @@ const finalLine = extraFail => {
     }
     check('home: twelve reports', hrefs.length === EXPECTED_REPORTS, `${hrefs.length} links`);
     check('home: no js errors', log.errs.length === 0, log.errs.slice(0, 3).join(' | '));
+    const homeBadge = await badge(page);
+    check('home: badge empty', homeBadge === '', homeBadge);
+    const sections = await page.$$eval('h2', els => els.map(e => e.textContent.trim()));
+    check('home: three sections', JSON.stringify(sections) === JSON.stringify(['Live', 'Replay', 'Mock']), sections.join(', '));
     await page.close();
   }
 
@@ -103,6 +108,8 @@ const finalLine = extraFail => {
     let t = await until(async () => { const b = await body(); return ready(b) ? b : null; }, 12000) || await body();
     check('dashboard renders samples', !/waiting for the first sample/i.test(t), t.slice(0, 160));
     check('dashboard says live', /\blive\b/i.test(t) && /run r-\d+/.test(t), (t.match(/run r-\d+[^|]{0,60}/) || [''])[0]);
+    const dashboardBadge = await badge(page);
+    check('dashboard: badge live with run id', /^live — .*· run r-\d+$/.test(dashboardBadge || ''), dashboardBadge);
     const banner = (t.match(/run r-\d+.{0,120}/) || [''])[0];
     check('dashboard banner not speed 0×', !/speed 0×/.test(t), banner.slice(0, 120));
     const slider = async () => page.$eval('[role=slider]', el => ({
@@ -130,8 +137,10 @@ const finalLine = extraFail => {
     check('showcase: no run on fresh load', !/run r-\d+/.test(t), (t.match(/run r-\d+[^|]{0,60}/) || [''])[0]);
     check('showcase: no StartRun on fresh load', !log.requests.some(u => u.endsWith('/StartRun')), `${log.startRuns.length} StartRun`);
     check('showcase: no js errors', log.errs.length === 0, log.errs.slice(0, 3).join(' | '));
+    const showcaseBadge = await badge(page);
+    check('showcase: badge empty on the card list', showcaseBadge === '', showcaseBadge);
     titles = await page.$$eval('button.card', els => els
-      .filter(e => !/not scripted yet/.test(e.textContent || ''))
+      .filter(e => !e.disabled)
       .map(e => (e.querySelector('.card-title')?.textContent || '').trim()).filter(Boolean));
     await page.close();
   }
@@ -147,10 +156,13 @@ const finalLine = extraFail => {
     await sleep(10000);
     const t = await body();
     const mode = await page.$eval('.wt-mode', el => el.textContent.trim()).catch(() => '');
+    const cardBadge = await badge(page);
     const stuck = /waiting for the first sample|looking for/i.test(t);
-    const ok = !stuck && /driving a live run/.test(mode) && /run r-\d+/.test(t) && log.errs.length === 0 && log.bad.length === 0;
+    const badgeOk = /^live — .*run r-\d+/.test(cardBadge || '');
+    const ok = !stuck && /driving a live run/.test(mode) && /run r-\d+/.test(t) && badgeOk && log.errs.length === 0 && log.bad.length === 0;
     check(`showcase "${title}"`, ok, [
-      stuck ? 'STUCK' : '', `mode="${mode.slice(0, 40)}"`, (t.match(/run r-\d+[^|]{0,50}/) || ['no run'])[0],
+      stuck ? 'STUCK' : '', `mode="${mode.slice(0, 40)}"`, `badge="${(cardBadge || '').slice(0, 50)}"`,
+      (t.match(/run r-\d+[^|]{0,50}/) || ['no run'])[0],
       ...log.errs.slice(0, 2), ...log.bad.slice(0, 2),
     ].filter(Boolean).join(' · '));
     if (REQUIRED_KEYS[title]) {
@@ -193,6 +205,8 @@ const finalLine = extraFail => {
     const { page, log, body, until } = await fresh('#/ab');
     const t = await until(async () => { const b = await body(); return b.length > 200 && !/waiting for the first sample/i.test(b) ? b : null; }, 8000) || await body();
     check('A/B renders', t.length > 200 && !/waiting for the first sample/i.test(t), t.slice(0, 120));
+    const abBadge = await badge(page);
+    check('A/B: badge mock', /^mock — /.test(abBadge || ''), abBadge);
     check('A/B: no js errors', log.errs.length === 0, log.errs.slice(0, 3).join(' | '));
     await page.close();
   }
@@ -200,6 +214,8 @@ const finalLine = extraFail => {
     const { page, log, body, until } = await fresh('?server=off#/dashboard');
     const t = await until(async () => { const b = await body(); return /replay/i.test(b) && !/waiting for the first sample/i.test(b) ? b : null; }, 8000) || await body();
     check('replay dashboard (server=off)', /replay/i.test(t) && !/waiting for the first sample/i.test(t), t.slice(0, 140));
+    const replayBadge = await badge(page);
+    check('replay: badge replay', /^replay — /.test(replayBadge || ''), replayBadge);
     check('replay: no js errors', log.errs.length === 0, log.errs.slice(0, 3).join(' | '));
     await page.close();
   }
