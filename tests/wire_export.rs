@@ -175,6 +175,88 @@ fn metric_value(line: &str, metric: i32) -> Option<f64> {
     Some(rest[..end].parse().unwrap_or_else(|e| panic!("{}: {e}", &rest[..end])))
 }
 
+/// A metric's `Distribution` sub-object on one line's `distributions` map, or None when absent. The
+/// key `"<metric>":{` is unambiguous: a `values` entry for the same number is always followed by a
+/// number, never a `{`.
+fn metric_distribution(line: &str, metric: i32) -> Option<&str> {
+    let key = format!(r#""{metric}":{{"#);
+    let start = line.find(&key)?;
+    let obj_start = start + key.len() - 1;
+    let bytes = line.as_bytes();
+    let mut depth = 0i32;
+    let mut i = obj_start;
+    loop {
+        match bytes[i] {
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&line[obj_start..=i]);
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+}
+
+/// A `u64` field of a small JSON object slice, like the ones `metric_distribution` returns. WIRE.md
+/// rule: a `uint64` crosses as a quoted string, unlike the `double` fields alongside it.
+fn field_u64(obj: &str, name: &str) -> u64 {
+    let key = format!(r#""{name}":""#);
+    let start = obj.find(&key).unwrap_or_else(|| panic!("{name} missing in {obj}")) + key.len();
+    let rest = &obj[start..];
+    let end = rest.find('"').unwrap();
+    rest[..end].parse().unwrap_or_else(|e| panic!("{}: {e}", &rest[..end]))
+}
+
+/// The `percentile` array of a `Distribution` object slice.
+fn field_percentiles(obj: &str) -> Vec<f64> {
+    let key = r#""percentile":["#;
+    let start = obj.find(key).unwrap_or_else(|| panic!("percentile missing in {obj}")) + key.len();
+    let rest = &obj[start..];
+    let end = rest.find(']').unwrap();
+    rest[..end].split(',').filter(|s| !s.is_empty()).map(|s| s.parse().unwrap()).collect()
+}
+
+/// U94b part (2): the fleet row carries GPU utilization as a mean plus a distribution over
+/// replicas at 50/90/99, and the same distribution now exists for KV utilization; the replica row
+/// carries the plain scalar. Both scopes' values stay in [0, 1], and the small scenario's fleet is
+/// busy enough that both scopes see a positive reading somewhere.
+#[test]
+fn gpu_utilization_is_a_mean_and_a_distribution_over_replicas() {
+    let dir = fresh_dir("gpu");
+    let r = small_run();
+    let run_dir = export::export_run_from(&r, "gpu", None, &dir).unwrap();
+    let replicas = r.scenario.replicas as u64;
+
+    let fleet_lines: Vec<String> = read(&run_dir.join("fleet.jsonl")).lines().map(String::from).collect();
+    assert!(!fleet_lines.is_empty());
+    let mut fleet_gpu_positive = false;
+    for line in &fleet_lines {
+        let gpu = metric_value(line, wire::METRIC_GPU_UTILIZATION).expect("fleet gpu utilization value");
+        assert!((0.0..=1.0).contains(&gpu), "{line}");
+        fleet_gpu_positive |= gpu > 0.0;
+
+        let dist = metric_distribution(line, wire::METRIC_GPU_UTILIZATION).expect("gpu distribution");
+        assert_eq!(field_percentiles(dist), vec![50.0, 90.0, 99.0], "{line}");
+        assert_eq!(field_u64(dist, "count"), replicas, "{line}");
+
+        assert!(metric_distribution(line, wire::METRIC_KV_UTILIZATION).is_some(), "{line}");
+    }
+    assert!(fleet_gpu_positive, "no fleet row shows any GPU busy");
+
+    let replica_lines: Vec<String> = read(&run_dir.join("replicas.jsonl")).lines().map(String::from).collect();
+    assert!(!replica_lines.is_empty());
+    let mut replica_gpu_positive = false;
+    for line in &replica_lines {
+        let gpu = metric_value(line, wire::METRIC_GPU_UTILIZATION).expect("replica gpu utilization value");
+        assert!((0.0..=1.0).contains(&gpu), "{line}");
+        replica_gpu_positive |= gpu > 0.0;
+    }
+    assert!(replica_gpu_positive, "no replica row shows any GPU busy");
+}
+
 #[test]
 fn replica_rows_follow_the_frames() {
     let dir = fresh_dir("replicas");

@@ -248,6 +248,26 @@ fn summary_csv(r: &RunResult) -> String {
     row("replicas_inspected_per_decision", r.replicas_inspected_per_decision.to_string());
     row("retries", r.retries.to_string());
     row("first_attempts", r.first_attempts.to_string());
+    // U94b: the fleet-mean of GPU utilization (busy share of the sample window, averaged over
+    // replicas at each instant), then averaged over the measured frames — those closing after
+    // `measured_from`, i.e. past warmup. Falls back to every frame if warmup somehow ate them all,
+    // rather than reporting NaN for a run that plainly ran.
+    let window_ns = (r.scenario.sample_interval_ms * 1e6).max(1.0);
+    let measured: Vec<_> = r.frames.iter().filter(|f| f.t > r.measured_from).collect();
+    let frames = if measured.is_empty() { r.frames.iter().collect() } else { measured };
+    let gpu_utilization_mean = if frames.is_empty() {
+        f64::NAN
+    } else {
+        let sum: f64 = frames
+            .iter()
+            .map(|f| {
+                let n = f.replicas.len().max(1) as f64;
+                f.replicas.iter().map(|rep| (rep.busy_ns as f64 / window_ns).min(1.0)).sum::<f64>() / n
+            })
+            .sum();
+        sum / frames.len() as f64
+    };
+    row("gpu_utilization_mean", format!("{gpu_utilization_mean:.4}"));
     for q in [50.0, 90.0, 99.0, 99.9] {
         for (key, _, hist) in HISTOGRAMS {
             row(&format!("{key}_p{q}_ns"), hist(r).percentile(q).to_string());
