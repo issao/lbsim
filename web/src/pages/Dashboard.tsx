@@ -80,22 +80,19 @@ function ServerDashboard({ initial, autoplay = true, run: _recording, ...rest }:
   return <DashboardBody run={run} banner={<ServerBanner run={run} />} {...rest} />;
 }
 
-/** Says where the numbers come from, what the server cannot do yet, and names what it refused. */
+/** Says where the numbers come from and names what the server refused. */
 function ServerBanner({ run }: { run: ServerRunHandle }) {
   return (
     <>
       <div className="banner">
         <span className="tagline">live</span>
         <span className="note">{dataSourceGloss('server')}</span>
-        <span>
-          run <code>{run.runId ?? '…'}</code> &middot; stream {run.connection}
-          {run.subscriptionId ? <> ({run.subscriptionId})</> : null} &middot; {run.engine.frames.length} samples at{' '}
-          {run.config.samplesPerSimSecond}/sim s &middot; speed {speedLabel(run.status, run.paused)}
-          {run.dropped.length ? <> &middot; inert controls: {run.dropped.join(', ')}</> : null}
-          {run.unserved.length ? <> &middot; not served by this server, panels stay mock: {run.unserved.join(', ')}</> : null}
+        <span title={`stream ${run.connection}${run.subscriptionId ? ` (${run.subscriptionId})` : ''}`}>
+          run <code>{run.runId ?? '…'}</code> &middot; {run.engine.frames.length} samples at {run.config.samplesPerSimSecond}
+          /sim s &middot; speed {speedLabel(run.status, run.paused)}
         </span>
         <span style={{ marginLeft: 'auto', color: 'var(--ink-3)' }} title={run.disabledReason}>
-          load and policy changes go to the server; scrub is a local read; rewind is off: {run.disabledReason}
+          rewind is off on a live run
         </span>
       </div>
       {run.error ? (
@@ -227,14 +224,14 @@ function ReplayBanner({ run, picker }: { run: ReplayRunHandle; picker: ReactNode
         <span className="tagline">replay</span>
         <span className="note">{dataSourceGloss('replay')}</span>
         {picker}
-        <span>
-          <code>runs/{e.runId}</code> &middot; routing {e.routing} &middot; {e.replicas} replicas &middot;{' '}
-          {run.loaded.frames.length} samples at {1000 / e.sampleIntervalMs}/sim s over {runDurationS(e).toFixed(0)} s
-          &middot; seed {r.seed.toString()} &middot; checksum {r.stateChecksum.toString()}
+        <span
+          title={`runs/${e.runId} · ${1000 / e.sampleIntervalMs} samples/sim s · seed ${r.seed.toString()} · checksum ${r.stateChecksum.toString()}`}
+        >
+          routing {e.routing} &middot; {e.replicas} replicas &middot; {run.loaded.frames.length} samples over{' '}
+          {runDurationS(e).toFixed(0)} s
         </span>
         <span style={{ marginLeft: 'auto', color: 'var(--ink-3)' }} title={run.disabledReason}>
-          play, pause, speed, step and scrub are local; rewind-and-resimulate, load and policy changes are off:{' '}
-          {run.disabledReason}
+          rewind and changes are off on a replay
         </span>
       </div>
       {run.refused ? (

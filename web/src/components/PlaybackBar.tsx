@@ -4,7 +4,6 @@ import { SPEEDS, STEP_S } from '../lib/useRun';
 import { SNAPSHOT_S } from '../lib/engine';
 import { fmtTime } from '../lib/format';
 import { updateBannerText } from '../lib/updateBanner';
-import { MockTag } from './ui';
 
 /**
  * Playback lives across the top of the dashboard and the A/B view rather than inside a tab, per
@@ -52,44 +51,42 @@ export function PlaybackBar({ run, dense = false }: { run: RunHandle; dense?: bo
   const pct = (s: number) => `${(Math.min(s, run.durationS) / run.durationS) * 100}%`;
   const events = run.engine.eventsUpTo(run.recordedToS);
   const beyond = drag !== null && drag > run.recordedToS;
+  // Rewind-and-resimulate exists only on the mock; a live or replayed run refuses it, and a button
+  // that only ever says no is clutter rather than a control.
+  const canRewind = (run.source?.disabledReason ?? null) === null;
 
   return (
     <div className="playback">
       <div className="btn-row" style={{ flex: '0 0 auto' }}>
-        <button
-          className="btn icon"
-          onClick={() => run.rewindTo(0)}
-          title="Rewind(to_sim_time = 0)"
-          aria-label="rewind to start"
-        >
-          |&lt;
-        </button>
-        <button
-          className="btn icon"
-          onClick={() => run.rewindTo(Math.max(0, run.cursorS - 10))}
-          title="Rewind(to_sim_time = now - 10 s)"
-          aria-label="back ten seconds"
-        >
-          &lt;&lt;
-        </button>
+        {canRewind ? (
+          <>
+            <button className="btn icon" onClick={() => run.rewindTo(0)} title="rewind to start" aria-label="rewind to start">
+              |&lt;
+            </button>
+            <button
+              className="btn icon"
+              onClick={() => run.rewindTo(Math.max(0, run.cursorS - 10))}
+              title="back 10 s"
+              aria-label="back ten seconds"
+            >
+              &lt;&lt;
+            </button>
+          </>
+        ) : null}
         <button
           className="btn icon primary"
           onClick={() => run.setPaused(!run.paused)}
-          title="SetSpeed(paused). Pausing does not close subscriptions, so the charts hold their last values."
+          title={run.paused ? 'play' : 'pause'}
+          aria-label={run.paused ? 'play' : 'pause'}
         >
           {run.paused ? '▶' : '‖'}
         </button>
-        <button
-          className="btn icon"
-          onClick={run.step}
-          title={`StepForward(sim_duration_ns = ${STEP_S} s), bounded; the response says where it stopped`}
-          aria-label="step forward"
-        >
+        <button className="btn icon" onClick={run.step} title={`step ${STEP_S} s`} aria-label="step forward">
           &gt;|
         </button>
       </div>
 
-      <div className="seg" title="SetSpeed(realtime_factor): simulated seconds per wall-clock second">
+      <div className="seg" title="speed: simulated seconds per wall second">
         {SPEEDS.map((s) => (
           <button key={s} aria-pressed={run.speed === s} onClick={() => run.setSpeed(s)}>
             {s}&times;
@@ -142,10 +139,13 @@ export function PlaybackBar({ run, dense = false }: { run: RunHandle; dense?: bo
               <i className="rec" />
               <b>recorded</b> to {run.recordedToS.toFixed(0)} s &mdash; scrubbing here is instant
             </span>
-            <span>
-              <i className="beyond" />
-              <b>not yet simulated</b> &mdash; dragging here re-simulates
-            </span>
+            {run.recordedToS < run.durationS ? (
+              <span>
+                <i className="beyond" />
+                <b>{canRewind ? 'not yet simulated' : 'not yet reached'}</b>
+                {canRewind ? <> &mdash; dragging here re-simulates</> : null}
+              </span>
+            ) : null}
             <span>| snapshot every {SNAPSHOT_S} s</span>
             {beyond ? <span style={{ color: 'var(--serious)' }}>release to re-simulate to {drag!.toFixed(1)} s</span> : null}
           </div>
@@ -155,7 +155,6 @@ export function PlaybackBar({ run, dense = false }: { run: RunHandle; dense?: bo
       <div className="clock num">
         {fmtTime(run.cursorS)} <em>/ {fmtTime(run.durationS)}</em>
       </div>
-      <MockTag what="mock run" />
     </div>
   );
 }

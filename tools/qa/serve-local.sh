@@ -5,6 +5,7 @@
 #   QA_PORT=8181         port the local sim-run serve listens on
 #   QA_SKIP_REPORTS=1    skip run-demos.sh (one to two minutes); home's report links then 404
 #   QA_BASE              honoured by qa.js only; this script always points it at localhost:$QA_PORT
+#   QA_SCRIPT=screens.js run the screenshot walkthrough (tools/qa/screens.js) instead of the gate
 # Exit status is qa.js's.
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
@@ -40,4 +41,4 @@ if ! curl -s -X POST "localhost:$PORT/v1/ingress/ListRuns" -d '{}' >/dev/null; t
   exit 1
 fi
 
-QA_BASE="http://localhost:$PORT" node tools/qa/qa.js
+QA_BASE="http://localhost:$PORT" node "tools/qa/${QA_SCRIPT:-qa.js}"
