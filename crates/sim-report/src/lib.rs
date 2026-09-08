@@ -444,6 +444,42 @@ const CHART_W: usize = 1000;
 const PAD: f64 = 44.0;
 /// Heatmap row height: thin, because a fleet of dozens of replicas still has to fit on one screen.
 const ROW_H: usize = 8;
+/// Cap on points plotted per line in a fleet series chart. A rect or a polyline vertex costs the same
+/// whether or not it moves the picture; past this many samples the line is visually solid anyway, so
+/// striding down to this cap keeps report size independent of run duration.
+const MAX_LINE_POINTS: usize = 2000;
+/// Cap on replicas drawn in a per-replica heatmap or table. Above this, only the most and least
+/// loaded half are shown (see `select_replicas`): the hotspot and the idle tail are the two things a
+/// reader of this panel is looking for, and the replicas in between look like the ones already shown.
+const MAX_REPLICAS_SHOWN: usize = 64;
+/// Cap on time samples drawn per heatmap row. A heatmap's cost is rows times columns rather than
+/// columns alone, so a longer run or a report with several of them (a sweep, a compare of more than a
+/// couple of scenarios) needs a tighter column budget than a line chart's `MAX_LINE_POINTS` to stay
+/// under the report's overall size budget.
+const MAX_HEATMAP_COLUMNS: usize = 250;
+
+/// The replicas to draw for one run's heatmap: every one of them, unless there are more than
+/// `MAX_REPLICAS_SHOWN`, in which case the `MAX_REPLICAS_SHOWN / 2` most loaded (by mean load over the
+/// run) and the same number least loaded, most-loaded-first. Returns the chosen series alongside the
+/// total replica count, so the caller can decide whether to note that replicas were dropped.
+fn select_replicas(r: &RunResult) -> (Vec<&Series>, usize) {
+    let total = r.replica_load.len();
+    if total <= MAX_REPLICAS_SHOWN {
+        return (r.replica_load.iter().collect(), total);
+    }
+    let half = MAX_REPLICAS_SHOWN / 2;
+    let mean = |s: &Series| if s.v.is_empty() { 0.0 } else { s.v.iter().sum::<f64>() / s.v.len() as f64 };
+    let mut order: Vec<usize> = (0..total).collect();
+    order.sort_by(|&a, &b| {
+        mean(&r.replica_load[b]).partial_cmp(&mean(&r.replica_load[a])).unwrap_or(Ordering::Equal)
+    });
+    let chosen: Vec<&Series> = order[..half]
+        .iter()
+        .chain(order[total - half..].iter())
+        .map(|&i| &r.replica_load[i])
+        .collect();
+    (chosen, total)
+}
 
 fn render(runs: &[RunResult]) -> String {
     let mut h = String::from(r##"<!doctype html><meta charset="utf-8"><title>lbsim report</title>
@@ -845,12 +881,15 @@ fn multi_line_chart(h: &mut String, runs: &[RunResult], pick: fn(&RunResult) -> 
         );
         label(h, PAD - 6.0, format_args!("{:.1}", y + 3.0), true, format_args!("{:.0}", ymax * (1.0 - k as f64 / 4.0)));
     }
+    // Striding rather than averaging: a line this dense reads as solid either way, and a stride keeps
+    // every plotted point an actual sample rather than a smoothed value a reader might mistake for one.
+    let stride = n.div_ceil(MAX_LINE_POINTS).max(1);
     for (i, r) in runs.iter().enumerate() {
         let s = pick(r);
         if s.v.is_empty() {
             continue;
         }
-        let pts: Vec<String> = s.v.iter().enumerate().map(|(j, v)| {
+        let pts: Vec<String> = s.v.iter().enumerate().filter(|(j, _)| j % stride == 0).map(|(j, v)| {
             let x = PAD + (CHART_W as f64 - PAD - 8.0) * (j as f64 / (n.max(2) - 1) as f64);
             let y = PAD / 2.0 + (hgt as f64 - PAD) * (1.0 - (v / ymax).clamp(0.0, 1.0));
             format!("{x:.1},{y:.1}")
@@ -867,18 +906,30 @@ fn multi_line_chart(h: &mut String, runs: &[RunResult], pick: fn(&RunResult) -> 
 }
 
 fn heatmap(h: &mut String, r: &RunResult) {
-    let rows = r.replica_load.len();
+    let (shown, total) = select_replicas(r);
+    let rows = shown.len();
     if rows == 0 {
         return;
     }
-    let cols = r.replica_load[0].v.len().max(1);
+    if rows < total {
+        let _ = write!(
+            h,
+            r##"<p class="note">{rows} of {total} shown: the {} most and least loaded</p>"##,
+            MAX_REPLICAS_SHOWN / 2
+        );
+    }
+    let orig_cols = shown[0].v.len().max(1);
+    // Same striding idea as `multi_line_chart`: keep every `stride`-th sample rather than averaging,
+    // so a cell drawn is always a real observation.
+    let stride = orig_cols.div_ceil(MAX_HEATMAP_COLUMNS).max(1);
+    let cols = orig_cols.div_ceil(stride);
     let hgt = rows * ROW_H + 26;
     let cw = (CHART_W as f64 - PAD - 8.0) / cols as f64;
-    let vmax = r.replica_load.iter().map(Series::max).fold(1.0, f64::max);
+    let vmax = shown.iter().map(|s| s.max()).fold(1.0, f64::max);
     frame(h, hgt);
-    for (ri, s) in r.replica_load.iter().enumerate() {
+    for (ri, s) in shown.iter().enumerate() {
         let y = ri * ROW_H + 4;
-        for (ci, v) in s.v.iter().enumerate() {
+        for (ci, v) in s.v.iter().step_by(stride).enumerate() {
             if *v <= 0.0 {
                 continue;
             }
