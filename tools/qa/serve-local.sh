@@ -6,6 +6,10 @@
 #   QA_SKIP_REPORTS=1    skip run-demos.sh (one to two minutes); home's report links then 404
 #   QA_BASE              honoured by qa.js only; this script always points it at localhost:$QA_PORT
 #   QA_SCRIPT=screens.js run the screenshot walkthrough (tools/qa/screens.js) instead of the gate
+#   QA_SHORT_RUN=<s>     honoured by qa.js only: the load-test dashboard's Restart check runs a
+#                        live run this short (default 20 s -- sim-leaf refuses warmup_s >= duration_s,
+#                        and the default warmup is 15 s) instead of the page's own 600 s default, so
+#                        the run reaches STATE_COMPLETE inside the check's own budget
 # Exit status is qa.js's.
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"

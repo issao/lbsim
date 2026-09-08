@@ -869,6 +869,43 @@ await checkAsync('(p) setSmoothing reopens the fleet stream with smoothing_windo
 });
 
 // ---------------------------------------------------------------------------
+// (q) a completed run restarts from its own config, at the same seed, cursor back at 0 (U120)
+// ---------------------------------------------------------------------------
+
+await checkAsync('(q) a run that reaches STATE_COMPLETE restarts from its own config: same seed, fresh run id, cursor at 0', async () => {
+  // The playback bar's end-of-run Restart button is exactly this: `run.restart(run.config)`, no
+  // diff at all. `status.state === 'STATE_COMPLETE'` is what the bar's `ended` reads, so the test
+  // drives the fake to that state the same way (b) does, then polls once rather than waiting on
+  // the interval, since this rig uses statusPollMs 0 for determinism.
+  const { fake, engine } = rig();
+  const id = await engine.start();
+  eq(id, 'r-1', 'run id');
+  fake.advance(ROWS);
+  await until(() => engine.frames.length === ROWS, `${ROWS} frames`);
+  await engine.pollStatus();
+  eq(engine.status?.state, 'STATE_COMPLETE', 'the poll sees the run finished');
+  eq(engine.status?.state === 'STATE_COMPLETE', true, "the bar's `ended` reads true here");
+
+  const before = fake.calls.length;
+  const seed = engine.config.seed;
+  const arrivalRps = engine.config.workload.arrivalRps;
+  await engine.restart(engine.config);
+  const seq = fake.calls.slice(before).map((c) => c.rpc).filter((r) => r === 'StopRun' || r === 'StartRun');
+  eq(seq.join(','), 'StopRun,StartRun', 'StopRun, then StartRun, same as a staged restart');
+  eq(calls(fake, 'StopRun')[0].body.run_id, 'r-1', 'the finished run is the one stopped');
+  eq(engine.runId, 'r-2', 'a fresh run id');
+  const started = calls(fake, 'StartRun')[1].body as { scenario: { text: string } };
+  ok(started.scenario.text.includes(`seed = ${seed}`), 'restarted at the same seed');
+  ok(started.scenario.text.includes(`arrival_rps = ${arrivalRps}`), 'and the same config, unchanged');
+  eq(engine.frames.length, 0, 'frames cleared: the cursor is back at 0');
+  eq(engine.cursorS, 0, 'cursorS reports 0 with no frames and no status yet');
+  eq(engine.status, null, "status cleared, so `ended` reads false again until the next poll");
+  await until(() => calls(fake, 'OpenSubscription').length === 2, 'the subscription reopened');
+  engine.dispose();
+  return `r-1 finished -> restart(config) -> r-2 at seed ${seed}, arrival_rps ${arrivalRps}, cursor 0`;
+});
+
+// ---------------------------------------------------------------------------
 
 console.log(`${cases} cases, ${cases - failures} passed, ${failures} failed`);
 if (failures > 0) throw new Error(`${failures} case(s) failed`);

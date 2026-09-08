@@ -68,6 +68,13 @@ export interface RunHandle {
   recordedToS: number;
   durationS: number;
   paused: boolean;
+  /**
+   * True once the run has actually finished (live: STATE_COMPLETE; replay: the cursor reached the
+   * recording's end) -- distinct from `paused`, which is also true for a user pause or a
+   * mid-run STATE_PAUSED. The playback bar reads this to swap play/pause for Restart or "replay
+   * again" (U120, Issao: "add a restart button when a loadtest run finishes").
+   */
+  ended: boolean;
   speed: number;
   /** Set while the run is re-simulating after an update, so panels can say so rather than lying. */
   resimulating: boolean;
@@ -211,6 +218,9 @@ export function useReplayRun(loaded: LoadedRun, autoplay = true): ReplayRunHandl
     recordedToS: durationS,
     durationS,
     paused,
+    // A replay has no server status to read; the cursor reaching the recording's end is the only
+    // signal there is, and clampCursor keeps it exact rather than approaching durationS in the limit.
+    ended: cursorS >= durationS,
     speed,
     resimulating: false,
     lastRewind,

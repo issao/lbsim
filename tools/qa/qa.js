@@ -304,6 +304,48 @@ const finalLine = extraFail => {
     await page.close();
   }
 
+  // b2. load-test dashboard: a run that reaches STATE_COMPLETE offers Restart (U120, Issao: "add a
+  // restart button when a loadtest run finishes"). The page's own default is 600 s; QA_SHORT_RUN
+  // (default 20 s) overrides duration_s (and warmup_s, which sim-leaf requires stays below it) via
+  // the `#/dashboard?duration_s=&warmup_s=` link config.ts's loadTestInitial reads, so the run
+  // actually finishes inside this check's budget instead of the harness's.
+  {
+    const shortS = Number(process.env.QA_SHORT_RUN) > 0 ? Number(process.env.QA_SHORT_RUN) : 20;
+    const warmupS = shortS > 1 ? 1 : 0;
+    const { page, log, body, until } = await fresh(`#/dashboard?duration_s=${shortS}&warmup_s=${warmupS}`);
+    const runIdOf = t => (/run (r-\d+)/.exec(t) || [])[1];
+    const restartBtn = () => page.$('.playback [aria-label="restart"]');
+    const startedTexts = () => log.startRuns.map(b => { try { return JSON.parse(b)?.scenario?.text ?? b; } catch { return b; } });
+
+    await until(async () => runIdOf(await body()), 12000);
+    const before = runIdOf(await body());
+    check('load test: short run starts (U120 setup)', Boolean(before), before ? `run ${before}` : (await body()).slice(0, 160));
+
+    const early = await restartBtn();
+    check('load test: no Restart button while the run is in progress (U120)', early === null, early ? 'button present before completion' : 'absent, as expected');
+
+    const complete = await until(async () => (/run complete/i.test(await body()) ? await body() : null), (shortS + 15) * 1000);
+    const wantClock = `run complete · ${shortS} s simulated`;
+    check('load test: end-of-run state reads "run complete · Ns simulated" (U120)', Boolean(complete) && (complete || '').includes(wantClock),
+      complete ? (complete.match(/run complete[^|]{0,40}/) || [''])[0] : `never reached "run complete" within ${shortS + 15} s`);
+
+    const restartVisible = await restartBtn();
+    check('load test: Restart button appears on completion (U120)', Boolean(restartVisible), restartVisible ? 'present' : 'absent');
+
+    const initialSeed = (/^seed = (\d+)$/m.exec(startedTexts()[0] || '') || [])[1];
+    const before2 = log.startRuns.length;
+    await page.click('.playback [aria-label="restart"]').catch(() => null);
+    const after = await until(async () => { const id = runIdOf(await body()); return id && id !== before ? id : null; }, 15000);
+    check('load test: clicking Restart starts a new run id (U120)', Boolean(after) && after !== before, `${before} -> ${after || 'no new run'}`);
+    const restarted = startedTexts().slice(before2);
+    const sameConfig = Boolean(initialSeed) && restarted.some(t => t.includes(`seed = ${initialSeed}`) && t.includes(`duration_s = ${shortS}`));
+    check('load test: restart carries the same config and seed (U120)', sameConfig,
+      `seed ${initialSeed}, ${restarted.length} StartRun(s) since click: ${(restarted[restarted.length - 1] || 'none').slice(0, 80)}`);
+    const buttonGone = await until(async () => (await restartBtn()) === null, 4000, 200);
+    check('load test: the new run is in progress, so Restart is gone again (U120)', Boolean(buttonGone), buttonGone ? 'gone' : 'still showing on the new run');
+    await page.close();
+  }
+
   // c. showcase on a fresh load shows the cards and starts nothing
   let titles = [];
   {

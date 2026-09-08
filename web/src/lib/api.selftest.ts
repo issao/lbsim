@@ -43,7 +43,7 @@ const api = await load<typeof import('./api')>('api');
 const fx = await load<typeof import('./apiFixtures')>('apiFixtures');
 const mode = await load<typeof import('./mode')>('mode');
 const replay = await load<typeof import('./replay')>('replay');
-const { BASE, cloneConfig } = await load<typeof import('./config')>('config');
+const { BASE, cloneConfig, LOAD_TEST_DEFAULT, loadTestInitial } = await load<typeof import('./config')>('config');
 
 // Node's fs, without @types/node: a variable specifier keeps tsc out of it, and this file is the
 // only one that reads the disk.
@@ -714,6 +714,25 @@ check('config.ts BASE matches scenarios/base.txt key for key', () => {
   eq(differing, [], 'values that disagree');
   ok(Object.keys(file).length >= 30, `base.txt has only ${Object.keys(file).length} keys; was it read?`);
   return `${Object.keys(file).length} keys in base.txt, every one equal (replicas ${file.replicas}, max_batch ${file.max_batch}, kv ${file.kv_capacity_tokens}, rps ${file.arrival_rps})`;
+});
+
+check('LOAD_TEST_DEFAULT is BASE at 600 s, and BASE itself is untouched (U120)', () => {
+  eq(LOAD_TEST_DEFAULT.durationS, 600, 'the Load Test page defaults to 10 minutes');
+  eq(BASE.durationS, 120, 'BASE stays scenarios/base.txt verbatim, for the A/B page and every showcase script');
+  const rest = cloneConfig(LOAD_TEST_DEFAULT);
+  rest.durationS = BASE.durationS;
+  eq(rest, BASE, 'every other field is exactly BASE');
+  return `LOAD_TEST_DEFAULT.durationS 600, BASE.durationS ${BASE.durationS}`;
+});
+
+check('loadTestInitial reads duration_s / warmup_s from either the query string or a hash route\'s own query', () => {
+  eq(loadTestInitial('', '#/dashboard').durationS, 600, 'no override: the page default');
+  eq(loadTestInitial('?duration_s=20', '#/dashboard').durationS, 20, 'override from the query string');
+  eq(loadTestInitial('', '#/dashboard?duration_s=20&warmup_s=1').durationS, 20, 'override from the hash route\'s own query');
+  eq(loadTestInitial('', '#/dashboard?duration_s=20&warmup_s=1').warmupS, 1, 'warmup_s overrides alongside it, so sim-leaf\'s warmup_s < duration_s still holds');
+  eq(loadTestInitial('?duration_s=nonsense', '#/dashboard').durationS, 600, 'a non-numeric override is ignored, not NaN');
+  eq(loadTestInitial('?duration_s=0', '#/dashboard').durationS, 600, 'zero is ignored: sim-leaf refuses a non-positive duration');
+  return 'query string, hash-route query, absent, non-numeric and zero all resolve correctly';
 });
 
 check('the two engine name mismatches are translated, and prefix affinity sends its two knobs', () => {

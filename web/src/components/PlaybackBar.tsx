@@ -27,7 +27,21 @@ export interface PlaybackOverride {
 }
 export const PlaybackOverrideContext = createContext<PlaybackOverride | null>(null);
 
-export function PlaybackBar({ run, dense = false }: { run: RunHandle; dense?: boolean }) {
+export function PlaybackBar({
+  run,
+  dense = false,
+  endOfRun = true,
+}: {
+  run: RunHandle;
+  dense?: boolean;
+  /**
+   * Swap play/pause for Restart (live) or "replay again" (replay) once the run is over. Off on
+   * the A/B page (Compare.tsx): its bar drives two handles glued together, restart isn't fanned
+   * out to both, and picking a policy apart is the whole point of that view, so the paired run's
+   * own end-of-run handling is a separate unit rather than something this bar assumes.
+   */
+  endOfRun?: boolean;
+}) {
   const trackRef = useRef<HTMLDivElement>(null);
   const override = useContext(PlaybackOverrideContext);
   const togglePlay = () => {
@@ -37,6 +51,15 @@ export function PlaybackBar({ run, dense = false }: { run: RunHandle; dense?: bo
   };
   const [drag, setDrag] = useState<number | null>(null);
   const smooth = useSmoothing();
+  const ended = endOfRun && run.ended;
+  const restartAgain = () => {
+    if (run.source?.kind === 'replay') {
+      run.rewindTo(0);
+      run.setPaused(false);
+    } else {
+      run.restart(run.config);
+    }
+  };
 
   const timeAt = useCallback(
     (clientX: number): number => {
@@ -93,14 +116,25 @@ export function PlaybackBar({ run, dense = false }: { run: RunHandle; dense?: bo
             </button>
           </>
         ) : null}
-        <button
-          className="btn icon primary"
-          onClick={togglePlay}
-          title={run.paused ? 'play' : 'pause'}
-          aria-label={run.paused ? 'play' : 'pause'}
-        >
-          {run.paused ? '▶' : '‖'}
-        </button>
+        {ended ? (
+          <button
+            className="btn primary"
+            onClick={restartAgain}
+            title={run.source?.kind === 'replay' ? 'replay again' : 'restart'}
+            aria-label={run.source?.kind === 'replay' ? 'replay again' : 'restart'}
+          >
+            {run.source?.kind === 'replay' ? 'replay again' : 'Restart'}
+          </button>
+        ) : (
+          <button
+            className="btn icon primary"
+            onClick={togglePlay}
+            title={run.paused ? 'play' : 'pause'}
+            aria-label={run.paused ? 'play' : 'pause'}
+          >
+            {run.paused ? '▶' : '‖'}
+          </button>
+        )}
         <button className="btn icon" onClick={run.step} title={`step ${STEP_S} s`} aria-label="step forward">
           &gt;|
         </button>
@@ -185,7 +219,13 @@ export function PlaybackBar({ run, dense = false }: { run: RunHandle; dense?: bo
       </div>
 
       <div className="clock num">
-        {fmtTime(run.cursorS)} <em>/ {fmtTime(run.durationS)}</em>
+        {ended ? (
+          <>run complete &middot; {run.durationS} s simulated</>
+        ) : (
+          <>
+            {fmtTime(run.cursorS)} <em>/ {fmtTime(run.durationS)}</em>
+          </>
+        )}
       </div>
     </div>
   );
