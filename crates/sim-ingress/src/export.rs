@@ -230,11 +230,14 @@ pub fn fleet_rows(r: &RunResult) -> Vec<SubscriptionUpdate> {
             if w.all == 0 { f64::NAN } else { w.ok as f64 / w.all as f64 },
         );
         row.value(wire::METRIC_LOAD_IMBALANCE_CV, imbalance_at(r, s));
-        row.value(wire::METRIC_READY_REPLICAS, r.scenario.replicas as f64);
         // GPU utilization and the KV-utilization band across replicas, from the same frame the
         // per-replica rows below read. `busy_ns` never exceeds the window by construction; the ratio
         // is clamped anyway rather than trust an upstream invariant.
         let frame = &r.frames[s];
+        // `r.scenario.replicas` is the fleet size, not how many are up: a crashed replica (state 3,
+        // EJECTED) keeps its slot in `frame.replicas` so a client cannot see it dropped.
+        let ready = frame.replicas.iter().filter(|rep| rep.state != 3).count();
+        row.value(wire::METRIC_READY_REPLICAS, ready as f64);
         let window_ns = sample_interval(r) as f64;
         let gpu: Vec<f64> =
             frame.replicas.iter().map(|rep| (rep.busy_ns as f64 / window_ns).min(1.0)).collect();

@@ -482,3 +482,43 @@ fn demos_table_mirrors_run_demos_sh() {
         );
     }
 }
+
+/// U27d: a crashed replica keeps its slot in `frame.replicas`, so counting the slots (as
+/// `fleet_rows` used to, reading `scenario.replicas`) never notices it left. The ready count must
+/// drop for every sample after the crash instant, and only then.
+#[test]
+fn ready_replicas_excludes_a_crashed_one() {
+    let mut sc = common::at_load(0.9);
+    sc.name = "wire export crash".into();
+    let crash_s = 15.0; // small()'s run is 30 s with 3 s of warmup; this is comfortably mid-run.
+    sc.failures = format!("t={crash_s},replica=0,kind=crash");
+    let r = sim::run(&sc).expect("crash scenario runs");
+    let replicas = r.scenario.replicas as f64;
+    let crash = lbsim::EPOCH_BASE + (crash_s * 1e9) as lbsim::Nanos;
+
+    let rows = export::fleet_rows(&r);
+    assert!(!rows.is_empty(), "the crash scenario must produce fleet samples");
+    let (mut before, mut after) = (false, false);
+    for u in &rows {
+        let ready = u
+            .row
+            .values
+            .iter()
+            .find(|(m, _)| *m == wire::METRIC_READY_REPLICAS)
+            .map(|(_, v)| *v)
+            .expect("every fleet row carries a ready-replica count");
+        if u.sim_time_unix_ns < crash {
+            assert_eq!(ready, replicas, "sample at {} precedes the crash instant", u.sim_time_unix_ns);
+            before = true;
+        } else {
+            assert_eq!(
+                ready,
+                replicas - 1.0,
+                "sample at {} follows the crash instant",
+                u.sim_time_unix_ns
+            );
+            after = true;
+        }
+    }
+    assert!(before && after, "need fleet samples on both sides of the crash instant to prove anything");
+}
