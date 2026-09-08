@@ -115,6 +115,7 @@ impl Server {
         self
     }
 
+    // Lock order: leases → subs → run.state, each optional, never reversed.
     fn subs(&self) -> MutexGuard<'_, BTreeMap<u64, Sub>> {
         self.subs.lock().unwrap_or_else(|e| e.into_inner())
     }
@@ -316,7 +317,7 @@ impl Server {
             };
             sse_head(&mut stream)?;
             sse_event(&mut stream, None, "open", &open_json(id, expires, ""))?;
-            return self.stream_updates(stream, run, id, generation, last);
+            return self.stream_updates(stream, run, id, generation, last).map(|_| ());
         }
 
         // A fresh open: validate everything the proto says is a rejection, then lease and stream.
@@ -365,15 +366,15 @@ impl Server {
         run.resume_from_idle();
         sse_head(&mut stream)?;
         sse_event(&mut stream, None, "open", &open_json(id, lease.expires_at_wall_ns, ""))?;
-        self.stream_updates(stream, run, id, 1, 0)
+        self.stream_updates(stream, run, id, 1, 0).map(|_| ())
     }
 
     /// The update loop: one event per sample at the client's cadence, replayed from the ring when
     /// the ring has something newer than `last_sent`, generated from the run's frames otherwise.
     /// Ends when the lease expires, the subscription is closed or superseded, or the final update
-    /// has gone out. A write error (the peer vanished, or the write timeout: a peer that stopped
-    /// reading) ends it too, freeing the thread and the connection slot at once; the subscription
-    /// itself stays for a reconnect until its lease runs out, and `reap` takes it then.
+    /// has gone out, and says which. A write error (the peer vanished, or the write timeout: a peer
+    /// that stopped reading) ends it too, freeing the thread and the connection slot at once; the
+    /// subscription itself stays for a reconnect until its lease runs out, and `reap` takes it then.
     fn stream_updates(
         &self,
         mut stream: TcpStream,
@@ -381,7 +382,18 @@ impl Server {
         id: u64,
         generation: u64,
         mut last_sent: u64,
-    ) -> std::io::Result<()> {
+    ) -> std::io::Result<&'static str> {
+        // What one visit to the subscription decided, carried out of the `subs` block so that no
+        // arm relocks `subs` while holding it. A std Mutex relocked by its holder parks the thread
+        // forever, and a writer parked holding `subs` stalls every `reap` and every fresh open on
+        // the process; that is how the public instance went quiet (docs/wrap-up-2026-09-06.md 5b).
+        enum Step {
+            Send(u64, String, bool),
+            Finish(&'static str),
+            Wait,
+            End(&'static str),
+        }
+
         let mut last_write = Instant::now();
         loop {
             let now = wall_now_ns();
@@ -392,63 +404,71 @@ impl Server {
                     leases.expire(now);
                     drop(leases);
                     self.subs().remove(&id);
-                    return Ok(());
+                    return Ok("lease expired");
                 }
             }
 
-            let next: Option<(u64, String, bool)> = {
+            let step = {
                 let mut subs = self.subs();
-                let Some(sub) = subs.get_mut(&id) else { return Ok(()) };
-                if sub.generation != generation {
-                    return Ok(());
-                }
-                if let Some(e) = sub.ring.iter().find(|(s, _, _)| *s > last_sent) {
-                    Some(e.clone())
-                } else if sub.finished {
-                    return self.finish_subscription(id);
-                } else {
-                    let st = run.lock();
-                    let j = run::frame_index(sub.next_k, sub.samples_per_sim_second, st.sample_interval_ns());
-                    let n = st.frames.len();
-                    let ending = st.is_terminal() || st.stop_requested;
-                    if n == 0 && ending {
-                        drop(st);
-                        return self.finish_subscription(id);
-                    }
-                    pick(j, n, ending).and_then(|(idx, is_final)| {
-                        let frame = &st.frames[idx];
-                        let row = run::row(frame, &st.scenario, &sub.spec)?;
-                        let u = SubscriptionUpdate {
-                            subscription_id: format!("s-{id}"),
-                            sim_time_unix_ns: frame.t,
-                            realtime_factor: st.realtime_factor,
-                            row,
-                            is_final,
-                        };
-                        let seq = sub.next_seq;
-                        sub.next_seq += 1;
-                        sub.next_k += 1;
-                        sub.finished = is_final;
-                        let data = wire::subscription_update_json(&u);
-                        sub.ring.push_back((seq, data.clone(), is_final));
-                        while sub.ring.len() > RING {
-                            sub.ring.pop_front();
+                match subs.get_mut(&id) {
+                    None => Step::End("closed"),
+                    Some(sub) if sub.generation != generation => Step::End("superseded"),
+                    Some(sub) => {
+                        if let Some((seq, data, is_final)) = sub.ring.iter().find(|(s, _, _)| *s > last_sent) {
+                            Step::Send(*seq, data.clone(), *is_final)
+                        } else if sub.finished {
+                            Step::Finish("final")
+                        } else {
+                            let st = run.lock();
+                            let j = run::frame_index(sub.next_k, sub.samples_per_sim_second, st.sample_interval_ns());
+                            let n = st.frames.len();
+                            let ending = st.is_terminal() || st.stop_requested;
+                            if n == 0 && ending {
+                                Step::Finish("no frames")
+                            } else {
+                                let generated = pick(j, n, ending).and_then(|(idx, is_final)| {
+                                    let frame = &st.frames[idx];
+                                    let row = run::row(frame, &st.scenario, &sub.spec)?;
+                                    let u = SubscriptionUpdate {
+                                        subscription_id: format!("s-{id}"),
+                                        sim_time_unix_ns: frame.t,
+                                        realtime_factor: st.realtime_factor,
+                                        row,
+                                        is_final,
+                                    };
+                                    let seq = sub.next_seq;
+                                    sub.next_seq += 1;
+                                    sub.next_k += 1;
+                                    sub.finished = is_final;
+                                    let data = wire::subscription_update_json(&u);
+                                    sub.ring.push_back((seq, data.clone(), is_final));
+                                    while sub.ring.len() > RING {
+                                        sub.ring.pop_front();
+                                    }
+                                    Some((seq, data, is_final))
+                                });
+                                match generated {
+                                    Some((seq, data, is_final)) => Step::Send(seq, data, is_final),
+                                    None => Step::Wait,
+                                }
+                            }
                         }
-                        Some((seq, data, is_final))
-                    })
+                    }
                 }
             };
 
-            match next {
-                Some((seq, data, is_final)) => {
+            match step {
+                Step::Send(seq, data, is_final) => {
                     sse_event(&mut stream, Some(seq), "update", &data)?;
                     last_write = Instant::now();
                     last_sent = seq;
                     if is_final {
-                        return self.finish_subscription(id);
+                        return Ok(self.finish_subscription(id, "final"));
                     }
                 }
-                None => {
+                Step::Finish(reason) => return Ok(self.finish_subscription(id, reason)),
+                Step::End(reason) => return Ok(reason),
+                Step::Wait => {
                     if last_write.elapsed() >= KEEPALIVE {
                         stream.write_all(b": keepalive\n\n")?;
                         stream.flush()?;
@@ -462,11 +482,12 @@ impl Server {
     }
 
     /// After the final update nothing follows, so the lease is released rather than left to run
-    /// down: the idle guard should see a finished viewer as gone.
-    fn finish_subscription(&self, id: u64) -> std::io::Result<()> {
+    /// down: the idle guard should see a finished viewer as gone. Takes `leases` then `subs`, each
+    /// on its own, so the caller must hold neither.
+    fn finish_subscription(&self, id: u64, reason: &'static str) -> &'static str {
         self.runs.leases().close(&SubscriptionId(id));
         self.subs().remove(&id);
-        Ok(())
+        reason
     }
 }
 
@@ -981,17 +1002,19 @@ mod tests {
         rx.recv_timeout(within).ok()
     }
 
-    #[test]
-    fn a_stop_before_the_first_frame_ends_the_stream_instead_of_parking_the_server() {
-        let (addr, server) = start_server("stop-before-frame");
-        // Paced so slowly that the first 250 ms frame is 25 s of wall time away: the stop lands
-        // with `frames` empty, the `n == 0 && ending` path.
+    /// A run paced so slowly that the first 250 ms frame is 25 s of wall time away: a stop lands
+    /// with `frames` empty, the `n == 0 && ending` path.
+    fn start_slow_run(addr: SocketAddr) -> String {
         let (status, body) = post(addr, "StartRun", &start_run_json(0.01));
         assert_eq!(status, 200, "{body}");
-        let run_id = parse_json(&body).unwrap().str("run_id").unwrap().to_string();
+        parse_json(&body).unwrap().str("run_id").unwrap().to_string()
+    }
 
+    /// Open a fleet subscription and read through its `open` event, or fail after `within`: on a
+    /// server with a writer parked holding `subs`, the open never gets past the insert.
+    fn open_subscription_within(addr: SocketAddr, run_id: &str, within: Duration) -> TcpStream {
         let mut stream = TcpStream::connect(addr).unwrap();
-        stream.set_read_timeout(Some(Duration::from_secs(30))).unwrap();
+        stream.set_read_timeout(Some(within)).unwrap();
         write!(
             stream,
             "GET /v1/ingress/OpenSubscription?run_id={run_id}&scope=SCOPE_FLEET&samples_per_sim_second=4 HTTP/1.1\r\n\
@@ -1000,7 +1023,7 @@ mod tests {
         .unwrap();
         let mut reader = BufReader::new(stream.try_clone().unwrap());
         let mut line = String::new();
-        reader.read_line(&mut line).unwrap();
+        reader.read_line(&mut line).expect("no status line: the open is stuck behind a parked writer");
         assert!(line.starts_with("HTTP/1.1 200"), "{line}");
         // Up to and including the `open` event, which is the first blank-line-terminated event.
         let mut seen_open = false;
@@ -1009,6 +1032,15 @@ mod tests {
             assert!(reader.read_line(&mut line).unwrap() > 0, "stream ended before the open event");
             seen_open = line.starts_with("event: open");
         }
+        stream.set_read_timeout(Some(Duration::from_secs(30))).unwrap();
+        stream
+    }
+
+    #[test]
+    fn a_stop_before_the_first_frame_ends_the_stream_instead_of_parking_the_server() {
+        let (addr, server) = start_server("stop-before-frame");
+        let run_id = start_slow_run(addr);
+        let stream = open_subscription_within(addr, &run_id, Duration::from_secs(30));
         assert_eq!(server.open_subscriptions(), 1);
 
         let (status, body) = post(addr, "StopRun", &format!("{{\"run_id\":\"{run_id}\"}}"));
@@ -1020,6 +1052,24 @@ mod tests {
         // The proof that nothing is parked holding `subs`: a later request that has to sweep it answers.
         let (status, _) = post(addr, "GetRun", &format!("{{\"run_id\":\"{run_id}\"}}"));
         assert_eq!(status, 200);
+    }
+
+    #[test]
+    fn the_server_still_opens_subscriptions_after_a_stream_ended_on_a_stop() {
+        // The consequence on the public instance, not the cause: after one stream ended this way
+        // every later open on any run went unanswered, because each parked at `subs().insert`.
+        let (addr, server) = start_server("opens-after-stop");
+        let first = start_slow_run(addr);
+        let stream = open_subscription_within(addr, &first, Duration::from_secs(30));
+        let (status, body) = post(addr, "StopRun", &format!("{{\"run_id\":\"{first}\"}}"));
+        assert_eq!(status, 200, "{body}");
+        // Not waited for: the point is what happens to the next viewer while this one is ending.
+        drop(stream);
+
+        let second = start_slow_run(addr);
+        let stream = open_subscription_within(addr, &second, Duration::from_secs(5));
+        assert_eq!(server.open_subscriptions(), 1, "the stopped run's subscription was finished, the new one is open");
+        drop(stream);
     }
 
     #[test]

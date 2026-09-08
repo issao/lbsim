@@ -290,6 +290,7 @@ impl Registry {
         }
     }
 
+    // Lock order: leases → subs → run.state, each optional, never reversed.
     pub fn leases(&self) -> MutexGuard<'_, LeaseRegistry> {
         self.leases.lock().unwrap_or_else(|e| e.into_inner())
     }
@@ -373,16 +374,21 @@ fn drive(run: Arc<Run>, reg: Arc<Registry>, sc: Scenario, ready: mpsc::SyncSende
     // Pacing anchor: the wall instant at which simulated `sim` was due, at `factor`. Dropped on
     // every pause or speed change so the run does not sprint to catch up after one.
     let mut anchor: Option<(Instant, Nanos, f64)> = None;
-    {
+    let run_id = {
         let mut st = run.lock();
         st.state = State::Running;
         run.changed.notify_all();
-    }
+        st.run_id.clone()
+    };
 
     loop {
         // Built under the lock, written after it: every subscription's writer waits on this lock,
         // so a file write inside it stalls every viewer for the duration of the write.
         let mut pending: Option<Checkpoint> = None;
+        // Leases before the run state, never inside it: the writers take `subs` then `run.state`,
+        // and `reap` takes `leases` then `subs`, so `leases` under `run.state` would be a cycle.
+        let now_wall = wall_now_ns();
+        let live = reg.leases().live_for_run(&run_id, now_wall);
         let next = {
             let mut st = run.lock();
             let sample_iv = st.sample_interval_ns();
@@ -398,8 +404,6 @@ fn drive(run: Arc<Run>, reg: Arc<Registry>, sc: Scenario, ready: mpsc::SyncSende
 
             // The idle guard, once per visit. A run advancing as fast as it can is busy; one
             // paced for a viewer, or paused, or finished, is only as busy as its leases.
-            let now_wall = wall_now_ns();
-            let live = reg.leases().live_for_run(&st.run_id, now_wall);
             let advancing = st.state == State::Running && !st.paused && !st.idle_stopped;
             let queued = usize::from(st.step_target.is_some() || (advancing && st.realtime_factor == 0.0));
             let mut checkpointed_now = false;
