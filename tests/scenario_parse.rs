@@ -10,11 +10,11 @@ use lbsim::scenario::Scenario;
 use lbsim::sim;
 
 /// Every key `parse` accepts, which is also every key `to_text` must emit.
-const KEYS: [&str; 57] = [
+const KEYS: [&str; 58] = [
     "name", "seed", "duration_s", "warmup_s", "replicas", "max_batch", "step_base_ms",
     "step_per_seq_ms", "step_per_kv_ktoken_ms", "kv_capacity_tokens", "prefill_tokens_per_s",
     "step_token_budget", "max_queue", "disable_decode", "preemption", "preemption_victim",
-    "dram_capacity_tokens", "swap_gbps", "arrival_rps", "prompt_mean", "prompt_cv", "output_mean",
+    "dram_capacity_tokens", "swap_gbps", "arrival_rps", "arrival_rps_per_replica", "prompt_mean", "prompt_cv", "output_mean",
     "output_cv", "long_probability", "long_prompt_mean", "long_output_mean", "session_turns_mean",
     "session_think_s", "load_step_at_s",
     "load_step_factor", "load_step_until_s", "routing", "p2c_choices", "probe_live",
@@ -49,6 +49,8 @@ fn all_fields_distinct() -> Scenario {
         dram_capacity_tokens: 2_222_000.0,
         swap_gbps: 32.5,
         arrival_rps: 19.5,
+        // Stays at its unused value: anything else would derive arrival_rps on the way back in.
+        arrival_rps_per_replica: 0.0,
         prompt_mean: 1500.5,
         prompt_cv: 1.75,
         output_mean: 275.25,
@@ -113,6 +115,7 @@ fn to_text_then_parse_preserves_every_field() {
     assert_eq!(got.dram_capacity_tokens, want.dram_capacity_tokens);
     assert_eq!(got.swap_gbps, want.swap_gbps);
     assert_eq!(got.arrival_rps, want.arrival_rps);
+    assert_eq!(got.arrival_rps_per_replica, want.arrival_rps_per_replica);
     assert_eq!(got.prompt_mean, want.prompt_mean);
     assert_eq!(got.prompt_cv, want.prompt_cv);
     assert_eq!(got.output_mean, want.output_mean);

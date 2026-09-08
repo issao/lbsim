@@ -129,6 +129,11 @@ const EXPORTED_RUN_IDS = new Set([
   '11-preemption/kv-spiral-swap',
   '12-spec-decode/spec-off',
   '12-spec-decode/spec-n4',
+  '13-herd-fleet/replicas=32',
+  '13-herd-fleet/replicas=64',
+  '13-herd-fleet/replicas=128',
+  '13-herd-fleet/replicas=256',
+  '13-herd-fleet/replicas=512',
 ]);
 
 /** U48's ten selected dynamics, plus spec-decode (U26b): every one of these must have a script
@@ -145,6 +150,7 @@ const SELECTED_IDS = [
   'deadline-admission',
   'fair-share',
   'spec-decode',
+  'herd-fleet-size',
 ];
 
 // ---------------------------------------------------------------------------

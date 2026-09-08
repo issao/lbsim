@@ -667,6 +667,11 @@ pub const DEMOS: &[Demo] = &[
         files: &["spec_off.txt", "spec_n4.txt"],
         sweep: None,
     },
+    Demo {
+        group: "13-herd-fleet",
+        files: &["herd_fleet.txt"],
+        sweep: Some(("replicas", &["32", "64", "128", "256", "512"])),
+    },
 ];
 
 /// Set one key, through the text form so there is exactly one place that knows the key names. The

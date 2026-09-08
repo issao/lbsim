@@ -1,0 +1,71 @@
+{
+  "id": "herd-fleet-size",
+  "dynamic": 2,
+  "title": "Herding gets worse as the fleet grows",
+  "summary": "The same least_requests policy, the same 250 ms telemetry and the same offered/capacity ratio: 79.5% attainment at 32 replicas, 14.5% at 256, 7.0% at 512. The herd scales with the fleet.",
+  "scenario": {
+    "name": "showcase: fleet-size sweep",
+    "seed": 20260906,
+    "durationS": 120,
+    "fleet.replicas": 256,
+    "workload.arrivalRps": 560,
+    "routing.kind": "least_requests",
+    "telemetryIntervalMs": 250
+  },
+  "run": "13-herd-fleet/replicas=32",
+  "compare": "13-herd-fleet/replicas=256",
+  "steps": [
+    {
+      "at_sim_s": 12,
+      "speed": 2,
+      "control_tab": "cluster",
+      "observe_tab": "machine",
+      "highlight": "heatmap",
+      "title": "32 replicas: the 250 ms point that looked harmless",
+      "body": [
+        "Least-requests routing at 250 ms telemetry and 70 rps over 32 replicas, an offered/capacity ratio of 0.30: 14,941 tok/s goodput, 79.5% attainment, load spread 0.71, TTFT p99 8.0 s, 3 running timeouts.",
+        "This is the same point the staleness walkthrough called almost nothing happening. Every step in this sweep keeps the policy, the cadence and the ratio fixed and changes only how many replicas share the work."
+      ],
+      "look_for": "A heatmap with a visible but bounded stripe: the herd exists at 32 replicas, it is just small."
+    },
+    {
+      "at_sim_s": 36,
+      "speed": 2,
+      "control_tab": "cluster",
+      "observe_tab": "machine",
+      "highlight": "heatmap",
+      "title": "64 and 128: the herd grows with the fleet",
+      "body": [
+        "At 64 replicas and 140 rps: 56.5% attainment, spread 1.01, TTFT p99 12.8 s. At 128 replicas and 280 rps: 29.5%, spread 1.34, TTFT p99 18.3 s.",
+        "Every router reads the same 250 ms-old snapshot, so within one window every arrival goes to the replica that looked least loaded when the snapshot was taken. The herd is the number of arrivals per window, and at a fixed ratio that number grows with the fleet: 17 requests per window at 32 replicas, 70 at 128."
+      ],
+      "look_for": "The hot stripe getting taller relative to the fleet, not just wider: more requests land on one row per window."
+    },
+    {
+      "at_sim_s": 60,
+      "speed": 2,
+      "control_tab": "cluster",
+      "observe_tab": "quality",
+      "highlight": "goodput",
+      "title": "256: the collapse, with nothing changed but scale",
+      "body": [
+        "At 256 replicas and 560 rps: 14.5% attainment, spread 1.64, TTFT p99 35.4 s, 176 running timeouts. Throughput is 120,836 tok/s, so the fleet is working; goodput is 17,388 tok/s, so almost none of it lands inside the SLO.",
+        "Per replica, goodput fell from 467 tok/s at 32 replicas to 68 tok/s here. The staleness cliff from the previous walkthrough did not move on the telemetry axis; the fleet grew until 250 ms was on the wrong side of it."
+      ],
+      "look_for": "The gap between throughput and goodput opening up: the fleet is busy serving requests that are already late."
+    },
+    {
+      "at_sim_s": 96,
+      "speed": 1,
+      "control_tab": "run",
+      "observe_tab": "quality",
+      "highlight": "headline",
+      "title": "512: the cliff keeps moving left",
+      "body": [
+        "At 512 replicas and 1,120 rps: 7.0% attainment, spread 2.03, TTFT p99 50.5 s, 4,050 running timeouts. 280 arrivals now share each 250 ms snapshot.",
+        "Open the A/B view with A = 32 replicas and B = 256 to see the same policy and the same ratio with an eightfold difference in the herd. A telemetry cadence tuned at 32 replicas does not transfer to 256; power-of-two-choices does not have this term, because only a fraction of routers consider any one replica at once."
+      ],
+      "look_for": "Attainment falling from 79.5% to 14.5% with nothing changed but the number of replicas."
+    }
+  ]
+}
