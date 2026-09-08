@@ -1,157 +1,207 @@
 # VISION.md, requirement by requirement: done, building, far away
 
-**Temporary.** Snapshot taken 2026-09-06 16:19 PDT from `origin/master` f263575 for Issao to review; to be
-deleted or folded into `STATUS.md` once read. Every row cites its evidence. "Done" means the requirement is
-met as VISION.md states it, on `master`, verified; a partial is Building or Far away with what exists noted.
-ETAs are the tech lead's, wall clock, conditional on agents landing at today's rate.
+**Temporary.** Snapshot taken 2026-09-07 21:31 PDT from `origin/master` 2eb5d4f, refreshing the one of 2026-09-06 16:19
+(f263575) for Issao, who asked: *"what is missing in the vision progress, is that up to date? What else can we make
+progress there?"* Every row cites its evidence: a commit on `origin/master`, a finding number in `docs/findings.md`, a
+scenario, a test, a page on <https://lbsim.ai>, or a unit id in `docs/execution-graph.md` (the tech lead's memory:
+85 done, U94b in flight, 15 queued at its 21:21 line; U97 and U92b landed after it, at 2eb5d4f). "Done" means the
+requirement is met as VISION.md states it, on `master`, verified; a partial is Building or Far away with what exists
+noted. Queue positions are the graph's "Queue at the stop" order: U31b, U25b, S3, U69, then the engine roadmap U27,
+U30, U32, U33, U29/U36/U37, U38, U39, with U98 and U99 queued beside them.
 
-Legend: **D** done, **B** building in the next ~2 hours, **F** far away.
+Legend: **D** done, **B** building (an agent is on it, or it has a unit id in the graph's queue; the evidence says
+which and where in the queue), **F** far away (no unit in any queue, or behind a foundation that has none).
 
 ## §1 Pitch and the two goals
 
 | Requirement | | Evidence |
 |---|---|---|
-| Simulator of a large-scale LLM serving system with fidelity to reproduce insightful dynamics | B | six dynamics reproduce (`docs/findings.md` 1–6) on a 32-replica fleet; "large scale" is unmeasured, see §8 |
-| Learn the real-world challenges of LLM serving | D | `docs/llm-serving-primer.md`, `docs/calibration.md` (SOTA numbers you asked for), six findings each stating the mechanism |
-| Learn publicly available SOTA serving information | D | `docs/calibration.md`: H100 HBM, prefill tok/s, NIM batch-1 decode 10.25 ms, Azure trace dispersion; cost model matched to it |
-| Playground to teach others | B | showcase page exists with mock data (`web/src/pages/Showcase.tsx`); real runs in the dashboard ~19:00 (`docs/dashboard-plan.md`) |
-| Evaluate policies across the stack: GPU/host/node scheduling, LB, affinity, shaping, redundancy | B | LB: six routing policies; shaping: admission seam + two policies on branches (`tl-policy-deadline`, `tl-policy-fair-share`); GPU-level scheduling: chunk budget and batch cap only; affinity, redundancy: F (see §3b) |
-| Scorecard metrics: throughput, SLO, goodput, service quality | D | `RunResult` scorecard: goodput, throughput, completed rps, SLO attainment, outcomes, TTFT/ITL/E2E/queue-wait percentiles; `summary.csv` per run |
+| Simulator of a large-scale LLM serving system with fidelity to reproduce insightful dynamics | B | twelve dynamics reproduce on real runs: findings 1–9 in `docs/findings.md`, reports 1–12 at lbsim.ai/reports/ (7 no-decode, 8 admission, 9 fair-share, 10 probes, 11 preemption, 12 spec-decode); default fleet 256 replicas (U92, f95d0ce). Scale measured (`docs/wrap-up-2026-09-06.md` §5d): 1,000 replicas 57× realtime, 10,000 replicas (80k GPUs) 1.5–1.9× on one core. "Large scale" is one cluster; the multi-cluster dimension is U32, queued |
+| Learn the real-world challenges of LLM serving | D | `docs/llm-serving-primer.md`, `docs/calibration.md`, nine findings each stating the mechanism, "What these nine have in common" |
+| Learn publicly available SOTA serving information | D | `docs/calibration.md`: H100 HBM, prefill tok/s, NIM batch-1 decode, Azure trace dispersion; `check-sensitivity.sh` shows the ordering survives ±30% |
+| Playground to teach others | D | lbsim.ai/#/showcase: 22 cards, 14 scripted walkthroughs (`web/public/walkthroughs/`) that open a live run and narrate it step by step (U48 c16675b, U49, U58 9bfe832, U75); 8 phase-2/3 cards are placeholders marked "coming" until their dynamics exist (U27, U30, U31b, U32, U39) |
+| Evaluate policies across the stack: GPU/host/node scheduling, LB, affinity, shaping, redundancy | B | LB: eight routing policies (`crates/sim-policy/src/`: round_robin, random, least_requests, least_queue_tokens, p2c, least_kv_probe, forecast_load, forecast_latency); shaping: three admission policies (accept_all, deadline_aware, fair_share); GPU-level scheduling: knobs only (`step_token_budget`, `max_batch`, `preemption`, `preemption_victim`, spec N/M), no scheduling policy trait; affinity: U27 queued (roadmap first); redundancy: four catalog ideas, no unit |
+| Scorecard metrics: throughput, SLO, goodput, service quality | D | `RunResult` scorecard plus per-class goodput and attainment since U25a (5a4f185); `summary.csv` gains `gpu_utilization_mean` with U94b (in flight); U25b (queued 2nd) puts the per-class rows in the report table |
 
 ## §2 Why: cheap, fast, hermetic, usable by LLM agents
 
 | Requirement | | Evidence |
 |---|---|---|
-| Hermetic, cheap, fast | D | zero-dependency Rust workspace; a 600 s, 32-replica run in seconds; `tools/build.sh test --workspace` |
-| A playground for LLM agents to evaluate policies | B | arena mechanical half (`crates/sim-arena`, `docs/arena-implementation.md` §3 measured round); `GeneratedPolicy` proto slot (947649b) and one-file-per-policy registry (289cb22) so a generated policy is a file; the generator/judge loop itself is not built, queued, no ETA |
+| Hermetic, cheap, fast | D | zero-dependency Rust workspace; the 256-replica base runs at 180–235× realtime on one core (U92 report); `tools/build.sh test --workspace` |
+| A playground for LLM agents to evaluate policies | D | the loop is closed: `sim-run generate --family routing --variant …` writes a policy file, rebuilds, scores a round, appends the catalog row (U34 fe0126f; `tests/arena_generator.rs`); the generator today is a template (p2c variants), so no LLM has yet been given the "free reins" of §10, which is a session to run, not a unit to build |
 
 ## §3a Dynamics to understand
 
 | Dynamic | | Evidence |
 |---|---|---|
-| Round-robin rolling hotspot with heterogeneous sizes, below rated capacity, "early on" | D | finding 1, `scenarios/route_round_robin.txt` vs `route_p2c.txt`, report `1-routing.html` live at lbsim.ai |
-| Knob to turn off decode so traffic looks stateless | B | **no `disable_decode` key exists** (`crates/sim-scenario`); `output_mean` can be set small but that is not the knob asked for. Small; not in any brief Issao, 16:22: *"we could get disable decode basically by setting HBM to infinity, so that should be straight forward."* Routed to the tech lead, first in priority: scenario key `disable_decode` zeroing the bandwidth term. No ETA yet. |
-| Stale-state LB oscillation, time/frequency-domain, control-theory framing | B (partial D) | finding 2 reproduces herding vs telemetry staleness with the dominant frequency measured (`Series::dominant_frequency`); the perturbation input, Bode plot and robust-control policy (execution plan M7) are **not started** |
-| Value of policies with robust control logic | F | depends on M7 above; no controller policy exists |
-| Global cascading failure | F | depends on failure injection (scope item 11) and multi-cluster (item 12); neither started |
-| GPU utilization vs latency when tuning prefill/decode; large-prefill traffic | D | finding 3 (chunk budget sweep, `3-chunking.html`), finding 5 (long-context mixture, `5-long-context.html`) |
-| KV-cache preemption pathology: many sessions, low qps, severe degradation | B | KV is a token budget with queue-on-full today (finding 5); preemption with swap/recompute and sessions are queued behind the engine-core unit (`claude/tl-engine`, frames landed 16:15); tech lead's order puts it first after the physics oracle; no ETA stated |
-| Value of traffic shaping at each layer, in every scenario | B | admission seam on `master`; `deadline_aware` and `fair_share` on branches (16:17); a per-layer contrast report is not written; shaping at the router and replica layers is `max_queue` only |
-| Model-weight locality, MoE, multi-model | F | scope item 17, "if we have time"; nothing started; depends on tiering (item 14) |
-| Multi-geo diurnal autoscaling with on-demand allocation and spike absorption, as robust control | F | scope item 13; depends on replica lifecycle and turn-up delay (§4), multi-cluster, and M7 control analysis |
-| Traffic with different latency SLOs | B | queued as "SLO classes" in the tech lead's fan-out; single `ttft_slo_ms`/`itl_slo_ms` today; `docs/arena.md` §5b argues per-class targets are needed for a 0.99 cap; no ETA |
-| Speculative decoding with a stochastic small-model agreement | B | the N/M model is exact in Python (`bench/validate_epochs.py`) and being ported in `claude/tl-physics` (16:18); wiring it into the engine as a scenario knob is queued (scope item 16, "30 minutes once 7 exists") |
-| Affinity: good case vs failover hotspot cascade | F | scope items 9, 10; prefix model decided (§14 row 9: session model with fork/merge rates) but nothing built; depends on preemption and sessions |
+| Round-robin rolling hotspot with heterogeneous sizes, below rated capacity, "early on" | D | finding 1, `scenarios/route_round_robin.txt` vs `route_p2c.txt`, report 1, walkthrough `rolling-hotspot` live |
+| Knob to turn off decode so traffic looks stateless | D | `disable_decode` scenario key (U21 c7f8c6a), `scenarios/route_*_no_decode.txt`, report 7, finding 7: the routing ordering holds with the decode physics off, so the effect is the queue's |
+| Stale-state LB oscillation, time/frequency-domain, control-theory framing | B (partial D) | finding 2 measures herding against staleness with the dominant frequency (`Series::dominant_frequency`), demo 2 re-baselined at 32 replicas (U92b bff97f2) because at 256 the herd is past the cliff at 100 ms; that cliff moving with fleet size is U98 (queued, demo 13); the perturbation input, Bode plot and controller policy are U33 (queued, after U32) |
+| Value of policies with robust control logic | B | U33 queued; first steps landed as the two stale-view-compensating routing policies `forecast_load` (U40a 9b4fc5c) and `forecast_latency` (U40b 9cae0fa); `robust_controller` and `stale_view_shaping` are catalog ideas |
+| Global cascading failure | B | failure injection is in the engine (U31a e755f67: `failures = t=60,replica=2,kind=slow=0.3`, silent slow, hang, announced crash; `scenarios/crash.txt`, `gray_failure.txt`; `tests/failures.rs`); U31b ejection is first in the queue; the global half needs multi-cluster, which is inside U32 (queued 7th) |
+| GPU utilization vs latency when tuning prefill/decode; large-prefill traffic | D | findings 3 and 5, reports 3 and 5; GPU utilization now a metric with p50/p90/p99 bands across replicas on the Utilization page (U94a 5d9732c, U94c 599c41c; U94b wire in flight) |
+| KV-cache preemption pathology: many sessions, low qps, severe degradation | D | U22 (d48191f): preemption with swap-to-DRAM or recompute, victim rules, multi-turn sessions (`session_turns_mean`, `session_think_s`, `dram_capacity_tokens`, `swap_gbps`); U62 (51968a7) session turns through admission; finding 8 the KV spiral, report 11, walkthrough `kv-spiral` live; `tests/preemption.rs`. The "connect with cascading failure" clause is not planned anywhere |
+| Value of traffic shaping at each layer, in every scenario | B (partial D) | `deadline_aware` and `fair_share` on master with reports 8 and 9 and live walkthroughs; the per-layer contrast report is U38 (queued 10th); router and replica layers shape by `max_queue` only; `layered_shaping` is a catalog idea |
+| Model-weight locality, MoE, multi-model | B | U39 is the last name in the roadmap queue, "none started; becomes a section when specified"; catalog `weight_locality`; needs U30 tiering |
+| Multi-geo diurnal autoscaling with on-demand allocation and spike absorption, as robust control | B | U32 queued (7th): replica lifecycle with turn-up delay, warm pools, diurnal load per cluster; the proto has `ClusterSpec` with a diurnal phase offset (`scenario.proto:121`) but the scenario parser has no cluster key, so a second cluster cannot be expressed today |
+| Traffic with different latency SLOs | B (partial D) | U25a (5a4f185): `slo_classes = interactive:0.7,agent:0.2,batch:0.1`, targets per U42, per-class goodput and attainment on `RunResult`, `tests/slo_classes.rs`; U25b (queued 2nd) surfaces them in the report and export; class-aware scheduling (`slo_class_priority_queues`, `earliest_deadline_first`) is catalog-only; the batch class's longer-window throughput is U44, recorded and unscheduled at your word |
+| Speculative decoding with a stochastic small-model agreement | D | U26 (6fd648e): `spec_draft_tokens`, `spec_accept_rate` through `CostModel`; finding 9 (2.61× at batch 4, 0.92× at 144, crossover B≈72); report 12, demo 12 walkthrough `spec-decode` (U26b b827d84); `tests/spec_decoding.rs` |
+| Affinity: good case vs failover hotspot cascade | B | U27 queued (roadmap first): session model with fork/merge rates, prefix segment tree, affinity routing, the failover-cascade scenario; the `affinity-vs-spread` walkthrough script exists against today's engine, `affinity-cascade` is a placeholder card |
 
 ## §3b Policies to evaluate
 
 | Policy family | | Evidence |
 |---|---|---|
-| Load balancing | D | round_robin, random, least_requests, least_queue_tokens, p2c, least_kv_probe (`crates/sim-policy/src/`), O(1) each per §10.4 |
-| Batch scheduling, prefill batch sizing | B (partial D) | chunked prefill `step_token_budget` and `max_batch` are knobs (finding 3); a pluggable batch-scheduling policy seam does not exist; the engine decides |
-| Speculative decoding | B | see §3a |
-| Load forecasting | B | not in any document beyond VISION.md Issao, 16:22: forecasting joins the policy ideas to evaluate; `docs/policy-catalog.md` is being written and the tech lead wires the arena generator to append a row per authored policy. No ETA yet. |
-| Latency forecasting | B | `deadline_aware` sheds on *expected* queue wait, which is a one-step latency forecast; a forecasting policy family is not designed Same decision as load forecasting, 16:22; routed to the tech lead. No ETA yet. |
-| Machine failover | F | depends on failure injection (item 11) |
-| Prefill-decode disaggregation | F | scope item 15, 2 h estimate, depends on tiering/fabric model |
-| Prefill-decode batch co-scheduling | B (partial D) | co-scheduling is what chunked prefill does today; the policy is fixed, not pluggable |
-| Affinity, how sticky | F | items 9, 10 |
-| Load shaping with stale cluster status | D | admission and routing read the delayed telemetry view (`telemetry_interval_ms`, `telemetry_delay_ms`); finding 2 |
-| Auto scale | F | item 13 |
+| Load balancing | D | eight routing policies, each a file behind `RoutingPolicy` (`crates/sim-policy/src/routing.rs:88`), registry generated from the files (5083b7b) |
+| Batch scheduling, prefill batch sizing | F (partial D) | `step_token_budget` and `max_batch` are knobs (finding 3); there is no `SchedulingPolicy` trait (only `AdmissionPolicy` and `RoutingPolicy` exist in `crates/sim-policy`), the engine's step loop decides; `n_requests_m_batches` and `step_budget_controller` are catalog ideas with no unit |
+| Speculative decoding | D | see §3a |
+| Load forecasting | D | `forecast_load` (U40a 9b4fc5c; `scenarios/route_forecast_load.txt`, `tests/policy_forecast_load.rs`); a seven-idea family in `docs/policy-catalog.md` |
+| Latency forecasting | D | `forecast_latency` (U40b 9cae0fa; `scenarios/route_forecast_latency.txt`, `tests/policy_forecast_latency.rs`); a seven-idea family in the catalog |
+| Machine failover | B | injection done (U31a); the ejection policy on the health vector (`ReplicaView.ejected`, `last_step_ns` vs fleet median) is U31b, first in the queue, with demo 13 and its finding |
+| Prefill-decode disaggregation | B | U30 queued (6th): prefill and decode pools with KV transfer over the modelled fabric; `static_split`, `dynamic_split` in the catalog |
+| Prefill-decode batch co-scheduling | F (partial D) | chunked prefill is the co-scheduling and it is fixed, not pluggable; same missing seam as batch scheduling; `prefill_decode_co_scheduling` is a catalog idea with no unit |
+| Affinity, how sticky | B | U27 queued; `sticky_session`, `prefix_affinity_load_capped` in the catalog |
+| Load shaping with stale cluster status | D | admission and routing read the delayed view (`telemetry_interval_ms`, `telemetry_delay_ms`); finding 2; `forecast_load` compensates for it |
+| Auto scale | B | U32 queued; `reactive_threshold`, `predictive_diurnal`, `warm_pool`, `robust_controller` in the catalog; every run so far is at fixed fleet size |
 
 ## §4 What "realistic" means
 
 | Requirement | | Evidence |
 |---|---|---|
-| Batch-level realism computed analytically; work scales with requests, not tokens | D | analytic epoch advance, exact against a naive oracle in rational arithmetic (`bench/validate_epochs.py`), 56–82× fewer iterations; Rust port with the same oracle on `claude/tl-physics` |
-| Request cohorts / fluid limit | F | **parked by decision** (§14 row 2): trigger and knob recorded in `docs/ARCHITECTURE.md` §4; not built |
-| KV data locality: HBM/DRAM/SSD, where preempted KV lives | F | design decided (§14 rows 4, 8: pooled per cluster, Ingress-owned, bloom-filter residency hint); scope item 14; nothing built |
-| KV prefix modelling, feasibility documented | B (design D) | feasibility documented in `docs/ARCHITECTURE.md` §7.3 and `docs/calibration.md` §9; §14 row 9 chose a session model; code not started (item 9) |
-| Model weights locality | F | item 17 |
-| Stale status from machines to upper layers, delayed actuator | D | telemetry publish/delay events in the engine; finding 2 |
-| Turn-up delay for autoscale | F | with item 13 |
-| Failure discovery delay, gray failure vs clean shutdown | F | item 11; the mock dashboard shows gray-failure events, the engine has none |
-| Calibrate against SOTA NVIDIA cluster shapes and published workload data, user-configurable | D | `docs/calibration.md`; every cost-model number is a scenario key (`step_base_ms`, `step_per_kv_ktoken_ms`, `prefill_tokens_per_s`, `kv_capacity_tokens`); `check-sensitivity.sh` shows ordering survives ±30% error |
+| Batch-level realism computed analytically; work scales with requests, not tokens | D | analytic epoch advance exact against a rational-arithmetic oracle (`bench/validate_epochs.py`, Rust port U14 dbfc553); ~30 events per request, 1.1 M events/s at 10,000 replicas (§5d) |
+| Request cohorts / fluid limit | F | parked by decision (`docs/ARCHITECTURE.md` §4) with the knob table (`cohort_size` 1 … ∞ = fluid) and three triggers; trigger 1, "cannot reach 2× on one core at target scale", is now measurably close (1.5–1.9× at 10k replicas), and the chosen lever is Leaf sharding (U29/U36), not cohorts |
+| KV data locality: HBM/DRAM/SSD, where preempted KV lives | B (partial D) | one DRAM tier exists as the swap target since U22 (`dram_capacity_tokens`, `swap_gbps`); cluster-pooled DRAM/SSD owned by Ingress with the bloom-filter residency hint (§14 rows 4, 8) is U30, queued |
+| KV prefix modelling, feasibility documented | B (design D) | feasibility in `docs/ARCHITECTURE.md` §7.3 and `docs/calibration.md` §9; the session model chosen (§14 row 9); code is U27, queued first in the roadmap |
+| Model weights locality | B | U39, last in the queue, unspecified |
+| Stale status from machines to upper layers, delayed actuator | D | telemetry publish/delay events; finding 2; the crash in U31a is announced only through the delayed view |
+| Turn-up delay for autoscale | B | inside U32 |
+| Failure discovery delay, gray failure vs clean shutdown | D (engine) | U31a: `slow` is silent (gray), `hang` is speed 0, `crash` is announced, `until` restores; the detector that turns discovery delay into a number is U31b, first in the queue |
+| Calibrate against SOTA NVIDIA cluster shapes and published workload data, user-configurable | D | `docs/calibration.md`; every cost-model number is a scenario key; `check-sensitivity.sh` is a regression test on the ordering; a real trace can replace the synthetic mixture (`workload = trace`, `trace_file`, U35 ad4ff74) |
 
 ## §5 Non-goals
 
-All honoured: no RPC hook-in, no billing model, no training, no kernel or packet modelling. The only
-tension is with "small simulator footprint": unmeasured at target scale, see §8.
+All honoured: no RPC hook-in, no billing model, no training, no kernel or packet modelling. The "small simulator
+footprint" tension is now measured rather than unmeasured: 580 MB peak RSS at 10,000 replicas, and the cloud backend
+was resized to 2 vCPU / 2 GiB with a memory budget so that run fits (9dd03e9).
 
 ## §6 Success criteria and surfaces
 
 | Requirement | | Evidence |
 |---|---|---|
-| Each key dynamic shown in a dashboard with strong visuals at every relevant layer | B | today: six static HTML reports with charts (live at lbsim.ai/reports/); in the React dashboard, real data ~19:00 pre-baked, live ~22:30 (`docs/dashboard-plan.md`) |
-| A/B comparison between policy sets | D (reports) / B (dashboard) | `sim-run compare` and findings 1, 6; `web/src/pages/Compare.tsx` exists on mock data |
-| Home page listing surfaces | D | lbsim.ai `/`, with report links since 16:03 (16daf22) |
-| Interactive load-test control: load shape, cluster shape, policies, all parameters on the fly | B | control panel built on the mock (`web/src/panels/ControlPanel.tsx`); on-the-fly changes need the live Ingress (`UpdateWorkload`/`UpdatePolicies` in `WIRE.md`), ~21:00 |
-| Observability panel: time series at cluster and machine level | B | panels exist on mock; fleet series real ~19:00, per-replica heatmap after `claude/tl-engine` frames merge; prefix/tier/failure panels stay mock until those dynamics exist |
-| Showcase: scenario cards with preloaded settings and a step-by-step "scenario play" | B | `Showcase.tsx` + `walkthrough.ts` on mock; one real walkthrough was the M0.5 goal; wiring to real runs follows the pre-baked path |
-| Standalone simulator as an agent playground | B | CLI `sim-run run/compare/sweep` is standalone today; the arena loop is the missing half (§2) |
+| Each key dynamic shown in a dashboard with strong visuals at every relevant layer | D | twelve static reports; the live dashboard streams fleet series, per-replica rows on the Machines page (U90 258c706), GPU and KV utilization with percentile bands (U94), service quality; a panel for a dynamic the engine does not simulate yet says so in plain words under its mode tag (U95). Exception: the Traces tab, see §8 |
+| A/B comparison between policy sets | D | `sim-run compare` and findings 1, 6; the A/B page runs two live runs at one seed differing in policy, or a walkthrough's recorded pair (U96 b9e8b10); lockstep through `StepForward` is U99, queued |
+| Home page listing surfaces | D | lbsim.ai in three sections, Live / Replay / Mock (U80 023672d), reports 1–12 |
+| Interactive load-test control: load shape, cluster shape, policies, all parameters on the fly | D | `UpdateWorkload`/`UpdatePolicies` apply to a running simulation, forward-only (U59a 7470b54, U59b 11165ba); engine-only keys ride on `ScenarioConfig.extra` (U72); the replica slider reaches 10,000 and the banner reports the pace achieved (U91); a physics change is refused with the reason and needs a new run |
+| Observability panel: time series at cluster and machine level | D | fleet and per-replica subscriptions over SSE (U18 c0e9ea8, U90); heatmap and replica table live and on replay (U23 5e14b23) |
+| Showcase: scenario cards with preloaded settings and a step-by-step "scenario play" | D | 14 scripted walkthroughs over 22 cards; a walkthrough opens a live run, its `set` steps change the run mid-flight, the open walkthrough lives in the URL (U48, U49, U58, U59b, U75); eight cards wait on their dynamics |
+| Standalone simulator as an agent playground | D | `sim-run run / compare / sweep / export / generate / serve`; the arena round and catalog (`crates/sim-arena`, U20, U34) |
 
 ## §8 Constraints and preferences
 
 | Requirement | | Evidence |
 |---|---|---|
 | Dependency-light core | D | zero external crates in the workspace |
-| Deterministic, one global seed, named streams | D | `sim-core/rng.rs` xoshiro256++ streams; `tests/determinism.rs`, `tests/stream_independence.rs`; fingerprints in `bench/golden-fingerprints.txt` |
-| Periodic snapshots for scroll-back / replay; fast-forward and rewind in the UI | B | proto `Rewind`/`StepForward` defined; snapshots designed (`ARCHITECTURE.md` §8.2); the resumable `Sim` is the engine-core unit in flight (`claude/tl-engine`); UI scrub on pre-baked runs ~19:00, true rewind with re-simulation ~22:00 |
-| Trace single requests, sampled uniformly and by latency bucket, across machines | B | per-request records exist (arrival, admit, first token, finish, outcome) and the budgeted telemetry dump is stratified by outcome/latency with a manifest (`sim-report`); **no per-machine span trace** and `GetTraces` is unimplemented; the UI trace view is mock (`web/src/lib/traces.ts`) Issao, 16:22: *"We should have a way to sample requests to see execution traces and what was busy in each resource as it executed."* Routed to the tech lead: seeded, stratified by latency bucket, spans with per-resource state, through `GetTraces` and the export. No ETA yet. |
-| Proto-defined interfaces, written or reviewed by you | D | twelve files in `proto/lbsim/v1/`, reviewed; every change since goes through the main agent; `WIRE.md` maps them to JSON until codegen |
+| Deterministic, one global seed, named streams | D | xoshiro256++ streams; `tests/determinism.rs`, `tests/stream_independence.rs`; `bench/golden-fingerprints.txt` gates every integration (`tools/integrate.sh` stage 4), union-mergeable since U66 |
+| Periodic snapshots for scroll-back / replay; fast-forward and rewind in the UI | F (partial D) | fast-forward: `StepForward` is implemented (`crates/sim-ingress/src/run.rs:197`), pause and speed apply live, replay scrubs any exported run; the resumable `Sim` and the idle guard's checkpoints exist (U15, `run.rs:79`). Rewind: **`Rewind` answers HTTP 501** (`crates/sim-ingress/src/server.rs:315`) and the UI hides it off-mock; no unit plans re-simulation from a checkpoint |
+| Trace single requests, sampled uniformly and by latency bucket, across machines | F (partial D) | the engine records per-request spans with resource state at each step for a seeded sample stratified by p50/p90/p99/p99.9 and outcome (U24 a3b5141, `TraceSpan` extension a035514 awaiting your review, `tests/trace_engine.rs`), and the export carries a budgeted trace set (U19 c766e2f, `export_run_with_traces`). What remains: **`GetTraces` answers 501 on the server** (`server.rs:315`; `WIRE.md:127` still says "until U24 lands"), and the dashboard's Traces tab reads `web/src/lib/traces.ts`, which invents traces from the seed rather than decoding the wire (`decodeTraceSpan` exists in `api.ts:604`, unused by the tab). No unit for either; U69 (queued 4th) adds the eviction span |
+| Proto-defined interfaces, written or reviewed by you | D | twelve files in `proto/lbsim/v1/`; additions since the last snapshot: `TraceSpan` resource state (a035514, `TASKS.md` item 1), GPU metrics 67/68 (b92ab52). Gap reported by U96: `RunStatus` carries no seed |
 | A TODO file for you | D | `TASKS.md` |
-| Standalone dashboard as the final result | B | see §6 |
-| ≥2× realtime for 5 clusters × 10k GPUs, ideally 10× that | F | **not measured** (M9). `ARCHITECTURE.md` §1.4 argues one core carries 6,250 replicas at 20×; today's runs are 32 replicas; the multi-cluster dimension does not exist in the scenario at all |
-| Sharded service on GCP, ≤10 backend replicas | B (partial D) | deployed, public, scale-to-zero measured, `--max-instances 10`; **one service, not sharded**: Leaf-as-process is decided (§14 row 7) and the leaf trait is in `claude/tl-engine`, the process boundary is not built |
+| Standalone dashboard as the final result | D | lbsim.ai, revision `lbsim-00016-nbc` at the last deploy; the U90–U96 wave awaits its READY |
+| ≥2× realtime for 5 clusters × 10k GPUs, ideally 10× that | B (partial D) | measured for the first time (§5d, U37's first numbers): 8k GPUs at 57×, 80k GPUs at 1.5–1.9× on one core, at ~0.3 offered/capacity; the event ceiling now scales with the run (U97 a13faf2). Not met as stated: one cluster, not five, and under 2×; the lever is the Leaf split and leaf-as-process (U29, U36, queued 9th) |
+| Sharded service on GCP, ≤10 backend replicas | B (partial D) | Cloud Run, `--max-instances 10`, `--min-instances 0`, session affinity because a run lives in one instance (be30de6), 2 vCPU / 2 GiB (9dd03e9), the request-scoped-CPU idle rule in `WIRE.md`; one service, not sharded: U36 queued |
 | Rust backends, Node + React frontend | D | as built |
-| Static HTML report with interactive links to replay | B (partial D) | static reports done; "links to replay" need the dashboard to load a run by id, which the pre-baked index (`runs/index.json`, `claude/tl-export`) provides ~19:00 |
+| Static HTML report with interactive links to replay | F (partial D) | twelve reports; **no report carries a link** (`crates/sim-report/src/lib.rs` emits no anchor); the target exists, since the dashboard opens an exported run by id and a walkthrough by URL (U75). No unit |
 
 ## §10 Open questions
 
 | Question | | Evidence |
 |---|---|---|
-| Request cohorts, pressure-tested | D (decided) | parked with a stated trigger, §14 row 2 |
-| Engine/policy separation with a physics referee so policies cannot cheat | B (partial D) | policies are behind traits and see only `ReplicaView`/`RequestView` (delayed); the engine owns physics; the arena's realism envelope checks outputs; a strict-mode referee that audits a policy's *proposed* schedule (execution plan M5) does not exist |
-| Battle arena for agents, after realism is validated | B | §2 |
+| Request cohorts, pressure-tested | D (decided) | parked with a trigger and a knob, `ARCHITECTURE.md` §4; see §4 above for the trigger's status |
+| Engine/policy separation with a physics referee so policies cannot cheat | F (partial D) | policies see only delayed `ReplicaView`/`RequestView`; the engine owns physics; the arena's realism envelope checks outputs (`crates/sim-arena`); the strict-mode referee auditing a policy's *proposed* schedule is named in `docs/execution-plan.md` M5 and has never had a unit; with no scheduling seam there is nothing for it to audit yet |
+| Battle arena for agents, after realism is validated | D (mechanics) | rule set v2 (U20, U43 default stands), the generator loop (U34), the catalog; the round where Claude is given free rein on a metric has not been run |
 
 ## Counts
 
-- **Done: 19** rows (counting split rows by their D part where the report side is complete).
-- **Building in the next ~2 hours: 22** rows, of which the dashboard path (~19:00) covers 8, in-flight
-  engine/physics/policy branches cover 7, and 7 are queued in the tech lead's fan-out with no ETA
-  (preemption, SLO classes, speculative decoding knob, prefix caching, arena loop, batch-policy seam, trace spans).
-- **Far away: 17** rows, all downstream of four missing foundations: failure injection (item 11),
-  replica lifecycle with turn-up delay, multi-cluster, and memory tiering.
+62 rows.
 
-## The five most valuable far-away items
-
-1. **Failure injection with gray failure and detection delay** (item 11). It unlocks cascading failure,
-   failover, affinity-hotspot cascade and the "global cascading failure" showcase; nothing else does.
-2. **Multi-cluster in the scenario** (prerequisite of items 12, 13, and of the scale target). Today the
-   whole model is one fleet; the 5×10k GPU target cannot even be expressed, let alone measured.
-3. **Control analysis M7** (perturbation input, Bode plot, controller policy). It is the thesis of
-   VISION.md §3a and the most distinctive result the project can show; finding 2 is only its prologue.
-4. **The `disable_decode` knob.** Tiny, explicitly asked for "early on", and it is what makes the
-   rolling-hotspot finding legible to a non-LLM audience. It is in no brief.
-5. **Scale measurement M9.** Every design claim about realtime factor rests on one extrapolation in
-   `ARCHITECTURE.md` §1.4; one measured run at 6,250 replicas would either confirm the whole approach or
-   change the plan.
+- **Done: 35** (was 19). Since the last snapshot: `disable_decode`, preemption and sessions, speculative decoding, both
+  forecasting families, failure injection in the engine, SLO classes in the engine, the live Ingress server, on-the-fly
+  controls, the live showcase and A/B, machine-level and GPU-utilization panels, the arena generator loop, trace replay
+  workloads, the home page.
+- **Building: 20** (was 22), every one a unit id in the graph's queue, in this order: U31b (ejection, failover, gray-failure
+  finding), U25b (per-class rows), U69 (eviction span), U27 (prefix, sessions, affinity, cascade), U30 (tiers,
+  disaggregation), U32 (autoscaling, multi-geo, turn-up delay, global cascade), U33 (Bode, robust control), U29/U36/U37
+  (leaf split, leaf as process, scale validation), U38 (shaping contrast), U39 (model weights, MoE); plus U94b, U98 and
+  U99 on the surface side. Nothing on this list has an agent on it tonight except U94b.
+- **Far away: 7** (was 17): the batch-scheduling policy seam and co-scheduling behind it, cohorts/fluid (parked), rewind on
+  the server, traces end to end (server RPC and the Traces tab), the strict-mode referee, report links to replay. None is
+  behind a missing foundation any more; each is missing a unit.
 
 ## VISION.md requirements that no plan document mentions
 
-These appear in VISION.md and in none of `docs/ARCHITECTURE.md`, `docs/execution-plan.md`,
-`docs/scope-today.md`, `docs/dashboard-plan.md`, `docs/arena.md`, or `TASKS.md`:
+Compared against the last snapshot's eight (`docs/ARCHITECTURE.md`, `docs/execution-plan.md`, `docs/execution-graph.md`,
+`docs/scope-today.md`, `docs/dashboard-plan.md`, `docs/arena.md`, `docs/policy-catalog.md`, `TASKS.md`):
 
-- **`disable_decode` knob** (§3a) to make traffic look like stateless serving.
-- **Load forecasting** as a policy family (§3b).
-- **Latency forecasting** as a policy family (§3b); `deadline_aware` touches it by accident, not by design.
-- **Redundancy policies** (§1) as a named family.
-- **Model-weight locality / MoE / multi-model** (§3a, §4) is in `scope-today.md` item 17 only as a row
-  with an estimate; no design section exists.
-- **Sampled request tracing across machines by latency bucket** (§8): the proto has `GetTraces` and
-  `record_traces`, and the telemetry dump stratifies records, but no document plans per-machine spans.
-- **"Fluid" simulation as cohorts = 1** (§4) is mentioned only as the parked cohorts decision; the fluid
-  limit itself is not discussed.
-- **The question in §5**, whether production mixes training and serving, was never answered: in
-  practice large operators keep them on separate fleets; some share nodes off-peak for fine-tuning, but
-  latency-sensitive serving and training are not co-scheduled on the same GPUs.
+Resolved since 2026-09-06: **`disable_decode`** (built, U21), **load forecasting** and **latency forecasting** (built, U40a/b,
+and each a catalog family), **model-weight locality / MoE** (now U39 in the queue, a name without a specification, and
+`weight_locality` in the catalog), **the fluid limit** (now the ∞ end of the `cohort_size` table in `ARCHITECTURE.md` §4.2,
+with a trigger).
+
+Still in no plan document:
+
+- **Sampled request traces, the remaining half** (§8): the engine samples by latency bucket and records per-machine
+  spans, but `GetTraces` is 501 on the server and the Traces tab invents its data. No unit names either.
+- **Rewind** (§8 "fast forward, rewind"): 501 on the server, hidden in the UI, no unit. The idle guard already checkpoints a
+  run, so the mechanism is re-simulation from the nearest checkpoint.
+- **Static report links to replay** (§8): no unit; a one-line anchor per report row to the dashboard's run-by-id URL.
+- **Redundancy policies** (§1): four ideas in the catalog's Redundancy section (`hedged_request`, `prefix_replication`,
+  `n_plus_k_capacity`, `cross_cluster_spill`), no design, no unit.
+- **A batch-scheduling policy seam** (§3b, §4 "N requests, M batches"): catalog ideas only; every scheduling row above is
+  gated on it, and the M5 referee has nothing to audit without it.
+- **Connecting the KV-preemption pathology with a cascading failure** (§3a): both halves exist or are queued; the
+  combined scenario is nowhere.
+- **The §5 question**, whether production mixes training and serving: still answered only here. In practice large
+  operators keep them on separate fleets; some share nodes off-peak for fine-tuning, but latency-sensitive serving and
+  training are not co-scheduled on the same GPUs.
+
+Named in a plan document but never given a unit: the strict-mode physics referee (`execution-plan.md` M5); U44, the
+batch class's long-window throughput, recorded at your word as future work.
+
+## What we can make progress on next: the ten most valuable items
+
+In the order the execution graph's queue would take them, each with the dependency it needs, so you can re-rank.
+Items 9 and 10 are not in the queue; a suggested slot is given.
+
+1. **U31b, outlier ejection and machine failover** (queue 1st). Needs nothing: U31a's health vector and `ejected` flag
+   are on master. Unlocks failover, the gray-failure finding with numbers, and demo 13; the cascade and affinity items
+   below all cite it.
+2. **U27, prefix caching, sessions, affinity, the failover cascade** (roadmap 1st). Needs U22 (done) and U31b for the
+   cascade half. Two VISION dynamics (affinity good case, hotspot cascade), two policy families (affinity, how sticky),
+   and it turns two placeholder showcase cards into live ones.
+3. **U30, memory tiering and prefill/decode disaggregation** (roadmap 2nd). Needs the swap-to-DRAM tier from U22 (done)
+   and the Ingress-owned pooled tiers already designed (§14 rows 4, 8). Three VISION rows: KV locality, disaggregation,
+   and the tiering showcase card.
+4. **U32, replica lifecycle, turn-up delay, autoscaling, multi-geo** (roadmap 3rd). Needs U31b and a `clusters` scenario
+   key, which does not exist (the proto's `ClusterSpec` does). The largest single item, and the only route to "global"
+   in global cascading failure and to the five-cluster scale target.
+5. **U33, the Bode plot and a robust-control policy** (roadmap 4th). The graph puts it after U32, but the single-fleet
+   version needs only U15 (done): a perturbation input on `arrival_rps`, a frequency sweep, the empirical transfer
+   function. This is the thesis of VISION §3a and could be pulled ahead of U30 and U32 without conflict.
+6. **U29 / U36 / U37, the leaf split, leaf as a process, scale validation** (roadmap 5th). Needs U15 (done) and U97
+   (landed). The 10k-replica measurement sits at 1.5–1.9× on one core; sharding is the lever, and a sharded Cloud Run
+   service is the §8 deployment shape.
+7. **U38, the shaping contrast report** (roadmap 6th). Needs U31b for the failure layer; the admission policies are
+   done. It is the row "value of traffic shaping at each layer, in every scenario", which every dynamic cites.
+8. **U39, model weights and MoE** (roadmap 7th, unspecified). Needs U30. Lowest in VISION's own words ("if we have
+   time"), and last here.
+9. **Traces end to end** (not queued; suggested between U25b and U69, since U69 edits the same recorder). Needs
+   nothing: implement `GetTraces` over the recorder the engine already fills, decode it in the Traces tab in place of
+   `traces.ts`. Small, and the single VISION §8 requirement whose engine half is done while its visible half is
+   invented.
+10. **Rewind** (not queued; suggested after U99, which builds the stepped-run switch it shares). Needs the checkpoint
+    the idle guard already writes and the resumable `Sim`: re-simulate from the nearest checkpoint to the requested
+    time. With it, the §8 "fast forward, rewind" row and the "links to replay" row both close.
+
+Also queued and cheap, outside the ten: U25b (per-class rows, 2nd), U98 (the staleness cliff against fleet size, demo
+13), U99 (lockstep A/B), U69 (eviction span). Not queued and cheap: the report anchors (one line per row in
+`sim-report`), the §5 answer into `docs/llm-serving-primer.md`.
