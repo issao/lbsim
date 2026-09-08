@@ -12,7 +12,7 @@
 // The resolve hook is replay.selftest.ts's: the modules under test import extensionless, which
 // Vite resolves and Node does not.
 
-import type { SseEvent } from './api';
+import type { FetchLike, SseEvent } from './api';
 import type { RunHandle } from './useRun';
 import type { ServerRunHandle } from './useServerRun';
 
@@ -106,19 +106,73 @@ const EXPECTED = replay.parseFleetJsonl(fx.FLEET_JSONL_EXCERPT, BigInt(fx.FLEET_
 /** No server is configured: the probe alone decides. */
 const UNCONFIGURED = mode.serverModeFrom(undefined, '', '', null);
 
-function rig(opts: Parameters<typeof fakeIngress>[1] = {}) {
+/**
+ * Wraps the fake so that calls to `rpc` which are in flight at the same time reach it in reverse
+ * order of issue. A server behind a load balancer may apply two requests in either order; the
+ * client must not depend on the one it sent first landing first.
+ */
+function reversing(fake: FetchLike, rpc: string, settleMs = 5): FetchLike {
+  let pending: Array<() => Promise<void>> = [];
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  return (input, init) => {
+    if (!input.endsWith(`/${rpc}`)) return fake(input, init);
+    return new Promise<Response>((resolve, reject) => {
+      pending.push(() => fake(input, init).then(resolve, reject));
+      if (timer === null) {
+        timer = setTimeout(async () => {
+          const batch = pending.reverse();
+          pending = [];
+          timer = null;
+          for (const f of batch) await f();
+        }, settleMs);
+      }
+    });
+  };
+}
+
+/** Holds calls to `rpc` while closed, so the test can act between a request leaving and answering. */
+function gate(fake: FetchLike, rpc: string, open = false) {
+  const held: Array<() => void> = [];
+  const waiting: Array<() => void> = [];
+  const fetch: FetchLike = (input, init) => {
+    if (open || !input.endsWith(`/${rpc}`)) return fake(input, init);
+    return new Promise<Response>((resolve, reject) => {
+      held.push(() => void fake(input, init).then(resolve, reject));
+      for (const w of waiting.splice(0)) w();
+    });
+  };
+  return {
+    fetch,
+    hold: () => (open = false),
+    release: () => {
+      open = true;
+      for (const h of held.splice(0)) h();
+    },
+    /** Resolves once a call is held. */
+    arrived: () => (held.length ? Promise.resolve() : new Promise<void>((r) => waiting.push(r))),
+  };
+}
+
+type RigExtra = { fetch?: (fake: FetchLike) => FetchLike; statusPollMs?: number };
+
+function rig(opts: Parameters<typeof fakeIngress>[1] = {}, extra: RigExtra = {}) {
   const fake = fakeIngress(FIXTURE, opts);
-  const client = new api.IngressClient({ baseUrl: '', fetchImpl: fake });
+  const client = new api.IngressClient({ baseUrl: '', fetchImpl: extra.fetch ? extra.fetch(fake) : fake });
   let changes = 0;
+  // Set after construction, so a test can react to the engine's own state (the run id appearing).
+  const hooks: { onChange: (() => void) | null } = { onChange: null };
   const engine = new ServerRunEngine(cloneConfig(BASE), {
     client,
-    statusPollMs: 0,
-    onChange: () => changes++,
+    statusPollMs: extra.statusPollMs ?? 0,
+    onChange: () => {
+      changes++;
+      hooks.onChange?.();
+    },
     // No backoff and no jitter: a reconnect in the test is immediate and deterministic.
     sleep: async () => undefined,
     rnd: () => 0,
   });
-  return { fake, client, engine, changes: () => changes };
+  return { fake, client, engine, hooks, changes: () => changes };
 }
 
 const calls = (fake: ReturnType<typeof fakeIngress>, rpc: string) => fake.calls.filter((c) => c.rpc === rpc);
@@ -545,6 +599,96 @@ await checkAsync('(k) controls_before_the_run_id_are_applied_after_StartRun', as
   await until(() => calls(pausing.fake, 'StopRun').length === 1, 'the StopRun');
   eq(calls(pausing.fake, 'StopRun')[0].body.run_id, 'r-1', 'dispose stops the run it owns');
   return 'setSpeed(2)+play before the id: one SetSpeed(2, playing); before start(false): none needed; plain start(false): paused at 1; start(true): no SetSpeed; pause in flight lands';
+});
+
+// ---------------------------------------------------------------------------
+// (l) a play issued the moment the run id appears beats the starting pause, whatever order the
+//     server applies the two in
+// ---------------------------------------------------------------------------
+
+await checkAsync('(l) a_play_racing_the_starting_pause_wins_in_either_server_order', async () => {
+  // The showcase mounts its dashboard with autoplay=false, so start(false) sends SetSpeed(paused)
+  // once StartRun answers; the walkthrough runner is built by the render that first sees the run
+  // id and its first step sends SetSpeed(playing) a moment later. On lbsim.ai one card in fourteen
+  // sat at "0 samples" with its stream open: the two were in flight together and the pause landed
+  // last. The fake here applies concurrent SetSpeeds in reverse order, so the client has to keep
+  // one in flight at a time for the run to end up playing.
+  const r = rig({}, { fetch: (f) => reversing(f, 'SetSpeed') });
+  let seenId = false;
+  r.hooks.onChange = () => {
+    if (r.engine.runId === null || seenId) return;
+    seenId = true;
+    // React renders after the current task; the runner's controls follow start's own pause.
+    queueMicrotask(() => {
+      r.engine.setSpeed(2);
+      r.engine.setPaused(false);
+    });
+  };
+  eq(await r.engine.start(false), 'r-1', 'the run starts');
+  await until(() => calls(r.fake, 'SetSpeed').length >= 2, 'both controls at the server');
+  await until(() => r.engine.status?.state === 'STATE_RUNNING' && r.engine.status.realtimeFactor === 2, 'the engine sees the run playing at 2x');
+  await new Promise<void>((res) => setTimeout(res, 20));
+  const sent = calls(r.fake, 'SetSpeed');
+  const last = sent[sent.length - 1].body;
+  eq(last.paused, false, 'the last SetSpeed the server saw plays');
+  eq(last.realtime_factor, 2, 'at 2x');
+  eq(r.fake.run('r-1')?.state, 'STATE_RUNNING', 'the fake\'s run plays');
+  eq(r.fake.run('r-1')?.realtimeFactor, 2, 'at 2x');
+  eq(r.engine.paused, false, 'the engine agrees');
+  eq(r.engine.error, null, 'no error');
+  r.engine.dispose();
+  return `${sent.length} SetSpeed(s), applied in reverse; the run plays at 2x`;
+});
+
+// ---------------------------------------------------------------------------
+// (m) dispose during the starting SetSpeed leaves no stream, no poll, and no leaked interval
+// ---------------------------------------------------------------------------
+
+await checkAsync('(m) dispose_during_the_starting_SetSpeed_leaves_no_stream_and_no_poll', async () => {
+  // The harness closes the page while start's SetSpeed is in flight. start then went on to open a
+  // subscription and set a status poll on a disposed engine; a later start (React's double mount,
+  // a restart) reset `disposed` and overwrote `poll`, leaving the earlier interval with no handle.
+  let speed!: ReturnType<typeof gate>;
+  let starting!: ReturnType<typeof gate>;
+  const r = rig({}, { fetch: (f) => (starting = gate((speed = gate(f, 'SetSpeed')).fetch, 'StartRun', true)).fetch, statusPollMs: 20 });
+  const s1 = r.engine.start(false);
+  await speed.arrived();
+  r.engine.dispose();
+  speed.release();
+  eq(await s1, null, 'a start that lost its owner during its SetSpeed returns nothing');
+  await until(() => calls(r.fake, 'StopRun').length === 1, 'the StopRun');
+  const opens = calls(r.fake, 'OpenSubscription').length;
+  const polls = calls(r.fake, 'GetRun').length;
+  await new Promise<void>((res) => setTimeout(res, 60));
+  eq(calls(r.fake, 'OpenSubscription').length, opens, 'no subscription opened after dispose');
+  eq(opens, 0, 'none at all');
+  eq(calls(r.fake, 'GetRun').length, polls, 'no GetRun after dispose');
+  eq(r.fake.openStreams(), 0, 'no stream left open');
+
+  // start, dispose during SetSpeed, start again, dispose: the second start must not inherit an
+  // interval from the first. A third start whose StartRun never answers exposes one: `disposed`
+  // is false and the old id is still held, so a leaked interval polls GetRun while nothing else does.
+  speed.hold();
+  const s2 = r.engine.start(false);
+  await speed.arrived();
+  r.engine.dispose();
+  const s3 = r.engine.start(false);
+  speed.release();
+  await s2;
+  eq(await s3, 'r-3', 'the third run starts');
+  r.engine.dispose();
+  await until(() => calls(r.fake, 'StopRun').length === 3, 'every run stopped');
+  starting.hold();
+  const s4 = r.engine.start(false);
+  const before = calls(r.fake, 'GetRun').length;
+  await new Promise<void>((res) => setTimeout(res, 60));
+  eq(calls(r.fake, 'GetRun').length, before, 'no GetRun while a start is waiting on StartRun: no interval survived the disposes');
+  r.engine.dispose();
+  starting.release();
+  await s4;
+  await until(() => calls(r.fake, 'StopRun').some((c) => c.body.run_id === 'r-4'), 'the fourth run is stopped by the dispose that beat its StartRun');
+  eq(r.fake.openStreams(), 0, 'no stream left open');
+  return 'no OpenSubscription or GetRun after a dispose mid-SetSpeed; no interval outlives start/dispose/start/dispose';
 });
 
 // ---------------------------------------------------------------------------

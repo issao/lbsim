@@ -148,6 +148,13 @@ export class ServerRunEngine implements FrameSource {
    * must not reset `wantPaused` to its own default when a control already spoke.
    */
   private pendingControl = false;
+  /**
+   * Every control for the run, one in flight at a time, in the order it was issued. Two SetSpeeds
+   * in flight together reach the server in either order: on lbsim.ai the walkthrough's play was
+   * overtaken by start's own pause about once in fourteen cards, and the run stood still with its
+   * stream open. Each link reads the wish current when its turn comes, so a stale pause never wins.
+   */
+  private controls: Promise<void> = Promise.resolve();
 
   constructor(initial: ScenarioConfig, opts: ServerRunEngineOptions) {
     this.config = cloneConfig(initial);
@@ -288,23 +295,50 @@ export class ServerRunEngine implements FrameSource {
     }
     this.runId = id;
     this.error = null;
-    this.changed();
     // The run is already paced at the factor StartRun carried, so a playing run at that factor
-    // needs no call; a pause, or a speed chosen while the request was in flight, needs one.
+    // needs no call; a pause, or a speed chosen while the request was in flight, needs one. It is
+    // queued before the id is published, so a control issued by the render that first sees the id
+    // (the walkthrough's first step) lines up behind it instead of racing it on the wire.
+    let settled: Promise<void> = Promise.resolve();
     if (this.wantPaused || this.lastFactor !== startedAt) {
-      await client
-        .setSpeed(id, this.lastFactor, this.wantPaused)
-        .then((s) => this.setStatus(s))
+      settled = this.control(
+        () => (this.runId === id ? client.setSpeed(id, this.lastFactor, this.wantPaused) : null),
         // Already finished is not a failure: every sample is recorded and the stream replays it.
-        .catch((e) => (String(e).includes('STATE_COMPLETE') ? undefined : this.fail(e)));
+        (e) => (String(e).includes('STATE_COMPLETE') ? undefined : this.fail(e))
+      );
     }
+    this.changed();
+    await settled;
+    // Disposed or restarted while that control was in flight, which is where a closing page lands:
+    // a subscription and a poll set now would have no owner, and the next start would overwrite
+    // the interval's handle and leave it ticking for good.
+    if (gen !== this.generation) return null;
     this.subscribe();
     const every = this.opts.statusPollMs ?? STATUS_POLL_MS;
     if (every > 0) {
+      if (this.poll !== null) clearInterval(this.poll);
       void this.pollStatus();
       this.poll = setInterval(() => void this.pollStatus(), every);
     }
     return id;
+  }
+
+  /**
+   * Append a control to the run's queue. `send` runs once every earlier control has answered and
+   * returns null when the run it was meant for is gone. Resolves when this control has answered.
+   */
+  private control(send: () => Promise<RunStatus> | null, onError: (e: unknown) => void = (e) => this.fail(e)): Promise<void> {
+    const turn = this.controls.then(async () => {
+      if (this.disposed) return;
+      try {
+        const s = await send();
+        if (s) this.setStatus(s);
+      } catch (e) {
+        onError(e);
+      }
+    });
+    this.controls = turn;
+    return turn;
   }
 
   private setStatus(s: RunStatus): void {
@@ -402,10 +436,7 @@ export class ServerRunEngine implements FrameSource {
       this.pendingControl = true;
       return;
     }
-    void this.opts.client
-      .setSpeed(id, this.lastFactor, p)
-      .then((s) => this.setStatus(s))
-      .catch((e) => this.fail(e));
+    void this.control(() => (this.runId === id ? this.opts.client.setSpeed(id, this.lastFactor, this.wantPaused) : null));
   }
 
   /** A speed of 0 is a pause; any other speed sets the factor and plays at it. */
@@ -421,10 +452,7 @@ export class ServerRunEngine implements FrameSource {
       this.pendingControl = true;
       return;
     }
-    void this.opts.client
-      .setSpeed(id, f, false)
-      .then((s) => this.setStatus(s))
-      .catch((e) => this.fail(e));
+    void this.control(() => (this.runId === id ? this.opts.client.setSpeed(id, this.lastFactor, this.wantPaused) : null));
   }
 
   step(): void {
@@ -432,10 +460,7 @@ export class ServerRunEngine implements FrameSource {
     if (!id) return;
     this.pinnedS = null;
     // StepForward is bounded server-side; the status it returns says where it actually stopped.
-    void this.opts.client
-      .stepForward(id, secondsToNs(STEP_S))
-      .then((s) => this.setStatus(s))
-      .catch((e) => this.fail(e));
+    void this.control(() => (this.runId === id ? this.opts.client.stepForward(id, secondsToNs(STEP_S)) : null));
   }
 
   rewindTo(_s: number): void {
