@@ -79,7 +79,7 @@ const finalLine = extraFail => {
   };
   const cardCount = page => page.$$eval('button.card', els => els.length);
   const hasWt = page => page.$('.wt-mode').then(Boolean);
-  const badge = page => page.$eval('.mock-global', el => el.textContent.trim()).catch(() => null);
+  const badge = page => page.$eval('.mode-badge', el => el.textContent.trim()).catch(() => null);
   // The Machine level tab is the only place per-replica rows appear, and on every source it once
   // said "0 replicas exist" (Issao: "the machine page always shows 0 replicas"). The pager count and
   // the table must agree that at least one replica is there.
@@ -89,7 +89,7 @@ const finalLine = extraFail => {
     const seen = await until(async () => {
       const pager = await page.$eval('#replicas .pager .grow', el => el.textContent).catch(() => '');
       const m = /(\d+) replicas exist/.exec(pager || '');
-      const rows = await page.$$eval('#replicas tbody tr', els => els.length).catch(() => 0);
+      const rows = await page.$$eval('#replicas tbody tr:not([aria-hidden])', els => els.length).catch(() => 0);
       // A row whose queue cell reads "—" exists but has not streamed; live rows arrive one
       // subscription each, so at least one must have a number before this counts as fixed.
       const streamed = await page.$$eval('#replicas tbody td.bar-cell span', els => els.filter(e => e.textContent.trim() !== '—').length).catch(() => 0);
@@ -99,30 +99,34 @@ const finalLine = extraFail => {
       seen ? `${seen.exist} exist, ${seen.rows} rows on the page, ${seen.streamed} with values` : tab ? 'pager says 0 replicas exist, or no row has streamed a value' : 'no Machine level tab');
   };
 
-  // U95b (Issao, again: "what is mock about a live showcase run?"): on a live or replay run no
-  // panel may show an invented number. Walk every observation tab, since a panel only mounts once
-  // its tab is selected: no tag may read the bare word "mock", no partial note may remain, and on
-  // the Machines tab the five columns the engine does not produce (state, prefix hit rate, TTFT
-  // mean, and the speed multiplier / weight folded into them) must read "—" rather than the
-  // adapter's "ready" / "1.00x" placeholders.
+  // U95b (Issao: "what is mock about a live showcase run?"), then U100 (Issao: "remove all invented
+  // numbers everywhere"): no panel may show a number the engine did not produce, and nothing on the
+  // page may call itself mock. Walk every observation tab, since a panel only mounts once its tab
+  // is selected: no per-panel tag or partial note may exist at all, the tab bodies the engine does
+  // not feed yet (traces) must say so in words, and on the Machines tab the one column the engine
+  // does not produce (prefix hit rate, REPLICA_COLUMNS index 6) must read "—" on every row, while
+  // the state column (index 1), wired by U101, must carry a real state on at least one row.
   const noInvented = async (page, label) => {
     const obsTabs = await page.$$eval('button[data-tab^="observe:"]', els => els.map(e => e.getAttribute('data-tab')));
     const bad = obsTabs.length === 0 ? ['no observation tabs'] : [];
     for (const tabId of obsTabs) {
       await page.click(`button[data-tab="${tabId}"]`);
       await sleep(500);
-      const mockTags = await page.$$eval('.panel .mock-tag', els => els.map(e => e.textContent.trim()).filter(w => w === 'mock'));
-      if (mockTags.length) bad.push(`${tabId}: ${mockTags.length} mock tag(s)`);
-      const notes = await page.$$eval('.partial-note', els => els.length);
-      if (notes) bad.push(`${tabId}: ${notes} partial note(s)`);
+      const tags = await page.$$eval('.mock-tag, .partial-note', els => els.length);
+      if (tags) bad.push(`${tabId}: ${tags} mock tag(s) or partial note(s)`);
+      const words = await page.$$eval('.panel, .note', els => els.map(e => e.textContent).filter(t => /\bmock\b/i.test(t)).length);
+      if (words) bad.push(`${tabId}: ${words} element(s) say mock`);
+      if (tabId === 'observe:traces') {
+        const t = await page.$eval('#trace-list', el => el.textContent.trim()).catch(() => '');
+        if (!/not simulated yet/.test(t)) bad.push(`traces: expected "not simulated yet", saw ${JSON.stringify(t.slice(0, 40))}`);
+      }
       if (tabId === 'observe:machine') {
-        const rows = await page.$$eval('#replicas tbody tr', trs => trs.map(tr => [...tr.querySelectorAll('td')].map(td => td.textContent.trim())));
+        const rows = await page.$$eval('#replicas tbody tr:not([aria-hidden])', trs => trs.map(tr => [...tr.querySelectorAll('td')].map(td => td.textContent.trim())));
         if (rows.length === 0) bad.push('machine: no rows');
-        const placeholder = rows.flat().filter(c => /^ready$/i.test(c) || /\b\d\.\d\dx\b/.test(c));
-        if (placeholder.length) bad.push(`machine: placeholder cells ${JSON.stringify(placeholder.slice(0, 3))}`);
-        // state, prefix hit rate, ttft mean: the columns REPLICA_COLUMNS puts at 1, 6, 7.
-        const dashed = rows.filter(r => [1, 6, 7].every(i => r[i] === '—')).length;
-        if (dashed !== rows.length) bad.push(`machine: ${rows.length - dashed} of ${rows.length} rows carry a value in an unwired column`);
+        const prefixValued = rows.filter(r => r[6] !== '—').length;
+        if (prefixValued) bad.push(`machine: ${prefixValued} of ${rows.length} rows carry a value in the unwired prefix-hit column`);
+        const stated = rows.filter(r => /^(ready|degraded|ejected)\b/.test(r[1])).length;
+        if (stated === 0) bad.push(`machine: no row carries a real state (U101); first row ${JSON.stringify(rows[0] || [])}`);
       }
     }
     check(label, bad.length === 0, bad.length ? bad.join(' · ') : `${obsTabs.length} tabs clean`);
@@ -144,7 +148,9 @@ const finalLine = extraFail => {
     const homeBadge = await badge(page);
     check('home: badge empty', homeBadge === '', homeBadge);
     const sections = await page.$$eval('h2', els => els.map(e => e.textContent.trim()));
-    check('home: three sections', JSON.stringify(sections) === JSON.stringify(['Live', 'Replay', 'Mock']), sections.join(', '));
+    check('home: two sections', JSON.stringify(sections) === JSON.stringify(['Live', 'Replay']), sections.join(', '));
+    const mockLinks = await page.$$eval('a', as => as.map(a => a.getAttribute('href') || '').filter(h => /replay=off|replay=0/.test(h)));
+    check('home: no mock links', mockLinks.length === 0, mockLinks.join(' '));
     await page.close();
   }
 
@@ -171,8 +177,8 @@ const finalLine = extraFail => {
       s1 && s2 ? `${s1.now} -> ${s2.now} over 4 s (max ${s2.max})` : 'no [role=slider]');
     check('dashboard: no js errors', log.errs.length === 0, log.errs.slice(0, 3).join(' | '));
     check('dashboard: no 4xx/5xx', log.bad.length === 0, log.bad.slice(0, 3).join(' | '));
-    const controlTag = await page.$eval('#control .mock-tag', el => el.textContent.trim()).catch(() => null);
-    check('dashboard: control panel tagged live', controlTag === 'live', controlTag);
+    const tags = await page.$$eval('.mock-tag', els => els.length);
+    check('dashboard: no per-panel tags (U100)', tags === 0, `${tags} .mock-tag`);
     await machines(page, until, 'dashboard');
     await noInvented(page, 'dashboard: no invented numbers on live (U95b)');
     await page.close();
@@ -299,12 +305,8 @@ const finalLine = extraFail => {
     check('replay dashboard (server=off)', /replay/i.test(t) && !/waiting for the first sample/i.test(t), t.slice(0, 140));
     const replayBadge = await badge(page);
     check('replay: badge replay', /^replay — /.test(replayBadge || ''), replayBadge);
-    const replayControlTag = await until(async () => {
-      const tag = await page.$eval('#control .mock-tag', el => el.textContent.trim()).catch(() => null);
-      return tag === 'replay' ? tag : null;
-    }, 8000);
-    check('replay: control panel tagged replay', replayControlTag === 'replay', replayControlTag);
     await machines(page, until, 'replay');
+    await noInvented(page, 'replay: no invented numbers on a recording (U100)');
     const loadTabBtn = await page.$('#control button:has-text("Load")');
     if (loadTabBtn) await loadTabBtn.click();
     const loadDisabled = await until(async () => {
@@ -316,16 +318,17 @@ const finalLine = extraFail => {
     check('replay: no js errors', log.errs.length === 0, log.errs.slice(0, 3).join(' | '));
     await page.close();
   }
-  // The mock dashboard: no server and no run index leaves the in-browser stand-in, which invents
-  // its replicas, so it must show them too.
+  // U100: with neither a server nor a recording the page says so in words and draws nothing; the
+  // in-browser stand-in that used to fill this gap with invented replicas is gone.
   {
     const { page, log, body, until } = await fresh('?server=off&replay=off#/dashboard');
-    const t = await until(async () => { const b = await body(); return /mock/i.test(b) && !/waiting for the first sample/i.test(b) ? b : null; }, 8000) || await body();
-    check('mock dashboard (server=off, replay=off)', /mock/i.test(t) && !/waiting for the first sample/i.test(t), t.slice(0, 140));
-    const mockBadge = await badge(page);
-    check('mock: badge mock', /^mock — /.test(mockBadge || ''), mockBadge);
-    await machines(page, until, 'mock');
-    check('mock: no js errors', log.errs.length === 0, log.errs.slice(0, 3).join(' | '));
+    const t = await until(async () => { const b = await body(); return /no server and no recordings served/.test(b) ? b : null; }, 8000) || await body();
+    check('no source: dashboard says so (U100)', /no server and no recordings served/.test(t) && !/mock/i.test(t), t.slice(0, 140));
+    const noneBadge = await badge(page);
+    check('no source: badge empty', noneBadge === '', noneBadge);
+    const tiles = await page.$$eval('.tile, .panel', els => els.length);
+    check('no source: nothing drawn', tiles === 0, `${tiles} tiles/panels`);
+    check('no source: no js errors', log.errs.length === 0, log.errs.slice(0, 3).join(' | '));
     await page.close();
   }
 
