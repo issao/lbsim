@@ -55,12 +55,42 @@ pub enum OutcomeFilter {
 }
 
 impl OutcomeFilter {
-    fn matches(self, o: Outcome) -> bool {
+    pub fn matches(self, o: Outcome) -> bool {
         match self {
             OutcomeFilter::Any => true,
             OutcomeFilter::Only(want) => want == o,
             OutcomeFilter::Nothing => false,
         }
+    }
+}
+
+/// What `StartRun { record_traces: true }` and `export --demos` sample when the scenario names no
+/// `trace_sample_rate` of its own: one request in twenty. Enough that a minute of a 70 rps run keeps
+/// a few hundred journeys with every latency bucket and outcome represented (the sampler's quotas
+/// see to that), small enough that a run's traces stay inside `DEFAULT_TRACE_BUDGET_BYTES`. Tracing
+/// draws from its own stream, so this moves no fingerprint.
+pub const RECORD_TRACES_SAMPLE_RATE: f64 = 0.05;
+
+/// `GetTracesRequest`'s filters, resolved. `limit` is already defaulted; the tenant is `None` for
+/// the proto's zero, which proto3 cannot tell from "unset".
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TraceQuery {
+    pub outcome: OutcomeFilter,
+    pub min_e2e_ns: u64,
+    pub tenant_id: Option<u64>,
+    pub limit: usize,
+}
+
+/// `GetTracesRequest.limit`'s default. A page of the dashboard's table, not the whole ring.
+pub const DEFAULT_TRACE_LIMIT: usize = 100;
+
+impl TraceQuery {
+    /// `min_e2e_ns` is against the request's latency to whatever ended it, success or not, so a
+    /// timed-out request with no `e2e_ns` on the record is still found by "slower than 5 s".
+    pub fn matches(&self, t: &RequestTrace) -> bool {
+        self.outcome.matches(t.record.outcome)
+            && t.latency_ns() >= self.min_e2e_ns
+            && self.tenant_id.map_or(true, |id| id == t.tenant_id)
     }
 }
 

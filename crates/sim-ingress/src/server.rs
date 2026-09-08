@@ -11,6 +11,7 @@
 use crate::idle::wall_now_ns;
 use crate::lease::SubscriptionId;
 use crate::run::{self, Refused, Registry, RowSpec, Run};
+use crate::trace_wire;
 use crate::wire::{self, Json as JsonOut, SubscriptionUpdate, Target};
 use sim_scenario::{OverrideKind, Scenario};
 use std::collections::{BTreeMap, VecDeque};
@@ -219,7 +220,11 @@ impl Server {
                     }
                 }
                 let factor = req.f64("max_realtime_factor").unwrap_or(0.0);
-                // `record_traces` is accepted and ignored: the engine records no traces yet.
+                // `record_traces` turns the sampler on at the documented default rate. A scenario
+                // that names its own rate keeps it: the flag says "I want traces", not "at 5 %".
+                if req.bool("record_traces").unwrap_or(false) && sc.trace_sample_rate == 0.0 {
+                    sc.trace_sample_rate = trace_wire::RECORD_TRACES_SAMPLE_RATE;
+                }
                 let id = self.runs.start(sc, factor)?;
                 let mut j = JsonOut::new();
                 j.begin_object().field_str("run_id", &id).end_object();
@@ -312,7 +317,26 @@ impl Server {
                     .end_object();
                 Ok(j.finish())
             }
-            "Rewind" | "GetTraces" => Err(Refused {
+            "GetTraces" => {
+                let run = self.run(run_id()?)?;
+                // The enum may arrive as its name or its number; `outcome_from_name` reads both.
+                let outcome = match req.get("outcome").and_then(Json::scalar_string) {
+                    Some(o) => trace_wire::outcome_from_name(&o).map_err(bad)?,
+                    None => trace_wire::OutcomeFilter::Any,
+                };
+                let limit = match req.u64("limit").unwrap_or(0) {
+                    0 => trace_wire::DEFAULT_TRACE_LIMIT,
+                    n => n as usize,
+                };
+                let q = trace_wire::TraceQuery {
+                    outcome,
+                    min_e2e_ns: req.u64("min_e2e_ns").unwrap_or(0),
+                    tenant_id: req.u64("tenant_id").filter(|id| *id != 0),
+                    limit,
+                };
+                Ok(run.traces_json(&q))
+            }
+            "Rewind" => Err(Refused {
                 code: 501,
                 message: format!("{rpc} is not implemented by this server yet"),
             }),

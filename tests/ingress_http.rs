@@ -100,11 +100,15 @@ fn post(addr: SocketAddr, rpc: &str, body: &str) -> Response {
 
 /// `StartRun` of a scenario file with overrides; returns the run id.
 fn start_run(addr: SocketAddr, file: &str, overrides: &[(&str, &str)], max_realtime_factor: f64) -> String {
+    start_run_with(addr, file, overrides, max_realtime_factor, false)
+}
+
+fn start_run_with(addr: SocketAddr, file: &str, overrides: &[(&str, &str)], max_realtime_factor: f64, record_traces: bool) -> String {
     let text = std::fs::read_to_string(workspace().join("scenarios").join(file)).unwrap();
     let escaped = text.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n");
     let ov: Vec<String> = overrides.iter().map(|(k, v)| format!("\"{k}\":\"{v}\"")).collect();
     let body = format!(
-        "{{\"scenario\":{{\"text\":\"{escaped}\",\"overrides\":{{{}}}}},\"max_realtime_factor\":{max_realtime_factor},\"record_traces\":false}}",
+        "{{\"scenario\":{{\"text\":\"{escaped}\",\"overrides\":{{{}}}}},\"max_realtime_factor\":{max_realtime_factor},\"record_traces\":{record_traces}}}",
         ov.join(",")
     );
     let r = post(addr, "StartRun", &body);
@@ -167,7 +171,8 @@ fn json_keys(text: &str) -> BTreeSet<String> {
 /// Field names declared in the protos the wire is built from.
 fn proto_fields() -> BTreeSet<String> {
     let mut out = BTreeSet::new();
-    for name in ["ingress.proto", "subscription.proto", "metrics.proto", "common.proto"] {
+    // `request.proto` since `GetTraces`: a trace carries its `RequestRecord`.
+    for name in ["ingress.proto", "subscription.proto", "metrics.proto", "common.proto", "request.proto"] {
         let text = std::fs::read_to_string(workspace().join("proto/lbsim/v1").join(name)).unwrap();
         // One statement per `;`, since the protos put small messages on one line.
         for stmt in text.lines().flat_map(|l| l.split("//").next().unwrap_or("").split(';')) {
@@ -392,6 +397,79 @@ fn speed_step_and_stop_are_honoured_and_bounded() {
     assert_eq!(post(addr, "StepForward", &format!("{{\"run_id\":\"{run_id}\",\"barrier_windows\":1}}")).status, 409);
 }
 
+#[test]
+fn get_traces_lists_sampled_journeys_newest_first_and_filters() {
+    let (addr, _server, _dir) = start_server("traces", 3600 * S);
+    let replicas = 4u64;
+    // `record_traces` on a scenario with no rate of its own: the 5 % default, and the sampler's
+    // per-bucket and per-outcome quotas guarantee retained journeys in a 20 s run.
+    let run_id = start_run_with(addr, "route_p2c.txt", &[("duration_s", "20"), ("replicas", "4")], 0.0, true);
+    wait_for_state(addr, &run_id, "STATE_COMPLETE", Duration::from_secs(120));
+
+    let traces = |body: &str| -> Vec<Json> {
+        let r = post(addr, "GetTraces", body);
+        assert_eq!(r.status, 200, "{}", r.body);
+        assert_proto_keys(&r.body);
+        match r.json().get("traces") {
+            Some(Json::Arr(items)) => items.clone(),
+            other => panic!("traces: {other:?}"),
+        }
+    };
+
+    let page = traces(&format!("{{\"run_id\":\"{run_id}\",\"limit\":10}}"));
+    assert!(!page.is_empty() && page.len() <= 10, "{} traces", page.len());
+    // Newest first is by completion, which is when the sampler decides a journey is kept; a slow
+    // request that arrived early and a fast one that arrived late can end in either order.
+    let mut last_finished = u64::MAX;
+    for t in &page {
+        let record = t.get("record").expect("record");
+        let finished: u64 = record.str("finished_at_unix_ns").unwrap().parse().unwrap();
+        assert!(finished <= last_finished, "newest first: {finished} after {last_finished}");
+        last_finished = finished;
+        assert!(t.str("bucket").unwrap().starts_with("TRACE_BUCKET_"));
+        let spans = match t.get("spans") {
+            Some(Json::Arr(items)) => items.clone(),
+            other => panic!("spans: {other:?}"),
+        };
+        assert!(!spans.is_empty(), "a journey has at least one span");
+        // Every span names a real replica or none at all (the gateway and router spans omit the
+        // zero); none may name a replica the fleet does not have.
+        for s in &spans {
+            let id = s.u64("replica_id").unwrap_or(0);
+            assert!(id < replicas, "replica {id} of {replicas}: {s:?}");
+            assert!(s.str("operation").is_some() && s.str("component").is_some());
+        }
+        // A journey that reached a replica has that replica's span; a rejected one stops at the router.
+        let outcome = record.str("outcome").unwrap();
+        if outcome == "OUTCOME_OK" || outcome == "OUTCOME_OK_SLO_VIOLATED" {
+            assert!(spans.iter().any(|s| s.str("component").is_some_and(|c| c.starts_with("replica:"))), "{spans:?}");
+        }
+    }
+    // The default page is a hundred; a limit above the ring's contents is the contents.
+    assert!(traces(&format!("{{\"run_id\":\"{run_id}\"}}")).len() <= 100);
+
+    // Filters: an outcome the engine never produces is an empty list, not an error; a filter the
+    // run may or may not have hit returns only what it names; an unknown outcome is a 400.
+    assert!(traces(&format!("{{\"run_id\":\"{run_id}\",\"outcome\":\"OUTCOME_FAILED\"}}")).is_empty());
+    let rejected = traces(&format!("{{\"run_id\":\"{run_id}\",\"outcome\":\"OUTCOME_REJECTED\"}}"));
+    assert!(rejected.iter().all(|t| t.get("record").unwrap().str("outcome") == Some("OUTCOME_REJECTED")));
+    let result = post(addr, "GetResult", &format!("{{\"run_id\":\"{run_id}\"}}")).json();
+    let rejected_count = result.get("overall").and_then(|c| c.get("outcome_counts")).and_then(|o| o.u64("3")).unwrap_or(0);
+    if rejected_count == 0 {
+        assert!(rejected.is_empty(), "a run that rejected nothing has no rejected traces: {rejected:?}");
+    }
+    let slow = traces(&format!("{{\"run_id\":\"{run_id}\",\"min_e2e_ns\":\"{}\"}}", 3600 * S));
+    assert!(slow.is_empty(), "nothing took an hour: {slow:?}");
+    assert_eq!(post(addr, "GetTraces", &format!("{{\"run_id\":\"{run_id}\",\"outcome\":\"OUTCOME_BOGUS\"}}")).status, 400);
+
+    // A run started without `record_traces` recorded nothing: an empty list, not a 501.
+    let silent = start_run(addr, "route_p2c.txt", &[("duration_s", "20")], 0.0);
+    wait_for_state(addr, &silent, "STATE_COMPLETE", Duration::from_secs(120));
+    assert!(traces(&format!("{{\"run_id\":\"{silent}\"}}")).is_empty());
+
+    assert_eq!(post(addr, "GetTraces", "{\"run_id\":\"r-999\"}").status, 404);
+    assert_eq!(post(addr, "GetTraces", "{}").status, 400);
+}
 
 // ---------------------------------------------------------------------------
 // Subscriptions

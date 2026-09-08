@@ -942,6 +942,14 @@ impl Sim {
     pub fn drain_frames(&mut self) -> Vec<Frame> {
         std::mem::take(&mut self.frames)
     }
+    /// The traces the sampler has retained since the last drain, warm-up included, in completion
+    /// order. `drain_frames`'s contract, for traces: a long-lived driver takes them as it goes so
+    /// the engine's own copy does not grow for the run's whole length, and `into_result` then sees
+    /// only what nothing has drained. The sampler's window quotas are untouched, so what is kept
+    /// is exactly what `sim_leaf::run` would have kept.
+    pub fn drain_traces(&mut self) -> Vec<RequestTrace> {
+        std::mem::take(&mut self.tracing.traces)
+    }
     /// Every record so far, warmup included; the measured selection is `into_result`'s.
     pub fn records(&self) -> &[RequestRecord] {
         &self.records

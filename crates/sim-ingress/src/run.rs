@@ -19,6 +19,7 @@ use crate::lease::LeaseRegistry;
 use crate::wire::{self, Distribution, MetricRow, RunStatus, State, SubscriptionUpdate, Target};
 use sim_core::{Nanos, EPOCH_BASE};
 use sim_leaf::{Applied, Sim};
+use sim_metrics::trace::RequestTrace;
 use sim_metrics::{Frame, SparseHistogram};
 use sim_scenario::Scenario;
 use std::collections::BTreeMap;
@@ -42,6 +43,51 @@ const POLL: Duration = Duration::from_millis(50);
 
 /// The subscription id stamped on checkpoint rows, beside `export.rs`'s `"export"`.
 const CHECKPOINT_SUBSCRIPTION_ID: &str = "checkpoint";
+
+/// The trace ring: the newest sampled journeys a run keeps for `GetTraces`, bounded by count and
+/// by encoded size, whichever trips first. Two thousand is twenty pages of the dashboard's table;
+/// five MiB is `export::DEFAULT_TRACE_BUDGET_BYTES`, the same ceiling a finished run's
+/// `traces.jsonl` is held to, so a live run costs no more memory than its export would take on disk.
+pub const TRACE_RING_LEN: usize = 2_000;
+pub const TRACE_RING_BYTES: usize = 5 * 1024 * 1024;
+
+/// One retained trace and its wire form. Encoded once, at drain, on the run thread: `GetTraces`
+/// then filters on the struct and concatenates the strings, and a busy dashboard polling every two
+/// seconds never re-encodes the same journey.
+#[derive(Debug)]
+pub struct TraceEntry {
+    pub trace: RequestTrace,
+    pub json: String,
+}
+
+/// `TRACE_RING_LEN` / `TRACE_RING_BYTES`, kept exact: the oldest entries leave as the newest arrive.
+#[derive(Debug, Default)]
+pub struct TraceRing {
+    entries: std::collections::VecDeque<TraceEntry>,
+    bytes: usize,
+}
+
+impl TraceRing {
+    pub fn push(&mut self, trace: RequestTrace) {
+        let json = crate::trace_wire::request_trace_json(&trace);
+        self.bytes += json.len();
+        self.entries.push_back(TraceEntry { trace, json });
+        while self.entries.len() > TRACE_RING_LEN || self.bytes > TRACE_RING_BYTES {
+            let Some(old) = self.entries.pop_front() else { break };
+            self.bytes -= old.json.len();
+        }
+    }
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+    /// Newest first: the tail of the ring is what a viewer polling a live run wants to see move.
+    pub fn newest_first(&self) -> impl Iterator<Item = &TraceEntry> {
+        self.entries.iter().rev()
+    }
+}
 
 /// Everything a request handler may read or change about a run. The engine itself is not here; it
 /// belongs to the run thread.
@@ -72,6 +118,9 @@ pub struct RunState {
     pub error: String,
     /// Set once the run is complete, so `GetResult` is a lookup.
     pub result: Option<wire::RunResult>,
+    /// The newest sampled journeys, drained from the engine after every chunk. What `GetTraces`
+    /// answers from; empty for a run started without `record_traces` and a scenario at rate zero.
+    pub traces: TraceRing,
     /// A `StepForward` in progress: advance unpaced to here, then pause.
     pub step_target: Option<Nanos>,
     pub stop_requested: bool,
@@ -113,6 +162,7 @@ impl RunState {
             frames: Vec::new(),
             error: String::new(),
             result: None,
+            traces: TraceRing::default(),
             step_target: None,
             stop_requested: false,
             checkpoints: 0,
@@ -267,6 +317,28 @@ impl Run {
             (None, State::Failed) => Err(refused(409, format!("run {} failed: {}", st.run_id, st.error))),
             (None, s) => Err(refused(409, format!("run {} is {}, no result yet", st.run_id, s.name()))),
         }
+    }
+
+    /// `GetTraces`, encoded: the entries that pass `q`, newest first by the instant the request
+    /// ended, at most `q.limit`. Sorted rather than read off the ring's tail because the engine
+    /// settles a rejection at its arrival and a completion at its last step, so the ring's order is
+    /// not the order a viewer means by "newest". Answers at any state, since a live run's traces
+    /// are the point; a run that recorded none gives an empty list rather than an error, because
+    /// "nothing sampled" is an answer and not a fault.
+    pub fn traces_json(&self, q: &crate::trace_wire::TraceQuery) -> String {
+        let st = self.lock();
+        let mut hits: Vec<&TraceEntry> = st.traces.newest_first().filter(|e| q.matches(&e.trace)).collect();
+        // Stable, so two journeys ending in the same instant keep the engine's own order.
+        hits.sort_by_key(|e| std::cmp::Reverse(e.trace.record.finished_at));
+        let mut out = String::from("{\"traces\":[");
+        for (i, e) in hits.iter().take(q.limit).enumerate() {
+            if i > 0 {
+                out.push(',');
+            }
+            out.push_str(&e.json);
+        }
+        out.push_str("]}");
+        out
     }
 
     /// A subscription opened: an idle-stopped run starts advancing again (WIRE.md, "Reopening a
@@ -554,6 +626,7 @@ fn drive(run: Arc<Run>, reg: Arc<Registry>, sc: Scenario, ready: mpsc::SyncSende
                 let Some(mut engine) = sim.take() else { return };
                 let mut st = run.lock();
                 st.frames.extend(engine.drain_frames());
+                drain_traces(&mut st, &mut engine);
                 st.sim_time = engine.now();
                 match engine.into_result() {
                     Ok(mut r) => {
@@ -583,6 +656,7 @@ fn drive(run: Arc<Run>, reg: Arc<Registry>, sc: Scenario, ready: mpsc::SyncSende
 /// its last frames, which is what lets a subscription mark the last frame final on first sight.
 fn absorb(st: &mut RunState, engine: &mut Sim, outcome: Result<(), String>) {
     st.frames.extend(engine.drain_frames());
+    drain_traces(st, engine);
     st.sim_time = engine.now();
     match outcome {
         Ok(()) => {
@@ -594,6 +668,15 @@ fn absorb(st: &mut RunState, engine: &mut Sim, outcome: Result<(), String>) {
             st.state = State::Failed;
             st.error = why;
         }
+    }
+}
+
+/// The traces the chunk retained, into the ring. Encoding happens here, on the run thread and
+/// under the lock; at a 5 % sample a one-second chunk of a 70 rps run is three or four journeys,
+/// a few KB, which is cheaper than the frame copy beside it.
+fn drain_traces(st: &mut RunState, engine: &mut Sim) {
+    for t in engine.drain_traces() {
+        st.traces.push(t);
     }
 }
 
