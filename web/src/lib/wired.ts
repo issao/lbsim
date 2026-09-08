@@ -85,19 +85,20 @@ export function realness(
 }
 
 /**
- * U70/U95: the word a panel's tag should show, given what it may honestly claim and the active
- * data source. Unknown (no `Realness` computed yet) or a genuinely mock frame always says `mock`.
- * A partial or real panel on a live or replay run borrows the mode's own word -- a partial panel
- * is not lying about the run, only about a handful of columns on it, and that exception belongs
- * in the tag's title and the panel's inline note (see `partialNote`), not in the top-line word.
- * In mock mode this collapses back to the old behaviour: `DATA_SOURCE_LABEL.mock` is itself `mock`.
+ * U70/U95/U95b: the word a panel's tag should show, given what it may honestly claim and the
+ * active data source. Unknown (no `Realness` computed yet) or a genuinely mock frame always says
+ * `mock`. A partial or real panel on a live or replay run borrows the mode's own word with no
+ * exception text: on a wire frame every unwired field renders as `Unwired` ("—", hover "not
+ * simulated yet") rather than as a placeholder number, so there is nothing left for the tag to
+ * confess. In mock mode this collapses back to the old behaviour: `DATA_SOURCE_LABEL.mock` is
+ * itself `mock`.
  */
 export function panelTagWord(data: Realness | undefined, mode: DataMode): 'mock' | 'replay' | 'live' {
   if (!data || data.kind === 'mock') return 'mock';
   return DATA_SOURCE_LABEL[mode];
 }
 
-/** Human label for every `Frame` and `ReplicaSample` field a panel might name in a mock/partial tag. */
+/** Human label for every `Frame` and `ReplicaSample` field an `Unwired` hover or a mock tag might name. */
 export const FIELD_LABEL: Record<string, string> = {
   // Frame
   tick: 'tick',
@@ -149,15 +150,4 @@ export function fieldLabel(id: string): string {
     .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
     .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
     .toLowerCase();
-}
-
-/**
- * U95: the sentence a partial panel shows in its body and in its tag's title, when the panel is
- * otherwise honestly claiming the run's own word (live or replay). "values" rather than "columns"
- * because the same note serves a table's columns and a chart's series alike.
- */
-export function partialNote(word: 'live' | 'replay', fields: readonly string[]): string {
-  const n = fields.length;
-  const labels = fields.map(fieldLabel).join(', ');
-  return `${word} — ${n} ${n === 1 ? 'value' : 'values'} not simulated yet, shown as placeholders: ${labels}`;
 }

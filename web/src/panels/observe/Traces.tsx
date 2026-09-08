@@ -4,6 +4,7 @@ import type { ScenarioConfig } from '../../lib/config';
 import { getTraces } from '../../lib/traces';
 import { OUTCOMES, TRACE_BUCKETS, type Outcome, type TraceBucket } from '../../lib/types';
 import { Panel } from '../../components/ui';
+import { realness } from '../../lib/wired';
 import { Waterfall } from '../../components/charts/Waterfall';
 import { fmtMs, fmtTokens } from '../../lib/format';
 
@@ -13,6 +14,13 @@ function outcomeStatus(o: Outcome): 'good' | 'warning' | 'serious' | 'critical' 
   if (o === 'REJECTED') return 'warning';
   return 'critical';
 }
+
+// U95b: the trace list and waterfall are synthesized from the frame window and the scenario seed
+// (lib/traces.ts), not read off the wire, so on a live or replay run every panel here is an
+// invented number and says "not simulated yet" instead. Both panels claim `events` -- the closest
+// Frame field to a request trace -- so the tag reads the run's word on a wire frame and `mock` on
+// the mock dashboard, where the synthesized traces still draw.
+const FRAME_READS: (keyof Frame)[] = ['events'];
 
 /**
  * Traces are a query against what the recorder already sampled, so this tab does not pause the run.
@@ -44,6 +52,18 @@ export function Traces({
     [config, bucket, outcome, frames.length, frames[0]?.tick]
   );
   const trace = traces[Math.min(selected, Math.max(traces.length - 1, 0))];
+  const last = frames[frames.length - 1];
+  const data = last ? realness(last, FRAME_READS) : undefined;
+
+  if (data && data.kind !== 'mock') {
+    return (
+      <div className="grid" style={{ gridTemplateColumns: 'minmax(0, 1fr)' }}>
+        <Panel title="Sampled traces" sub="by latency bucket" highlight={highlight === 'trace-list'} id="trace-list" data={data}>
+          <p className="note" style={{ margin: 0 }}>not simulated yet</p>
+        </Panel>
+      </div>
+    );
+  }
 
   return (
     <div className="grid" style={{ gridTemplateColumns: 'minmax(280px, 380px) minmax(0, 1fr)' }}>
@@ -53,6 +73,7 @@ export function Traces({
         bodyClass="tight"
         highlight={highlight === 'trace-list'}
         id="trace-list"
+        data={data}
         right={
           <button className="btn" onClick={() => onPause(!paused)} title="A convenience, not a requirement of GetTraces">
             {paused ? 'resume charts' : 'pause charts'}
@@ -123,6 +144,7 @@ export function Traces({
           sub={`${trace.bucket} · ${trace.outcome.toLowerCase().replace(/_/g, ' ')} · arrived at ${trace.arrivalSimS.toFixed(1)} s`}
           highlight={highlight === 'waterfall'}
           id="waterfall"
+          data={data}
         >
           <div className="grid c4" style={{ gap: 6, marginBottom: 8 }}>
             <div className="tile">
@@ -161,7 +183,7 @@ export function Traces({
           </p>
         </Panel>
       ) : (
-        <Panel title="Request" sub="nothing selected" id="waterfall">
+        <Panel title="Request" sub="nothing selected" id="waterfall" data={data}>
           <p className="note">Pick a trace on the left.</p>
         </Panel>
       )}

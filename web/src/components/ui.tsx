@@ -1,6 +1,6 @@
 import { useSyncExternalStore, type ReactNode } from 'react';
 import { activeMode, DATA_SOURCE_GLOSS, subscribeActiveMode } from '../lib/mode';
-import { fieldLabel, panelTagWord, partialNote } from '../lib/wired';
+import { fieldLabel, panelTagWord } from '../lib/wired';
 
 /**
  * Every panel carries this. Per docs/ui-spec.md section 5: a dashboard that looks real while
@@ -10,16 +10,14 @@ import { fieldLabel, panelTagWord, partialNote } from '../lib/wired';
  * whichever word this instance shows. `what` also takes free text (a caller's own longer label);
  * only the three canonical words carry a gloss, so free text keeps its old generic tooltip.
  *
- * U95: `note`, when given, replaces the title outright -- it is `Panel`'s own `partialNote()`
- * sentence for a partial panel that is otherwise honestly wearing the run's word (live/replay).
- * Without a note, a partial panel's `fields` still render as a "mock: ..." title (mock mode, or
- * any other caller), now in human labels rather than raw identifiers.
+ * U95b: `fields` names what a mock-mode panel invents, in human labels. On a live or replay run a
+ * panel never passes them: its unwired values render as `Unwired` instead, so the tag's title is
+ * the mode gloss alone and the word "mock" appears only on the mock dashboard.
  */
-export function MockTag({ what = 'mock', fields, note }: { what?: string; fields?: string[]; note?: string }) {
+export function MockTag({ what = 'mock', fields }: { what?: string; fields?: string[] }) {
   const gloss = (DATA_SOURCE_GLOSS as Record<string, string | undefined>)[what];
-  const title = note
-    ? note
-    : fields && fields.length > 0
+  const title =
+    fields && fields.length > 0
       ? `mock: ${fields.map(fieldLabel).join(', ')}`
       : gloss
         ? `${what} — ${gloss}`
@@ -27,6 +25,22 @@ export function MockTag({ what = 'mock', fields, note }: { what?: string; fields
   return (
     <span className="mock-tag" title={title}>
       {what}
+    </span>
+  );
+}
+
+/**
+ * U95b: the value of a field the engine does not produce yet, on a live or replay run. Issao's
+ * rule: no panel may show an invented number on a run that is otherwise real, so the cell says
+ * so instead of carrying a placeholder that reads like a measurement. `what` is the field's
+ * identifier (see `FIELD_LABEL`) or free text, and goes into the hover so the reader knows which
+ * value is missing, not only that one is.
+ */
+export function Unwired({ what }: { what?: string }) {
+  const title = what ? `${fieldLabel(what)}: not simulated yet` : 'not simulated yet';
+  return (
+    <span className="unwired" title={title} style={{ color: 'var(--ink-3)' }}>
+      —
     </span>
   );
 }
@@ -58,17 +72,13 @@ export function Panel({
    *  which is treated as mock: no panel renders a number without one of the three words in its tag. */
   data?: PanelData;
 }) {
-  // U70/U95: a panel that draws from a genuinely mock frame is tagged `mock`, full stop. A panel
-  // that reads an unwired field on a live or replay run still borrows the run's own word -- it is
-  // not lying about the run, only about a few columns on it -- and says which columns in its tag's
-  // title and in a note in its body, rather than falling back to the bare word `mock`.
+  // U70/U95b: a panel that draws from a genuinely mock frame is tagged `mock` and its title names
+  // what it invents. A panel that reads an unwired field on a live or replay run borrows the run's
+  // own word with no exception text: the unwired values themselves render as `Unwired`, so the tag
+  // has nothing to confess and the field list belongs to mock mode only.
   const active = useSyncExternalStore(subscribeActiveMode, activeMode);
   // none/connecting/refused are badge states, not data sources: no engine numbers are on screen yet, so the tag word is mock.
   const tagWord = panelTagWord(data, active.mode === 'server' || active.mode === 'replay' ? active.mode : 'mock');
-  const note =
-    data?.kind === 'partial' && (tagWord === 'live' || tagWord === 'replay')
-      ? partialNote(tagWord, data.mockFields)
-      : undefined;
   return (
     <section className={`panel${highlight ? ' highlight' : ''}`} id={id} data-panel={id}>
       <header className="panel-head">
@@ -76,11 +86,10 @@ export function Panel({
         {sub ? <span className="panel-sub">{sub}</span> : null}
         <span className="panel-head-right">
           {right}
-          <MockTag what={tagWord} fields={data?.kind === 'partial' ? data.mockFields : undefined} note={note} />
+          <MockTag what={tagWord} fields={data?.kind === 'partial' && tagWord === 'mock' ? data.mockFields : undefined} />
         </span>
       </header>
       <div className={`panel-body ${bodyClass}`}>
-        {note ? <p className="note partial-note">{note}</p> : null}
         {children}
       </div>
     </section>
@@ -136,7 +145,8 @@ export function Tile({
   statusText,
 }: {
   label: string;
-  value: string;
+  /** A formatted number, or `<Unwired/>` on a live or replay run for a field the engine does not produce yet. */
+  value: ReactNode;
   unit?: string;
   note?: ReactNode;
   status?: Status;

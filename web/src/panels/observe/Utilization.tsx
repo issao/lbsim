@@ -1,14 +1,17 @@
 import type { FractionPercentiles, Frame } from '../../lib/engine';
 import type { ScenarioConfig } from '../../lib/config';
 import { fractionPercentileSeries, percentilesOver, series, xs } from '../../lib/derive';
-import { Panel, Tile } from '../../components/ui';
+import { Panel, Tile, Unwired } from '../../components/ui';
 import { LineChart } from '../../components/charts/LineChart';
 import { fmtNum, fmtPct } from '../../lib/format';
 import { useSubscriptions } from '../../lib/useSubscriptions';
 import { Metric } from '../../lib/types';
-import { realness } from '../../lib/wired';
+import { isWireFrame, realness } from '../../lib/wired';
 
 // Fields this panel reads off Frame. Keep this list honest: it drives the mock tag on every Panel below.
+// U95b: on a wire frame the unwired ones (wasted GPU, preemptions, prefix hit rate, the memory
+// tiers) render as `Unwired` tiles, as a "not simulated yet" note in place of a chart with no
+// wired series, or are dropped from a chart that also has a wired series.
 const FRAME_READS: (keyof Frame)[] = [
   'gpuUtilization',
   'gpuComputeBoundFraction',
@@ -78,6 +81,7 @@ export function Utilization({
   );
   const x = xs(frames);
   const data = realness(frame, FRAME_READS);
+  const wire = isWireFrame(frame);
   const gpuSpread = (f: Frame) => spread(f, f.gpuUtilizationP, (r) => r.gpuUtilization);
   const kvSpread = (f: Frame) => spread(f, f.kvUtilizationP, (r) => r.kvUtilization);
 
@@ -116,13 +120,17 @@ export function Utilization({
           />
           <Tile
             label="wasted gpu"
-            value={fmtPct(frame.wastedGpuFraction, 1)}
+            value={wire ? <Unwired what="wastedGpuFraction" /> : fmtPct(frame.wastedGpuFraction, 1)}
             note="on tokens never delivered"
-            status={frame.wastedGpuFraction > 0.15 ? 'critical' : undefined}
-            statusText={frame.wastedGpuFraction > 0.15 ? 'most of it under overload' : undefined}
+            status={!wire && frame.wastedGpuFraction > 0.15 ? 'critical' : undefined}
+            statusText={!wire && frame.wastedGpuFraction > 0.15 ? 'most of it under overload' : undefined}
           />
-          <Tile label="preemptions" value={fmtNum(frame.preemptionsPerS, 1)} unit=" /s" />
-          <Tile label="prefix hit rate" value={fmtPct(frame.prefixHitRate, 0)} note={config.routing.kind === 'prefix_affinity' ? 'affinity routing' : 'incidental only'} />
+          <Tile label="preemptions" value={wire ? <Unwired what="preemptionsPerS" /> : fmtNum(frame.preemptionsPerS, 1)} unit={wire ? undefined : ' /s'} />
+          <Tile
+            label="prefix hit rate"
+            value={wire ? <Unwired what="prefixHitRate" /> : fmtPct(frame.prefixHitRate, 0)}
+            note={config.routing.kind === 'prefix_affinity' ? 'affinity routing' : 'incidental only'}
+          />
         </div>
       </Panel>
 
@@ -138,6 +146,9 @@ export function Utilization({
       </Panel>
 
       <Panel title="Memory-tier occupancy" sub="HBM on the replica, DRAM and SSD cluster-pooled" highlight={highlight === 'tiers'} id="tiers" data={data}>
+        {wire ? (
+          <p className="note" style={{ margin: 0 }}>not simulated yet</p>
+        ) : (
         <LineChart
           xs={x}
           series={[
@@ -149,9 +160,13 @@ export function Utilization({
           yMax={1.05}
           height={116}
         />
+        )}
       </Panel>
 
       <Panel title="Tier bandwidth" sub="the shared path that inverts the swap-vs-recompute tradeoff" highlight={highlight === 'bandwidth'} id="bandwidth" data={data}>
+        {wire ? (
+          <p className="note" style={{ margin: 0 }}>not simulated yet</p>
+        ) : (
         <LineChart
           xs={x}
           series={[
@@ -162,6 +177,7 @@ export function Utilization({
           yMax={1.05}
           height={116}
         />
+        )}
         <p className="note" style={{ margin: '5px 0 0' }}>
           Swapping to DRAM costs about 20 ms each way and recomputing 4k tokens of prefill costs about 270 ms, so swap
           wins &mdash; until this line saturates, at which point the advantage inverts.
@@ -172,7 +188,7 @@ export function Utilization({
         <LineChart
           xs={x}
           series={[
-            { key: 'preempt', label: 'preemptions', color: 'var(--series-2)', points: series(frames, (f) => f.preemptionsPerS) },
+            ...(wire ? [] : [{ key: 'preempt', label: 'preemptions', color: 'var(--series-2)', points: series(frames, (f) => f.preemptionsPerS) }]),
             { key: 'shed', label: 'shed', color: 'var(--series-1)', points: series(frames, (f) => f.rejectedRps) },
           ]}
           format={(v) => fmtNum(v, 1)}
@@ -182,6 +198,9 @@ export function Utilization({
       </Panel>
 
       <Panel title="Wasted GPU fraction" sub="cumulative over the run" highlight={highlight === 'wasted'} id="wasted" data={data}>
+        {wire ? (
+          <p className="note" style={{ margin: 0 }}>not simulated yet</p>
+        ) : (
         <LineChart
           xs={x}
           series={[{ key: 'w', label: 'wasted', color: 'var(--series-2)', points: series(frames, (f) => f.wastedGpuFraction) }]}
@@ -190,6 +209,7 @@ export function Utilization({
           yMax={Math.max(0.2, Math.max(...frames.map((f) => f.wastedGpuFraction).filter(Number.isFinite)) * 1.3)}
           height={116}
         />
+        )}
       </Panel>
     </div>
   );
