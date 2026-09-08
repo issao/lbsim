@@ -625,7 +625,7 @@ check('scenarios/kv_spiral_never.txt: session and preemption keys land in `extra
   const src = repoFile('scenarios/kv_spiral_never.txt');
   const { config, unmapped } = replay.configFromScenarioText(src);
   eq(unmapped, [], 'unmapped');
-  eq(Object.keys(config.extra).sort(), ['preemption', 'session_think_s', 'session_turns_mean'], 'extra keys');
+  eq(Object.keys(config.extra).sort(), ['dram_capacity_tokens', 'preemption', 'preemption_victim', 'session_think_s', 'session_turns_mean'], 'extra keys');
   eq(config.extra.session_turns_mean, 8, 'session_turns_mean is a number');
   eq(config.extra.session_think_s, 8, 'session_think_s is a number');
   eq(config.extra.preemption, 'never', 'preemption stays text');

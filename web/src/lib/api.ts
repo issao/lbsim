@@ -1432,6 +1432,10 @@ export const EXTRA_KEYS = [
   'tenants', 'tenant_weights', 'tenant_demand',
   'workload', 'trace_file', 'trace_sample_rate',
   'slo_classes', 'failures',
+  // U32: autoscaling, with a cold start and a replica lifecycle. No panel control yet, same as
+  // any engine key without one.
+  'autoscaling', 'autoscale_target', 'autoscale_interval_s', 'autoscale_step', 'autoscale_cooldown_s',
+  'min_replicas', 'max_replicas', 'warmup_delay_s', 'drain_timeout_s',
 ] as const;
 
 /** Exactly the keys `Scenario::parse` in `crates/sim-scenario` accepts. An unknown key is an error there. */
