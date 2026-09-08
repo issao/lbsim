@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 import { fieldLabel } from '../lib/wired';
+import { LOG_POS_MAX, logPosToValue, valueToLogPos } from '../lib/logScale';
 
 /**
  * U95b: the value of a field the engine does not produce yet. Issao's rule: no panel may show an
@@ -146,6 +147,7 @@ export function Slider({
   format,
   note,
   readonly,
+  log,
 }: {
   label: string;
   value: number;
@@ -156,6 +158,12 @@ export function Slider({
   format?: (v: number) => string;
   note?: ReactNode;
   readonly?: boolean;
+  /**
+   * The range input's position (0..LOG_POS_MAX, `logScale.ts`) maps to `value` exponentially
+   * instead of linearly, so one control stays usable from a `min` a thousandth of `max` up to
+   * `max` itself. `step` is ignored in this mode; the position always moves in whole units.
+   */
+  log?: boolean;
 }) {
   return (
     <label className="field">
@@ -163,6 +171,15 @@ export function Slider({
       <span className="field-value">{format ? format(value) : value}</span>
       {readonly ? (
         <span className="field-value" />
+      ) : log ? (
+        <input
+          type="range"
+          min={0}
+          max={LOG_POS_MAX}
+          step={1}
+          value={valueToLogPos(min, max, value)}
+          onChange={(e) => onChange(logPosToValue(min, max, Number(e.target.value)))}
+        />
       ) : (
         <input
           type="range"
