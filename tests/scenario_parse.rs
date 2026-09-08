@@ -10,13 +10,14 @@ use lbsim::scenario::Scenario;
 use lbsim::sim;
 
 /// Every key `parse` accepts, which is also every key `to_text` must emit.
-const KEYS: [&str; 58] = [
+const KEYS: [&str; 65] = [
     "name", "seed", "duration_s", "warmup_s", "replicas", "max_batch", "step_base_ms",
     "step_per_seq_ms", "step_per_kv_ktoken_ms", "kv_capacity_tokens", "prefill_tokens_per_s",
     "step_token_budget", "max_queue", "disable_decode", "preemption", "preemption_victim",
     "dram_capacity_tokens", "swap_gbps", "arrival_rps", "arrival_rps_per_replica", "prompt_mean", "prompt_cv", "output_mean",
     "output_cv", "long_probability", "long_prompt_mean", "long_output_mean", "session_turns_mean",
-    "session_think_s", "load_step_at_s",
+    "session_think_s", "prefix_roots", "prefix_root_tokens", "prefix_zipf_s", "session_fork_rate",
+    "prefix_cache_tokens", "affinity_max_load_ratio", "affinity_fallback_choices", "load_step_at_s",
     "load_step_factor", "load_step_until_s", "routing", "p2c_choices", "probe_live",
     "admission", "admission_headroom", "fair_share_burst", "tenants", "tenant_weights", "tenant_demand",
     "telemetry_interval_ms", "telemetry_delay_ms", "client_timeout_s", "max_attempts",
@@ -60,6 +61,13 @@ fn all_fields_distinct() -> Scenario {
         long_output_mean: 512.5,
         session_turns_mean: 3.5,
         session_think_s: 6.5,
+        prefix_roots: 7,
+        prefix_root_tokens: 8.5,
+        prefix_zipf_s: 9.5,
+        session_fork_rate: 10.5,
+        prefix_cache_tokens: 11.5,
+        affinity_max_load_ratio: 12.5,
+        affinity_fallback_choices: 13,
         load_step_at_s: 21.0,
         load_step_factor: 2.5,
         load_step_until_s: 41.0,
@@ -125,6 +133,13 @@ fn to_text_then_parse_preserves_every_field() {
     assert_eq!(got.long_output_mean, want.long_output_mean);
     assert_eq!(got.session_turns_mean, want.session_turns_mean);
     assert_eq!(got.session_think_s, want.session_think_s);
+    assert_eq!(got.prefix_roots, want.prefix_roots);
+    assert_eq!(got.prefix_root_tokens, want.prefix_root_tokens);
+    assert_eq!(got.prefix_zipf_s, want.prefix_zipf_s);
+    assert_eq!(got.session_fork_rate, want.session_fork_rate);
+    assert_eq!(got.prefix_cache_tokens, want.prefix_cache_tokens);
+    assert_eq!(got.affinity_max_load_ratio, want.affinity_max_load_ratio);
+    assert_eq!(got.affinity_fallback_choices, want.affinity_fallback_choices);
     assert_eq!(got.load_step_at_s, want.load_step_at_s);
     assert_eq!(got.load_step_factor, want.load_step_factor);
     assert_eq!(got.load_step_until_s, want.load_step_until_s);
