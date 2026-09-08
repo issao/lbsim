@@ -80,6 +80,24 @@ const finalLine = extraFail => {
   const cardCount = page => page.$$eval('button.card', els => els.length);
   const hasWt = page => page.$('.wt-mode').then(Boolean);
   const badge = page => page.$eval('.mock-global', el => el.textContent.trim()).catch(() => null);
+  // The Machine level tab is the only place per-replica rows appear, and on every source it once
+  // said "0 replicas exist" (Issao: "the machine page always shows 0 replicas"). The pager count and
+  // the table must agree that at least one replica is there.
+  const machines = async (page, until, label) => {
+    const tab = await page.$('button[data-tab="observe:machine"]');
+    if (tab) await tab.click();
+    const seen = await until(async () => {
+      const pager = await page.$eval('#replicas .pager .grow', el => el.textContent).catch(() => '');
+      const m = /(\d+) replicas exist/.exec(pager || '');
+      const rows = await page.$$eval('#replicas tbody tr', els => els.length).catch(() => 0);
+      // A row whose queue cell reads "—" exists but has not streamed; live rows arrive one
+      // subscription each, so at least one must have a number before this counts as fixed.
+      const streamed = await page.$$eval('#replicas tbody td.bar-cell span', els => els.filter(e => e.textContent.trim() !== '—').length).catch(() => 0);
+      return m && Number(m[1]) > 0 && rows >= 1 && streamed >= 1 ? { exist: Number(m[1]), rows, streamed } : null;
+    }, 8000);
+    check(`${label}: machines shows replicas (U90)`, Boolean(seen),
+      seen ? `${seen.exist} exist, ${seen.rows} rows on the page, ${seen.streamed} with values` : tab ? 'pager says 0 replicas exist, or no row has streamed a value' : 'no Machine level tab');
+  };
 
   // a. home
   {
@@ -126,6 +144,7 @@ const finalLine = extraFail => {
     check('dashboard: no 4xx/5xx', log.bad.length === 0, log.bad.slice(0, 3).join(' | '));
     const controlTag = await page.$eval('#control .mock-tag', el => el.textContent.trim()).catch(() => null);
     check('dashboard: control panel tagged live', controlTag === 'live', controlTag);
+    await machines(page, until, 'dashboard');
     await page.close();
   }
 
@@ -230,6 +249,7 @@ const finalLine = extraFail => {
       return tag === 'replay' ? tag : null;
     }, 8000);
     check('replay: control panel tagged replay', replayControlTag === 'replay', replayControlTag);
+    await machines(page, until, 'replay');
     const loadTabBtn = await page.$('#control button:has-text("Load")');
     if (loadTabBtn) await loadTabBtn.click();
     const loadDisabled = await until(async () => {
@@ -239,6 +259,18 @@ const finalLine = extraFail => {
     check('replay: load tab disabled as recording', Boolean(loadDisabled && /recording/i.test(loadDisabled)),
       loadDisabled ? loadDisabled.slice(0, 120) : 'no fieldset[disabled] in #control');
     check('replay: no js errors', log.errs.length === 0, log.errs.slice(0, 3).join(' | '));
+    await page.close();
+  }
+  // The mock dashboard: no server and no run index leaves the in-browser stand-in, which invents
+  // its replicas, so it must show them too.
+  {
+    const { page, log, body, until } = await fresh('?server=off&replay=off#/dashboard');
+    const t = await until(async () => { const b = await body(); return /mock/i.test(b) && !/waiting for the first sample/i.test(b) ? b : null; }, 8000) || await body();
+    check('mock dashboard (server=off, replay=off)', /mock/i.test(t) && !/waiting for the first sample/i.test(t), t.slice(0, 140));
+    const mockBadge = await badge(page);
+    check('mock: badge mock', /^mock — /.test(mockBadge || ''), mockBadge);
+    await machines(page, until, 'mock');
+    check('mock: no js errors', log.errs.length === 0, log.errs.slice(0, 3).join(' | '));
     await page.close();
   }
 
