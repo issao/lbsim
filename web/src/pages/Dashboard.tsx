@@ -53,6 +53,7 @@ export function Dashboard(props: DashboardProps) {
   const src = useDataSource(data === 'auto');
   const state = data === 'server' ? 'server' : src.state;
   useEffect(() => {
+    if (state === 'probing') setActiveMode('connecting');
     if (state === 'mock') setActiveMode('mock');
   }, [state]);
   if (state === 'probing') return <div className="page-pad">looking for a server or recorded runs…</div>;
@@ -68,8 +69,14 @@ export function Dashboard(props: DashboardProps) {
 function ServerDashboard({ initial, autoplay = true, run: _recording, ...rest }: DashboardProps) {
   const run = useServerRun(initial, { autoplay });
   useEffect(() => {
-    setActiveMode('server', run.runId ?? undefined);
-  }, [run.runId]);
+    if (run.runId) {
+      setActiveMode('server', run.runId);
+    } else if (run.error) {
+      setActiveMode('refused', undefined, run.error);
+    } else {
+      setActiveMode('connecting');
+    }
+  }, [run.runId, run.error]);
   return <DashboardBody run={run} banner={<ServerBanner run={run} />} {...rest} />;
 }
 

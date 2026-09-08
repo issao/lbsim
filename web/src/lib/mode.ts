@@ -1,9 +1,9 @@
 // Which data the dashboard is showing: frames generated in this browser, or the Ingress server's.
 //
-// Mock stays the default, and the mock markers stay with it. The stand-in exists so the layout can
-// be criticised before anything is wired, and a build that quietly pointed at a server that is not
-// running would look like a broken dashboard rather than an absent one. In mock mode nothing in
-// api.ts or useServerRun.ts executes.
+// Mock stays the default, and the mock markers stay with it. Mock is a data source, not a stand-in
+// build: this is the product, and mock lets its layout be judged before anything is wired, so a
+// build that quietly pointed at a server that is not running would look like a broken dashboard
+// rather than an absent one. In mock mode nothing in api.ts or useServerRun.ts executes.
 //
 // Three ways to turn the server on, in precedence order, because they answer different questions.
 // `?server=` on the URL points one tab at a server while every other tab keeps showing mock data,
@@ -190,17 +190,27 @@ export function dataModeBanner(mode: DataMode, server: ServerMode = serverMode()
 
 // The mode a surface has actually resolved to, published so the header badge can follow it. The
 // probe is asynchronous and lives in the dashboard; a store is smaller than threading it through
-// the router. Mock until something says otherwise, so the badge never over-claims.
-let active: { mode: DataMode; runId?: string } = { mode: 'mock' };
+// the router. `none` until a route says otherwise, so the badge never shows a stale claim left
+// over from the previous page.
+export type ActiveModeName = DataMode | 'none' | 'connecting' | 'refused';
+
+export interface ActiveModeState {
+  mode: ActiveModeName;
+  runId?: string;
+  /** Free text for a state that has one to show, e.g. the server's refusal. */
+  detail?: string;
+}
+
+let active: ActiveModeState = { mode: 'none' };
 const listeners = new Set<() => void>();
 
-export function activeMode(): { mode: DataMode; runId?: string } {
+export function activeMode(): ActiveModeState {
   return active;
 }
 
-export function setActiveMode(mode: DataMode, runId?: string): void {
-  if (active.mode === mode && active.runId === runId) return;
-  active = { mode, runId };
+export function setActiveMode(mode: ActiveModeName, runId?: string, detail?: string): void {
+  if (active.mode === mode && active.runId === runId && active.detail === detail) return;
+  active = { mode, runId, detail };
   for (const l of listeners) l();
 }
 
@@ -209,4 +219,45 @@ export function subscribeActiveMode(l: () => void): () => void {
   return () => {
     listeners.delete(l);
   };
+}
+
+/**
+ * What the badge says. Names what is on screen right now, not what the build can do overall:
+ * `none` and `connecting` both render nothing wrong rather than a stale claim from the last page.
+ */
+export function badgeText(state: ActiveModeState): string {
+  switch (state.mode) {
+    case 'none':
+      return '';
+    case 'connecting':
+      return 'connecting…';
+    case 'refused':
+      return `live — refused: ${state.detail ?? 'the server refused this run'}`;
+    case 'server':
+      return state.runId ? `${SERVER_BANNER} · run ${state.runId}` : SERVER_BANNER;
+    case 'replay':
+      return state.runId ? `${REPLAY_BANNER}: ${state.runId}` : REPLAY_BANNER;
+    case 'mock':
+    default:
+      return MOCK_BANNER;
+  }
+}
+
+/** One short, accurate sentence per mode, built from the same gloss the badge text uses. */
+export function badgeTitle(state: ActiveModeState): string {
+  switch (state.mode) {
+    case 'none':
+      return '';
+    case 'connecting':
+      return 'Probing for a server or a recorded run; nothing on this page is live yet.';
+    case 'refused':
+      return `The server refused to start this run: ${state.detail ?? 'unknown error'}.`;
+    case 'server':
+      return `Every panel here is ${DATA_SOURCE_GLOSS.live}${state.runId ? `, run ${state.runId}` : ''}.`;
+    case 'replay':
+      return `Every panel here is ${DATA_SOURCE_GLOSS.replay}${state.runId ? `: ${state.runId}` : ''}.`;
+    case 'mock':
+    default:
+      return `Every panel here is ${DATA_SOURCE_GLOSS.mock}.`;
+  }
 }

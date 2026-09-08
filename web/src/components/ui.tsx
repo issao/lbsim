@@ -56,7 +56,8 @@ export function Panel({
   // `mock`, full stop. Only a panel where every field it reads is wired earns the active source's
   // own word (`replay` or `live`), because that is the only case where "real" and "mock" differ.
   const active = useSyncExternalStore(subscribeActiveMode, activeMode);
-  const tagWord = panelTagWord(data, active.mode);
+  // none/connecting/refused are badge states, not data sources: no engine numbers are on screen yet, so the tag word is mock.
+  const tagWord = panelTagWord(data, active.mode === 'server' || active.mode === 'replay' ? active.mode : 'mock');
   return (
     <section className={`panel${highlight ? ' highlight' : ''}`} id={id} data-panel={id}>
       <header className="panel-head">
