@@ -8,6 +8,7 @@ import { Sparkline } from '../../components/charts/Sparkline';
 import { fmtMs, fmtNum, fmtPct, fmtTokens } from '../../lib/format';
 import { useServerReplicas } from '../../lib/useServerRun';
 import { WIRED_REPLICA_FIELDS } from '../../lib/wired';
+import { smoothingLabel, smoothingWindowNs, useSmoothing } from '../../lib/smoothing';
 
 const PAGE_SIZES = [10, 20, 50];
 
@@ -53,7 +54,10 @@ export function MachineLevel({
   // replicas.jsonl, so replay keeps reading `frame.replicas`.
   const liveRunId = live?.runId ?? null;
   const [subIds, setSubIds] = useState<number[]>([]);
-  const streamed = useServerReplicas(liveRunId, subIds, config.samplesPerSimSecond);
+  // The rows stream on the same window as the fleet chart, so a queue depth here and the fleet's
+  // queue depth above agree; a replica's state is the sample's own either way.
+  const smooth = useSmoothing();
+  const streamed = useServerReplicas(liveRunId, subIds, config.samplesPerSimSecond, smoothingWindowNs(smooth));
   const present = useMemo(() => {
     if (liveRunId === null) return frame.replicas.filter((r) => r.present);
     const n = Number.isFinite(frame.readyReplicas) ? Math.max(0, Math.floor(frame.readyReplicas)) : 0;
@@ -156,7 +160,7 @@ export function MachineLevel({
     <div className="grid" style={{ gridTemplateColumns: 'minmax(0, 1fr)' }}>
       <Panel
         title="Replicas"
-        sub={`page ${p + 1} of ${pages} — a page, not a global ranking`}
+        sub={`page ${p + 1} of ${pages} — a page, not a global ranking · ${smoothingLabel(smooth)}`}
         bodyClass="tight"
         highlight={highlight === 'replicas'}
         id="replicas"
@@ -261,7 +265,7 @@ export function MachineLevel({
 
       <Panel
         title="Per-replica over time"
-        sub={liveRunId !== null ? 'from the rows on this page, since they opened' : 'from the cluster summary, not from the row subscriptions'}
+        sub={`${liveRunId !== null ? 'from the rows on this page, since they opened' : 'from the cluster summary, not from the row subscriptions'} · ${smoothingLabel(smooth)}`}
         highlight={highlight === 'heatmap'}
         id="heatmap"
         right={

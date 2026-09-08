@@ -28,7 +28,7 @@ import type { FractionPercentiles, Frame, ReplicaSample } from './frame';
 import type { ReplicaState } from './types';
 import type { MetricName, SubscriptionUpdate, WireDistribution } from './api';
 import { relSeconds } from './api';
-import { type Histogram, HIST_BUCKETS, newHistogram, record } from './hist';
+import { type Histogram, HIST_BUCKETS, histMean, newHistogram, quantile, record } from './hist';
 
 /** One wire distribution in the panels' unit (milliseconds), kept exactly as measured. */
 export interface ExactPercentiles {
@@ -301,4 +301,215 @@ function cdfAt(k: Knots, v: number): number {
   const p0 = k.p[i - 1];
   const p1 = k.p[i];
   return x1 > x0 ? p0 + ((v - x0) / (x1 - x0)) * (p1 - p0) : p1;
+}
+
+// ---------------------------------------------------------------------------
+// Smoothing: the trailing window over recorded frames
+// ---------------------------------------------------------------------------
+//
+// The replay half of `OpenSubscriptionRequest.smoothing_window_ns`. A live run asks the server for
+// smoothed rows; a recording is smoothed here, by the same definition (WIRE.md "Smoothing",
+// `run::row_over`): frame `i` becomes the window of the frames whose instant lies in
+// `(t_i − window, t_i]`, which is `ceil(window / interval)` frames ending at `i`, fewer at the start
+// of a run. Every gauge and rate is the mean of its per-frame values; every latency histogram is the
+// merge of the frames' histograms, so its p99 is the p99 of every request that finished in the
+// window; the replica counts by state, each replica's own state and the frame's instant are the
+// sample's own. One frame per input frame, so a smoothed series lines up with the raw one point for
+// point, and a window of one frame is the input itself.
+//
+// Two places the recording cannot match the server exactly, both documented rather than hidden: the
+// server takes SLO attainment, the compute-bound share and the prefix hit rate as ratios of the
+// window's sums, and a recording has no per-window counts to weigh with, so here they are means of
+// the per-frame ratios; and the wire's exact percentiles cannot be merged, so a smoothed frame's
+// `exact` is read off the merged histogram and says so with `fromMergedHistogram: true`.
+
+/** `ceil(windowS / intervalS)` frames, never fewer than one: the server's `frames_in_window`. */
+export function framesInWindow(windowS: number, intervalS: number): number {
+  // In whole milliseconds, as the scenario states its interval, so a 100 ms interval recovered from
+  // float seconds cannot round a 30 s window up to 301 frames.
+  const ivMs = Math.round(intervalS * 1000);
+  if (!(windowS > 0) || !(ivMs > 0)) return 1;
+  return Math.max(1, Math.ceil(Math.round(windowS * 1000) / ivMs));
+}
+
+const FRAME_MEANS = [
+  'offeredRps', 'admittedRps', 'completedRps', 'rejectedRps', 'outputTokensPerS', 'goodputTokensPerS',
+  'sloAttainment', 'preemptionsPerS', 'loadImbalanceCv', 'wastedGpuFraction', 'kvUtilization',
+  'gpuUtilization', 'gpuComputeBoundFraction', 'prefixHitRate', 'queuedSeqs', 'runningSeqs',
+] as const;
+const REPLICA_MEANS = [
+  'queuedSeqs', 'runningSeqs', 'batchSize', 'kvTokensResident', 'kvUtilization', 'gpuUtilization',
+  'gpuComputeBoundFraction', 'stepTimeMs', 'queueWaitMs', 'ttftMeanMs', 'itlMeanMs', 'prefixHitRate',
+  'admittedRps', 'completedRps', 'preemptionsPerS', 'trueSpeedMultiplier', 'telemetryStalenessMs',
+] as const;
+const LATENCIES: LatencyKind[] = ['ttft', 'itl', 'e2e', 'queueWait'];
+const DEFAULT_EXACT_PERCENTILES = [50, 90, 99, 99.9];
+
+/** A running mean over the finite values added and not yet removed; NaN while it holds none. */
+class Mean {
+  private sum = 0;
+  private n = 0;
+  add(v: number): void {
+    if (Number.isFinite(v)) {
+      this.sum += v;
+      this.n++;
+    }
+  }
+  remove(v: number): void {
+    if (Number.isFinite(v)) {
+      this.sum -= v;
+      this.n--;
+    }
+  }
+  value(): number {
+    return this.n > 0 ? this.sum / this.n : NaN;
+  }
+}
+
+function meanOf(values: number[]): number {
+  const m = new Mean();
+  for (const v of values) m.add(v);
+  return m.value();
+}
+
+/**
+ * A histogram's counts summed in float64 as the window slides, so that adding a frame and later
+ * subtracting it leaves the buckets where they were; the panels' `Histogram` keeps float32 counts,
+ * and a float32 sum is not undone by a float32 subtraction over thousands of frames.
+ */
+class SlidingHistogram {
+  readonly counts = new Float64Array(HIST_BUCKETS);
+  count = 0;
+  sum = 0;
+  add(h: Histogram): void {
+    for (let i = 0; i < HIST_BUCKETS; i++) this.counts[i] += h.counts[i];
+    this.count += h.count;
+    this.sum += h.sum;
+  }
+  remove(h: Histogram): void {
+    for (let i = 0; i < HIST_BUCKETS; i++) this.counts[i] = Math.max(0, this.counts[i] - h.counts[i]);
+    this.count = Math.max(0, this.count - h.count);
+    this.sum -= h.sum;
+  }
+  /** The window's histogram, its bounds read off the frames the window still holds. */
+  snapshot(window: ReplayFrame[], kind: LatencyKind): Histogram {
+    const h = newHistogram();
+    h.counts.set(this.counts);
+    h.count = this.count;
+    h.sum = this.count > 0 ? this.sum : 0;
+    for (const f of window) {
+      if (f[kind].count > 0) {
+        h.min = Math.min(h.min, f[kind].min);
+        h.max = Math.max(h.max, f[kind].max);
+      }
+    }
+    return h;
+  }
+}
+
+/** The per-slot mean of the fraction distributions the window's frames carry, null when none does. */
+function meanFractionPercentiles(window: ReplayFrame[], pick: (f: ReplayFrame) => FractionPercentiles | null): FractionPercentiles | null {
+  const carried = window.map(pick).filter((p): p is FractionPercentiles => p !== null);
+  if (carried.length === 0) return null;
+  const template = carried[carried.length - 1];
+  const same = carried.filter((p) => p.percentile.length === template.percentile.length && p.percentile.every((q, i) => q === template.percentile[i]));
+  return {
+    count: template.count,
+    mean: meanOf(same.map((p) => p.mean)),
+    min: meanOf(same.map((p) => p.min)),
+    max: meanOf(same.map((p) => p.max)),
+    percentile: template.percentile.slice(),
+    value: template.percentile.map((_, i) => meanOf(same.map((p) => p.value[i]))),
+  };
+}
+
+/**
+ * Every frame smoothed over the trailing window of `windowS` simulated seconds, at the recording's
+ * own interval (inferred from the frames when not given). The input itself when the window is one
+ * frame or shorter, so a caller can tell "nothing to do" by identity.
+ */
+export function smoothFrames(frames: ReplayFrame[], windowS: number, intervalS?: number): ReplayFrame[] {
+  const n = frames.length;
+  const dt = intervalS ?? (n > 1 ? (frames[n - 1].simS - frames[0].simS) / (n - 1) : 0);
+  const m = framesInWindow(windowS, dt);
+  if (m <= 1 || n === 0) return frames;
+
+  // Sliding state for what is too big to recompute per frame: the four histograms (72 buckets each)
+  // and the per-replica means (a fleet of hundreds). The scalars are recomputed over the window,
+  // which is exact and cheap.
+  const hists: Record<LatencyKind, SlidingHistogram> = {
+    ttft: new SlidingHistogram(),
+    itl: new SlidingHistogram(),
+    e2e: new SlidingHistogram(),
+    queueWait: new SlidingHistogram(),
+  };
+  const replicaMeans = new Map<number, Mean[]>();
+  const meansFor = (id: number): Mean[] => {
+    let ms = replicaMeans.get(id);
+    if (!ms) replicaMeans.set(id, (ms = REPLICA_MEANS.map(() => new Mean())));
+    return ms;
+  };
+  const enter = (f: ReplayFrame) => {
+    for (const k of LATENCIES) hists[k].add(f[k]);
+    for (const r of f.replicas) {
+      const ms = meansFor(r.id);
+      REPLICA_MEANS.forEach((key, i) => ms[i].add(r[key]));
+    }
+  };
+  const leave = (f: ReplayFrame) => {
+    for (const k of LATENCIES) hists[k].remove(f[k]);
+    for (const r of f.replicas) {
+      const ms = meansFor(r.id);
+      REPLICA_MEANS.forEach((key, i) => ms[i].remove(r[key]));
+    }
+  };
+
+  const out: ReplayFrame[] = new Array(n);
+  for (let i = 0; i < n; i++) {
+    enter(frames[i]);
+    if (i >= m) leave(frames[i - m]);
+    const window = frames.slice(Math.max(0, i + 1 - m), i + 1);
+    const last = frames[i];
+
+    const smoothed: ReplayFrame = { ...last, exact: {}, replicas: [] };
+    for (const key of FRAME_MEANS) smoothed[key] = meanOf(window.map((f) => f[key]));
+    smoothed.tierUtilization = {
+      hbm: meanOf(window.map((f) => f.tierUtilization.hbm)),
+      dram: meanOf(window.map((f) => f.tierUtilization.dram)),
+      ssd: meanOf(window.map((f) => f.tierUtilization.ssd)),
+    };
+    smoothed.tierBandwidth = { dram: meanOf(window.map((f) => f.tierBandwidth.dram)), ssd: meanOf(window.map((f) => f.tierBandwidth.ssd)) };
+    smoothed.gpuUtilizationP = meanFractionPercentiles(window, (f) => f.gpuUtilizationP);
+    smoothed.kvUtilizationP = meanFractionPercentiles(window, (f) => f.kvUtilizationP);
+
+    for (const k of LATENCIES) {
+      const h = hists[k].snapshot(window, k);
+      smoothed[k] = h;
+      if (h.count > 0) {
+        const percentile = window.map((f) => f.exact[k]?.percentile).find((p) => p !== undefined) ?? DEFAULT_EXACT_PERCENTILES;
+        smoothed.exact[k] = {
+          count: h.count,
+          meanMs: histMean(h),
+          minMs: h.min,
+          maxMs: h.max,
+          percentile: percentile.slice(),
+          valueMs: percentile.map((p) => quantile(h, p)),
+          fromMergedHistogram: true,
+        };
+      }
+    }
+
+    // The rows are the sample's own replicas, each with its values averaged over the window it was
+    // present in; its state, presence and weight are read at the sample.
+    smoothed.replicas = last.replicas.map((r) => {
+      const ms = meansFor(r.id);
+      const row: ReplicaSample = { ...r };
+      REPLICA_MEANS.forEach((key, j) => {
+        row[key] = ms[j].value();
+      });
+      return row;
+    });
+    out[i] = smoothed;
+  }
+  return out;
 }

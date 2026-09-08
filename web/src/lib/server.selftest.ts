@@ -823,6 +823,52 @@ await checkAsync('(o) a page of ten replicas holds three streams under budget 4 
 });
 
 // ---------------------------------------------------------------------------
+// (p) a smoothing change reopens the fleet subscription with the window and keeps everything else
+// ---------------------------------------------------------------------------
+
+await checkAsync('(p) setSmoothing reopens the fleet stream with smoothing_window_ns, keeps the cursor and the pause, swaps the history once caught up', async () => {
+  const { fake, engine } = rig();
+  await engine.start();
+  fake.advance(8);
+  await until(() => engine.frames.length === 8, '8 frames');
+  engine.setSpeed(0);
+  await until(() => engine.paused, 'paused');
+  engine.scrubTo(1);
+  eq(engine.cursorS, 1, 'cursor pinned at 1 s');
+  eq(calls(fake, 'OpenSubscription')[0].body.smoothing_window_ns, undefined, 'the first open is raw: no window on the query');
+
+  engine.setSmoothing(30_000_000_000n);
+  await until(() => calls(fake, 'OpenSubscription').length === 2, 'the reopen');
+  const reopened = calls(fake, 'OpenSubscription')[1];
+  eq(reopened.body.smoothing_window_ns, '30000000000', 'the window, as decimal nanoseconds');
+  eq(reopened.body.subscription_id, undefined, 'a fresh open, not a resume: the ring holds raw rows');
+  eq(reopened.lastEventId, undefined, 'no Last-Event-ID');
+  eq(calls(fake, 'SetSpeed').length, 1, 'no control was sent: the run stays as it was');
+  // The fake re-streams the eight released rows; the history is swapped once, whole.
+  await until(() => engine.subscriptionId === 's-2' && fake.subscriptions().length === 1, 'the old subscription closed');
+  await until(() => engine.frames.length === 8 && engine.frames[0].tick === 0, 'eight frames again after the swap');
+  eq(engine.frames.map((f) => f.tick).join(','), '0,1,2,3,4,5,6,7', 'ticks contiguous from 0');
+  for (let i = 0; i < 8; i++) eq(engine.frames[i].simTimeUnixNs, EXPECTED[i].simTimeUnixNs, `frame ${i} is the right row`);
+  eq(engine.cursorS, 1, 'the cursor is still pinned at 1 s');
+  eq(engine.paused, true, 'still paused');
+  eq(engine.recordedToS, 7 / 4, 'recorded extent unchanged');
+
+  engine.setSmoothing(30_000_000_000n);
+  eq(calls(fake, 'OpenSubscription').length, 2, 'the same window again opens nothing');
+  // The stream goes on from where the run is.
+  engine.setPaused(false);
+  await until(() => !engine.paused, 'playing');
+  fake.advance(ROWS - 8);
+  await until(() => engine.frames.length === ROWS, `${ROWS} frames`);
+  eq(engine.frames.map((f) => f.tick).join(','), Array.from({ length: ROWS }, (_, i) => i).join(','), 'ticks contiguous to the end');
+  engine.setSmoothing(0n);
+  await until(() => calls(fake, 'OpenSubscription').length === 3, 'back to raw reopens once more');
+  eq(calls(fake, 'OpenSubscription')[2].body.smoothing_window_ns, undefined, 'raw carries no window');
+  engine.dispose();
+  return 'reopened once with smoothing_window_ns=30000000000; cursor 1 s and pause kept; history swapped whole';
+});
+
+// ---------------------------------------------------------------------------
 
 console.log(`${cases} cases, ${cases - failures} passed, ${failures} failed`);
 if (failures > 0) throw new Error(`${failures} case(s) failed`);

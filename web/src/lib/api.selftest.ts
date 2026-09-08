@@ -445,15 +445,16 @@ await checkAsync('every unary RPC is POST /v1/ingress/<RpcName>, and the stream 
     samplesPerSimSecond: 2,
     percentiles: [50, 99],
     leaseNs: api.DEFAULT_LEASE_NS,
+    smoothingWindowNs: 30_000_000_000n,
   }));
   eq(url.pathname, '/v1/ingress/OpenSubscription', 'stream path');
   eq(Object.fromEntries(url.searchParams), {
     run_id: 'r-1', scope: 'SCOPE_REPLICA', replica_id: '3', metrics: 'METRIC_TTFT,METRIC_QUEUED_SEQS',
-    samples_per_sim_second: '2', percentiles: '50,99', lease_ns: '60000000000',
-  }, 'stream query mirrors OpenSubscriptionRequest');
-  const fleet = new URL(client.openSubscriptionUrl({ runId: 'r-1', target: api.fleetTarget(), metrics: ['METRIC_OFFERED_RPS'], samplesPerSimSecond: 4 }));
-  eq(Object.fromEntries(fleet.searchParams), { run_id: 'r-1', scope: 'SCOPE_FLEET', metrics: 'METRIC_OFFERED_RPS', samples_per_sim_second: '4' }, 'fleet query carries no id, no empty percentiles');
-  return '13 unary POSTs on /v1/ingress/<RpcName>; GET /v1/ingress/OpenSubscription?run_id&scope&replica_id&metrics&samples_per_sim_second&percentiles&lease_ns';
+    samples_per_sim_second: '2', percentiles: '50,99', lease_ns: '60000000000', smoothing_window_ns: '30000000000',
+  }, 'stream query mirrors OpenSubscriptionRequest, the window as decimal nanoseconds');
+  const fleet = new URL(client.openSubscriptionUrl({ runId: 'r-1', target: api.fleetTarget(), metrics: ['METRIC_OFFERED_RPS'], samplesPerSimSecond: 4, smoothingWindowNs: 0n }));
+  eq(Object.fromEntries(fleet.searchParams), { run_id: 'r-1', scope: 'SCOPE_FLEET', metrics: 'METRIC_OFFERED_RPS', samples_per_sim_second: '4' }, 'fleet query carries no id, no empty percentiles, no zero window');
+  return '13 unary POSTs on /v1/ingress/<RpcName>; GET /v1/ingress/OpenSubscription?run_id&scope&replica_id&metrics&samples_per_sim_second&percentiles&lease_ns&smoothing_window_ns';
 });
 
 await checkAsync('a non-2xx body {"error": "..."} becomes an IngressError with the HTTP status', async () => {

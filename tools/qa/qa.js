@@ -237,6 +237,42 @@ const finalLine = extraFail => {
     }
     await noInvented(page, 'dashboard: no invented numbers on live (U95b)');
 
+    // Smoothing (Issao: "a global selector of a window average to be applied on them, live
+    // selectable ... ideally it is a metric subscription that we pass down to the leaves"). On a
+    // live run choosing 30 s reopens the fleet subscription with `smoothing_window_ns` on the query,
+    // and the arrivals chart's series vary less than they did per sample. The offered rate itself
+    // is a constant on the default scenario (no perturbation), so the variance is read off the
+    // completed series of the same chart, the noisy one; the offered series must not grow noisier.
+    {
+      await page.click('button[data-tab="observe:cluster"]').catch(() => null);
+      const values = async key => page.$eval(`#arrivals path[data-key="${key}"]`, el => el.getAttribute('data-values'))
+        .then(v => v.split(',').map(Number).filter(Number.isFinite)).catch(() => []);
+      const variance = xs => { const m = xs.reduce((a, b) => a + b, 0) / xs.length; return xs.reduce((a, x) => a + (x - m) * (x - m), 0) / xs.length; };
+      await page.click('.playback [data-smooth="off"]').catch(() => null);
+      const rawCompleted = await until(async () => { const v = await values('completed'); return v.length >= 40 ? v : null; }, 20000) || [];
+      const rawOffered = await values('offered');
+      const before = log.requests.length;
+      await page.click('.playback [data-smooth="30s"]');
+      const reopened = await until(() => log.requests.slice(before).find(u => u.includes('OpenSubscription') && u.includes('smoothing_window_ns=30000000000')) || null, 5000);
+      check('smoothing: 30 s reopens the fleet subscription with smoothing_window_ns (Issao)', Boolean(reopened),
+        reopened ? reopened.slice(reopened.indexOf('?'), reopened.indexOf('?') + 200) : `no OpenSubscription with smoothing_window_ns=30000000000 among ${log.requests.length - before} requests`);
+      // The smoothed history arrives as one swap once the reopened stream has caught up.
+      const smoothCompleted = await until(async () => {
+        const v = await values('completed');
+        return v.length >= 40 && v.join() !== rawCompleted.join() ? v : null;
+      }, 15000) || [];
+      const smoothOffered = await values('offered');
+      const vr = variance(rawCompleted), vs = variance(smoothCompleted);
+      check('smoothing: the arrivals chart varies less at 30 s than per sample', rawCompleted.length >= 40 && smoothCompleted.length >= 40 && vs < vr && variance(smoothOffered) <= variance(rawOffered) + 1e-9,
+        `completed: variance ${vr.toFixed(2)} per sample -> ${vs.toFixed(2)} at 30 s over ${rawCompleted.length}/${smoothCompleted.length} points; offered ${variance(rawOffered).toFixed(3)} -> ${variance(smoothOffered).toFixed(3)}`);
+      check('smoothing: the URL carries the selection', /[?&]smooth=30s/.test(page.url()), page.url().slice(0, 120));
+      const readout = await page.$eval('#arrivals .panel-sub', el => el.textContent).catch(() => '');
+      check('smoothing: the chart readout states the window', /30 s window/.test(readout), readout.slice(0, 80));
+      // The selection is remembered per browser; put it back so the pages that follow open raw.
+      await page.click('.playback [data-smooth="off"]');
+      await until(async () => !(await page.$eval('.playback [data-smooth="30s"]', el => el.getAttribute('aria-pressed') === 'true')), 2000);
+    }
+
     // U106 (Issao: "where do i tune step token budget?"): the Cluster tab's physics knobs are
     // editable on a live run. A structural edit is staged, the banner asks for a restart naming
     // the key, and the restart starts a run whose scenario text carries the new value.
@@ -493,6 +529,17 @@ const finalLine = extraFail => {
     }, 3000);
     check('replay: load tab disabled as recording', Boolean(loadDisabled && /recording/i.test(loadDisabled)),
       loadDisabled ? loadDisabled.slice(0, 120) : 'no fieldset[disabled] in #control');
+    // Smoothing on a recording is the same selector, applied client-side to the recorded frames; the
+    // readout beside the latency chart says which window its percentiles are over.
+    {
+      await page.click('.playback [data-smooth="30s"]');
+      await page.click('button[data-tab="observe:quality"]').catch(() => null);
+      const readout = await until(async () => { const t = await page.$eval('#ttft .panel-sub', el => el.textContent).catch(() => ''); return /30 s window/.test(t) ? t : null; }, 5000);
+      check('smoothing: replay readout says 30 s window (Issao)', Boolean(readout), readout || (await page.$eval('#ttft .panel-sub', el => el.textContent).catch(() => 'no #ttft panel')));
+      const pts = await page.$eval('#ttft path[data-key="p99"]', el => el.getAttribute('data-values').split(',').filter(Boolean).length).catch(() => 0);
+      check('smoothing: replay p99 series still drawn point for point', pts >= 2, `${pts} points`);
+      await page.click('.playback [data-smooth="off"]');
+    }
     check('replay: no js errors', log.errs.length === 0, log.errs.slice(0, 3).join(' | '));
     await page.close();
   }
