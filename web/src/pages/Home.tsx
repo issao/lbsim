@@ -120,6 +120,10 @@ export function Home() {
           <a href="reports/19-tiering.html">19. KV memory tiering: a DRAM pool, an SSD pool under it, and the fabric they share</a>
           <p>The spiral's swap traffic against a quarter-sized cluster DRAM pool, then a 10 GB/s SSD tier beneath it, then both behind a 10 GB/s shared fabric that serialises every migration.</p>
         </li>
+        <li>
+          <a href="reports/20-autoscaling.html">20. Autoscaling with a cold start: the controller lags the view, the turn-up lags the controller</a>
+          <p>A 200 s day at 224–896 rps on a fixed 256-replica fleet, against target-utilization scaling between 64 and 384 with a 30 s and a 5 s turn-up.</p>
+        </li>
       </ul>
       <p>
         Every number on every page is engine data. A quantity the engine does not simulate yet shows a dash and says

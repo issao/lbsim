@@ -10,13 +10,13 @@ use sim_leaf_api::{AdvanceRequest, AdvanceResponse, ConfigureShardResponse, Leaf
 use sim_metrics::trace::{BandwidthOrCompute, MemoryTier, RequestTrace, ResourceState, SpanKind, TraceSampler, TraceSpan};
 use sim_metrics::{Frame, Histogram, Outcome, ReplicaSample, RequestRecord, Series};
 use sim_policy::{
-    Admission, AdmissionContext, AdmissionPolicy, HealthPolicy, PrefixIndex, ReplicaView, RequestView,
-    RouteContext, RoutingPolicy, SchedulingPolicy,
+    Admission, AdmissionContext, AdmissionPolicy, AutoscalingPolicy, FleetView, HealthPolicy, PrefixIndex,
+    ReplicaView, RequestView, RouteContext, RoutingPolicy, SchedulingPolicy,
 };
 use sim_core::queue::{EventQueue, PRIO_OBSERVE};
 use sim_core::rng::{Rng, Streams};
 use sim_model::trace::{ResourceSnapshot, StepEvent};
-use sim_model::{PrefixTree, Replica, Tiers};
+use sim_model::{Lifecycle, PrefixTree, Replica, Tiers};
 use sim_scenario::{FailureEvent, FailureKind, OverrideKind, Scenario};
 use sim_workload::{Request, Workload};
 use sim_core::{Nanos, EPOCH_BASE, MILLI};
@@ -46,6 +46,12 @@ enum Ev {
     /// A scheduled failure begins or ends; the index is into `Sim::failures`.
     Fail(usize),
     Recover(usize),
+    /// The autoscaler's decision tick. Never scheduled with `autoscaling = none`.
+    Autoscale,
+    /// A turned-up slot's cold start ends; a turned-down slot's drain runs out. Each carries the
+    /// slot's lifecycle generation, so a slot that moved on since the event was scheduled ignores it.
+    WarmupDone(usize, u64),
+    DrainTimeout(usize, u64),
 }
 
 pub struct RunResult {
@@ -176,7 +182,19 @@ impl RunResult {
         let mut acc = 0.0;
         let mut n = 0usize;
         for s in 0..samples {
-            let vals: Vec<f64> = self.replica_load.iter().map(|r| r.v[s]).collect();
+            // A slot that is absent or warming holds no load by construction, and counting its zero
+            // would report an imbalance the router never made. Nothing is filtered in a fixed fleet.
+            let frame = self.frames.get(s);
+            let vals: Vec<f64> = self
+                .replica_load
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| frame.map_or(true, |f| f.replicas.get(*i).map_or(true, |r| !matches!(r.state, 0 | 4))))
+                .map(|(_, r)| r.v[s])
+                .collect();
+            if vals.is_empty() {
+                continue;
+            }
             let mean = vals.iter().sum::<f64>() / vals.len() as f64;
             if mean <= 0.0 {
                 continue;
@@ -338,6 +356,30 @@ fn validate(sc: &Scenario) -> Result<(), String> {
     }
     if sc.replicas == 0 || sc.replicas > 200_000 {
         bad.push(format!("replicas = {} (need 1..=200000)", sc.replicas));
+    }
+    if sc.fleet_max() < sc.replicas || sc.fleet_max() > 200_000 {
+        bad.push(format!("max_replicas = {} (need replicas = {} ..= 200000)", sc.fleet_max(), sc.replicas));
+    }
+    if sc.fleet_min() > sc.fleet_max() {
+        bad.push(format!("min_replicas = {} exceeds max_replicas = {}", sc.fleet_min(), sc.fleet_max()));
+    }
+    if !(sc.autoscale_interval_s.is_finite() && sc.autoscale_interval_s > 0.0) {
+        bad.push(format!("autoscale_interval_s = {} (need > 0)", sc.autoscale_interval_s));
+    }
+    if !(sc.autoscale_target.is_finite() && sc.autoscale_target > 0.0 && sc.autoscale_target <= 1.0) {
+        bad.push(format!("autoscale_target = {} (need 0 < t <= 1)", sc.autoscale_target));
+    }
+    if sc.autoscale_step == 0 {
+        bad.push("autoscale_step = 0 (need >= 1)".into());
+    }
+    for (k, v) in [
+        ("autoscale_cooldown_s", sc.autoscale_cooldown_s),
+        ("warmup_delay_s", sc.warmup_delay_s),
+        ("drain_timeout_s", sc.drain_timeout_s),
+    ] {
+        if !(v.is_finite() && v >= 0.0) {
+            bad.push(format!("{k} = {v} (need >= 0)"));
+        }
     }
     if sc.max_batch == 0 || sc.max_batch > 100_000 {
         bad.push(format!("max_batch = {} (need 1..=100000)", sc.max_batch));
@@ -563,7 +605,7 @@ pub struct Applied {
 /// the proof.
 /// One scheduler per replica, from the scenario's `scheduling` name.
 fn make_schedulers(sc: &Scenario) -> Result<Vec<Box<dyn SchedulingPolicy>>, String> {
-    (0..sc.replicas).map(|_| sim_policy::make_scheduling(sc)).collect()
+    (0..sc.fleet_max()).map(|_| sim_policy::make_scheduling(sc)).collect()
 }
 
 pub struct Sim {
@@ -573,6 +615,28 @@ pub struct Sim {
     /// Decides ejection from the delayed views, and writes its verdict back into them, so routing and
     /// admission see a gray replica leave the rotation through the seam they already read.
     health: Box<dyn HealthPolicy>,
+    /// Sizes the fleet from the delayed views on every `Ev::Autoscale`. The engine owns what a
+    /// decision costs: the cold start, the drain, and which replica goes.
+    autoscaler: Box<dyn AutoscalingPolicy>,
+    autoscale_iv: Nanos,
+    /// Whether a tick is in the queue, so a policy override that turns autoscaling on mid-run starts
+    /// exactly one cycle.
+    autoscale_pending: bool,
+    /// Per slot: bumped on every lifecycle move, so a `WarmupDone` or `DrainTimeout` scheduled for an
+    /// earlier life of the slot is ignored; and whether its telemetry cycle is in the queue, so a slot
+    /// that returns keeps one cycle rather than two.
+    lifecycle_gen: Vec<u64>,
+    tele_pending: Vec<bool>,
+    /// What the router and admission sample from: the views of the slots that are up, dense and in
+    /// slot order, with `route_slot` mapping a choice back to its slot and `route_pos` the inverse
+    /// (`NO_REPLICA` for a slot that is not up). A sampling policy draws over `views.len()` and falls
+    /// back to the first usable replica when every draw lands on an ejected one; with a third of the
+    /// slots absent that fallback funnels a ninth of all traffic to slot 0. So absent, warming and
+    /// draining slots are not in this array at all. A fixed fleet has every slot up and this is
+    /// `views` itself, in the same order, so nothing about a fixed fleet's routing moves.
+    route_views: Vec<ReplicaView>,
+    route_slot: Vec<usize>,
+    route_pos: Vec<usize>,
     /// One scheduler per replica, since the seam is replica-scoped and a policy may keep state.
     schedulers: Vec<Box<dyn SchedulingPolicy>>,
     tenant_shares: Vec<f64>,
@@ -782,6 +846,7 @@ impl Sim {
         let router = sim_policy::make_routing(sc)?;
         let admission = sim_policy::make_admission(sc)?;
         let health = sim_policy::make_health(sc)?;
+        let autoscaler = sim_policy::make_autoscaling(sc)?;
         let schedulers = make_schedulers(sc)?;
         let tenant_shares = sc.tenant_shares();
         let streams = Streams::new(sc.seed);
@@ -797,8 +862,22 @@ impl Sim {
         let measured_from = start + (sc.warmup_s * 1e9) as Nanos;
 
         let mut q: EventQueue<Ev> = EventQueue::new(start);
-        let replicas: Vec<Replica> = (0..sc.replicas).map(|_| Replica::default()).collect();
-        let views: Vec<ReplicaView> = vec![ReplicaView::default(); sc.replicas];
+        // Every slot the autoscaler may ever fill exists from the start, so replica ids are stable
+        // for the whole run; the ones past `replicas` begin absent, unrouted and silent. Without an
+        // autoscaler `fleet_max() == replicas` and this is the fleet it always was.
+        let slots = sc.fleet_max();
+        let replicas: Vec<Replica> = (0..slots)
+            .map(|i| {
+                let mut r = Replica::default();
+                if i >= sc.replicas {
+                    r.set_lifecycle(Lifecycle::Absent);
+                }
+                r
+            })
+            .collect();
+        let views: Vec<ReplicaView> = (0..slots)
+            .map(|i| ReplicaView { ejected: i >= sc.replicas, ..ReplicaView::default() })
+            .collect();
 
         let cost = sc.cost_model();
         let tiers = Tiers::new(sc);
@@ -806,9 +885,14 @@ impl Sim {
         let tele_iv = (sc.telemetry_interval_ms * 1e6) as Nanos;
         let tele_delay = (sc.telemetry_delay_ms * 1e6) as Nanos;
 
-        let replica_load: Vec<Series> = (0..sc.replicas)
+        let replica_load: Vec<Series> = (0..slots)
             .map(|i| Series::new(&format!("replica_{}", i)))
             .collect();
+        let autoscale_iv = (sc.autoscale_interval_s * 1e9) as Nanos;
+        let autoscale_pending = sc.autoscaling != "none";
+        if autoscale_pending {
+            q.schedule(start + autoscale_iv, Ev::Autoscale);
+        }
 
         q.schedule(start, Ev::Arrival);
         q.schedule_prio(start + sample_iv, PRIO_OBSERVE, Ev::Sample);
@@ -830,6 +914,14 @@ impl Sim {
             router,
             admission,
             health,
+            autoscaler,
+            autoscale_iv,
+            autoscale_pending,
+            lifecycle_gen: vec![0; slots],
+            tele_pending: (0..slots).map(|i| i < sc.replicas).collect(),
+            route_views: views[..sc.replicas].to_vec(),
+            route_slot: (0..sc.replicas).collect(),
+            route_pos: (0..slots).map(|i| if i < sc.replicas { i } else { NO_REPLICA }).collect(),
             schedulers,
             tenant_shares,
             route_rng,
@@ -878,6 +970,112 @@ impl Sim {
         })
     }
 
+    /// One autoscaling decision, from what a controller can see: the lifecycle counts it set itself
+    /// and the delayed views. Up fills the lowest absent slots; down cancels warming slots first,
+    /// since they hold nothing, then drains the ready replicas the view shows lightest.
+    fn autoscale(&mut self, now: Nanos) {
+        let (mut ready, mut warming, mut draining) = (0, 0, 0);
+        for r in &self.replicas {
+            match r.lifecycle() {
+                Lifecycle::Active => ready += 1,
+                Lifecycle::Warming => warming += 1,
+                Lifecycle::Draining => draining += 1,
+                Lifecycle::Absent => {}
+            }
+        }
+        let (min, max) = (self.sc.fleet_min(), self.sc.fleet_max());
+        let fv = FleetView { now, ready, warming, draining, max, min, views: &self.views };
+        let want = self.autoscaler.desired(&fv).clamp(min, max);
+        let current = ready + warming;
+        if want > current {
+            let absent: Vec<usize> = (0..self.replicas.len())
+                .filter(|&i| self.replicas[i].lifecycle() == Lifecycle::Absent)
+                .take(want - current)
+                .collect();
+            for i in absent {
+                self.turn_up(i, now);
+            }
+        } else if want < current {
+            let mut n = current - want;
+            let mut warming: Vec<usize> = (0..self.replicas.len())
+                .filter(|&i| self.replicas[i].lifecycle() == Lifecycle::Warming)
+                .collect();
+            while n > 0 {
+                let Some(i) = warming.pop() else { break };
+                self.lifecycle_gen[i] += 1;
+                self.replicas[i].set_lifecycle(Lifecycle::Absent);
+                n -= 1;
+            }
+            let mut ready: Vec<usize> = (0..self.replicas.len())
+                .filter(|&i| self.replicas[i].lifecycle() == Lifecycle::Active)
+                .collect();
+            ready.sort_by_key(|&i| (self.views[i].queued + self.views[i].running, i));
+            for i in ready.into_iter().take(n) {
+                self.drain(i, now);
+            }
+        }
+    }
+
+    /// The routable set changed: rebuild the dense views and both maps. O(slots), on a lifecycle
+    /// move only, never per request.
+    fn rebuild_route(&mut self) {
+        self.route_slot.clear();
+        self.route_views.clear();
+        for (i, r) in self.replicas.iter().enumerate() {
+            self.route_pos[i] = if r.lifecycle() == Lifecycle::Active {
+                self.route_slot.push(i);
+                self.route_views.push(self.views[i]);
+                self.route_slot.len() - 1
+            } else {
+                NO_REPLICA
+            };
+        }
+    }
+
+    /// A delivery or a verdict changed `views`: the dense copy follows.
+    fn sync_route_views(&mut self) {
+        for (d, &slot) in self.route_slot.iter().enumerate() {
+            self.route_views[d] = self.views[slot];
+        }
+    }
+
+    /// An absent slot begins its cold start.
+    fn turn_up(&mut self, i: usize, now: Nanos) {
+        self.lifecycle_gen[i] += 1;
+        self.replicas[i].set_lifecycle(Lifecycle::Warming);
+        let warmup = (self.sc.warmup_delay_s * 1e9) as Nanos;
+        self.q.schedule(now + warmup, Ev::WarmupDone(i, self.lifecycle_gen[i]));
+    }
+
+    /// A ready replica stops taking work. The router sees it leave at once, since the controller
+    /// decided it; what it holds finishes, or is lost at the drain timeout.
+    fn drain(&mut self, i: usize, now: Nanos) {
+        self.lifecycle_gen[i] += 1;
+        self.replicas[i].set_lifecycle(Lifecycle::Draining);
+        self.views[i].ejected = true;
+        self.rebuild_route();
+        if self.replicas[i].load() == 0 {
+            self.retire(i, now);
+            return;
+        }
+        let timeout = (self.sc.drain_timeout_s * 1e9) as Nanos;
+        self.q.schedule(now + timeout, Ev::DrainTimeout(i, self.lifecycle_gen[i]));
+    }
+
+    /// The slot leaves the fleet. Whatever it still holds is lost exactly as a crash loses it, and
+    /// its cache goes with it, so a slot that returns later returns cold.
+    fn retire(&mut self, i: usize, now: Nanos) {
+        for req in self.replicas[i].crash() {
+            self.abort(&req, i, Outcome::TimeoutRunning, now);
+        }
+        let (inserted, evicted) = self.replicas[i].drain_prefix_changes();
+        self.holders.apply(i, &inserted, &evicted);
+        self.replicas[i].recover();
+        self.lifecycle_gen[i] += 1;
+        self.replicas[i].set_lifecycle(Lifecycle::Absent);
+        self.views[i].ejected = true;
+    }
+
     /// Record a failed attempt and, under the retry budget, dispatch the next one. Timeouts, crashes
     /// and refused dispatches all end here, so a retry means the same thing whatever caused it.
     fn abort(&mut self, req: &Request, i: usize, outcome: Outcome, now: Nanos) {
@@ -913,9 +1111,9 @@ impl Sim {
             // Re-routed rather than pinned, so a retry does not land on the same
             // struggling replica by construction.
             let d = dispatch(
-                &mut *self.router, &mut *self.admission, &self.views, &self.replicas,
+                &mut *self.router, &mut *self.admission, &self.route_views, &self.route_slot, &self.replicas,
                 &self.tenant_shares, &mut self.route_rng, sc, at, &again, traced.then_some(&mut probed),
-                &self.holders.index(&self.tree),
+                &RoutableIndex { inner: self.holders.index(&self.tree), pos: &self.route_pos },
             );
             let (again_id, routed) = (again.id, matches!(d, Dispatch::Route { .. }));
             if traced {
@@ -1033,11 +1231,20 @@ impl Sim {
             let router = sim_policy::make_routing(&sc)?;
             let admission = sim_policy::make_admission(&sc)?;
             let health = sim_policy::make_health(&sc)?;
+            let autoscaler = sim_policy::make_autoscaling(&sc)?;
             let schedulers = make_schedulers(&sc)?;
             self.router = router;
             self.admission = admission;
             self.health = health;
+            self.autoscaler = autoscaler;
             self.schedulers = schedulers;
+            self.autoscale_iv = (sc.autoscale_interval_s * 1e9) as Nanos;
+            // Turned on mid-run: one cycle starts now. A cycle already running keeps its cadence and
+            // reads the new interval at its next tick; `none` lets the running cycle lapse.
+            if sc.autoscaling != "none" && !self.autoscale_pending {
+                self.autoscale_pending = true;
+                self.q.schedule(self.now + self.autoscale_iv, Ev::Autoscale);
+            }
         }
         self.sc = sc;
         Ok(Applied { changed, at: self.now })
@@ -1114,9 +1321,9 @@ impl Sim {
                     let traced = self.tracing.sample();
                     let mut probed = Vec::new();
                     let d = dispatch(
-                        &mut *self.router, &mut *self.admission, &self.views, &self.replicas,
+                        &mut *self.router, &mut *self.admission, &self.route_views, &self.route_slot, &self.replicas,
                         &self.tenant_shares, &mut self.route_rng, sc, now, &req, traced.then_some(&mut probed),
-                        &self.holders.index(&self.tree),
+                        &RoutableIndex { inner: self.holders.index(&self.tree), pos: &self.route_pos },
                     );
                     let (id, routed) = (req.id, matches!(d, Dispatch::Route { .. }));
                     if traced {
@@ -1137,7 +1344,7 @@ impl Sim {
                     // A first attempt for the retry budget as much as a fresh arrival is.
                     self.first_attempts += 1;
                     let d = dispatch_pinned(
-                        &mut *self.admission, &self.views, &self.tenant_shares, now, &req, i,
+                        &mut *self.admission, &self.route_views, &self.tenant_shares, now, &req, i,
                     );
                     if matches!(d, Dispatch::Rejected) {
                         // The turn that would have reused the parked context is not coming.
@@ -1151,9 +1358,11 @@ impl Sim {
                 }
 
                 Ev::Admit(target, req) => {
-                    if self.replicas[target].is_down() {
+                    if !self.replicas[target].accepts() && self.replicas[target].lifecycle() != Lifecycle::Draining {
                         // Sent here on a stale view: the router will not learn of the crash until the
-                        // next telemetry delivery. Refused before any device time, and retried.
+                        // next telemetry delivery. Refused before any device time, and retried. A
+                        // draining replica is the exception: it was routable when the request left,
+                        // and finishing a straggler is cheaper than bouncing it.
                         self.abort(&req, target, Outcome::TimeoutQueued, now);
                         continue;
                     }
@@ -1229,6 +1438,9 @@ impl Sim {
 
                     if !out.idle {
                         self.q.schedule(token_at, Ev::Step(i));
+                    } else if self.replicas[i].lifecycle() == Lifecycle::Draining {
+                        // Nothing left to run: the drain is complete and the slot leaves the fleet.
+                        self.retire(i, now);
                     }
                     self.fingerprint = self
                         .fingerprint
@@ -1237,6 +1449,11 @@ impl Sim {
                 }
 
                 Ev::TelemetryPublish(i) => {
+                    if self.replicas[i].lifecycle() == Lifecycle::Absent {
+                        // A slot that left the fleet stops announcing; `turn_up` restarts the cycle.
+                        self.tele_pending[i] = false;
+                        continue;
+                    }
                     let view = view_of(&self.replicas[i], now);
                     // Delayed delivery. This one line is the whole staleness mechanism: a policy cannot
                     // see the fleet as it is, only as it was.
@@ -1246,6 +1463,12 @@ impl Sim {
 
                 Ev::TelemetryDeliver(i, view) => {
                     self.views[i] = view;
+                    // A slot the controller moved since this view was published is not routable
+                    // whatever the view says: the controller made that decision itself, so it does
+                    // not wait for telemetry to hear of it. A fixed fleet never enters here.
+                    if self.replicas[i].lifecycle() != Lifecycle::Active {
+                        self.views[i].ejected = true;
+                    }
                     // Assessed on every delivery, over the delayed views, and written back into them:
                     // an ejection reaches the router by the same stale path a crash does. With
                     // `ejection = none` this returns the flags already there, byte for byte.
@@ -1253,6 +1476,7 @@ impl Sim {
                     for (v, ejected) in self.views.iter_mut().zip(verdict) {
                         v.ejected = ejected;
                     }
+                    self.sync_route_views();
                 }
 
                 Ev::Timeout(id) => {
@@ -1269,6 +1493,9 @@ impl Sim {
                             Outcome::TimeoutQueued
                         };
                         self.abort(&req, i, outcome, now);
+                        if self.replicas[i].lifecycle() == Lifecycle::Draining && self.replicas[i].load() == 0 {
+                            self.retire(i, now);
+                        }
                     }
                 }
 
@@ -1313,13 +1540,50 @@ impl Sim {
                     }
                     self.fleet_queue.push(now, tq);
                     self.fleet_running.push(now, tr);
-                    self.fleet_kv.push(now, 100.0 * tkv / sc.replicas as f64);
+                    // Over the replicas that can hold context, so an absent slot's empty cache does
+                    // not read as headroom. Exactly `replicas` for a fixed fleet.
+                    let holding = self
+                        .replicas
+                        .iter()
+                        .filter(|r| matches!(r.lifecycle(), Lifecycle::Active | Lifecycle::Draining))
+                        .count()
+                        .max(1);
+                    self.fleet_kv.push(now, 100.0 * tkv / holding as f64);
                     let window_end_ns = now - start;
                     let window_start_ns = window_end_ns.saturating_sub(self.sample_iv);
                     let rate = self.workload.offered_rps(sc, window_start_ns, window_end_ns);
                     self.offered.push(now, rate);
                     self.frames.push(self.window.close(now, rate, &self.replicas, &self.tiers));
                     self.q.schedule_prio(now + self.sample_iv, PRIO_OBSERVE, Ev::Sample);
+                }
+
+                Ev::Autoscale => {
+                    if sc.autoscaling == "none" {
+                        self.autoscale_pending = false;
+                        continue;
+                    }
+                    self.autoscale(now);
+                    self.q.schedule(now + self.autoscale_iv, Ev::Autoscale);
+                }
+
+                Ev::WarmupDone(i, gen) => {
+                    if self.lifecycle_gen[i] == gen && self.replicas[i].lifecycle() == Lifecycle::Warming {
+                        self.lifecycle_gen[i] += 1;
+                        self.replicas[i].set_lifecycle(Lifecycle::Active);
+                        self.rebuild_route();
+                        // Its telemetry starts with readiness, so the router hears of it one delay
+                        // later, the way it hears of everything else.
+                        if !self.tele_pending[i] {
+                            self.tele_pending[i] = true;
+                            self.q.schedule(now, Ev::TelemetryPublish(i));
+                        }
+                    }
+                }
+
+                Ev::DrainTimeout(i, gen) => {
+                    if self.lifecycle_gen[i] == gen && self.replicas[i].lifecycle() == Lifecycle::Draining {
+                        self.retire(i, now);
+                    }
                 }
             }
         }
@@ -1558,8 +1822,9 @@ fn view_of(r: &Replica, now: Nanos) -> ReplicaView {
         kv_tokens: r.kv_tokens(),
         last_step_ns: r.last_step_ns(),
         // Only a crash is announced. A slow or hung replica reports itself as healthy, and the
-        // growing `last_step_ns` is the one tell a policy has.
-        ejected: r.is_down(),
+        // growing `last_step_ns` is the one tell a policy has. A slot the autoscaler has not made
+        // ready is not there to be routed to.
+        ejected: !r.accepts(),
     }
 }
 
@@ -1580,6 +1845,7 @@ fn dispatch(
     router: &mut dyn RoutingPolicy,
     admission: &mut dyn AdmissionPolicy,
     views: &[ReplicaView],
+    route_slot: &[usize],
     replicas: &[Replica],
     tenant_shares: &[f64],
     rng: &mut Rng,
@@ -1596,19 +1862,38 @@ fn dispatch(
     // A traced request also learns which replicas the policy paid to look at; the stale views it
     // read for free are not observable from here.
     let probed = RefCell::new(probed);
+    // The router's indices are into `views`, the dense array of slots that are up; `route_slot`
+    // turns each back into a slot, for the probe, the trace and the destination alike.
     let live = |i: usize| {
         if let Some(p) = probed.borrow_mut().as_mut() {
-            p.push(i);
+            p.push(route_slot[i]);
         }
-        view_of(&replicas[i], now)
+        view_of(&replicas[route_slot[i]], now)
     };
     let mut ctx = RouteContext::new(now, views, &request, rng, &live, prefix);
     match router.choose(&mut ctx) {
         Some(target) => {
             let paid = ctx.probes() as Nanos + if sc.probe_live { 1 } else { 0 };
-            Dispatch::Route { target, delay: paid * PROBE_COST }
+            Dispatch::Route { target: route_slot[target], delay: paid * PROBE_COST }
         }
         None => Dispatch::Dropped,
+    }
+}
+
+/// The prefix index as the router sees it: holders named by their dense routing index rather than
+/// their slot, and a holder that is not up (its cache went with it) left out.
+struct RoutableIndex<'a> {
+    inner: LeafPrefixIndex<'a>,
+    pos: &'a [usize],
+}
+
+impl PrefixIndex for RoutableIndex<'_> {
+    fn holders(&self, node: u64) -> Vec<(usize, u32)> {
+        self.inner
+            .holders(node)
+            .into_iter()
+            .filter_map(|(slot, hit)| (self.pos[slot] != NO_REPLICA).then_some((self.pos[slot], hit)))
+            .collect()
     }
 }
 

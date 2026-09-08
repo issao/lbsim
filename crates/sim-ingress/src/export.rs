@@ -187,11 +187,19 @@ fn windows(r: &RunResult) -> Vec<Window> {
 /// Coefficient of variation of per-replica load at one sample, the per-instant form of
 /// `RunResult::load_imbalance_cv`. NaN when the fleet is idle, which the row then omits.
 fn imbalance_at(r: &RunResult, s: usize) -> f64 {
-    let n = r.replica_load.len();
+    // Over the slots that were there to hold load at this sample: an absent (0) or warming (4) slot
+    // holds nothing by construction. Every slot in a fixed fleet.
+    let frame = r.frames.get(s);
+    let vals = r
+        .replica_load
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| frame.map_or(true, |f| f.replicas.get(*i).map_or(true, |x| !matches!(x.state, 0 | 4))))
+        .map(|(_, series)| series.v[s]);
+    let n = vals.clone().count();
     if n == 0 {
         return f64::NAN;
     }
-    let vals = r.replica_load.iter().map(|series| series.v[s]);
     let mean = vals.clone().sum::<f64>() / n as f64;
     if mean <= 0.0 {
         return f64::NAN;
@@ -235,22 +243,27 @@ pub fn fleet_rows(r: &RunResult) -> Vec<SubscriptionUpdate> {
         // is clamped anyway rather than trust an upstream invariant.
         let frame = &r.frames[s];
         // `r.scenario.replicas` is the fleet size, not how many are up: a crashed replica (state 3,
-        // EJECTED) keeps its slot in `frame.replicas` so a client cannot see it dropped.
-        let ready = frame.replicas.iter().filter(|rep| rep.state != 3).count();
+        // EJECTED) keeps its slot in `frame.replicas` so a client cannot see it dropped, and so do the
+        // autoscaler's warming (4), draining (5) and absent (0) slots. The fleet's means are over
+        // the slots with a device behind them, which is every slot of a fixed fleet.
+        let ready = frame.replicas.iter().filter(|rep| matches!(rep.state, 1 | 2)).count();
         row.value(wire::METRIC_READY_REPLICAS, ready as f64);
         row.value(wire::METRIC_PREEMPTIONS_PER_S, frame.preemptions as f64 / iv_s);
         row.value(wire::METRIC_RETRIES_PER_S, frame.retries as f64 / iv_s);
+        row.value(wire::METRIC_WARMING_REPLICAS, frame.replicas.iter().filter(|rep| rep.state == 4).count() as f64);
+        row.value(wire::METRIC_DRAINING_REPLICAS, frame.replicas.iter().filter(|rep| rep.state == 5).count() as f64);
+        let serving: Vec<&sim_metrics::ReplicaSample> =
+            frame.replicas.iter().filter(|rep| !matches!(rep.state, 0 | 4)).collect();
         let window_ns = sample_interval(r) as f64;
         let gpu: Vec<f64> =
-            frame.replicas.iter().map(|rep| (rep.busy_ns as f64 / window_ns).min(1.0)).collect();
-        let kv_ratios: Vec<f64> = frame
-            .replicas
+            serving.iter().map(|rep| (rep.busy_ns as f64 / window_ns).min(1.0)).collect();
+        let kv_ratios: Vec<f64> = serving
             .iter()
             .map(|rep| rep.kv_tokens as f64 / r.scenario.kv_capacity_tokens.max(1.0))
             .collect();
         let busy_sum: u64 = frame.replicas.iter().map(|rep| rep.busy_ns).sum();
         let compute_sum: u64 = frame.replicas.iter().map(|rep| rep.compute_ns).sum();
-        let replica_n = frame.replicas.len().max(1) as f64;
+        let replica_n = serving.len().max(1) as f64;
         row.value(wire::METRIC_GPU_UTILIZATION, gpu.iter().sum::<f64>() / replica_n);
         row.value(wire::METRIC_GPU_COMPUTE_BOUND_FRACTION, compute_sum as f64 / busy_sum as f64);
         // Ratio of sums, same reasoning as the GPU ratio above. Gated on `prefix_roots`:
@@ -748,6 +761,11 @@ pub const DEMOS: &[Demo] = &[
     Demo {
         group: "19-tiering",
         files: &["tier_dram.txt", "tier_dram_ssd.txt", "tier_contended.txt"],
+        sweep: None,
+    },
+    Demo {
+        group: "20-autoscaling",
+        files: &["autoscale_none.txt", "autoscale_cold30.txt", "autoscale_cold5.txt"],
         sweep: None,
     },
 ];

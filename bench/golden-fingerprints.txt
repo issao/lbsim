@@ -39,6 +39,9 @@
 2-staleness/03-telemetry_interval_ms___1000.summary.csv      fingerprint=16448447818164244385   events=245191    summary_md5=9847d8b22c81
 2-staleness/04-telemetry_interval_ms___2000.summary.csv      fingerprint=7251813521880172349    events=183639    summary_md5=ee40f7991bb9
 2-staleness/05-telemetry_interval_ms___4000.summary.csv      fingerprint=17180289366105092703   events=70869     summary_md5=f72b7ca7e5c7
+20-autoscaling/00-autoscale_none.summary.csv                 fingerprint=5386345349897519539    events=8029441   summary_md5=8ff26a66e202
+20-autoscaling/01-autoscale_cold30.summary.csv               fingerprint=13060766991648619877   events=5243408   summary_md5=0b57e1b8cb42
+20-autoscaling/02-autoscale_cold5.summary.csv                fingerprint=8937971653094848932    events=5966691   summary_md5=149853c25f68
 3-chunking/00-step_token_budget___512.summary.csv            fingerprint=10009565252466278158   events=2379996   summary_md5=84cf6a70c20a
 3-chunking/01-step_token_budget___1024.summary.csv           fingerprint=15913688846466930736   events=2391338   summary_md5=dc576838d6f9
 3-chunking/02-step_token_budget___2048.summary.csv           fingerprint=18263792306167486998   events=2397207   summary_md5=f7d15119fa56
@@ -88,6 +91,7 @@ h-h8-retry-storm/00-h8_retry_storm.summary.csv               fingerprint=4264169
 18-bode.html                                                 html_md5=ccc293a5ee12
 19-tiering.html                                              html_md5=f77945f4cc46
 2-staleness.html                                             html_md5=9013dd9c4627
+20-autoscaling.html                                          html_md5=6c8ab7d22100
 3-chunking.html                                              html_md5=1e9a42424201
 4-load-curve.html                                            html_md5=c81e2f1f6dbc
 5-long-context.html                                          html_md5=8aa8fdf500ab

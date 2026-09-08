@@ -771,6 +771,8 @@ pub const FLEET_METRICS: &[i32] = &[
     wire::METRIC_E2E,
     wire::METRIC_QUEUE_WAIT,
     wire::METRIC_READY_REPLICAS,
+    wire::METRIC_WARMING_REPLICAS,
+    wire::METRIC_DRAINING_REPLICAS,
     wire::METRIC_GPU_UTILIZATION,
     wire::METRIC_GPU_COMPUTE_BOUND_FRACTION,
     wire::METRIC_TRUE_SPEED_MULTIPLIER,
@@ -952,7 +954,11 @@ pub fn row(f: &Frame, sc: &Scenario, spec: &RowSpec) -> Option<MetricRow> {
         }
         Target::Fleet => {
             let iv_s = (sc.sample_interval_ms / 1000.0).max(1e-9);
-            let n = f.replicas.len().max(1) as f64;
+            // The fleet's means are over the replicas that are there to serve: an absent slot (0) or
+            // one inside its cold start (4) has no device behind it yet. Every slot in a fixed fleet.
+            let serving: Vec<&sim_metrics::ReplicaSample> =
+                f.replicas.iter().filter(|r| !matches!(r.state, 0 | 4)).collect();
+            let n = serving.len().max(1) as f64;
             let queued: u64 = f.replicas.iter().map(|r| u64::from(r.queued)).sum();
             let running: u64 = f.replicas.iter().map(|r| u64::from(r.running)).sum();
             let kv: u64 = f.replicas.iter().map(|r| r.kv_tokens).sum();
@@ -983,12 +989,15 @@ pub fn row(f: &Frame, sc: &Scenario, spec: &RowSpec) -> Option<MetricRow> {
                 wire::METRIC_SLO_ATTAINMENT,
                 if ended == 0 { f64::NAN } else { f.within_slo as f64 / ended as f64 },
             );
-            // 3 is EJECTED (`ReplicaSample::state`'s doc comment): a crashed replica is still in
-            // `f.replicas` so the frame keeps a slot per replica id, but it is not ready, and a
-            // client deriving "how many are down" as fleet size minus this must see it drop.
+            // `ReplicaSample::state`'s doc comment: READY is 1 or 2, a crashed replica (3) is still
+            // in `f.replicas` so the frame keeps a slot per replica id but it is not ready, and a
+            // client deriving "how many are down" as fleet size minus this must see it drop. 4 and 5
+            // are the autoscaler's in-between states, 0 a slot it has not filled.
             let live: Vec<&sim_metrics::ReplicaSample> =
-                f.replicas.iter().filter(|r| r.state != 3).collect();
+                f.replicas.iter().filter(|r| matches!(r.state, 1 | 2)).collect();
             value(wire::METRIC_READY_REPLICAS, live.len() as f64);
+            value(wire::METRIC_WARMING_REPLICAS, f.replicas.iter().filter(|r| r.state == 4).count() as f64);
+            value(wire::METRIC_DRAINING_REPLICAS, f.replicas.iter().filter(|r| r.state == 5).count() as f64);
             value(
                 wire::METRIC_TRUE_SPEED_MULTIPLIER,
                 if live.is_empty() {
@@ -1004,8 +1013,8 @@ pub fn row(f: &Frame, sc: &Scenario, spec: &RowSpec) -> Option<MetricRow> {
             // none".
             let window_ns = (sc.sample_interval_ms * 1e6).max(1e-9);
             let gpu: Vec<f64> =
-                f.replicas.iter().map(|r| (r.busy_ns as f64 / window_ns).min(1.0)).collect();
-            let kv_ratios: Vec<f64> = f.replicas.iter().map(|r| r.kv_tokens as f64 / cap).collect();
+                serving.iter().map(|r| (r.busy_ns as f64 / window_ns).min(1.0)).collect();
+            let kv_ratios: Vec<f64> = serving.iter().map(|r| r.kv_tokens as f64 / cap).collect();
             let busy_sum: u64 = f.replicas.iter().map(|r| r.busy_ns).sum();
             let compute_sum: u64 = f.replicas.iter().map(|r| r.compute_ns).sum();
             value(wire::METRIC_GPU_UTILIZATION, gpu.iter().sum::<f64>() / n);
@@ -1068,11 +1077,13 @@ pub fn row(f: &Frame, sc: &Scenario, spec: &RowSpec) -> Option<MetricRow> {
 /// Coefficient of variation of queued-plus-running across replicas at the sample, the per-instant
 /// form of `RunResult::load_imbalance_cv`. NaN when the fleet is idle, which the row omits.
 fn imbalance(f: &Frame) -> f64 {
-    let n = f.replicas.len();
+    // An absent or warming slot holds nothing by construction; its zero is not the router's doing.
+    let serving = f.replicas.iter().filter(|r| !matches!(r.state, 0 | 4));
+    let n = serving.clone().count();
     if n == 0 {
         return f64::NAN;
     }
-    let loads = f.replicas.iter().map(|r| f64::from(r.queued + r.running));
+    let loads = serving.map(|r| f64::from(r.queued + r.running));
     let mean = loads.clone().sum::<f64>() / n as f64;
     if mean <= 0.0 {
         return f64::NAN;
@@ -1182,9 +1193,11 @@ mod tests {
             tier_ssd_used: 0,
             tier_dram_busy_ns: 0,
             tier_ssd_busy_ns: 0,
+            // `state: 1`, READY: the default 0 is ABSENT, a slot with no device, which the fleet
+            // means leave out, as the engine's samples always carry a real state.
             replicas: vec![
-                sim_metrics::ReplicaSample { busy_ns: 0, ..Default::default() },
-                sim_metrics::ReplicaSample { busy_ns: window_ns, ..Default::default() },
+                sim_metrics::ReplicaSample { busy_ns: 0, state: 1, ..Default::default() },
+                sim_metrics::ReplicaSample { busy_ns: window_ns, state: 1, ..Default::default() },
             ],
         };
         let spec = RowSpec { target: Target::Fleet, metrics: Vec::new(), percentiles: Vec::new() };
