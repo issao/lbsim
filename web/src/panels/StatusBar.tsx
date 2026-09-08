@@ -28,11 +28,14 @@ export function StatusBar({ run }: { run: RunHandle }) {
       <span style={{ marginLeft: 'auto' }}>
         {run.source?.kind === 'server' ? (
           <>
-            mode <b>live</b> <span className="note">({dataSourceGloss('server')})</span> &middot; frames streamed{' '}
+            mode{' '}
+            <span title="nothing is generated in this browser; the subscription counts on the left are this page's own, not the server's">
+              <b>live</b>
+            </span>{' '}
+            <span className="note">({dataSourceGloss('server')})</span> &middot; frames streamed{' '}
             <b>{run.engine.frames.length}</b> from the Ingress server
             {run.source.runId ? <> (run <code>{run.source.runId}</code>)</> : null} &middot; sample rate{' '}
-            <b>{run.config.samplesPerSimSecond}/sim s</b> &middot; nothing is generated in this browser; the
-            subscription counts on the left are this page's own, not the server's
+            <b>{run.config.samplesPerSimSecond}/sim s</b>
           </>
         ) : run.source?.kind === 'replay' ? (
           <>

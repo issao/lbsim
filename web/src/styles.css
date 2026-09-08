@@ -294,7 +294,7 @@ fieldset.dropped .dropped-why { display: block; color: var(--ink-3); font-family
 @media (max-width: 1000px) { .dash-body { grid-template-columns: minmax(0, 1fr); } }
 
 .control-panel { display: flex; flex-direction: column; min-height: 0; }
-.control-panel .panel-body { overflow: auto; }
+.control-panel .panel-body { overflow: auto; flex: 1 1 auto; min-height: 0; }
 .observe-panel { display: flex; flex-direction: column; min-height: 0; }
 .observe-panel .panel-body { overflow: auto; flex: 1 1 auto; }
 
