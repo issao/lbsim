@@ -7,17 +7,22 @@
 //! dynamics in section 6 are a property of the architecture. The one exception is an explicit probe,
 //! [`RouteContext::probe`], which pays a modelled round trip so the cost of freshness is visible.
 //!
+//! The fourth seam is the replica's own scheduler, [`SchedulingPolicy`]: it sees the batch and the
+//! head of its queue, never the fleet, and decides batch admission order, the prefill chunk budget
+//! and its order, and the preemption victim. See `scheduling.rs` for why it never sees the whole queue.
+//!
 //! **Adding a policy is one file.** Write `src/<name>.rs` implementing [`RoutingPolicy`],
-//! [`AdmissionPolicy`] or [`HealthPolicy`], with a first line declaring it:
+//! [`AdmissionPolicy`], [`HealthPolicy`] or [`SchedulingPolicy`], with a first line declaring it:
 //!
 //! ```text
 //! //! lbsim-policy: routing names=<canonical>,<alias>...
 //! ```
 //!
 //! `build.rs` reads that header from every file in `src/` and generates the `mod` lines and the
-//! [`ROUTING`], [`ADMISSION`] and [`HEALTH`] tables, sorted by file name. Nothing in the engine changes;
-//! the engine resolves the scenario's `routing`, `admission` and `ejection` names through
-//! [`make_routing`], [`make_admission`] and [`make_health`]. The registry used to be a hand-written table here, and three policy branches
+//! [`ROUTING`], [`ADMISSION`], [`HEALTH`] and [`SCHEDULING`] tables, sorted by file name. Nothing in the
+//! engine changes; the engine resolves the scenario's `routing`, `admission`, `ejection` and `scheduling`
+//! names through [`make_routing`], [`make_admission`], [`make_health`] and [`make_scheduling`].
+//! The registry used to be a hand-written table here, and three policy branches
 //! written in parallel conflicted on it in one afternoon; a generated table cannot conflict. This is
 //! also how the arena's generated policies work: a generated policy is a file with that header like any
 //! other, and `PolicyEntry::file` is what a run records the source hash of.
@@ -31,14 +36,17 @@
 pub mod admission;
 pub mod health;
 pub mod routing;
+pub mod scheduling;
 
 pub use admission::{Admission, AdmissionContext, AdmissionPolicy};
 pub use health::HealthPolicy;
 pub use routing::{NoPrefixIndex, PrefixIndex, ReplicaView, RequestView, RouteContext, RoutingPolicy};
+pub use scheduling::{SchedulingPolicy, SeqView, StepView};
 
 use sim_scenario::Scenario;
 
-/// One registered policy. `names` are what a scenario's `routing =` or `admission =` line may say;
+/// One registered policy. `names` are what a scenario's `routing =`, `admission =` or `scheduling =`
+/// line may say;
 /// the first is canonical. `file` is the source file, recorded so a run can hash what decided it.
 pub struct PolicyEntry<T: ?Sized> {
     pub names: &'static [&'static str],
@@ -80,9 +88,22 @@ pub fn make_health(sc: &Scenario) -> Result<Box<dyn HealthPolicy>, String> {
     }
 }
 
+/// Resolve the scenario's `scheduling` name.
+pub fn make_scheduling(sc: &Scenario) -> Result<Box<dyn SchedulingPolicy>, String> {
+    match lookup(SCHEDULING, sc.scheduling.as_str()) {
+        Some(e) => Ok((e.make)(sc)),
+        None => Err(format!("unknown scheduling policy {:?}", sc.scheduling)),
+    }
+}
+
 /// Canonical names of every routing policy, for the arena and the CLI.
 pub fn routing_names() -> Vec<&'static str> {
     ROUTING.iter().map(|e| e.names[0]).collect()
+}
+
+/// Canonical names of every scheduling policy, for the arena and the CLI.
+pub fn scheduling_names() -> Vec<&'static str> {
+    SCHEDULING.iter().map(|e| e.names[0]).collect()
 }
 
 #[cfg(test)]
@@ -113,6 +134,13 @@ mod tests {
                 assert!(seen.insert(*n), "health name {n} registered twice");
             }
         }
+        for e in SCHEDULING {
+            assert!(dir.join(e.file).is_file(), "{} is registered but missing", e.file);
+            for n in e.names {
+                assert!(seen.insert(*n), "scheduling name {n} registered twice");
+            }
+        }
+        assert!(seen.contains("fifo_chunked"), "the engine's default scheduler must be registered");
     }
 
     #[test]
@@ -129,5 +157,8 @@ mod tests {
         sc.ejection = "oracle".into();
         let err = make_health(&sc).err().expect("unknown ejection name must be an error");
         assert!(err.contains("oracle"), "{err}");
+        sc.scheduling = "shortest_job_first".into();
+        let err = make_scheduling(&sc).err().expect("unknown scheduling name must be an error");
+        assert!(err.contains("shortest_job_first"), "{err}");
     }
 }

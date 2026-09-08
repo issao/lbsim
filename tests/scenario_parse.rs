@@ -10,10 +10,10 @@ use lbsim::scenario::Scenario;
 use lbsim::sim;
 
 /// Every key `parse` accepts, which is also every key `to_text` must emit.
-const KEYS: [&str; 69] = [
+const KEYS: [&str; 70] = [
     "name", "seed", "duration_s", "warmup_s", "replicas", "max_batch", "step_base_ms",
     "step_per_seq_ms", "step_per_kv_ktoken_ms", "kv_capacity_tokens", "prefill_tokens_per_s",
-    "step_token_budget", "max_queue", "disable_decode", "preemption", "preemption_victim",
+    "step_token_budget", "max_queue", "disable_decode", "preemption", "preemption_victim", "scheduling",
     "dram_capacity_tokens", "swap_gbps", "arrival_rps", "arrival_rps_per_replica", "prompt_mean", "prompt_cv", "output_mean",
     "output_cv", "long_probability", "long_prompt_mean", "long_output_mean", "session_turns_mean",
     "session_think_s", "prefix_roots", "prefix_root_tokens", "prefix_zipf_s", "session_fork_rate",
@@ -49,6 +49,7 @@ fn all_fields_distinct() -> Scenario {
         disable_decode: true,
         preemption: "swap_else_recompute".into(),
         preemption_victim: "largest_kv".into(),
+        scheduling: "class_priority".into(),
         dram_capacity_tokens: 2_222_000.0,
         swap_gbps: 32.5,
         arrival_rps: 19.5,
@@ -126,6 +127,7 @@ fn to_text_then_parse_preserves_every_field() {
     assert_eq!(got.max_queue, want.max_queue);
     assert_eq!(got.preemption, want.preemption);
     assert_eq!(got.preemption_victim, want.preemption_victim);
+    assert_eq!(got.scheduling, want.scheduling);
     assert_eq!(got.dram_capacity_tokens, want.dram_capacity_tokens);
     assert_eq!(got.swap_gbps, want.swap_gbps);
     assert_eq!(got.arrival_rps, want.arrival_rps);

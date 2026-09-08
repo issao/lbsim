@@ -11,7 +11,7 @@ use sim_metrics::trace::{BandwidthOrCompute, MemoryTier, RequestTrace, ResourceS
 use sim_metrics::{Frame, Histogram, Outcome, ReplicaSample, RequestRecord, Series};
 use sim_policy::{
     Admission, AdmissionContext, AdmissionPolicy, HealthPolicy, PrefixIndex, ReplicaView, RequestView,
-    RouteContext, RoutingPolicy,
+    RouteContext, RoutingPolicy, SchedulingPolicy,
 };
 use sim_core::queue::{EventQueue, PRIO_OBSERVE};
 use sim_core::rng::{Rng, Streams};
@@ -539,6 +539,11 @@ pub struct Applied {
 /// event up to an instant and then hands control back. `run` is `new`, `advance_to(end)` and
 /// `into_result`, and produces the byte-identical output it always did; the golden fingerprints are
 /// the proof.
+/// One scheduler per replica, from the scenario's `scheduling` name.
+fn make_schedulers(sc: &Scenario) -> Result<Vec<Box<dyn SchedulingPolicy>>, String> {
+    (0..sc.replicas).map(|_| sim_policy::make_scheduling(sc)).collect()
+}
+
 pub struct Sim {
     sc: Scenario,
     router: Box<dyn RoutingPolicy>,
@@ -546,6 +551,8 @@ pub struct Sim {
     /// Decides ejection from the delayed views, and writes its verdict back into them, so routing and
     /// admission see a gray replica leave the rotation through the seam they already read.
     health: Box<dyn HealthPolicy>,
+    /// One scheduler per replica, since the seam is replica-scoped and a policy may keep state.
+    schedulers: Vec<Box<dyn SchedulingPolicy>>,
     tenant_shares: Vec<f64>,
     route_rng: Rng,
     /// Its own stream, so turning sessions on cannot perturb arrivals, shapes or routing.
@@ -745,9 +752,12 @@ pub fn run(sc: &Scenario) -> Result<RunResult, String> {
 impl Sim {
     pub fn new(sc: &Scenario) -> Result<Sim, String> {
         validate(sc)?;
+        // An unknown name is an error here, before anything runs, never a panic mid-run.
+        sim_policy::make_scheduling(sc)?;
         let router = sim_policy::make_routing(sc)?;
         let admission = sim_policy::make_admission(sc)?;
         let health = sim_policy::make_health(sc)?;
+        let schedulers = make_schedulers(sc)?;
         let tenant_shares = sc.tenant_shares();
         let streams = Streams::new(sc.seed);
         let route_rng: Rng = streams.stream("route");
@@ -794,6 +804,7 @@ impl Sim {
             router,
             admission,
             health,
+            schedulers,
             tenant_shares,
             route_rng,
             session_rng,
@@ -986,9 +997,11 @@ impl Sim {
             let router = sim_policy::make_routing(&sc)?;
             let admission = sim_policy::make_admission(&sc)?;
             let health = sim_policy::make_health(&sc)?;
+            let schedulers = make_schedulers(&sc)?;
             self.router = router;
             self.admission = admission;
             self.health = health;
+            self.schedulers = schedulers;
         }
         self.sc = sc;
         Ok(Applied { changed, at: self.now })
@@ -1135,8 +1148,13 @@ impl Sim {
                 }
 
                 Ev::Step(i) => {
-                    let Some(out) = self.replicas[i].step_with_prefixes(sc, &self.cost, now, &self.tree)
-                    else {
+                    let Some(out) = self.replicas[i].step_scheduled(
+                        sc,
+                        &self.cost,
+                        now,
+                        &self.tree,
+                        &mut *self.schedulers[i],
+                    ) else {
                         continue
                     };
                     let (inserted, evicted) = self.replicas[i].drain_prefix_changes();

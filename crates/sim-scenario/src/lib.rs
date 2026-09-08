@@ -57,6 +57,12 @@ pub struct Scenario {
     /// Which resident context goes first: `newest` (last admitted, what vLLM does), `largest_kv`, or
     /// `latest_deadline` (the request with the most slack).
     pub preemption_victim: String,
+    /// The replica's own scheduler: `fifo_chunked` (first come first served, chunked prefill at
+    /// `step_token_budget`, victims by `preemption_victim`: what the engine always did),
+    /// `class_priority` (interactive before agent before batch at admission, batch evicted first) or
+    /// `deadline_first` (least slack first, latest deadline evicted first). It orders the work a
+    /// replica already holds; it cannot create capacity.
+    pub scheduling: String,
     /// Host-side room for swapped context per replica, in tokens. Zero means four times the cache.
     pub dram_capacity_tokens: f64,
     /// Host link bandwidth for swapping context, in GB/s.
@@ -330,6 +336,7 @@ impl Default for Scenario {
             disable_decode: false,
             preemption: "never".into(),
             preemption_victim: "newest".into(),
+            scheduling: "fifo_chunked".into(),
             dram_capacity_tokens: 0.0,
             swap_gbps: 50.0,
             arrival_rps: 320.0,
@@ -442,6 +449,7 @@ impl Scenario {
                 "spec_accept_rate" => s.spec_accept_rate = f("spec_accept_rate"),
                 "preemption" => s.preemption = v.clone(),
                 "preemption_victim" => s.preemption_victim = v.clone(),
+                "scheduling" => s.scheduling = v.clone(),
                 "dram_capacity_tokens" => s.dram_capacity_tokens = f("dram_capacity_tokens"),
                 "swap_gbps" => s.swap_gbps = f("swap_gbps"),
                 "trace_sample_rate" => s.trace_sample_rate = f("trace_sample_rate"),
@@ -654,7 +662,7 @@ impl Scenario {
                 OverrideKind::Workload
             }
             "routing" | "p2c_choices" | "probe_live" | "admission" | "admission_headroom"
-            | "fair_share_burst" | "preemption" | "preemption_victim"
+            | "fair_share_burst" | "preemption" | "preemption_victim" | "scheduling"
             | "ejection" | "ejection_ratio" | "ejection_views" | "ejection_cooldown_s"
             | "affinity_max_load_ratio" | "affinity_fallback_choices" => OverrideKind::Policy,
             _ => OverrideKind::Structural,
@@ -688,7 +696,8 @@ impl Scenario {
              step_base_ms = {}\nstep_per_seq_ms = {}\nstep_per_kv_ktoken_ms = {}\n\
              kv_capacity_tokens = {}\nprefill_tokens_per_s = {}\n\
              step_token_budget = {}\nmax_queue = {}\ndisable_decode = {}\npreemption = {}\n\
-             preemption_victim = {}\ndram_capacity_tokens = {}\nswap_gbps = {}\narrival_rps = {}\n\
+             preemption_victim = {}\nscheduling = {}\ndram_capacity_tokens = {}\nswap_gbps = {}\n\
+             arrival_rps = {}\n\
              arrival_rps_per_replica = {}\nprompt_mean = {}\n\
              prompt_cv = {}\noutput_mean = {}\noutput_cv = {}\nlong_probability = {}\n\
              long_prompt_mean = {}\nlong_output_mean = {}\nsession_turns_mean = {}\n\
@@ -709,7 +718,8 @@ impl Scenario {
             self.step_base_ms, self.step_per_seq_ms, self.step_per_kv_ktoken_ms,
             self.kv_capacity_tokens, self.prefill_tokens_per_s,
             self.step_token_budget, self.max_queue, self.disable_decode, self.preemption,
-            self.preemption_victim, self.dram_capacity_tokens, self.swap_gbps, self.arrival_rps,
+            self.preemption_victim, self.scheduling, self.dram_capacity_tokens, self.swap_gbps,
+            self.arrival_rps,
             self.arrival_rps_per_replica, self.prompt_mean,
             self.prompt_cv, self.output_mean, self.output_cv, self.long_probability,
             self.long_prompt_mean, self.long_output_mean, self.session_turns_mean,
