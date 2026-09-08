@@ -181,6 +181,35 @@ const finalLine = extraFail => {
     check('dashboard: no per-panel tags (U100)', tags === 0, `${tags} .mock-tag`);
     await machines(page, until, 'dashboard');
     await noInvented(page, 'dashboard: no invented numbers on live (U95b)');
+
+    // U106 (Issao: "where do i tune step token budget?"): the Cluster tab's physics knobs are
+    // editable on a live run. A structural edit is staged, the banner asks for a restart naming
+    // the key, and the restart starts a run whose scenario text carries the new value.
+    {
+      const runIdOf = t => (/run (r-\d+)/.exec(t) || [])[1];
+      const before = runIdOf(await body());
+      await page.click('button[data-tab="control:cluster"]').catch(() => null);
+      await sleep(300);
+      // React owns the input's value, so the native setter plus an input event is what a drag is.
+      const moved = await page.evaluate(() => {
+        const lab = [...document.querySelectorAll('label.field')].find(l => (l.querySelector('.field-label')?.textContent || '').trim() === 'step token budget');
+        const el = lab && lab.querySelector('input[type=range]');
+        if (!el) return null;
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, '2048');
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        return el.value;
+      });
+      const staged = await until(async () => { const b = await body(); return /restart the run to apply/i.test(b) ? b : null; }, 3000) || await body();
+      check('cluster: structural change shows the restart banner (U106)', /restart the run to apply.*step token budget/i.test(staged),
+        moved === null ? 'no step token budget slider on the Cluster tab' : (staged.match(/restart the run to apply[^|]{0,80}/) || [`slider at ${moved}, no banner`])[0]);
+      const startRunsBefore = log.startRuns.length;
+      await page.click('#restart-pending').catch(() => null);
+      const after = await until(async () => { const id = runIdOf(await body()); return id && id !== before ? id : null; }, 15000);
+      const bodies = log.startRuns.slice(startRunsBefore).map(b => { try { return JSON.parse(b)?.scenario?.text ?? b; } catch { return b; } });
+      const applied = bodies.some(b => /^step_token_budget = 2048$/m.test(b));
+      check('cluster: restart applies the new value (U106)', Boolean(after) && applied,
+        `${before} -> ${after || 'no new run'}; ${bodies.length} StartRun(s), ${applied ? 'step_token_budget = 2048 sent' : (bodies[bodies.length - 1] || 'no scenario text').match(/step_token_budget[^\n]*/)?.[0] || 'no step_token_budget'}`);
+    }
     await page.close();
   }
 

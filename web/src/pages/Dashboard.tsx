@@ -105,9 +105,20 @@ function ServerBanner({ run }: { run: ServerRunHandle }) {
             </>
           )}
         </span>
-        <span style={{ marginLeft: 'auto', color: 'var(--ink-3)' }} title={run.disabledReason}>
-          rewind is off on a live run
-        </span>
+        {run.pendingRestart ? (
+          // U106: a structural edit (fleet shape, physics, seed, duration) waits here for the
+          // restart the server needs, instead of ending in a refusal. Same row, so the height holds.
+          <span style={{ marginLeft: 'auto', display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+            <span style={{ color: 'var(--serious)' }}>restart the run to apply: {run.pendingKeys.join(', ')}</span>
+            <button id="restart-pending" className="btn" onClick={() => run.pendingRestart && run.restart(run.pendingRestart)}>
+              Restart
+            </button>
+          </span>
+        ) : (
+          <span style={{ marginLeft: 'auto', color: 'var(--ink-3)' }} title={run.disabledReason}>
+            rewind is off on a live run
+          </span>
+        )}
       </div>
       {run.refused ? (
         <div className="banner">

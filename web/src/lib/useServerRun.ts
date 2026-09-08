@@ -100,6 +100,9 @@ export interface ServerRunEngineOptions {
   now?: () => number;
 }
 
+/** A config path the server reads only at StartRun: no Update call carries it. */
+const isStructural = (p: string): boolean => p === 'seed' || p === 'durationS' || p === 'warmupS' || p.startsWith('fleet.');
+
 /**
  * The panels' view of a live run. Frames arrive over the stream and accumulate; the reads are the
  * replay engine's over a growing array. Nothing here is simulated in the browser.
@@ -115,6 +118,17 @@ export class ServerRunEngine implements FrameSource {
   error: string | null = null;
   /** Control-panel fields the engine has no equivalent for, so the UI can say they are inert. */
   dropped: string[] = [];
+  /**
+   * Edits the server takes only at StartRun -- fleet shape, physics, seed, duration -- staged on
+   * the config the panel shows until `restart(pendingRestart)` starts a run from them. Null when
+   * the running fleet holds every structural value the panel does. Issao: "where do i tune step
+   * token budget?": the knob was a slider that ended in a refusal, so it read as inert.
+   */
+  pendingRestart: ScenarioConfig | null = null;
+  /** Human labels of the staged keys, for the banner that asks for the restart. */
+  pendingKeys: string[] = [];
+  /** The config the current run was started from: what `pendingKeys` is measured against. */
+  private startedFrom: ScenarioConfig;
   lastUpdate: UpdateResponse | null = null;
   /** Always null: nothing is ever rewound. Kept so the handle keeps its shape. */
   readonly lastRewind: RewindResponse | null = null;
@@ -167,6 +181,7 @@ export class ServerRunEngine implements FrameSource {
 
   constructor(initial: ScenarioConfig, opts: ServerRunEngineOptions) {
     this.config = cloneConfig(initial);
+    this.startedFrom = this.config;
     this.opts = opts;
     this.metrics = opts.metrics ?? FLEET_METRICS;
   }
@@ -275,6 +290,8 @@ export class ServerRunEngine implements FrameSource {
     const client = this.opts.client;
     const wire = scenarioConfigToWire(this.config);
     this.dropped = wire.dropped;
+    this.startedFrom = cloneConfig(this.config);
+    this.stage();
     const startedAt = this.lastFactor;
     let id: string;
     try {
@@ -515,10 +532,20 @@ export class ServerRunEngine implements FrameSource {
     this.refused = u.accepted ? null : `${u.changed.join(', ')}: not applied. ${u.rejectedReason}`;
   }
 
+  /** Recompute what a restart would change: the structural keys the panel holds and the run does not. */
+  private stage(): void {
+    const keys = diffConfig(this.startedFrom, this.config).paths.filter(isStructural);
+    this.pendingKeys = keys.map((p) => FIELD_LABEL[p] ?? p);
+    this.pendingRestart = keys.length ? cloneConfig(this.config) : null;
+  }
+
   /**
    * UpdateWorkload and UpdatePolicies, the only two live-tunable calls in ingress.proto. The answer
    * lands on `lastUpdate`; a 501 lands there too, named, because the control being wired and the
    * server not yet honouring it are two different facts and the banner should say which.
+   * A structural key -- fleet shape, physics, seed, duration -- is a new run by design: it is
+   * staged on `pendingRestart` for the banner's restart rather than sent, so the knob keeps the
+   * value the user set instead of ending in a refusal.
    */
   async update(next: ScenarioConfig): Promise<void> {
     const prev = this.config;
@@ -533,13 +560,15 @@ export class ServerRunEngine implements FrameSource {
       this.changed();
       return;
     }
+    const structural = d.paths.some(isStructural);
+    if (structural) this.stage();
     const client = this.opts.client;
     const calls: Promise<{ accepted: boolean; requiredResimulation: boolean; rewoundToUnixNs: bigint; rejectedReason: string }>[] = [];
     if (d.paths.some((p) => p.startsWith('workload.'))) calls.push(client.updateWorkload(id, toOverrides(workloadToWire(next).fields)));
     if (d.paths.some((p) => p.startsWith('routing.'))) calls.push(client.updatePolicies(id, toOverrides(policiesToWire(next).fields)));
     if (calls.length === 0) {
-      // Anything else -- fleet shape, seed, duration -- is a new run by design.
-      this.settle({ accepted: false, requiredResimulation: false, rewoundToS: this.cursorS, rejectedReason: 'only workload and policy are live-tunable; restart the run for this change', changed });
+      if (structural) this.lastUpdate = null;
+      else this.settle({ accepted: false, requiredResimulation: false, rewoundToS: this.cursorS, rejectedReason: 'only workload and policy are live-tunable; restart the run for this change', changed });
       this.changed();
       return;
     }
@@ -564,6 +593,7 @@ export class ServerRunEngine implements FrameSource {
       if (!accepted) {
         this.config = prev;
         this.revision++;
+        this.stage();
       }
       if (resim && rewoundNs !== undefined) {
         // The history after the rewind point is a different future now, so drop it rather than
@@ -577,6 +607,7 @@ export class ServerRunEngine implements FrameSource {
         this.settle({ accepted: false, requiredResimulation: false, rewoundToS: this.cursorS, rejectedReason: `${SERVER_NOT_YET}: ${e.message}`, changed });
         this.config = prev;
         this.revision++;
+        this.stage();
       } else {
         this.error = e instanceof Error ? e.message : String(e);
       }
@@ -603,6 +634,10 @@ export class ServerRunEngine implements FrameSource {
     this.originUnixNs = null;
     this.connection = 'opening';
     this.config = cloneConfig(next);
+    // The new run starts from `next`, so nothing is pending against it; `start` measures again.
+    this.startedFrom = this.config;
+    this.pendingRestart = null;
+    this.pendingKeys = [];
     this.revision++;
     this.changed();
     const gen = this.generation;
@@ -644,6 +679,9 @@ export type ServerRunHandle = Omit<RunHandle, 'engine' | 'update' | 'source'> & 
   dropped: string[];
   unserved: MetricName[];
   error: string | null;
+  /** Structural edits waiting for `restart(pendingRestart)`; see `ServerRunEngine.pendingRestart`. */
+  pendingRestart: ScenarioConfig | null;
+  pendingKeys: string[];
   /** The reason every refused control gives. Constant; here so a panel need not import this file. */
   disabledReason: string;
   refused: string | null;
@@ -742,6 +780,8 @@ export function useServerRun(initial: ScenarioConfig, opts: ServerRunOptions = {
       dropped: engine.dropped,
       unserved: engine.unserved,
       error: engine.error,
+      pendingRestart: engine.pendingRestart,
+      pendingKeys: engine.pendingKeys,
       disabledReason: SERVER_DISABLED_REASON,
       refused: engine.refused,
       dismissRefused: () => engine.dismissRefused(),

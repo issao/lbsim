@@ -670,7 +670,7 @@ check('scenarioConfigToWire(BASE) sends only keys Scenario::parse accepts', () =
   eq(fields.seed, 20260906, 'seed');
   eq(fields.duration_s, 120, 'duration_s');
   eq(fields.kv_capacity_tokens, 1370000, 'fleet.kvTokensPerReplica becomes kv_capacity_tokens');
-  eq(fields.arrival_rps, 70, 'arrival_rps');
+  eq(fields.arrival_rps, 560, 'arrival_rps, base.txt since U92');
   eq(fields.routing, 'round_robin', 'routing');
   eq(fields.p2c_choices, 2, 'p2c_choices');
   eq(fields.probe_live, false, 'probe_live');
@@ -716,7 +716,7 @@ check('the two engine name mismatches are translated, and prefix affinity is ref
 check('workload and policy updates carry only their own keys, as string overrides', () => {
   const w = api.workloadToWire(BASE);
   eq(api.unacceptedKeys(w.fields, api.WORKLOAD_KEYS), [], 'workload keys outside WORKLOAD_KEYS');
-  eq(w.fields.arrival_rps, 70, 'arrival_rps');
+  eq(w.fields.arrival_rps, 560, 'arrival_rps, base.txt since U92');
   eq(w.dropped, ['workload.perturbation', 'workload.perturbAmplitude', 'workload.perturbFrequencyHz'], 'workload dropped');
   const p = api.policiesToWire(BASE);
   eq(api.unacceptedKeys(p.fields, api.POLICY_KEYS), [], 'policy keys outside POLICY_KEYS');
