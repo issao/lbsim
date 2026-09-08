@@ -243,13 +243,33 @@ const finalLine = extraFail => {
     // and the arrivals chart's series vary less than they did per sample. The offered rate itself
     // is a constant on the default scenario (no perturbation), so the variance is read off the
     // completed series of the same chart, the noisy one; the offered series must not grow noisier.
+    //
+    // A trailing mean over a *complete* window cannot raise a stationary series' variance, but
+    // WIRE.md says outright that "a run's first seconds smooth over the frames that exist rather
+    // than wait for a full window" -- by design, not a bug. `framesInWindow` (adapter.ts) is
+    // `ceil(30s / sample_interval)`; at this scenario's 4 samples/sim s that is 120 frames, so every
+    // one of the first ~40 points this check used to compare is a partial window, barely smoothed,
+    // and comparing variance there is comparing noise to noise. Confirmed by hand against lbsim.ai
+    // (playwright, collecting ~150 points): over the first 120 points variance barely moves
+    // (13493.82 -> 13307.53), while over the points *past* the first full window it drops by an
+    // order of magnitude (2220.82 -> 246.64), exactly as the trailing-mean math promises. So this
+    // check now waits past the first full window and compares only the points beyond it, on both
+    // series at the same indices.
     {
       await page.click('button[data-tab="observe:cluster"]').catch(() => null);
       const values = async key => page.$eval(`#arrivals path[data-key="${key}"]`, el => el.getAttribute('data-values'))
         .then(v => v.split(',').map(Number).filter(Number.isFinite)).catch(() => []);
       const variance = xs => { const m = xs.reduce((a, b) => a + b, 0) / xs.length; return xs.reduce((a, x) => a + (x - m) * (x - m), 0) / xs.length; };
+      // The banner states the run's own sample rate ("N samples at R/sim s"); read it rather than
+      // assuming BASE's, so this keeps working if the default scenario's rate ever changes.
+      const rateMatch = /at ([\d.]+)\/sim s/.exec(await body());
+      const rate = rateMatch ? Number(rateMatch[1]) : 4;
+      const WINDOW_S = 30;
+      const framesInWindow = Math.max(1, Math.ceil(WINDOW_S * rate));
+      const TAIL = 60; // points compared once every one of them has a complete trailing window
+      const need = framesInWindow + TAIL;
       await page.click('.playback [data-smooth="off"]').catch(() => null);
-      const rawCompleted = await until(async () => { const v = await values('completed'); return v.length >= 40 ? v : null; }, 20000) || [];
+      const rawAll = await until(async () => { const v = await values('completed'); return v.length >= need ? v : null; }, 90000) || [];
       const rawOffered = await values('offered');
       const before = log.requests.length;
       await page.click('.playback [data-smooth="30s"]');
@@ -257,14 +277,18 @@ const finalLine = extraFail => {
       check('smoothing: 30 s reopens the fleet subscription with smoothing_window_ns (Issao)', Boolean(reopened),
         reopened ? reopened.slice(reopened.indexOf('?'), reopened.indexOf('?') + 200) : `no OpenSubscription with smoothing_window_ns=30000000000 among ${log.requests.length - before} requests`);
       // The smoothed history arrives as one swap once the reopened stream has caught up.
-      const smoothCompleted = await until(async () => {
+      const rawJoin = rawAll.join();
+      const smoothAll = await until(async () => {
         const v = await values('completed');
-        return v.length >= 40 && v.join() !== rawCompleted.join() ? v : null;
-      }, 15000) || [];
+        return v.length >= rawAll.length && v.join() !== rawJoin ? v : null;
+      }, 60000) || [];
       const smoothOffered = await values('offered');
-      const vr = variance(rawCompleted), vs = variance(smoothCompleted);
-      check('smoothing: the arrivals chart varies less at 30 s than per sample', rawCompleted.length >= 40 && smoothCompleted.length >= 40 && vs < vr && variance(smoothOffered) <= variance(rawOffered) + 1e-9,
-        `completed: variance ${vr.toFixed(2)} per sample -> ${vs.toFixed(2)} at 30 s over ${rawCompleted.length}/${smoothCompleted.length} points; offered ${variance(rawOffered).toFixed(3)} -> ${variance(smoothOffered).toFixed(3)}`);
+      const n = Math.min(rawAll.length, smoothAll.length);
+      const rawTail = rawAll.slice(framesInWindow, n);
+      const smoothTail = smoothAll.slice(framesInWindow, n);
+      const vr = variance(rawTail), vs = variance(smoothTail);
+      check('smoothing: the arrivals chart varies less at 30 s than per sample', n >= need && rawTail.length >= TAIL && vs < vr && variance(smoothOffered) <= variance(rawOffered) + 1e-9,
+        `completed: variance ${vr.toFixed(2)} per sample -> ${vs.toFixed(2)} at 30 s over ${rawTail.length} points past the first ${framesInWindow}-frame window (of ${n}/${rawAll.length}/${smoothAll.length} raw/collected/smoothed); offered ${variance(rawOffered).toFixed(3)} -> ${variance(smoothOffered).toFixed(3)}`);
       check('smoothing: the URL carries the selection', /[?&]smooth=30s/.test(page.url()), page.url().slice(0, 120));
       const readout = await page.$eval('#arrivals .panel-sub', el => el.textContent).catch(() => '');
       check('smoothing: the chart readout states the window', /30 s window/.test(readout), readout.slice(0, 80));
@@ -650,10 +674,13 @@ const finalLine = extraFail => {
       15000
     );
     check(`service quality ${label}: badput chart has at least one point`, Boolean(hasPoint), String(hasPoint));
-    const readout = await until(
-      () => page.$eval('[data-tile="badput"]', el => el.innerText.replace(/\s+/g, ' ')).catch(() => ''),
-      8000
-    ) || '';
+    // Both sources autoplay from a fresh page, and the cursor starts at (or near) 0: a window with
+    // no completions yet has no throughput to divide by, so `fmtSig2Pct` prints "-" rather than a
+    // false zero (derive.ts's `badput`, ServiceQuality.tsx). That is correct, not missing, so this
+    // waits for the cursor to carry the run past its first completions instead of reading the tile
+    // at whatever instant the page happened to be on.
+    const readTile = () => page.$eval('[data-tile="badput"]', el => el.innerText.replace(/\s+/g, ' ')).catch(() => '');
+    const readout = await until(async () => { const t = await readTile(); return /\d+(\.\d+)?%/.test(t) ? t : null; }, 20000) || await readTile();
     check(`service quality ${label}: badput readout ends in a percentage`, /\d+(\.\d+)?%/.test(readout), readout.slice(0, 120) || 'no [data-tile="badput"]');
     await page.close();
   }
