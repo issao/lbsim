@@ -1,6 +1,6 @@
 # TASKS — things that need Issao
 
-Last updated: 2026-09-07 20:10 PDT by Claude.
+Last updated: 2026-09-07 20:19 PDT by Claude.
 
 **RESUMED 2026-09-07 19:13 PDT** at your "resume", relayed by main. The pause (11:22–19:13, quota) changed nothing on `master` but the tech lead's graph checkpoint (1a58186). The tech lead is `a56ff1d3950e7375f` now, resuming U79–U83 from the four WIP branches; U80 (Home in Live / Replay / Mock sections) landed at 023672d, 19:13, not yet deployed; `STATUS.md` has their state. Everything below stands as it was; one thing needs a word from you tonight, item 2.
 
@@ -73,10 +73,10 @@ the `docs/wrap-up-2026-09-06.md` §5b caveat (one tab at a time until U79 lands)
 11:19, U83 queued behind U81; `STATUS.md` records each unit as it lands.
 **Done, all five, by 19:50 today:** U80 Home sections 023672d, U81 badge bd5ba3f, U82 finished-product text 837910b, U79 the
 live-server fix 60327b7 (deployed 19:39 as `lbsim-00014-gvp`), U83 the UI pass b5f5af7 and U77 the live-run cap f4a119f, deployed 19:51 as
-`lbsim-00015-79v`. **The whole instruction is on <https://lbsim.ai> as of `lbsim-00015-79v`**, with the four follow-ups above to come. Four follow-ups spawned at main's instruction at 19:55; by 20:10 three are on `master`: U86 9c22131, the one-in-fourteen
+`lbsim-00015-79v`. **The whole instruction is on <https://lbsim.ai> as of `lbsim-00015-79v`**, with the four follow-ups above to come. Four follow-ups spawned at main's instruction at 19:55; by 20:10 all four are on `master`: U86 9c22131, the one-in-fourteen
 showcase card stuck at 0 samples (a SetSpeed race, proven and fixed), and U84+U85 90e6b93, the control-panel header tag per mode
-and replay's tabs disabled; U89 a9252da at 20:10, Showcase copy and empty states; in flight: U87+U88, internal names out of the UI and view-only
-sliders as readouts, the last of the four. One READY when all four land, one last deploy, then
+and replay's tabs disabled; U89 a9252da at 20:10, Showcase copy and empty states; and U87+U88 03bd74e at 20:19, internal names out of the UI and view-only
+sliders as readouts. All four are on `master` as of 20:19; the last deploy follows the tech lead's READY. One READY when all four land, one last deploy, then
 the tech lead stops.
 **If you say nothing:** the tech lead's reading of it in the graph stands.
 
