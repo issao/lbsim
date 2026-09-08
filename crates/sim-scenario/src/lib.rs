@@ -67,6 +67,20 @@ pub struct Scenario {
     pub dram_capacity_tokens: f64,
     /// Host link bandwidth for swapping context, in GB/s.
     pub swap_gbps: f64,
+    /// Section 7.2 of the architecture: DRAM and SSD are cluster-wide pools, not per-host, because a
+    /// replica pays a network transfer to reach either wherever the bytes live. A cluster DRAM pool
+    /// in tokens; zero keeps today's per-replica `dram_capacity_tokens`.
+    pub dram_pool_tokens: f64,
+    /// A cluster SSD pool in tokens, the tier below DRAM: context that finds DRAM full goes here
+    /// before it is dropped. Zero means no SSD tier.
+    pub ssd_pool_tokens: f64,
+    /// Aggregate SSD bandwidth in GB/s. 50 is eight drives striped, the figure section 7.2 adopts
+    /// as the default; a single Gen5 drive is 10, and the difference decides whether SSD is a usable
+    /// tier at all.
+    pub ssd_gbps: f64,
+    /// The shared bandwidth container every migration debits, in GB/s: transfers queue on it, so
+    /// contention emerges rather than being assumed. Zero is unlimited, which is today's model.
+    pub fabric_gbps: f64,
 
     // -- workload ----------------------------------------------------------
     pub arrival_rps: f64,
@@ -345,6 +359,10 @@ impl Default for Scenario {
             scheduling: "fifo_chunked".into(),
             dram_capacity_tokens: 0.0,
             swap_gbps: 50.0,
+            dram_pool_tokens: 0.0,
+            ssd_pool_tokens: 0.0,
+            ssd_gbps: 50.0,
+            fabric_gbps: 0.0,
             arrival_rps: 320.0,
             arrival_rps_per_replica: 0.0,
             prompt_mean: 1200.0,
@@ -461,6 +479,10 @@ impl Scenario {
                 "scheduling" => s.scheduling = v.clone(),
                 "dram_capacity_tokens" => s.dram_capacity_tokens = f("dram_capacity_tokens"),
                 "swap_gbps" => s.swap_gbps = f("swap_gbps"),
+                "dram_pool_tokens" => s.dram_pool_tokens = f("dram_pool_tokens"),
+                "ssd_pool_tokens" => s.ssd_pool_tokens = f("ssd_pool_tokens"),
+                "ssd_gbps" => s.ssd_gbps = f("ssd_gbps"),
+                "fabric_gbps" => s.fabric_gbps = f("fabric_gbps"),
                 "trace_sample_rate" => s.trace_sample_rate = f("trace_sample_rate"),
                 "arrival_rps" => s.arrival_rps = f("arrival_rps"),
                 "arrival_rps_per_replica" => s.arrival_rps_per_replica = f("arrival_rps_per_replica"),
@@ -564,6 +586,8 @@ impl Scenario {
             prefill_tokens_per_s: self.prefill_tokens_per_s,
             disable_decode: self.disable_decode,
             swap_gbps: self.swap_gbps,
+            ssd_gbps: self.ssd_gbps,
+            fabric_gbps: self.fabric_gbps,
             spec_draft_tokens: self.spec_draft_tokens,
             spec_accept_rate: self.spec_accept_rate,
         }
@@ -710,6 +734,7 @@ impl Scenario {
              kv_capacity_tokens = {}\nprefill_tokens_per_s = {}\n\
              step_token_budget = {}\nmax_queue = {}\ndisable_decode = {}\npreemption = {}\n\
              preemption_victim = {}\nscheduling = {}\ndram_capacity_tokens = {}\nswap_gbps = {}\n\
+             dram_pool_tokens = {}\nssd_pool_tokens = {}\nssd_gbps = {}\nfabric_gbps = {}\n\
              arrival_rps = {}\n\
              arrival_rps_per_replica = {}\nprompt_mean = {}\n\
              prompt_cv = {}\noutput_mean = {}\noutput_cv = {}\nlong_probability = {}\n\
@@ -733,6 +758,7 @@ impl Scenario {
             self.kv_capacity_tokens, self.prefill_tokens_per_s,
             self.step_token_budget, self.max_queue, self.disable_decode, self.preemption,
             self.preemption_victim, self.scheduling, self.dram_capacity_tokens, self.swap_gbps,
+            self.dram_pool_tokens, self.ssd_pool_tokens, self.ssd_gbps, self.fabric_gbps,
             self.arrival_rps,
             self.arrival_rps_per_replica, self.prompt_mean,
             self.prompt_cv, self.output_mean, self.output_cv, self.long_probability,

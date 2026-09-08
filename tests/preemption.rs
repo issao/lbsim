@@ -8,7 +8,7 @@
 //! context fills the cache at a load the device could easily serve, and without eviction the replica
 //! is reduced to serving one sequence at a time.
 
-use lbsim::model::{Replica, StepOutcome};
+use lbsim::model::{PrefixTree, Replica, StepOutcome, Tiers};
 use lbsim::physics::CostModel;
 use lbsim::scenario::Scenario;
 use lbsim::sim;
@@ -232,4 +232,117 @@ fn eviction_never_swaps_the_queue_heads_own_context() {
         "the head's turn should be admitted on resident context, without a swap-in charge"
     );
     assert_eq!(r.parked(), 1, "the thinking session's context is the one that may be evicted");
+}
+
+// ---------------------------------------------------------------------------------------------
+// Memory tiering (architecture section 7.2): cluster DRAM and SSD pools, one shared fabric.
+// ---------------------------------------------------------------------------------------------
+
+/// The golden row of `kv_spiral_swap` as of the merge that introduced the tier keys. The keys at
+/// their defaults, one DRAM tier per replica over an unlimited fabric, must reduce to the arithmetic
+/// that produced it, so the fingerprint is asserted by value rather than against another run.
+#[test]
+fn tier_defaults_leave_the_spiral_swap_run_byte_identical() {
+    let sc = scenario("scenarios/kv_spiral_swap.txt");
+    assert_eq!(sc.dram_pool_tokens, 0.0);
+    assert_eq!(sc.ssd_pool_tokens, 0.0);
+    assert_eq!(sc.fabric_gbps, 0.0);
+    let r = sim::run(&sc).unwrap();
+    assert_eq!(r.fingerprint, 4949261867223813137, "kv_spiral_swap's golden fingerprint moved");
+    assert_eq!(r.events, 45412, "kv_spiral_swap's golden event count moved");
+}
+
+/// `step_until`, against a shared cluster `Tiers`, which is how the loop steps a replica.
+fn step_until_tiered(
+    r: &mut Replica,
+    sc: &Scenario,
+    cost: &CostModel,
+    now: &mut Nanos,
+    tiers: &mut Tiers,
+    stop: impl Fn(&StepOutcome) -> bool,
+) -> StepOutcome {
+    let mut sched = lbsim::policy::make_scheduling(sc).unwrap();
+    for _ in 0..1000 {
+        let out = r
+            .step_tiered(sc, cost, *now, &PrefixTree::empty(), &mut *sched, tiers)
+            .expect("replica went idle before the condition held");
+        *now = out.token_at;
+        if stop(&out) {
+            return out;
+        }
+    }
+    panic!("condition never held");
+}
+
+#[test]
+fn a_shared_dram_pool_refuses_the_second_replica_and_ssd_takes_the_overflow() {
+    // Room in the pool for one 105-token context, not two. Replica A fills it; B's victim is refused.
+    let mut sc = tiny("swap_to_dram");
+    sc.dram_pool_tokens = 150.0;
+    let cost = sc.cost_model();
+    let base = cost.step_ns(1, 0, 0);
+    let mut tiers = Tiers::new(&sc);
+    let (mut a, _) = two_sequences(&sc);
+    let (mut b, _) = two_sequences(&sc);
+    let mut now_a = EPOCH_BASE;
+    let mut now_b = EPOCH_BASE;
+    let ev_a = step_until_tiered(&mut a, &sc, &cost, &mut now_a, &mut tiers, |o| o.preempted > 0);
+    assert_eq!(ev_a.step_ns, base + cost.swap_ns(105), "A's victim goes to DRAM and pays the copy");
+    assert_eq!((a.dram_tokens(), tiers.dram_used()), (105, 105));
+    let ev_b = step_until_tiered(&mut b, &sc, &cost, &mut now_b, &mut tiers, |o| o.preempted > 0);
+    assert_eq!(ev_b.step_ns, base, "with the pool full and no SSD tier, B's victim is dropped for free");
+    assert_eq!((b.dram_tokens(), b.ssd_tokens(), tiers.dram_used(), tiers.ssd_used()), (0, 0, 105, 0));
+
+    // The same, with an SSD pool below the DRAM one: B's victim lands there at SSD's transfer time.
+    sc.ssd_pool_tokens = 1000.0;
+    sc.ssd_gbps = 10.0;
+    let cost = sc.cost_model();
+    let mut tiers = Tiers::new(&sc);
+    let (mut a, _) = two_sequences(&sc);
+    let (mut b, _) = two_sequences(&sc);
+    let mut now_a = EPOCH_BASE;
+    let mut now_b = EPOCH_BASE;
+    step_until_tiered(&mut a, &sc, &cost, &mut now_a, &mut tiers, |o| o.preempted > 0);
+    let ev_b = step_until_tiered(&mut b, &sc, &cost, &mut now_b, &mut tiers, |o| o.preempted > 0);
+    assert_eq!(cost.ssd_ns(105), 5 * cost.swap_ns(105), "a single drive is five times the DRAM path");
+    assert_eq!(ev_b.step_ns, base + cost.ssd_ns(105), "B's victim goes to SSD and pays the slower copy");
+    assert_eq!((b.dram_tokens(), b.ssd_tokens(), tiers.dram_used(), tiers.ssd_used()), (0, 105, 105, 105));
+    // Re-admission pays the copy back from the tier it went to and gives the pool its tokens back.
+    step_until_tiered(&mut b, &sc, &cost, &mut now_b, &mut tiers, |o| !o.finished.is_empty());
+    let mut sched = lbsim::policy::make_scheduling(&sc).unwrap();
+    let back = b.step_tiered(&sc, &cost, now_b, &PrefixTree::empty(), &mut *sched, &mut tiers).unwrap();
+    assert_eq!(back.step_ns, base + cost.ssd_ns(105));
+    assert_eq!((b.ssd_tokens(), tiers.ssd_used(), tiers.dram_used()), (0, 0, 105));
+}
+
+#[test]
+fn the_shared_fabric_serialises_migrations_scheduled_at_the_same_instant() {
+    // Two replicas in lockstep evict at the same instant. On a 1 GB/s fabric the first transfer ends
+    // at t + B/g and the second, queued behind it, at t + 2B/g: each step is charged the wall time.
+    let mut sc = tiny("swap_to_dram");
+    sc.fabric_gbps = 1.0;
+    let cost = sc.cost_model();
+    let base = cost.step_ns(1, 0, 0);
+    let bytes = 105.0 * lbsim::physics::KV_BYTES_PER_TOKEN as f64;
+    let over_fabric = (bytes / 1e9 * 1e9) as Nanos;
+    assert_eq!(cost.swap_ns(105), over_fabric, "the fabric, not the 50 GB/s host link, is the bottleneck");
+    let mut tiers = Tiers::new(&sc);
+    let (mut a, _) = two_sequences(&sc);
+    let (mut b, _) = two_sequences(&sc);
+    let mut sched = lbsim::policy::make_scheduling(&sc).unwrap();
+    let mut now = EPOCH_BASE;
+    for _ in 0..1000 {
+        let out_a = a.step_tiered(&sc, &cost, now, &PrefixTree::empty(), &mut *sched, &mut tiers).unwrap();
+        let out_b = b.step_tiered(&sc, &cost, now, &PrefixTree::empty(), &mut *sched, &mut tiers).unwrap();
+        if out_a.preempted > 0 {
+            assert_eq!(out_b.preempted, 1, "identical replicas evict on the same step");
+            assert_eq!(out_a.step_ns, base + over_fabric, "the first migration runs at once");
+            assert_eq!(out_b.step_ns, base + 2 * over_fabric, "the second waits for the first");
+            assert_eq!(tiers.fabric_busy_until(), now + 2 * over_fabric);
+            return;
+        }
+        assert_eq!(out_a.token_at, out_b.token_at);
+        now = out_a.token_at;
+    }
+    panic!("the replicas never reached the cap");
 }

@@ -43,8 +43,8 @@ struct Seq {
     max_itl: Nanos,
     itl_sum: Nanos,
     itl_count: u32,
-    /// Context is in host memory rather than the cache: re-admission pays the copy back, not prefill.
-    swapped: bool,
+    /// Where the context lives. Anything but `Hbm` means re-admission pays the copy back, not prefill.
+    tier: Tier,
     /// Fractional tokens owed by speculative decoding: each step adds the expected tokens per step and
     /// the integer part is emitted, so the long-run rate matches the formula with no random draw.
     spec_credit: f64,
@@ -66,7 +66,131 @@ struct Parked {
     tokens: u64,
     deadline: Nanos,
     parked_at: Nanos,
-    swapped: bool,
+    tier: Tier,
+}
+
+/// Where a sequence's key-value context is: section 7.2's tier tag. A dropped context has no tag
+/// because it has no owner left; that is the recompute path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Tier {
+    Hbm,
+    Dram,
+    Ssd,
+}
+
+/// The cluster's memory tiers and the fabric they share (architecture section 7.2). DRAM and SSD are
+/// pooled at cluster scope because a replica pays a network transfer to reach either wherever the
+/// bytes are, so per-host placement is not worth modelling. Migrations debit one shared bandwidth
+/// container: a transfer starts when the container is free and runs at the slower of its tier and
+/// the fabric, so concurrent migrations queue and contention emerges rather than being assumed. The
+/// cost is O(1) per migration.
+///
+/// With no pools and no fabric this is exactly the per-replica DRAM model that came before it: the
+/// decision falls back to each replica's own `dram_capacity_tokens`, and the transfer runs at
+/// `swap_gbps`. Every golden run before tiering is byte-identical through this path.
+#[derive(Clone, Debug)]
+pub struct Tiers {
+    /// Cluster DRAM pool in tokens; zero means the per-replica cap decides instead.
+    dram_cap: u64,
+    /// Cluster SSD pool in tokens; zero means there is no SSD tier.
+    ssd_cap: u64,
+    dram_used: u64,
+    ssd_used: u64,
+    /// When the shared fabric frees up. Only advanced when there is a fabric to contend for.
+    fabric_busy_until: Nanos,
+    /// Transfer time debited so far, by tier, charged when the migration is scheduled. The loop
+    /// differences these per sample window for the tier bandwidth gauges.
+    dram_busy_ns: Nanos,
+    ssd_busy_ns: Nanos,
+}
+
+impl Tiers {
+    pub fn new(sc: &Scenario) -> Tiers {
+        Tiers {
+            dram_cap: sc.dram_pool_tokens as u64,
+            ssd_cap: sc.ssd_pool_tokens as u64,
+            dram_used: 0,
+            ssd_used: 0,
+            fabric_busy_until: 0,
+            dram_busy_ns: 0,
+            ssd_busy_ns: 0,
+        }
+    }
+
+    /// Where a context of `tokens` evicted under `policy` goes: the migration policy of this unit,
+    /// fixed. Down as far as the pools allow: DRAM while it has room, then SSD while it has room,
+    /// then nowhere, which is a drop and a recompute. `None` is the drop. Without a DRAM pool the
+    /// per-replica cap decides as it always did, and with `swap_to_dram` there it never refuses.
+    fn place(&self, policy: Policy, tokens: u64, replica_dram: u64, replica_cap: u64) -> Option<Tier> {
+        let dram = match policy {
+            Policy::Recompute | Policy::Never => return None,
+            _ if self.dram_cap > 0 => self.dram_used + tokens <= self.dram_cap,
+            Policy::Swap => true,
+            Policy::SwapElseRecompute => replica_dram + tokens <= replica_cap,
+        };
+        if dram {
+            Some(Tier::Dram)
+        } else if self.ssd_cap > 0 && self.ssd_used + tokens <= self.ssd_cap {
+            Some(Tier::Ssd)
+        } else {
+            None
+        }
+    }
+
+    /// Debit `tokens` of `tier` to the pool and the fabric at `now`, one direction. Returns the wall
+    /// time until the transfer is done, queueing behind the fabric included: what the step is charged.
+    fn transfer(&mut self, cost: &CostModel, tier: Tier, tokens: u64, now: Nanos) -> Nanos {
+        let (dur, busy) = match tier {
+            Tier::Hbm => return 0,
+            Tier::Dram => (cost.swap_ns(tokens), &mut self.dram_busy_ns),
+            Tier::Ssd => (cost.ssd_ns(tokens), &mut self.ssd_busy_ns),
+        };
+        *busy += dur;
+        if cost.fabric_gbps <= 0.0 {
+            return dur;
+        }
+        let start = now.max(self.fabric_busy_until);
+        self.fabric_busy_until = start + dur;
+        self.fabric_busy_until - now
+    }
+
+    fn hold(&mut self, tier: Tier, tokens: u64) {
+        match tier {
+            Tier::Hbm => {}
+            Tier::Dram => self.dram_used += tokens,
+            Tier::Ssd => self.ssd_used += tokens,
+        }
+    }
+
+    fn release(&mut self, tier: Tier, tokens: u64) {
+        match tier {
+            Tier::Hbm => {}
+            Tier::Dram => self.dram_used = self.dram_used.saturating_sub(tokens),
+            Tier::Ssd => self.ssd_used = self.ssd_used.saturating_sub(tokens),
+        }
+    }
+
+    /// Give the pools back what `r` released outside a step: a timed-out or crashed context whose
+    /// bytes were parked in a tier. The loop calls this after every `remove` and `crash`.
+    pub fn reclaim(&mut self, r: &mut Replica) {
+        self.release(Tier::Dram, std::mem::take(&mut r.released_dram));
+        self.release(Tier::Ssd, std::mem::take(&mut r.released_ssd));
+    }
+
+    pub fn dram_used(&self) -> u64 {
+        self.dram_used
+    }
+    pub fn ssd_used(&self) -> u64 {
+        self.ssd_used
+    }
+    /// Transfer time debited to each tier so far, DRAM then SSD.
+    pub fn busy_ns(&self) -> (Nanos, Nanos) {
+        (self.dram_busy_ns, self.ssd_busy_ns)
+    }
+    /// When the shared fabric is next free; `now` or earlier means idle.
+    pub fn fabric_busy_until(&self) -> Nanos {
+        self.fabric_busy_until
+    }
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -100,8 +224,13 @@ pub struct Replica {
     /// and for every parked session its whole context.
     /// This is the real capacity constraint, and it is denominated in tokens rather than requests.
     kv_tokens: u64,
-    /// Context swapped out to host memory, in tokens.
+    /// Context swapped out to host memory, in tokens, and to the SSD tier.
     dram_tokens: u64,
+    ssd_tokens: u64,
+    /// Tiered context this replica let go of outside a step (a timeout, a crash), not yet handed
+    /// back to the cluster pools. `Tiers::reclaim` drains it.
+    released_dram: u64,
+    released_ssd: u64,
     next_step_at: Nanos,
     scheduled: bool,
     last_step_ns: Nanos,
@@ -158,6 +287,9 @@ impl Default for Replica {
             queued_tokens: 0,
             kv_tokens: 0,
             dram_tokens: 0,
+            ssd_tokens: 0,
+            released_dram: 0,
+            released_ssd: 0,
             next_step_at: 0,
             scheduled: false,
             last_step_ns: 0,
@@ -234,7 +366,7 @@ impl Replica {
     /// retired; this takes them back, so between turns the session costs what it did while running.
     pub fn park(&mut self, next_id: u64, tokens: u64, deadline: Nanos, now: Nanos) {
         self.kv_tokens += tokens;
-        self.parked.push(Parked { id: next_id, tokens, deadline, parked_at: now, swapped: false });
+        self.parked.push(Parked { id: next_id, tokens, deadline, parked_at: now, tier: Tier::Hbm });
     }
 
     /// The head of the queue as the scheduler sees it: at most `max_batch` entries, never the whole
@@ -291,7 +423,7 @@ impl Replica {
     /// Evict one context under `policy`, the victim chosen by `sched`. Parked context goes before a
     /// running sequence, since dropping idle context stalls nobody, and the parked entry for `keep`
     /// is exempt, because it is the one the request at the head of the queue is about to reuse. A
-    /// recompute drops the context; a swap moves it to host memory and charges the copy to this
+    /// recompute drops the context; a swap moves it down a tier and charges the transfer to this
     /// step. False when there is nothing left to evict.
     #[allow(clippy::too_many_arguments)]
     fn evict(
@@ -302,15 +434,11 @@ impl Replica {
         policy: Policy,
         keep: Option<u64>,
         cost: &CostModel,
+        tiers: &mut Tiers,
         dram_cap: u64,
         extra_ns: &mut Nanos,
         running_too: bool,
     ) -> bool {
-        let swap = |tokens: u64, dram_tokens: u64| match policy {
-            Policy::Swap => true,
-            Policy::SwapElseRecompute => dram_tokens + tokens <= dram_cap,
-            Policy::Recompute | Policy::Never => false,
-        };
         // The views are built here rather than kept across the step because an eviction changes
         // them, and evictions are rare: this costs O(batch + queue head) only under pressure.
         let mut queued = Vec::new();
@@ -322,7 +450,7 @@ impl Replica {
         let mut slots = Vec::new();
         let mut candidates = Vec::new();
         for (i, p) in self.parked.iter().enumerate() {
-            if !p.swapped && Some(p.id) != keep {
+            if p.tier == Tier::Hbm && Some(p.id) != keep {
                 slots.push(i);
                 candidates.push(SeqView {
                     id: p.id,
@@ -345,10 +473,10 @@ impl Replica {
         if let Some(i) = parked {
             let tokens = self.parked[i].tokens;
             self.kv_tokens = self.kv_tokens.saturating_sub(tokens);
-            if swap(tokens, self.dram_tokens) {
-                self.parked[i].swapped = true;
-                self.dram_tokens += tokens;
-                *extra_ns += cost.swap_ns(tokens);
+            if let Some(tier) = tiers.place(policy, tokens, self.dram_tokens, dram_cap) {
+                self.parked[i].tier = tier;
+                self.hold(tiers, tier, tokens);
+                *extra_ns += tiers.transfer(cost, tier, tokens, now);
             } else {
                 self.parked.swap_remove(i);
             }
@@ -364,10 +492,10 @@ impl Replica {
         let mut s = self.running.swap_remove(i);
         let tokens = s.resident();
         self.kv_tokens = self.kv_tokens.saturating_sub(tokens);
-        if swap(tokens, self.dram_tokens) {
-            s.swapped = true;
-            self.dram_tokens += tokens;
-            *extra_ns += cost.swap_ns(tokens);
+        if let Some(tier) = tiers.place(policy, tokens, self.dram_tokens, dram_cap) {
+            s.tier = tier;
+            self.hold(tiers, tier, tokens);
+            *extra_ns += tiers.transfer(cost, tier, tokens, now);
         } else {
             // Everything generated so far becomes prompt to compute again; the prefill done this
             // step, if any, is wasted work the device still did.
@@ -456,14 +584,9 @@ impl Replica {
         self.step_scheduled(sc, cost, now, tree, &mut sched)
     }
 
-    /// Entries of the queue the scheduler was shown at the last step: at most `max_batch`, whatever
-    /// the queue holds. Exposed so a test can prove a policy never receives the whole queue.
-    pub fn last_view_len(&self) -> usize {
-        self.last_view_len
-    }
-
-    /// `step_with_prefixes`, with the replica's scheduler. The policy is consulted at exactly four
-    /// points: the admission order, the prefill budget and its order, and each victim.
+    /// `step_tiered` with tiers built fresh from the scenario, which is exact for a scenario without
+    /// cluster pools. A caller driving one replica against a pooled scenario holds the `Tiers` and
+    /// calls `step_tiered`; the loop always does.
     pub fn step_scheduled(
         &mut self,
         sc: &Scenario,
@@ -472,7 +595,29 @@ impl Replica {
         tree: &PrefixTree,
         sched: &mut dyn SchedulingPolicy,
     ) -> Option<StepOutcome> {
+        self.step_tiered(sc, cost, now, tree, sched, &mut Tiers::new(sc))
+    }
+
+    /// Entries of the queue the scheduler was shown at the last step: at most `max_batch`, whatever
+    /// the queue holds. Exposed so a test can prove a policy never receives the whole queue.
+    pub fn last_view_len(&self) -> usize {
+        self.last_view_len
+    }
+
+    /// `step_with_prefixes`, with the replica's scheduler and the cluster's memory tiers. The policy
+    /// is consulted at exactly four points: the admission order, the prefill budget and its order,
+    /// and each victim. The tiers decide where a victim's context goes and what the move costs.
+    pub fn step_tiered(
+        &mut self,
+        sc: &Scenario,
+        cost: &CostModel,
+        now: Nanos,
+        tree: &PrefixTree,
+        sched: &mut dyn SchedulingPolicy,
+        tiers: &mut Tiers,
+    ) -> Option<StepOutcome> {
         let r = self;
+        tiers.reclaim(r);
         let prefix_cap = sc.prefix_cache_tokens as u64;
         // A crashed replica holds nothing and a hung one never finishes a step. Either way there is
         // no follow-up to schedule, so this reads as idle; what it holds waits for the client timeout.
@@ -522,7 +667,7 @@ impl Replica {
                 s.resident()
             } else if let Some(req) = next_pos.map(|i| &r.queue[i]) {
                 match r.parked.iter().find(|p| p.id == req.id) {
-                    Some(p) if !p.swapped => (req.prompt as u64).saturating_sub(p.tokens),
+                    Some(p) if p.tier == Tier::Hbm => (req.prompt as u64).saturating_sub(p.tokens),
                     _ => req.prompt as u64,
                 }
             } else {
@@ -531,7 +676,7 @@ impl Replica {
             if r.kv_tokens + next_cost > kv_cap {
                 let keep = next_pos.map(|i| r.queue[i].id).or_else(|| r.queue.front().map(|q| q.id));
                 if policy != Policy::Never
-                    && r.evict(sc, now, sched, policy, keep, cost, dram_cap, &mut extra_ns, false)
+                    && r.evict(sc, now, sched, policy, keep, cost, tiers, dram_cap, &mut extra_ns, false)
                 {
                     preempted += 1;
                     continue;
@@ -542,10 +687,10 @@ impl Replica {
             }
             if let Some(mut s) = r.preempted.pop_front() {
                 let tokens = s.resident();
-                if s.swapped {
-                    s.swapped = false;
-                    r.dram_tokens = r.dram_tokens.saturating_sub(tokens);
-                    extra_ns += cost.swap_ns(tokens);
+                if s.tier != Tier::Hbm {
+                    r.release(tiers, s.tier, tokens);
+                    extra_ns += tiers.transfer(cost, s.tier, tokens, now);
+                    s.tier = Tier::Hbm;
                 }
                 r.kv_tokens += tokens;
                 r.running.push(s);
@@ -571,9 +716,9 @@ impl Replica {
                     if let Some(i) = r.parked.iter().position(|p| p.id == req.id) {
                         let p = r.parked.swap_remove(i);
                         let reused = p.tokens.min(req.prompt as u64);
-                        if p.swapped {
-                            r.dram_tokens = r.dram_tokens.saturating_sub(p.tokens);
-                            extra_ns += cost.swap_ns(p.tokens);
+                        if p.tier != Tier::Hbm {
+                            r.release(tiers, p.tier, p.tokens);
+                            extra_ns += tiers.transfer(cost, p.tier, p.tokens, now);
                             r.kv_tokens += req.prompt as u64;
                         } else {
                             r.kv_tokens += req.prompt as u64 - reused;
@@ -599,7 +744,7 @@ impl Replica {
                         max_itl: 0,
                         itl_sum: 0,
                         itl_count: 0,
-                        swapped: false,
+                        tier: Tier::Hbm,
                         spec_credit: 0.0,
                         req,
                     });
@@ -672,6 +817,7 @@ impl Replica {
                     policy,
                     keep,
                     cost,
+                    tiers,
                     dram_cap,
                     &mut extra_ns,
                     r.running.len() > 1,
@@ -791,15 +937,13 @@ impl Replica {
             victim = Some((s.req, true));
         } else if let Some(pos) = r.preempted.iter().position(|s| s.req.id == id) {
             let s = r.preempted.remove(pos).unwrap();
-            if s.swapped {
-                r.dram_tokens = r.dram_tokens.saturating_sub(s.resident());
-            }
+            r.let_go(s.tier, s.resident());
             victim = Some((s.req, true));
         }
         if let Some(pos) = r.parked.iter().position(|p| p.id == id) {
             let p = r.parked.swap_remove(pos);
-            if p.swapped {
-                r.dram_tokens = r.dram_tokens.saturating_sub(p.tokens);
+            if p.tier != Tier::Hbm {
+                r.let_go(p.tier, p.tokens);
             } else {
                 r.kv_tokens = r.kv_tokens.saturating_sub(p.tokens);
             }
@@ -835,6 +979,44 @@ impl Replica {
     }
     pub fn dram_tokens(&self) -> u64 {
         self.dram_tokens
+    }
+    pub fn ssd_tokens(&self) -> u64 {
+        self.ssd_tokens
+    }
+
+    /// Book `tokens` of this replica's context into `tier`, on the replica and in the pool.
+    fn hold(&mut self, tiers: &mut Tiers, tier: Tier, tokens: u64) {
+        match tier {
+            Tier::Hbm => {}
+            Tier::Dram => self.dram_tokens += tokens,
+            Tier::Ssd => self.ssd_tokens += tokens,
+        }
+        tiers.hold(tier, tokens);
+    }
+
+    /// The reverse of `hold`, at re-admission.
+    fn release(&mut self, tiers: &mut Tiers, tier: Tier, tokens: u64) {
+        match tier {
+            Tier::Hbm => {}
+            Tier::Dram => self.dram_tokens = self.dram_tokens.saturating_sub(tokens),
+            Tier::Ssd => self.ssd_tokens = self.ssd_tokens.saturating_sub(tokens),
+        }
+        tiers.release(tier, tokens);
+    }
+
+    /// Drop tiered context without a `Tiers` in hand: the pool hears of it at `Tiers::reclaim`.
+    fn let_go(&mut self, tier: Tier, tokens: u64) {
+        match tier {
+            Tier::Hbm => {}
+            Tier::Dram => {
+                self.dram_tokens = self.dram_tokens.saturating_sub(tokens);
+                self.released_dram += tokens;
+            }
+            Tier::Ssd => {
+                self.ssd_tokens = self.ssd_tokens.saturating_sub(tokens);
+                self.released_ssd += tokens;
+            }
+        }
     }
     /// Contexts evicted so far, running or parked.
     pub fn preemptions(&self) -> u64 {
@@ -891,7 +1073,10 @@ impl Replica {
         r.parked.clear();
         r.queued_tokens = 0;
         r.kv_tokens = 0;
+        r.released_dram += r.dram_tokens;
+        r.released_ssd += r.ssd_tokens;
         r.dram_tokens = 0;
+        r.ssd_tokens = 0;
         // The cache dies with the device, and the index must hear of every node it held.
         r.prefix_evicted.extend(r.prefix_cache.keys().copied());
         r.prefix_cache.clear();

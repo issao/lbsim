@@ -775,6 +775,8 @@ pub const FLEET_METRICS: &[i32] = &[
     wire::METRIC_GPU_COMPUTE_BOUND_FRACTION,
     wire::METRIC_TRUE_SPEED_MULTIPLIER,
     wire::METRIC_PREFIX_HIT_RATE,
+    wire::METRIC_TIER_UTILIZATION,
+    wire::METRIC_TIER_BANDWIDTH_UTILIZATION,
 ];
 pub const REPLICA_METRICS: &[i32] = &[
     wire::METRIC_QUEUED_SEQS,
@@ -814,6 +816,53 @@ fn distribution(h: &SparseHistogram, percentiles: &[f64]) -> Distribution {
 /// `Distribution::exact`'s windowed sample. The question this answers is never "what is the average"
 /// but "how many replicas sit idle while others saturate", so it is a distribution over replicas
 /// rather than over time. `None` when no replica has a finite reading.
+/// The memory-tier gauges of a frame at fleet scope, `(METRIC_TIER_UTILIZATION,
+/// METRIC_TIER_BANDWIDTH_UTILIZATION)`, each a value and a per-tier distribution.
+///
+/// The encoding, WIRE.md-style: the value is the headline tier, DRAM's fill for 27 and the shared
+/// fabric's busy fraction for 28 (both paths' transfer time over the window, since every migration
+/// crosses the one fabric). The distribution carries the per-tier reading, and its `percentile` slots
+/// are not percentiles but tier ids: 1 the cluster DRAM pool, 2 the cluster SSD pool, section 7.2's
+/// numbering, with `value[k]` that tier's fill (27) or path busy fraction (28). Tier 2 is present
+/// only when the scenario has an SSD pool. `count` is the number of tiers, `min`/`max`/`mean` are
+/// over them, and nothing is merged from a histogram. Every reading is clamped to [0, 1]: a fill can
+/// exceed one only through a per-replica cap larger than the pool, and a busy fraction only when
+/// more than one transfer is in flight on an unlimited fabric.
+pub fn tier_gauges(f: &Frame, sc: &Scenario) -> (Distribution, Distribution) {
+    let n = f.replicas.len().max(1) as f64;
+    let dram_cap = if sc.dram_pool_tokens > 0.0 { sc.dram_pool_tokens } else { sc.dram_capacity_tokens() * n };
+    let window_ns = (sc.sample_interval_ms * 1e6).max(1e-9);
+    let unit = |v: f64| v.clamp(0.0, 1.0);
+    let mut fill = vec![(1.0, unit(f.tier_dram_used as f64 / dram_cap.max(1.0)))];
+    let mut busy = vec![(1.0, unit(f.tier_dram_busy_ns as f64 / window_ns))];
+    if sc.ssd_pool_tokens > 0.0 {
+        fill.push((2.0, unit(f.tier_ssd_used as f64 / sc.ssd_pool_tokens)));
+        busy.push((2.0, unit(f.tier_ssd_busy_ns as f64 / window_ns)));
+    }
+    let over_tiers = |slots: Vec<(f64, f64)>| {
+        let values: Vec<f64> = slots.iter().map(|(_, v)| *v).collect();
+        Distribution {
+            count: values.len() as u64,
+            mean: values.iter().sum::<f64>() / values.len() as f64,
+            min: values.iter().cloned().fold(f64::INFINITY, f64::min),
+            max: values.iter().cloned().fold(f64::NEG_INFINITY, f64::max),
+            percentile: slots.iter().map(|(id, _)| *id).collect(),
+            value: values,
+            from_merged_histogram: false,
+        }
+    };
+    (over_tiers(fill), over_tiers(busy))
+}
+
+/// The scalar the fleet row carries beside each tier distribution: DRAM's fill, and the fabric's
+/// busy fraction, the two paths' transfer time together over the window.
+pub fn tier_values(f: &Frame, sc: &Scenario) -> (f64, f64) {
+    let (fill, _) = tier_gauges(f, sc);
+    let window_ns = (sc.sample_interval_ms * 1e6).max(1e-9);
+    let fabric = ((f.tier_dram_busy_ns + f.tier_ssd_busy_ns) as f64 / window_ns).clamp(0.0, 1.0);
+    (fill.value[0], fabric)
+}
+
 pub fn distribution_over_replicas(values: &[f64], percentiles: &[f64]) -> Option<Distribution> {
     let mut finite: Vec<f64> = values.iter().copied().filter(|v| v.is_finite()).collect();
     if finite.is_empty() {
@@ -987,6 +1036,20 @@ pub fn row(f: &Frame, sc: &Scenario, spec: &RowSpec) -> Option<MetricRow> {
                     row.distribution(wire::METRIC_KV_UTILIZATION, d);
                 }
             }
+            // The memory tiers are cluster-scoped, so they are fleet gauges and no replica row
+            // carries them; see `tier_gauges` for the per-tier encoding.
+            if spec.wants(wire::METRIC_TIER_UTILIZATION) || spec.wants(wire::METRIC_TIER_BANDWIDTH_UTILIZATION) {
+                let (fill, busy) = tier_gauges(f, sc);
+                let (fill_v, fabric_v) = tier_values(f, sc);
+                if spec.wants(wire::METRIC_TIER_UTILIZATION) {
+                    row.value(wire::METRIC_TIER_UTILIZATION, fill_v);
+                    row.distribution(wire::METRIC_TIER_UTILIZATION, fill);
+                }
+                if spec.wants(wire::METRIC_TIER_BANDWIDTH_UTILIZATION) {
+                    row.value(wire::METRIC_TIER_BANDWIDTH_UTILIZATION, fabric_v);
+                    row.distribution(wire::METRIC_TIER_BANDWIDTH_UTILIZATION, busy);
+                }
+            }
             for (m, h) in [
                 (wire::METRIC_TTFT, &f.ttft),
                 (wire::METRIC_ITL, &f.itl_max),
@@ -1080,6 +1143,10 @@ mod tests {
             queue_wait: SparseHistogram::default(),
             preemptions: 0,
             retries: 0,
+            tier_dram_used: 0,
+            tier_ssd_used: 0,
+            tier_dram_busy_ns: 0,
+            tier_ssd_busy_ns: 0,
             replicas: vec![sim_metrics::ReplicaSample { last_step_ns: 2_000_000, ..Default::default() }],
         };
         let sc = Scenario::default();
@@ -1111,6 +1178,10 @@ mod tests {
             queue_wait: SparseHistogram::default(),
             preemptions: 0,
             retries: 0,
+            tier_dram_used: 0,
+            tier_ssd_used: 0,
+            tier_dram_busy_ns: 0,
+            tier_ssd_busy_ns: 0,
             replicas: vec![
                 sim_metrics::ReplicaSample { busy_ns: 0, ..Default::default() },
                 sim_metrics::ReplicaSample { busy_ns: window_ns, ..Default::default() },

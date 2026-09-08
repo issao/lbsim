@@ -601,3 +601,31 @@ fn ready_replicas_excludes_a_crashed_one() {
     }
     assert!(before && after, "need fleet samples on both sides of the crash instant to prove anything");
 }
+
+/// U30: the memory-tier gauges at fleet scope. 27 and 28 each carry a value and a distribution whose
+/// `percentile` slots are tier ids, 1 DRAM and 2 SSD, every reading in [0, 1]; a scenario with an
+/// SSD pool carries both tiers, one without carries DRAM alone.
+#[test]
+fn fleet_rows_carry_the_tier_gauges_keyed_by_tier_id() {
+    let mut sc = common::at_load(0.9);
+    sc.preemption = "swap_to_dram".into();
+    sc.dram_pool_tokens = 1000.0;
+    sc.ssd_pool_tokens = 1000.0;
+    let r = sim::run(&sc).expect("tiered scenario runs");
+    let rows = export::fleet_rows(&r);
+    assert!(!rows.is_empty());
+    for u in &rows {
+        for m in [wire::METRIC_TIER_UTILIZATION, wire::METRIC_TIER_BANDWIDTH_UTILIZATION] {
+            let v = u.row.values.iter().find(|(k, _)| *k == m).map(|(_, v)| *v).unwrap_or_else(|| panic!("metric {m} value missing"));
+            assert!((0.0..=1.0).contains(&v), "metric {m} value {v} outside [0, 1]");
+            let d = &u.row.distributions.iter().find(|(k, _)| *k == m).unwrap_or_else(|| panic!("metric {m} distribution missing")).1;
+            assert_eq!(d.percentile, vec![1.0, 2.0], "slots are tier ids, DRAM then SSD");
+            assert_eq!(d.count, 2);
+            assert!(d.value.iter().all(|v| (0.0..=1.0).contains(v)), "{:?}", d.value);
+            assert!(!d.from_merged_histogram);
+        }
+    }
+    let untiered = export::fleet_rows(&small_run());
+    let d = &untiered[0].row.distributions.iter().find(|(k, _)| *k == wire::METRIC_TIER_UTILIZATION).unwrap().1;
+    assert_eq!(d.percentile, vec![1.0], "no SSD pool, no tier 2");
+}

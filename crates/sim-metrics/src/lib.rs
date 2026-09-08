@@ -295,6 +295,15 @@ pub struct Frame {
     /// Retry attempts scheduled in the window: the client-side amplification a slowdown produces,
     /// `METRIC_RETRIES_PER_S` at fleet scope. `RunResult::retries` is the same count run-wide.
     pub retries: u64,
+    /// Context held in the cluster memory tiers at `t`, in tokens: `METRIC_TIER_UTILIZATION` over
+    /// the pool sizes. Fleet-scope because the pools are (architecture section 7.2).
+    pub tier_dram_used: u64,
+    pub tier_ssd_used: u64,
+    /// Transfer time debited to each tier's path in the window, charged when a migration is
+    /// scheduled: `METRIC_TIER_BANDWIDTH_UTILIZATION` over the window, their sum being the shared
+    /// fabric's busy time.
+    pub tier_dram_busy_ns: Nanos,
+    pub tier_ssd_busy_ns: Nanos,
     pub replicas: Vec<ReplicaSample>,
 }
 

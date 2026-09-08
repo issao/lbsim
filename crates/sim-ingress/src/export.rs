@@ -22,7 +22,7 @@
 //! names the index as the deviation. Everything else uses proto field names verbatim, and
 //! `tests/wire_export.rs` and `tests/trace_wire.rs` check that.
 
-use crate::run::distribution_over_replicas;
+use crate::run::{distribution_over_replicas, tier_gauges, tier_values};
 use crate::trace_wire;
 use crate::wire::{self, Distribution, MetricRow, RunStatus, State, SubscriptionUpdate, Target};
 use sim_core::Nanos;
@@ -271,6 +271,14 @@ pub fn fleet_rows(r: &RunResult) -> Vec<SubscriptionUpdate> {
         if let Some(d) = distribution_over_replicas(&kv_ratios, REPLICA_PERCENTILES) {
             row.distribution(wire::METRIC_KV_UTILIZATION, d);
         }
+        // The memory tiers, same encoding as the live server's `run::row`: a headline value and a
+        // per-tier distribution keyed by tier id.
+        let (fill, busy) = tier_gauges(frame, &r.scenario);
+        let (fill_v, fabric_v) = tier_values(frame, &r.scenario);
+        row.value(wire::METRIC_TIER_UTILIZATION, fill_v);
+        row.distribution(wire::METRIC_TIER_UTILIZATION, fill);
+        row.value(wire::METRIC_TIER_BANDWIDTH_UTILIZATION, fabric_v);
+        row.distribution(wire::METRIC_TIER_BANDWIDTH_UTILIZATION, busy);
         row.distribution(wire::METRIC_TTFT, Distribution::exact(&mut w.ttft.clone(), PERCENTILES));
         row.distribution(wire::METRIC_ITL, Distribution::exact(&mut w.itl.clone(), PERCENTILES));
         row.distribution(wire::METRIC_E2E, Distribution::exact(&mut w.e2e.clone(), PERCENTILES));

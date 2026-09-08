@@ -33,6 +33,11 @@ pub struct CostModel {
     /// Host link bandwidth for swapping key-value context between HBM and DRAM, in GB/s. PCIe 5.0 x16
     /// is 64 GB/s on paper and about 50 in practice, which is the default.
     pub swap_gbps: f64,
+    /// Aggregate bandwidth of the cluster SSD pool, in GB/s: 50 striped, 10 for a single drive.
+    pub ssd_gbps: f64,
+    /// The shared fabric every migration crosses, in GB/s. Zero is unlimited: a transfer then runs at
+    /// its tier's own bandwidth, which is what every run before tiering did.
+    pub fabric_gbps: f64,
     /// Draft tokens per sequence per step from a small speculating model, verified in the same step.
     /// Zero is off. Verification is compute over N extra tokens per sequence, prefill-class work, and
     /// that is the cost side of speculation: it grows with the batch while the gain does not.
@@ -118,11 +123,25 @@ impl CostModel {
     /// a swap is never free.
     #[inline]
     pub fn swap_ns(&self, tokens: u64) -> Nanos {
+        self.transfer_ns(tokens, self.swap_gbps)
+    }
+
+    /// `swap_ns` for the SSD tier: the same bytes over the pool's aggregate bandwidth.
+    #[inline]
+    pub fn ssd_ns(&self, tokens: u64) -> Nanos {
+        self.transfer_ns(tokens, self.ssd_gbps)
+    }
+
+    /// Time to move `tokens` over a tier of `gbps`, capped by the shared fabric when there is one.
+    /// Section 7.2 drops device latency: it is three orders of magnitude under the transfer time.
+    #[inline]
+    pub fn transfer_ns(&self, tokens: u64, gbps: f64) -> Nanos {
         if tokens == 0 {
             return 0;
         }
+        let gbps = if self.fabric_gbps > 0.0 { gbps.min(self.fabric_gbps) } else { gbps };
         let bytes = tokens as f64 * KV_BYTES_PER_TOKEN as f64;
-        ((bytes / (self.swap_gbps * 1e9)) * 1e9).max(1.0) as Nanos
+        ((bytes / (gbps * 1e9)) * 1e9).max(1.0) as Nanos
     }
 
     /// Effective batch limit: the sequence cap, or the token budget, whichever binds first.
@@ -180,6 +199,8 @@ mod tests {
             prefill_tokens_per_s: 28_286.0,
             disable_decode,
             swap_gbps: 50.0,
+            ssd_gbps: 50.0,
+            fabric_gbps: 0.0,
             spec_draft_tokens,
             spec_accept_rate: 0.7,
         }
