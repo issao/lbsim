@@ -116,6 +116,10 @@ export function Home() {
           <a href="reports/18-bode.html">18. The staleness loop's Bode plot: gain, phase, and where it oscillates on its own</a>
           <p>A 30% sine on offered load swept from 0.01 to 1 Hz; least_requests on a 1 s / 200 ms delayed snapshot over 32 replicas.</p>
         </li>
+        <li>
+          <a href="reports/19-tiering.html">19. KV memory tiering: a DRAM pool, an SSD pool under it, and the fabric they share</a>
+          <p>The spiral's swap traffic against a quarter-sized cluster DRAM pool, then a 10 GB/s SSD tier beneath it, then both behind a 10 GB/s shared fabric that serialises every migration.</p>
+        </li>
       </ul>
       <p>
         Every number on every page is engine data. A quantity the engine does not simulate yet shows a dash and says

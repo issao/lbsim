@@ -745,6 +745,11 @@ pub const DEMOS: &[Demo] = &[
         files: &["bode.txt"],
         sweep: Some(("perturb_frequency_hz", &["0.01", "0.02", "0.05", "0.1", "0.2", "0.5", "1.0"])),
     },
+    Demo {
+        group: "19-tiering",
+        files: &["tier_dram.txt", "tier_dram_ssd.txt", "tier_contended.txt"],
+        sweep: None,
+    },
 ];
 
 /// Set one key, through the text form so there is exactly one place that knows the key names. The

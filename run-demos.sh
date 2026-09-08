@@ -85,5 +85,9 @@ $S sweep scenarios/bode.txt --over perturb_frequency_hz=0.01,0.02,0.05,0.1,0.2,0
            --out out/18-bode.html --telemetry out/18-bode --telemetry-budget-mb 64
 python3 bench/bode.py
 
+echo; echo "== 19. KV memory tiering: a cluster DRAM pool, an SSD pool under it, and a 10 GB/s fabric they share =="
+$S compare scenarios/tier_dram.txt scenarios/tier_dram_ssd.txt scenarios/tier_contended.txt \
+           --out out/19-tiering.html
+
 echo; echo "reports in out/"
 echo "for machine-readable telemetry, add: --telemetry out/NAME.tele [--telemetry-budget-mb N]"
