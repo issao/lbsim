@@ -10,7 +10,7 @@ use lbsim::scenario::Scenario;
 use lbsim::sim;
 
 /// Every key `parse` accepts, which is also every key `to_text` must emit.
-const KEYS: [&str; 70] = [
+const KEYS: [&str; 73] = [
     "name", "seed", "duration_s", "warmup_s", "replicas", "max_batch", "step_base_ms",
     "step_per_seq_ms", "step_per_kv_ktoken_ms", "kv_capacity_tokens", "prefill_tokens_per_s",
     "step_token_budget", "max_queue", "disable_decode", "preemption", "preemption_victim", "scheduling",
@@ -18,7 +18,8 @@ const KEYS: [&str; 70] = [
     "output_cv", "long_probability", "long_prompt_mean", "long_output_mean", "session_turns_mean",
     "session_think_s", "prefix_roots", "prefix_root_tokens", "prefix_zipf_s", "session_fork_rate",
     "prefix_cache_tokens", "affinity_max_load_ratio", "affinity_fallback_choices", "load_step_at_s",
-    "load_step_factor", "load_step_until_s", "routing", "p2c_choices", "probe_live",
+    "load_step_factor", "load_step_until_s", "perturbation", "perturb_amplitude", "perturb_frequency_hz",
+    "routing", "p2c_choices", "probe_live",
     "admission", "admission_headroom", "fair_share_burst",
     "ejection", "ejection_ratio", "ejection_views", "ejection_cooldown_s",
     "tenants", "tenant_weights", "tenant_demand",
@@ -74,6 +75,9 @@ fn all_fields_distinct() -> Scenario {
         load_step_at_s: 21.0,
         load_step_factor: 2.5,
         load_step_until_s: 41.0,
+        perturbation: "sine".into(),
+        perturb_amplitude: 0.45,
+        perturb_frequency_hz: 0.125,
         routing: "least_queue_tokens".into(),
         p2c_choices: 5,
         probe_live: true,
@@ -151,6 +155,9 @@ fn to_text_then_parse_preserves_every_field() {
     assert_eq!(got.load_step_at_s, want.load_step_at_s);
     assert_eq!(got.load_step_factor, want.load_step_factor);
     assert_eq!(got.load_step_until_s, want.load_step_until_s);
+    assert_eq!(got.perturbation, want.perturbation);
+    assert_eq!(got.perturb_amplitude, want.perturb_amplitude);
+    assert_eq!(got.perturb_frequency_hz, want.perturb_frequency_hz);
     assert_eq!(got.routing, want.routing);
     assert_eq!(got.p2c_choices, want.p2c_choices);
     assert_eq!(got.probe_live, want.probe_live);

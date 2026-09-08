@@ -111,6 +111,12 @@ pub struct Scenario {
     pub load_step_at_s: f64,
     pub load_step_factor: f64,
     pub load_step_until_s: f64,
+    /// M7's perturbation input: `none`, or `sine`, which multiplies the arrival rate by
+    /// `1 + perturb_amplitude · sin(2π · perturb_frequency_hz · t)`, so the fleet's response to a
+    /// known input frequency can be measured and the staleness loop's Bode plot drawn.
+    pub perturbation: String,
+    pub perturb_amplitude: f64,
+    pub perturb_frequency_hz: f64,
 
     // -- policies ------------------------------------------------------------
     // Names resolve through the registries in `sim_policy`; an unknown name is an error at run start.
@@ -360,6 +366,9 @@ impl Default for Scenario {
             load_step_at_s: -1.0,
             load_step_factor: 1.0,
             load_step_until_s: -1.0,
+            perturbation: "none".into(),
+            perturb_amplitude: 0.3,
+            perturb_frequency_hz: 0.05,
             routing: "round_robin".into(),
             p2c_choices: 2,
             probe_live: false,
@@ -476,6 +485,9 @@ impl Scenario {
                 "load_step_at_s" => s.load_step_at_s = f("load_step_at_s"),
                 "load_step_factor" => s.load_step_factor = f("load_step_factor"),
                 "load_step_until_s" => s.load_step_until_s = f("load_step_until_s"),
+                "perturbation" => s.perturbation = v.clone(),
+                "perturb_amplitude" => s.perturb_amplitude = f("perturb_amplitude"),
+                "perturb_frequency_hz" => s.perturb_frequency_hz = f("perturb_frequency_hz"),
                 "routing" => s.routing = v.clone(),
                 "p2c_choices" => s.p2c_choices = f("p2c_choices") as usize,
                 "probe_live" => s.probe_live = v == "true",
@@ -655,6 +667,7 @@ impl Scenario {
     pub fn override_kind(key: &str) -> OverrideKind {
         match key {
             "arrival_rps" | "arrival_rps_per_replica" | "load_step_at_s" | "load_step_factor" | "load_step_until_s"
+            | "perturbation" | "perturb_amplitude" | "perturb_frequency_hz"
             | "prompt_mean" | "prompt_cv" | "output_mean" | "output_cv"
             | "long_probability" | "long_prompt_mean" | "long_output_mean"
             | "session_turns_mean" | "session_think_s" | "tenant_demand"
@@ -704,7 +717,8 @@ impl Scenario {
              session_think_s = {}\nprefix_roots = {}\nprefix_root_tokens = {}\nprefix_zipf_s = {}\n\
              session_fork_rate = {}\nprefix_cache_tokens = {}\naffinity_max_load_ratio = {}\n\
              affinity_fallback_choices = {}\nload_step_at_s = {}\n\
-             load_step_factor = {}\nload_step_until_s = {}\nrouting = {}\np2c_choices = {}\n\
+             load_step_factor = {}\nload_step_until_s = {}\nperturbation = {}\n\
+             perturb_amplitude = {}\nperturb_frequency_hz = {}\nrouting = {}\np2c_choices = {}\n\
              probe_live = {}\nadmission = {}\nadmission_headroom = {}\nfair_share_burst = {}\n\
              ejection = {}\nejection_ratio = {}\nejection_views = {}\nejection_cooldown_s = {}\n\
              tenants = {}\ntenant_weights = {}\ntenant_demand = {}\n\
@@ -726,7 +740,8 @@ impl Scenario {
             self.session_think_s, self.prefix_roots, self.prefix_root_tokens, self.prefix_zipf_s,
             self.session_fork_rate, self.prefix_cache_tokens, self.affinity_max_load_ratio,
             self.affinity_fallback_choices, self.load_step_at_s,
-            self.load_step_factor, self.load_step_until_s, self.routing, self.p2c_choices,
+            self.load_step_factor, self.load_step_until_s, self.perturbation,
+            self.perturb_amplitude, self.perturb_frequency_hz, self.routing, self.p2c_choices,
             self.probe_live, self.admission, self.admission_headroom, self.fair_share_burst,
             self.ejection, self.ejection_ratio, self.ejection_views, self.ejection_cooldown_s,
             self.tenants,

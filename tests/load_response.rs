@@ -207,3 +207,33 @@ fn low_load_slo_misses_are_caused_by_inter_token_latency_not_congestion() {
          chunk budget or the prefill rate has moved"
     );
 }
+
+/// The M7 perturbation input: `perturbation = none` must leave the arrival rate exactly `arrival_rps`
+/// at every instant, so every existing golden fingerprint stays where it is; `sine` must modulate it
+/// by `1 + a·sin(2πft)`, peaking at a quarter period. The three keys round-trip through `to_text`,
+/// because a sweep over `perturb_frequency_hz` goes through that text form.
+#[test]
+fn a_sine_perturbation_modulates_the_arrival_rate_and_none_leaves_it_alone() {
+    use lbsim::workload::Workload;
+
+    let mut sc = Scenario::default();
+    sc.arrival_rps = 70.0;
+    for t in [0.0, 0.5, 5.0, 15.0, 60.0, 239.9] {
+        assert_eq!(Workload::rate_at(&sc, t), 70.0, "perturbation = none moved the rate at t = {t}");
+    }
+
+    sc.perturbation = "sine".into();
+    sc.perturb_amplitude = 0.3;
+    sc.perturb_frequency_hz = 0.05;
+    let peak = Workload::rate_at(&sc, 5.0);
+    let trough = Workload::rate_at(&sc, 15.0);
+    assert!((peak - 70.0 * 1.3).abs() < 1e-9, "peak at a quarter period: {peak}");
+    assert!((trough - 70.0 * 0.7).abs() < 1e-9, "trough at three quarters: {trough}");
+
+    let back = Scenario::parse(&sc.to_text()).expect("the perturbation keys did not round-trip");
+    assert_eq!(back.perturbation, "sine");
+    assert_eq!(back.perturb_amplitude, 0.3);
+    assert_eq!(back.perturb_frequency_hz, 0.05);
+    let parsed = Scenario::parse("perturbation = sine\nperturb_amplitude = 0.5\nperturb_frequency_hz = 0.2\n").unwrap();
+    assert_eq!((parsed.perturb_amplitude, parsed.perturb_frequency_hz), (0.5, 0.2));
+}
