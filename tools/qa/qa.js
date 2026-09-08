@@ -245,14 +245,36 @@ const finalLine = extraFail => {
     await page.close();
   }
 
-  // f. A/B and explicit replay
+  // f. A/B live, then explicit replay
   {
+    // U96: on a server the A/B view is two live runs from one scenario text and one seed, differing
+    // only in policy; the harness reads the ids the page shows and the seeds the page actually sent.
     const { page, log, body, until } = await fresh('#/ab');
-    const t = await until(async () => { const b = await body(); return b.length > 200 && !/waiting for the first sample/i.test(b) ? b : null; }, 8000) || await body();
-    check('A/B renders', t.length > 200 && !/waiting for the first sample/i.test(t), t.slice(0, 120));
+    const runPair = async () => { const m = (await body()).match(/run ([A-Za-z0-9_-]+) vs ([A-Za-z0-9_-]+)/); return m ? [m[1], m[2]] : null; };
+    const ids = await until(runPair, 20000);
+    const t = await body();
+    const seedShown = (t.match(/same seed (\d+)/) || [])[1];
+    const sent = log.startRuns.map(b => (b.match(/seed\s*=\s*(\d+)/) || [])[1]);
+    const routings = log.startRuns.map(b => (b.match(/routing\s*=\s*([a-z_0-9]+)/) || [])[1]);
+    check('A/B live: two runs streaming with equal seeds',
+      Boolean(ids) && ids[0] !== ids[1] && sent.length === 2 && sent[0] && sent[0] === sent[1] && sent[0] === seedShown && routings[0] !== routings[1],
+      `ids ${JSON.stringify(ids)}, seeds sent ${JSON.stringify(sent)}, shown ${seedShown}, routing ${JSON.stringify(routings)}`);
+    const cursor = () => page.$eval('[role=slider]', el => Number(el.getAttribute('aria-valuenow'))).catch(() => NaN);
+    const c0 = await until(async () => { const c = await cursor(); return c > 0 ? c : null; }, 15000);
+    await sleep(4000);
+    const c1 = await cursor();
+    check('A/B live: cursor advances', c1 - c0 >= 2, `${c0} -> ${c1} s over 4 s`);
+    const nonZero = async () => {
+      const cells = await page.$$eval('.diff-table td.n', els => els.map(e => e.textContent.trim())).catch(() => []);
+      return cells.some(c => /[1-9]/.test(c)) ? cells : null;
+    };
+    // The difference is read once both runs have ten seconds of samples; before that a zero row is honest.
+    await until(async () => (await cursor()) >= 10, 30000);
+    const cells = await until(nonZero, 10000);
+    check('A/B live: difference panel non-zero', Boolean(cells), cells ? cells.slice(0, 6).join(' ') : (await body()).slice(0, 160));
     const abBadge = await badge(page);
-    check('A/B: badge mock', /^mock — /.test(abBadge || ''), abBadge);
-    check('A/B: no js errors', log.errs.length === 0, log.errs.slice(0, 3).join(' | '));
+    check('A/B live: badge live', /^live — /.test(abBadge || ''), abBadge);
+    check('A/B live: no js errors', log.errs.length === 0, log.errs.slice(0, 3).join(' | '));
     await page.close();
   }
   {
