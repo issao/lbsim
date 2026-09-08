@@ -141,7 +141,11 @@ never the right mechanism.
 Building toward one goal, set by Issao on 2026-09-06: *"keep going until we get to the point that all
 selected dynamics are live demoable in the dashboard and in the showcase page."* A dynamic counts when it
 runs live through the Ingress endpoint in the dashboard and has a showcase walkthrough; `docs/execution-graph.md`'s
-status line carries the count. The simulator runs, ten dynamics reproduce as reports, the workspace test suite passes, and the stand-in dashboard builds. Counts live in `STATUS.md`, not here, because a number in this file goes stale within the hour.
+status line carries the count. The simulator runs, twelve dynamics reproduce as reports, recordings and live runs, the workspace test suite
+passes, and the dashboard has two data modes only, **live** (a run on the Ingress server) and **replay** (a
+recording of a real run). The browser mock engine that stood in for the engine on day one is gone, per Issao on
+2026-09-07: *"let's remove all invented numbers everywhere, every reference to mock in the ui, every link for a
+mock data view."* A field the engine does not produce renders "—" with "not simulated yet"; nothing invents a number. Counts live in `STATUS.md`, not here, because a number in this file goes stale within the hour.
 See `STATUS.md`. Work is delegated across long-running agents with strict file ownership:
 
 | Agent | Owns | Must not touch |
