@@ -57,7 +57,7 @@ export function ObservationPanel({
         {tab === 'utilization' ? (
           <Utilization frames={frames} frame={frame} config={run.config} highlight={highlight} />
         ) : null}
-        {tab === 'traces' ? <Traces /> : null}
+        {tab === 'traces' ? <Traces run={run} /> : null}
       </div>
     </section>
   );

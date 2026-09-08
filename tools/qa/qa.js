@@ -117,8 +117,18 @@ const finalLine = extraFail => {
       const words = await page.$$eval('.panel, .note', els => els.map(e => e.textContent).filter(t => /\bmock\b/i.test(t)).length);
       if (words) bad.push(`${tabId}: ${words} element(s) say mock`);
       if (tabId === 'observe:traces') {
-        const t = await page.$eval('#trace-list', el => el.textContent.trim()).catch(() => '');
-        if (!/not simulated yet/.test(t)) bad.push(`traces: expected "not simulated yet", saw ${JSON.stringify(t.slice(0, 40))}`);
+        // U104: the tab lists the engine's own sampled journeys. Live, the first page arrives with
+        // the first completions; on a recording, traces.jsonl is one fetch. A recording exported
+        // before traces existed says so in words, which is not an invented number.
+        const end = Date.now() + 10000;
+        let rows = 0, t = '';
+        for (;;) {
+          rows = await page.$$eval('#trace-list tbody tr', trs => trs.length).catch(() => 0);
+          t = await page.$eval('#trace-list', el => el.textContent.trim()).catch(() => '');
+          if (rows > 0 || /carries no traces/.test(t) || Date.now() > end) break;
+          await sleep(250);
+        }
+        if (rows === 0 && !/carries no traces/.test(t)) bad.push(`traces: no sampled request listed after 10 s; panel says ${JSON.stringify(t.slice(0, 80))}`);
       }
       if (tabId === 'observe:machine') {
         const rows = await page.$$eval('#replicas tbody tr:not([aria-hidden])', trs => trs.map(tr => [...tr.querySelectorAll('td')].map(td => td.textContent.trim())));
@@ -180,6 +190,27 @@ const finalLine = extraFail => {
     const tags = await page.$$eval('.mock-tag', els => els.length);
     check('dashboard: no per-panel tags (U100)', tags === 0, `${tags} .mock-tag`);
     await machines(page, until, 'dashboard');
+    // U104: the Traces tab lists journeys the engine sampled, and every replica it names is one
+    // the fleet has. The ready count is the Cluster tab's tile, the fleet row's own number.
+    {
+      await page.click('button[data-tab="observe:cluster"]');
+      const ready = await until(async () => {
+        const v = await page.$$eval('.tile', els => {
+          const t = els.find(e => (e.querySelector('.tile-label') || {}).textContent?.trim() === 'ready');
+          return t ? t.querySelector('.tile-value')?.textContent?.trim() : null;
+        }).catch(() => null);
+        return v && /^\d+$/.test(v) ? Number(v) : null;
+      }, 5000);
+      await page.click('button[data-tab="observe:traces"]');
+      const seen = await until(async () => {
+        const rows = await page.$$eval('#trace-list tbody tr', trs => trs.length).catch(() => 0);
+        return rows > 0 ? rows : null;
+      }, 10000);
+      const ids = await page.$$eval('#trace-list [data-replica]', els => els.map(e => Number(e.getAttribute('data-replica')))).catch(() => []);
+      const strays = ready === null ? ids : ids.filter(id => !(Number.isInteger(id) && id >= 0 && id < ready));
+      check('traces: live run lists sampled requests with real replica ids (U104)', Boolean(seen) && ready !== null && ready > 0 && strays.length === 0,
+        seen ? `${seen} rows, ${ids.length} replica ids shown, ${ready} ready${strays.length ? `, strays ${strays.slice(0, 5).join(',')}` : ''}` : ready === null ? 'no ready tile on the Cluster tab' : 'no trace row within 10 s');
+    }
     await noInvented(page, 'dashboard: no invented numbers on live (U95b)');
 
     // U106 (Issao: "where do i tune step token budget?"): the Cluster tab's physics knobs are

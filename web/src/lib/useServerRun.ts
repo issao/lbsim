@@ -34,6 +34,8 @@ import {
   type StreamPhase,
   type SubscriptionHandle,
   type WireDistribution,
+  type WireRequestTrace,
+  type OutcomeName,
   fleetTarget,
   relSeconds,
   scenarioConfigToWire,
@@ -846,6 +848,69 @@ export function useServerTarget(
   }, [c, runId, key, samplesPerSimSecond]);
 
   return samples;
+}
+
+/** How often the Traces tab asks `GetTraces` again while it is open. A poll, not a stream: the
+ * proto has no trace subscription, and a page of a hundred journeys every two seconds is bounded. */
+export const TRACES_POLL_MS = 2000;
+/** One page of the Traces tab; the server's own default when unset, and the ring holds twenty. */
+export const TRACES_PAGE = 100;
+
+export interface TraceFilters {
+  outcome?: OutcomeName;
+  minE2eNs?: bigint;
+  tenantId?: bigint;
+  limit?: number;
+}
+
+export interface ServerTraces {
+  /** The last page the server answered, newest first, exactly as decoded. */
+  traces: WireRequestTrace[];
+  /** How many polls have answered, so a panel can tell "none yet" from "none sampled". */
+  answered: number;
+  error: string | null;
+}
+
+/**
+ * The sampled journeys of one run, for the Traces tab: `GetTraces` every `TRACES_POLL_MS` while
+ * mounted, cancelled on unmount or when the run or the filters change. Sibling of `useServerTarget`:
+ * one entity, one bounded stream of reads, closed by the component's own lifecycle.
+ */
+export function useServerTraces(runId: string | null, filters: TraceFilters = {}, client?: IngressClient): ServerTraces {
+  const mode = useMemo(() => serverMode(), []);
+  const c = useMemo(() => client ?? new IngressClient({ baseUrl: mode.baseUrl }), [client, mode.baseUrl]);
+  const [state, setState] = useState<ServerTraces>({ traces: [], answered: 0, error: null });
+  // Keyed on the filter values, not the object, so a re-render with equal filters keeps the poll.
+  const key = `${filters.outcome ?? ''}:${filters.minE2eNs ?? ''}:${filters.tenantId ?? ''}:${filters.limit ?? TRACES_PAGE}`;
+  const filtersRef = useRef(filters);
+  filtersRef.current = filters;
+
+  useEffect(() => {
+    setState({ traces: [], answered: 0, error: null });
+    if (!runId) return;
+    const ac = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const tick = async () => {
+      try {
+        const f = filtersRef.current;
+        const traces = await c.getTraces(runId, { ...f, limit: f.limit ?? TRACES_PAGE }, ac.signal);
+        if (ac.signal.aborted) return;
+        setState((prev) => ({ traces, answered: prev.answered + 1, error: null }));
+      } catch (e) {
+        if (ac.signal.aborted) return;
+        const message = e instanceof IngressError && e.httpStatus === 501 ? SERVER_NOT_YET : e instanceof Error ? e.message : String(e);
+        setState((prev) => ({ ...prev, answered: prev.answered + 1, error: message }));
+      }
+      if (!ac.signal.aborted) timer = setTimeout(() => void tick(), TRACES_POLL_MS);
+    };
+    void tick();
+    return () => {
+      ac.abort();
+      if (timer !== null) clearTimeout(timer);
+    };
+  }, [c, runId, key]);
+
+  return state;
 }
 
 /** What the server serves on a `SCOPE_REPLICA` target (`REPLICA_METRICS` in sim-ingress/src/run.rs). */
