@@ -13,6 +13,9 @@
 13-herd-fleet/02-replicas___128.summary.csv                  fingerprint=5754949303558349045    events=1073633   summary_md5=d0a7b7c7b26a
 13-herd-fleet/03-replicas___256.summary.csv                  fingerprint=5360686017835867781    events=1444348   summary_md5=e1ddab339908
 13-herd-fleet/04-replicas___512.summary.csv                  fingerprint=12394225821938253623   events=1456724   summary_md5=b79985cee6cf
+14-affinity/00-affinity_off.summary.csv                      fingerprint=9480157343088694966    events=3023847   summary_md5=cc572cd57dab
+14-affinity/01-affinity_spread.summary.csv                   fingerprint=2180112783818850054    events=3033714   summary_md5=39b061c032df
+14-affinity/02-affinity_sticky.summary.csv                   fingerprint=13484650619450664251   events=3040354   summary_md5=b9137df87eaa
 2-staleness/00-telemetry_interval_ms___100.summary.csv       fingerprint=16393865130379415143   events=352465    summary_md5=c09138c8d42c
 2-staleness/01-telemetry_interval_ms___250.summary.csv       fingerprint=16416231017560174181   events=307351    summary_md5=23480d60a3ee
 2-staleness/02-telemetry_interval_ms___500.summary.csv       fingerprint=11216039682751027244   events=279763    summary_md5=a21fee97deba
@@ -61,6 +64,7 @@ h-h8-retry-storm/00-h8_retry_storm.summary.csv               fingerprint=4264169
 12-forecast-load.html                                        html_md5=86adc182f694
 13-forecast-latency.html                                     html_md5=399a015492ae
 13-herd-fleet.html                                           html_md5=f27aa3d107c4
+14-affinity.html                                             html_md5=45b032a716a5
 2-staleness.html                                             html_md5=270b4c12e04d
 3-chunking.html                                              html_md5=743b2ccf7fe8
 4-load-curve.html                                            html_md5=764d90715347

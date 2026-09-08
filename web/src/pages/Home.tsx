@@ -96,6 +96,10 @@ export function Home() {
           <a href="reports/13-herd-fleet.html">13. Herding gets worse as the fleet grows</a>
           <p>least_requests over 32–512 replicas at the same offered/capacity ratio and 250 ms telemetry.</p>
         </li>
+        <li>
+          <a href="reports/14-affinity.html">14. Prefix affinity against load spreading</a>
+          <p>p2c against prefix affinity at max load ratio 1.05 and 2.2, same prefix topology.</p>
+        </li>
       </ul>
 
       <h2 className="section-label" style={{ fontSize: 13, fontWeight: 600, margin: '26px 0 6px' }}>
