@@ -21,11 +21,11 @@
 import { useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import type { FrameSource, RunHandle, RunSourceInfo } from './useRun';
 import { STEP_S } from './useRun';
-import type { FleetEvent, Frame } from './engine';
+import type { FleetEvent, Frame, ReplicaSample } from './engine';
 import type { ScenarioConfig } from './config';
 import { cloneConfig, diffConfig, FIELD_LABEL } from './config';
 import type { RewindResponse, Target as UiTarget, UpdateResponse } from './types';
-import { frameFromUpdate, type ReplayFrame } from './adapter';
+import { frameFromUpdate, replicaFromUpdate, type ReplayFrame } from './adapter';
 import {
   IngressClient,
   IngressError,
@@ -765,4 +765,81 @@ export function useServerTarget(
   }, [c, runId, key, samplesPerSimSecond]);
 
   return samples;
+}
+
+/** What the server serves on a `SCOPE_REPLICA` target (`REPLICA_METRICS` in sim-ingress/src/run.rs). */
+const REPLICA_ROW_METRICS: MetricName[] = [
+  'METRIC_QUEUED_SEQS',
+  'METRIC_RUNNING_SEQS',
+  'METRIC_KV_UTILIZATION',
+  'METRIC_KV_TOKENS_RESIDENT',
+  'METRIC_STEP_TIME',
+];
+/** Enough history for a sparkline and a heatmap column per row without holding the run. */
+export const REPLICA_HISTORY = 240;
+
+export interface ServerReplicas {
+  /** The most recent row per replica this hook has ever streamed for the run; a replica that left
+   * the page keeps its last row, so a sort by a live column stays put instead of flapping. */
+  latest: Map<number, ReplicaSample>;
+  /** Oldest first, capped at `REPLICA_HISTORY` per replica. */
+  history: Map<number, ReplicaSample[]>;
+}
+
+const EMPTY_REPLICAS: ServerReplicas = { latest: new Map(), history: new Map() };
+
+/**
+ * One subscription per replica id, for the machine-level page. The fleet stream carries no
+ * per-replica rows (a subscription names exactly one entity), so the page asks for the rows it
+ * shows and nothing more: the wire is bounded by what is on screen, which is the ui spec's promise.
+ * Keyed on the id *set*, so re-sorting a page over the same replicas does not close and reopen
+ * anything; paging to other ids does.
+ */
+export function useServerReplicas(
+  runId: string | null,
+  ids: number[],
+  samplesPerSimSecond: number,
+  client?: IngressClient
+): ServerReplicas {
+  const mode = useMemo(() => serverMode(), []);
+  const c = useMemo(() => client ?? new IngressClient({ baseUrl: mode.baseUrl }), [client, mode.baseUrl]);
+  const [state, setState] = useState<ServerReplicas>(EMPTY_REPLICAS);
+  const key = JSON.stringify([...new Set(ids)].sort((a, b) => a - b));
+
+  useEffect(() => {
+    setState(EMPTY_REPLICAS);
+  }, [c, runId]);
+
+  useEffect(() => {
+    if (!runId) return;
+    const handles = (JSON.parse(key) as number[]).map((id) =>
+      subscribeToTarget(c, {
+        runId,
+        target: uiTargetToWire({ scope: 'REPLICA', id }),
+        metrics: REPLICA_ROW_METRICS,
+        samplesPerSimSecond,
+        percentiles: DEFAULT_PERCENTILES,
+        leaseNs: LEASE_NS,
+        onUpdate: (u) => {
+          const row = replicaFromUpdate(u);
+          setState((prev) => {
+            const latest = new Map(prev.latest);
+            latest.set(id, row);
+            const history = new Map(prev.history);
+            const had = prev.history.get(id) ?? [];
+            const next = had.length >= REPLICA_HISTORY ? had.slice(had.length - REPLICA_HISTORY + 1) : had.slice();
+            next.push(row);
+            history.set(id, next);
+            return { latest, history };
+          });
+        },
+      })
+    );
+    return () => {
+      for (const h of handles) h.close();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [c, runId, key, samplesPerSimSecond]);
+
+  return state;
 }

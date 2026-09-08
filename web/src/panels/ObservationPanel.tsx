@@ -55,7 +55,13 @@ export function ObservationPanel({
           <ServiceQuality frames={frames} frame={frame} config={run.config} highlight={highlight} />
         ) : null}
         {tab === 'machine' ? (
-          <MachineLevel frames={frames} frame={frame} config={run.config} highlight={highlight} />
+          <MachineLevel
+            frames={frames}
+            frame={frame}
+            config={run.config}
+            highlight={highlight}
+            live={run.source?.kind === 'server' && run.source.runId ? { runId: run.source.runId } : undefined}
+          />
         ) : null}
         {tab === 'utilization' ? (
           <Utilization frames={frames} frame={frame} config={run.config} highlight={highlight} />
