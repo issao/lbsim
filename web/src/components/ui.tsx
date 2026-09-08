@@ -155,6 +155,7 @@ export function Slider({
   onChange,
   format,
   note,
+  readonly,
 }: {
   label: string;
   value: number;
@@ -164,19 +165,24 @@ export function Slider({
   onChange: (v: number) => void;
   format?: (v: number) => string;
   note?: ReactNode;
+  readonly?: boolean;
 }) {
   return (
     <label className="field">
       <span className="field-label">{label}</span>
       <span className="field-value">{format ? format(value) : value}</span>
-      <input
-        type="range"
-        min={min}
-        max={max}
-        step={step}
-        value={value}
-        onChange={(e) => onChange(Number(e.target.value))}
-      />
+      {readonly ? (
+        <span className="field-value" />
+      ) : (
+        <input
+          type="range"
+          min={min}
+          max={max}
+          step={step}
+          value={value}
+          onChange={(e) => onChange(Number(e.target.value))}
+        />
+      )}
       {note ? <span className="field-note">{note}</span> : null}
     </label>
   );

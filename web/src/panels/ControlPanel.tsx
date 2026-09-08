@@ -320,6 +320,7 @@ function PoliciesTab({ c, set, dropped }: TabProps) {
         step={100}
         format={(v) => `${v} ms`}
         onChange={(v) => set((d) => { d.slo.ttftMs = v; })}
+        readonly
       />
       <Slider
         label="ITL SLO"
@@ -329,6 +330,7 @@ function PoliciesTab({ c, set, dropped }: TabProps) {
         step={5}
         format={(v) => `${v} ms`}
         onChange={(v) => set((d) => { d.slo.itlMs = v; })}
+        readonly
       />
       <Slider
         label="end-to-end SLO"
@@ -338,6 +340,7 @@ function PoliciesTab({ c, set, dropped }: TabProps) {
         step={5}
         format={(v) => `${v} s`}
         onChange={(v) => set((d) => { d.slo.e2eS = v; })}
+        readonly
       />
       <p className="note inset">
         These three move goodput and attainment without re-simulating anything: {VIEW_ONLY_EXPLANATION['slo.ttftMs']}.
@@ -548,6 +551,7 @@ function RunTab({ run, set }: { run: RunHandle; set: (m: (d: ScenarioConfig) => 
         format={(v) => `${v}/sim s`}
         onChange={(v) => set((d) => { d.samplesPerSimSecond = v; })}
         note="points per simulated second, so chart density does not change when the speed does. View only."
+        readonly
       />
 
       <div className="sep" />
