@@ -1167,6 +1167,15 @@ Two invariants worth enforcing in CI rather than in review:
 - `sim-ingress` must not depend on `sim-model` or `sim-physics`. If it can compute replica
   physics, someone eventually will, and the layer boundary Issao specified will erode.
 
+A seam whose two sides may not depend on each other lives below both: `SchedulingPolicy` and its
+views sit in `crates/sim-core/src/scheduling.rs`, because the engine (`sim-model`) calls it and the
+policies (`sim-policy`) implement it and this table lets neither reach the other, and `sim-policy`
+re-exports it, which is the `sim-leaf-api` precedent applied one layer down (U108, ratified
+2026-09-07). Five seams are pluggable now, each a trait with a generated registry and a scenario key:
+routing (`routing`), admission (`admission`), scheduling (`scheduling`, U108), autoscaling
+(`autoscaling`, U32) and health/ejection (`ejection`, U31b); every one reads the delayed view and
+none can reach mutable simulation state.
+
 ---
 
 ## 11. The system in words
