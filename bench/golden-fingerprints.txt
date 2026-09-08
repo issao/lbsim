@@ -13,9 +13,9 @@
 13-herd-fleet/02-replicas___128.summary.csv                  fingerprint=5754949303558349045    events=1073633   summary_md5=d0a7b7c7b26a
 13-herd-fleet/03-replicas___256.summary.csv                  fingerprint=5360686017835867781    events=1444348   summary_md5=e1ddab339908
 13-herd-fleet/04-replicas___512.summary.csv                  fingerprint=12394225821938253623   events=1456724   summary_md5=b79985cee6cf
-14-affinity/00-affinity_off.summary.csv                      fingerprint=9480157343088694966    events=3023847   summary_md5=cc572cd57dab
-14-affinity/01-affinity_spread.summary.csv                   fingerprint=2180112783818850054    events=3033714   summary_md5=39b061c032df
-14-affinity/02-affinity_sticky.summary.csv                   fingerprint=13484650619450664251   events=3040354   summary_md5=b9137df87eaa
+14-affinity/00-affinity_off.summary.csv                      fingerprint=9480157343088694966    events=3023847   summary_md5=a5ed327ec0c9
+14-affinity/01-affinity_spread.summary.csv                   fingerprint=2180112783818850054    events=3033714   summary_md5=d48ef56f4c3e
+14-affinity/02-affinity_sticky.summary.csv                   fingerprint=13484650619450664251   events=3040354   summary_md5=f814a5b787bc
 15-gray-failure/00-gray_failure_none.summary.csv             fingerprint=11970075920391275844   events=2387257   summary_md5=bc9cb21089e1
 15-gray-failure/01-gray_failure_eject.summary.csv            fingerprint=10337910879895080647   events=2387168   summary_md5=c501c737e6b1
 16-scheduling/00-sched_fifo.summary.csv                      fingerprint=16350867501900761315   events=1743798   summary_md5=1322b95d9f4f
@@ -71,7 +71,7 @@ h-h8-retry-storm/00-h8_retry_storm.summary.csv               fingerprint=4264169
 12-forecast-load.html                                        html_md5=86adc182f694
 13-forecast-latency.html                                     html_md5=399a015492ae
 13-herd-fleet.html                                           html_md5=f27aa3d107c4
-14-affinity.html                                             html_md5=45b032a716a5
+14-affinity.html                                             html_md5=f82024f046e9
 15-gray-failure.html                                         html_md5=11e6c6d7dfc3
 16-scheduling.html                                           html_md5=d73cc7f1669c
 17-cascade.html                                              html_md5=6e8cfe08ce83
