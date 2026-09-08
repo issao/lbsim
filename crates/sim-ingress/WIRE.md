@@ -201,6 +201,14 @@ ended — `final`, `no frames` (stopped or failed before its first closed frame)
 `superseded` (a reconnect took over), `closed` (`CloseSubscription`), or `write error: <cause>` — and the
 reason is logged; see the request log below.
 
+`GET /requests.log` answers `text/plain` with the last 512 request lines, oldest first, because the
+deploy identity cannot read Cloud Logging and a stall has to be diagnosable from the outside. One line
+per ingress request, `req <method> <rpc> <status> <ms>ms [run=<id>] [sub=s-<n>]`; for a subscription,
+`sse open sub=s-<n> run=<id>` once the head has gone out and `sse end sub=s-<n> reason=<reason> <ms>ms`
+when the stream returns; and `busy 503 connections=<n>` whenever the accept loop sheds a connection.
+Every line also goes to stderr with a wall-clock prefix, which Cloud Run captures. `/health` and the log
+itself are not logged, and `/health` never touches run state.
+
 ## What `sim-run export` writes, and the decisions it settled
 
 `sim-run export --demos --dir DIR` (and `export <scenario.txt ...>`) writes, under `DIR/runs/`:
