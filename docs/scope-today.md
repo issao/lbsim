@@ -120,7 +120,7 @@ demoted, and two side missions running in parallel. Working order:
 | 5 | Stale-telemetry oscillation, 2 | 0.75 h | **done**, finding 2 |
 | 6 | Retry storm, 4 | 0.5 h | **done**, finding 6 |
 | — | Tests | parallel | **done**, 45 pass |
-| — | Stand-in dashboard | parallel | **done**, `web/` |
+| — | Stand-in dashboard | parallel | **done**, `web/`; its stand-in role ended 2026-09-07 (U100, dcc226d): the mock engine is gone and the dashboard's data modes are live and replay |
 
 Every row was done by 15:00. Findings are numbered in `docs/findings.md`. The reasoning below is kept
 as written, since it is what the decision was made against.

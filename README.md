@@ -3,13 +3,15 @@
 A discrete-event simulator for a cloud LLM inference service. It exists to reproduce the load
 dynamics a real fleet shows, and to score scheduling, load-balancing and traffic-shaping policies for
 performance, service quality and robustness. Rust engine, React dashboard, protobuf interfaces.
-`VISION.md` is the authoritative scope.
+`VISION.md` is the authoritative scope. The dashboard's two data modes are live, a run on the Ingress
+server, and replay of a recorded run; the browser mock that stood in for the engine on day one was
+removed on 2026-09-07 (U100), so nothing on it invents a number.
 
 ## Run it
 
 ```bash
 export PATH="$HOME/local/bin:$HOME/.local/bin:$PATH"   # this sandbox; see docs/toolchain.md
-./run-demos.sh              # six experiments, six self-contained HTML reports in out/
+./run-demos.sh              # twenty experiments, twenty self-contained HTML reports in out/
 tools/build.sh test --workspace             # 73 tests, 3 ignored as known defects; build.sh bounds cargo to two processes machine-wide
 ./check-fingerprints.sh     # every report number byte-identical to bench/golden-fingerprints.txt
 ./check-sensitivity.sh      # the policy ordering must survive 30% cost-model error
@@ -32,7 +34,7 @@ Every run is deterministic: same scenario and seed, byte-identical output. Scena
 | the whole-project plan | `docs/execution-plan.md` |
 | what is being built right now, unit by unit | `docs/execution-graph.md` |
 | the policy arena | `docs/arena.md` spec, `docs/arena-implementation.md` measured, `docs/policy-catalog.md` every policy idea |
-| the dashboard | `docs/ui-spec.md`, `web/README.md`; when it shows real runs, `docs/dashboard-plan.md` |
+| the dashboard | `docs/ui-spec.md`, `web/README.md`; how it came to show real runs, `docs/dashboard-plan.md` |
 | the wire between browser and server | `crates/sim-ingress/WIRE.md` |
 | where the numbers come from | `docs/calibration.md`, `docs/llm-serving-primer.md` |
 | how the agents are staffed | `docs/agent-architecture.md`, ownership table in `CLAUDE.md` |

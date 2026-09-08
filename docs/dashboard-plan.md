@@ -2,7 +2,9 @@
 
 Written 2026-09-06 16:10 PDT at Issao's request, to scrutinise why the first dashboard showing real
 runs is estimated at 19:00 and not sooner. Owner of the estimate: the tech lead. Owner of this file: the
-main agent, until the tech lead's plan supersedes it.
+main agent, until the tech lead's plan supersedes it. **Read as history:** the path below was walked,
+and the stand-in's role ended on 2026-09-07 (U100, dcc226d) when the browser mock engine was deleted;
+the dashboard's data modes are live and replay, and a field the engine does not produce renders "—".
 
 ## 1. What is between the engine and the panels today
 

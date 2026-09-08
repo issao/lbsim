@@ -1,13 +1,22 @@
 # TASKS — things that need Issao
 
-Last updated: 2026-09-07 20:25 PDT by Claude.
+Last updated: 2026-09-08 00:35 PDT by Claude.
+
+**2026-09-08 00:35 PDT, from git and gcloud, by main's docs agent (housekeeping is not running tonight).** The tech lead ran two dynamics
+lanes and the dashboard units from 21:00 to 23:54 on 2026-09-07: 38 units landed, among them eight new demos (13–20) and the third, fourth and fifth
+pluggable seams (scheduling U108, health/ejection U31b, autoscaling U32); the mock dashboard is gone (U100, live and replay only); findings 10–17
+are in `docs/findings.md` as of this round. The graph at 818b34a reads RUNNING, 115 done, waiting for U30 and U32, both of which have since
+landed (192c6e0, e703f6a), then STOPPED. Deployed: `lbsim-00017-2wq` at 23:14 (interim), and `lbsim-00018-2hv` created 00:25 and rolling out after
+two failed image builds (23:53, 00:05) and a diagnostic build that succeeded at 00:16; `STATUS.md` has the hashes. Two things need a word from
+you: item 1, one IAM grant so build failures can be read, and item 3, whose default is now keep. Decisions the units left with main, not
+you, are listed under section 6.
 
 **STOPPED 2026-09-07 20:25 PDT, per main: nothing else needed tonight.** The tech lead stopped at 20:24 with 77 done, 0 in flight, 13 queued; ten units
 and three deploys tonight; your whole morning instruction, follow-ups included, is on <https://lbsim.ai> as of `lbsim-00016-nbc` (20:23). Resume by
-a message from main; agents re-spawned from `docs/agents/`. One thing still needs a word from you, item 2. Main's three harness runs against
+a message from main; agents re-spawned from `docs/agents/`. One thing still needed a word from you, item 2 then (item 3 now). Main's three harness runs against
 `lbsim-00016-nbc` were in progress at the stop; main holds the counts.
 
-**RESUMED 2026-09-07 19:13 PDT** at your "resume", relayed by main. The pause (11:22–19:13, quota) changed nothing on `master` but the tech lead's graph checkpoint (1a58186). The tech lead is `a56ff1d3950e7375f` now, resuming U79–U83 from the four WIP branches; U80 (Home in Live / Replay / Mock sections) landed at 023672d, 19:13, not yet deployed; `STATUS.md` has their state. Everything below stands as it was; one thing needs a word from you tonight, item 2.
+**RESUMED 2026-09-07 19:13 PDT** at your "resume", relayed by main. The pause (11:22–19:13, quota) changed nothing on `master` but the tech lead's graph checkpoint (1a58186). The tech lead is `a56ff1d3950e7375f` now, resuming U79–U83 from the four WIP branches; U80 (Home in Live / Replay / Mock sections) landed at 023672d, 19:13, not yet deployed; `STATUS.md` has their state. Everything below stands as it was; one thing needs a word from you tonight, item 2 (item 3 since the renumbering of 2026-09-08).
 
 **Resumed 2026-09-07 11:17 PDT.** The fleet stopped at 21:00 on 2026-09-06 at your request (*"we are approaching
 limit... tie up loose ends... give me a doc summarizing the state and most interesting outcomes with deep
@@ -25,7 +34,24 @@ findings, the graph, the deployed site and the catalog. On `master` since 5da8a6
 
 **If you say nothing:** the agents resume tomorrow from their files with the graph's queue as is.
 
-## 1. Review the `TraceSpan` extension in `proto/lbsim/v1/metrics.proto`
+## 1. Grant the deploy identity `roles/logging.viewer`, as yourself
+
+The moment named in the "later" list (item 7) has come. Three image builds failed tonight on the report step with a bare exit code:
+23:53 exit 127 (python3 missing from the image), 00:05 exit 2 (`bench/bode.py` not in the image), 00:30 exit 1 (069513de, cause pending). The deploy
+identity cannot read Cloud Build's log, so each was diagnosed by reading the Dockerfile and the script instead of the error, and the
+workaround now on `master` (682f35a) is a build whose report step writes its own log into the image at `/reports/build.log` and does
+not fail the build. Reading the log is one grant, and only you can make it:
+
+```bash
+gcloud projects add-iam-policy-binding lbsim-gcp \
+  --member=serviceAccount:lbsim-deployer@lbsim-gcp.iam.gserviceaccount.com \
+  --role=roles/logging.viewer --quiet
+```
+
+**If you say nothing:** builds stay non-fatal on the report step and the log is read from <https://lbsim.ai/reports/build.log>
+after each deploy; a report missing from the site is found there rather than in Cloud Build.
+
+## 2. Review the `TraceSpan` extension in `proto/lbsim/v1/metrics.proto`
 
 On `master` at f5eddf1 (a035514, 17:20), acting on *"We should have a way to sample requests to see
 execution traces and what was busy in each resource as it executed."* `TraceSpan` now carries the
@@ -38,20 +64,19 @@ operation names now match the engine's (`queue`, `route`, `prefill`, `decode`, `
 
 **If you say nothing:** it stands as written.
 
-## 2. Review `docs/vision-progress.md`
+## 3. Review `docs/vision-progress.md`
 
-Snapshot at 2026-09-06 16:19 PDT, on `master` d42546a: every `VISION.md` requirement classified as done,
-building in the next two hours, or far away, each with one line of evidence. It ends with five priority
-far-away items and eight requirements no plan document mentions: the `disable_decode` knob, load and
-latency forecasting, redundancy policies, model-weight locality, per-machine trace spans, the fluid
-limit, and the training-versus-serving question.
+**Refreshed:** the file is now a snapshot as of 2026-09-07 21:38 PDT (b0de727, corrected ac371f4 for the six merges that landed
+during the refresh), taken at your question *"what is missing in the vision progress, is that up to date?"*: every `VISION.md`
+requirement classified as done, building, or far away, with one line of evidence each; it produced U104 (real traces) and U105
+(rewind) in the graph. The first snapshot (2026-09-06 16:19, d42546a) is superseded by it. Since then the evening landed the
+prefix model, the scheduling, health and autoscaling seams, tiering and the Bode plot, so its "building" rows are behind again;
+`docs/execution-graph.md` and `STATUS.md` are current.
 
-**The default window passed during the pause** (16:19 today; the fleet was stopped from 11:22 to 19:13), so the file is
-still on `master` and Claude will not delete it tonight without your word. One line from you settles it: *"delete
-vision-progress"* or *"keep it"*. **If you say nothing:** it stays until the first housekeeping round after you next
-push; the reading is stale by a day of work now, `docs/execution-graph.md` and `STATUS.md` are current.
+**If you say nothing: it stays**, refreshed on request rather than deleted; the earlier default to delete it is withdrawn now that
+you asked for it to be refreshed. Say *"delete vision-progress"* if you want it gone.
 
-## 3. Delete the stale `claude/*` branches on `origin`
+## 4. Delete the stale `claude/*` branches on `origin`
 
 The merged branches from before the 16:43 restart (`tl-idle`, `tl-web-transport`, `tl-web`,
 `tl-engine`, `tl-export`, `tl-physics`, `tl-policy-*`, `tl-replay`, `tl-trace-wire`, `tl-arena-rules`,
@@ -65,7 +90,7 @@ your word. Say *"delete the stale branches"* and housekeeping runs `git push ori
 that list, name by name, never by prefix. Or do it yourself:
 `git fetch --prune && git branch -r --merged origin/master | grep 'origin/claude/' | sed 's|origin/||' | xargs git push origin --delete`.
 
-## 4. Routed to the tech lead, for the record
+## 5. Routed to the tech lead, for the record
 
 Each of these is a unit in `docs/execution-graph.md`, the tech lead's graph, which carries its state
 and ETA; this list is the record of what was routed and why.
@@ -146,7 +171,7 @@ consequences that belong to the tech lead; verbatim, from `TASKS.md` before the 
 
 ---
 
-## 5. Decisions with a default
+## 6. Decisions with a default
 
 `docs/execution-graph.md` has a section "Waiting on Issao" listing the units that need a word from
 you, each with the default it takes if you say nothing. Those defaults stand until you say otherwise.
@@ -156,14 +181,16 @@ The design decisions below are the ones outside that graph.
 |---|---|---|
 | A routing policy that scans the fleet fails the run rather than warning (`docs/ARCHITECTURE.md` §10.4) | fail | small |
 | Prefix-affinity index at Ingress is a bounded top-K, not exact (§10.4) | bounded | small |
+| `ejection_ratio` default: the `Scenario` default is 3.0 as briefed, demo 15 runs 8 because a healthy fleet's step time is bimodal (11 ms decode, 48 ms with a prefill chunk) and 3 ejected 146 healthy replicas by t = 20 s (U31b, with main) | 3.0 stays, demo at 8 | one constant |
+| Trace budget: an encoded trace is ~570 KB (one decode span per output token with the full resource state), so the 5 MiB ring holds 9–25 journeys and the demos export kept 9 of 943; coalescing decode spans or raising the budget is a proto/wire decision (U104, with main) | 5 MiB, 2,000 traces | wire and proto |
+| `SchedulingPolicy` lives in `sim-core`, below both `sim-model` and `sim-policy`, and has a fourth decision, `prefill_order` (U108; ratified by main 22:56, `docs/ARCHITECTURE.md` §10.8) | as landed | crate move |
 
-## 6. Later, when this phase ends
+## 7. Later, when this phase ends
 
 - [ ] Delete the deploy key. `gcloud iam service-accounts keys list --iam-account=lbsim-deployer@lbsim-gcp.iam.gserviceaccount.com`
       shows the id, which starts `94afd556`; then `keys delete KEY_ID --iam-account=...`.
-- [ ] Grant `roles/logging.viewer` to the deploy account **only when a container fails on startup**.
-      Today it cannot read container or request logs; nothing has needed them yet, and `docs/deploy.md`
-      records the gap. Not worth granting pre-emptively.
+- [x] Grant `roles/logging.viewer` to the deploy account **only when a container fails on startup**. **That moment came on
+      2026-09-07 night, three failed image builds; it is item 1 now.** `docs/deploy.md` records the gap.
 
 - [ ] Delete the leftover test image, which the deploy account cannot delete itself:
       `gcloud artifacts docker images delete us-central1-docker.pkg.dev/lbsim-gcp/lbsim/lbsim:wstest --project lbsim-gcp --quiet`.
@@ -172,8 +199,8 @@ The design decisions below are the ones outside that graph.
       for the 90-day delete rule on `gs://lbsim-gcp-runs`, which matters once runs write results there;
       and `artifactregistry.repoAdmin`, or running the tear-down as yourself, when this phase ends.
 
-**If you do nothing:** the key stays until you delete it, the first startup crash is undiagnosable
-until you grant the role, and the results bucket keeps everything it is ever given.
+**If you do nothing:** the key stays until you delete it, build and startup failures stay diagnosable only through
+`/reports/build.log` until you grant the role (item 1), and the results bucket keeps everything it is ever given.
 
 ---
 
