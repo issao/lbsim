@@ -994,7 +994,7 @@ impl Sim {
             match ev {
                 Ev::Arrival => {
                     let elapsed = (now - start) as f64 / 1e9;
-                    let mut req = self.workload.make(sc, now, &self.tree);
+                    let mut req = self.workload.make_with_prefixes(sc, now, &self.tree);
                     // A fork: an agent spawned from a recently finished request's context shares
                     // that whole prefix rather than starting at a root. Drawn before the pool is
                     // consulted, so the stream advances the same way whether or not one is there.

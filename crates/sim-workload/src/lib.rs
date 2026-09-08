@@ -273,7 +273,14 @@ impl Workload {
         (k + 1) as u64
     }
 
-    pub fn make(&mut self, sc: &Scenario, now: Nanos, tree: &PrefixTree) -> Request {
+    /// The next arrival, for a run without a prefix model: every request carries node 0. The tree
+    /// is only read for a chosen root, so the empty one is exact here.
+    pub fn make(&mut self, sc: &Scenario, now: Nanos) -> Request {
+        self.make_with_prefixes(sc, now, &PrefixTree::empty())
+    }
+
+    /// The next arrival, with the tree its `prefix_node` indexes.
+    pub fn make_with_prefixes(&mut self, sc: &Scenario, now: Nanos, tree: &PrefixTree) -> Request {
         self.next_id += 1;
         let class = self.draw_class(sc);
         if sc.workload == "trace" {
