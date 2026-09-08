@@ -5,7 +5,7 @@
 //! attached to a message, or committed. No chart library: every panel here is a polyline, a grid of
 //! rectangles, or a table.
 
-use sim_metrics::{Histogram, RequestRecord, Series};
+use sim_metrics::{Frame, Histogram, RequestRecord, Series};
 use sim_scenario::Scenario;
 use sim_leaf::{self as sim, RunResult};
 use sim_core::Nanos;
@@ -268,6 +268,15 @@ fn summary_csv(r: &RunResult) -> String {
         sum / frames.len() as f64
     };
     row("gpu_utilization_mean", format!("{gpu_utilization_mean:.4}"));
+    // U27c: only when the scenario has a prefix model — `prompt_tokens` accumulates on every
+    // admission regardless, so a scenario without one would otherwise get a permanent, meaningless
+    // 0% row. Gating here, rather than skipping only a NaN, is also what keeps `summary_md5` byte
+    // identical for every scenario but the affinity demos.
+    if r.scenario.prefix_roots > 0 {
+        if let Some(rate) = prefix_hit_rate(&frames) {
+            row("prefix_hit_rate", format!("{rate:.6}"));
+        }
+    }
     for q in [50.0, 90.0, 99.0, 99.9] {
         for (key, _, hist) in HISTOGRAMS {
             row(&format!("{key}_p{q}_ns"), hist(r).percentile(q).to_string());
@@ -282,6 +291,15 @@ fn summary_csv(r: &RunResult) -> String {
         row("recovered", ok.to_string());
     }
     s
+}
+
+/// The prefix hit rate over a set of frames: hit tokens over prompt tokens, summed across replicas
+/// and frames first, so a frame with few admissions doesn't skew the average the way a mean of
+/// per-frame ratios would. `None` when nothing was admitted in the window (0/0), never a false 0%.
+fn prefix_hit_rate(frames: &[&Frame]) -> Option<f64> {
+    let prompt: u64 = frames.iter().flat_map(|f| &f.replicas).map(|rep| rep.prompt_tokens).sum();
+    let hit: u64 = frames.iter().flat_map(|f| &f.replicas).map(|rep| rep.prefix_hit_tokens).sum();
+    if prompt == 0 { None } else { Some(hit as f64 / prompt as f64) }
 }
 
 /// One row per request, where it went and what it experienced, so a policy generator can find
@@ -659,11 +677,17 @@ imbalance column is the coefficient of variation of per-replica load, time-avera
 direct measure of whether the balancer is doing its job. Inspected is replicas examined per routing
 decision, and anything proportional to fleet size does not hold at scale."##);
     let best = runs.iter().enumerate().max_by(|a, b| goodput_cmp(a.1, b.1)).map(|(i, _)| i);
-    let headers = ["scenario", "routing", "offered rps", "rated rps", "completed rps", "goodput tok/s",
-        "throughput tok/s", "imbalance CV", "batch limit", "inspected"];
+    // U27c: an extra column, added only when at least one run in the report has a prefix model, so
+    // a report over scenarios that never asked for one keeps its `html_md5` byte identical.
+    let show_prefix = runs.iter().any(|r| r.scenario.prefix_roots > 0);
+    let mut headers = vec!["scenario", "routing", "offered rps", "rated rps", "completed rps",
+        "goodput tok/s", "throughput tok/s", "imbalance CV", "batch limit", "inspected"];
+    if show_prefix {
+        headers.push("prefix hit");
+    }
     table(h, &headers, runs.iter().enumerate().map(|(i, r)| {
-        format!(
-            "<tr{}><td>{}</td><td>{}</td><td>{:.0}</td><td>{:.0}</td><td>{:.1}</td><td>{:.0}</td><td>{:.0}</td><td>{:.2}</td><td>{:.0}</td><td>{}</td></tr>",
+        let mut row = format!(
+            "<tr{}><td>{}</td><td>{}</td><td>{:.0}</td><td>{:.0}</td><td>{:.1}</td><td>{:.0}</td><td>{:.0}</td><td>{:.2}</td><td>{:.0}</td><td>{}</td>",
             if Some(i) == best { " class=\"best\"" } else { "" },
             esc(&r.scenario.name),
             esc(&r.routing_label),
@@ -675,7 +699,19 @@ decision, and anything proportional to fleet size does not hold at scale."##);
             r.load_imbalance_cv(),
             r.scenario.effective_batch(),
             r.replicas_inspected_per_decision
-        )
+        );
+        if show_prefix {
+            let measured: Vec<_> = r.frames.iter().filter(|f| f.t > r.measured_from).collect();
+            let frames = if measured.is_empty() { r.frames.iter().collect() } else { measured };
+            match prefix_hit_rate(&frames) {
+                Some(rate) if r.scenario.prefix_roots > 0 => {
+                    let _ = write!(row, "<td>{:.1}%</td>", rate * 100.0);
+                }
+                _ => row.push_str("<td>—</td>"),
+            }
+        }
+        row.push_str("</tr>");
+        row
     }));
 }
 

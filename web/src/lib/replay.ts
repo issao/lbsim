@@ -328,15 +328,26 @@ export function configFromScenarioText(text: string): { config: ScenarioConfig; 
   const unmapped: string[] = [];
   if (f.routing !== undefined) {
     used.add('routing');
-    const kind = ENGINE_TO_ROUTING[f.routing];
-    if (kind === undefined) unmapped.push(`routing = ${f.routing}`);
-    else c.routing.kind = kind;
+    // `ENGINE_TO_ROUTING` is built from api.ts's `ROUTING_TO_ENGINE`, which maps `prefix_affinity`
+    // to `null` because StartRun cannot send it yet; that null is an encode-side gap, not a reason
+    // to fail reading back a recorded run that used it, so it is named directly here instead.
+    if (f.routing === 'prefix_affinity') {
+      c.routing.kind = 'prefix_affinity';
+    } else {
+      const kind = ENGINE_TO_ROUTING[f.routing];
+      if (kind === undefined) unmapped.push(`routing = ${f.routing}`);
+      else c.routing.kind = kind;
+    }
   }
   num('p2c_choices', (v) => { c.routing.choices = v; });
   if (f.probe_live !== undefined) {
     used.add('probe_live');
     c.routing.probeLive = f.probe_live === 'true';
   }
+  // U27c: PrefixAffinity's two knobs. Typed fields, not `extra`, because the mock engine already
+  // reads `c.routing.maxLoadRatio`/`fallbackChoices` for its own simulation of the policy.
+  num('affinity_max_load_ratio', (v) => { c.routing.maxLoadRatio = v; });
+  num('affinity_fallback_choices', (v) => { c.routing.fallbackChoices = v; });
 
   num('telemetry_interval_ms', (v) => { c.telemetryIntervalMs = v; });
   num('telemetry_delay_ms', (v) => { c.telemetryDelayMs = v; });
@@ -351,7 +362,10 @@ export function configFromScenarioText(text: string): { config: ScenarioConfig; 
 
   // Numbers as numbers so the round trip compares `0.0` with `0`; anything else (`preemption =
   // never`, a tenant weight list) stays the text the engine will parse itself.
-  for (const k of EXTRA_KEYS) {
+  // U27c's five other prefix-model keys have no typed field and are not in api.ts's `EXTRA_KEYS`
+  // (that list predates the prefix model), so they are named here directly rather than there.
+  const PREFIX_EXTRA_KEYS = ['prefix_roots', 'prefix_root_tokens', 'prefix_zipf_s', 'session_fork_rate', 'prefix_cache_tokens'];
+  for (const k of [...EXTRA_KEYS, ...PREFIX_EXTRA_KEYS]) {
     if (f[k] === undefined) continue;
     used.add(k);
     c.extra[k] = Number.isFinite(Number(f[k])) ? Number(f[k]) : f[k];

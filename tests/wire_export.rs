@@ -266,6 +266,40 @@ fn gpu_utilization_is_a_mean_and_a_distribution_over_replicas() {
     assert!(replica_gpu_positive, "no replica row shows any GPU busy");
 }
 
+/// U27c: the prefix hit rate only appears on the wire once a scenario has a prefix model.
+/// `small_run()`'s scenario has `prefix_roots = 0`, so no fleet row ever carries metric 48; a
+/// variant with a prefix model turned on shows the ratio in range, and positive somewhere once the
+/// cache has had a chance to warm.
+#[test]
+fn prefix_hit_rate_is_absent_without_a_prefix_model_and_in_range_with_one() {
+    let dir = fresh_dir("prefix-off");
+    let r = small_run();
+    let run_dir = export::export_run_from(&r, "prefix-off", None, &dir).unwrap();
+    let fleet_lines: Vec<String> = read(&run_dir.join("fleet.jsonl")).lines().map(String::from).collect();
+    assert!(!fleet_lines.is_empty());
+    for line in &fleet_lines {
+        assert!(metric_value(line, wire::METRIC_PREFIX_HIT_RATE).is_none(), "{line}");
+    }
+
+    let dir = fresh_dir("prefix-on");
+    let mut sc = common::at_load(0.9);
+    sc.name = "wire \"export\" / small-prefix".into();
+    sc.prefix_roots = 1;
+    sc.prefix_cache_tokens = 1e6;
+    let r = sim::run(&sc).expect("small prefix scenario runs");
+    let run_dir = export::export_run_from(&r, "prefix-on", None, &dir).unwrap();
+    let fleet_lines: Vec<String> = read(&run_dir.join("fleet.jsonl")).lines().map(String::from).collect();
+    assert!(!fleet_lines.is_empty());
+    let mut hit_rate_positive = false;
+    for line in &fleet_lines {
+        if let Some(rate) = metric_value(line, wire::METRIC_PREFIX_HIT_RATE) {
+            assert!((0.0..=1.0).contains(&rate), "{line}");
+            hit_rate_positive |= rate > 0.0;
+        }
+    }
+    assert!(hit_rate_positive, "no fleet row shows any prefix hit rate");
+}
+
 #[test]
 fn replica_rows_follow_the_frames() {
     let dir = fresh_dir("replicas");

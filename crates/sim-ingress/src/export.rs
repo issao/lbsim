@@ -251,6 +251,18 @@ pub fn fleet_rows(r: &RunResult) -> Vec<SubscriptionUpdate> {
         let replica_n = frame.replicas.len().max(1) as f64;
         row.value(wire::METRIC_GPU_UTILIZATION, gpu.iter().sum::<f64>() / replica_n);
         row.value(wire::METRIC_GPU_COMPUTE_BOUND_FRACTION, compute_sum as f64 / busy_sum as f64);
+        // Ratio of sums, same reasoning as the GPU ratio above. Gated on `prefix_roots`:
+        // `prompt_tokens` accumulates on every admission regardless of a prefix model, so the ratio
+        // alone can't tell "no cache" from "cache, nothing admitted"; NaN, which `value` drops, is
+        // correct only for the scenarios that never asked for one.
+        let prefix_hit_rate = if r.scenario.prefix_roots > 0 {
+            let prompt_sum: u64 = frame.replicas.iter().map(|rep| rep.prompt_tokens).sum();
+            let hit_sum: u64 = frame.replicas.iter().map(|rep| rep.prefix_hit_tokens).sum();
+            hit_sum as f64 / prompt_sum as f64
+        } else {
+            f64::NAN
+        };
+        row.value(wire::METRIC_PREFIX_HIT_RATE, prefix_hit_rate);
         if let Some(d) = distribution_over_replicas(&gpu, REPLICA_PERCENTILES) {
             row.distribution(wire::METRIC_GPU_UTILIZATION, d);
         }
@@ -298,6 +310,12 @@ pub fn replica_rows(r: &RunResult, s: usize) -> Vec<SubscriptionUpdate> {
         row.value(wire::METRIC_GPU_COMPUTE_BOUND_FRACTION, rep.compute_ns as f64 / rep.busy_ns as f64);
         row.value(wire::METRIC_REPLICA_STATE, rep.state as f64);
         row.value(wire::METRIC_TRUE_SPEED_MULTIPLIER, rep.speed);
+        // Gated on `prefix_roots`, like the fleet row above: `prompt_tokens` is nonzero on every
+        // scenario, so the bare ratio can't distinguish "no cache" from "cache, nothing admitted".
+        row.value(
+            wire::METRIC_PREFIX_HIT_RATE,
+            if r.scenario.prefix_roots > 0 { rep.prefix_hit_tokens as f64 / rep.prompt_tokens as f64 } else { f64::NAN },
+        );
         // Same rule as run.rs::row: a mean of nothing is a gap, not 0 ns.
         if rep.ttft_count > 0 {
             row.distribution(

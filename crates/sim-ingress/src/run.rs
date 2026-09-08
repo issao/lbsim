@@ -772,6 +772,7 @@ pub const FLEET_METRICS: &[i32] = &[
     wire::METRIC_GPU_UTILIZATION,
     wire::METRIC_GPU_COMPUTE_BOUND_FRACTION,
     wire::METRIC_TRUE_SPEED_MULTIPLIER,
+    wire::METRIC_PREFIX_HIT_RATE,
 ];
 pub const REPLICA_METRICS: &[i32] = &[
     wire::METRIC_QUEUED_SEQS,
@@ -784,6 +785,7 @@ pub const REPLICA_METRICS: &[i32] = &[
     wire::METRIC_REPLICA_STATE,
     wire::METRIC_TRUE_SPEED_MULTIPLIER,
     wire::METRIC_TTFT,
+    wire::METRIC_PREFIX_HIT_RATE,
 ];
 
 // Two metric numbers `wire.rs` does not name; the same table, and `metric_numbers_are_in_the_table`
@@ -860,6 +862,14 @@ pub fn row(f: &Frame, sc: &Scenario, spec: &RowSpec) -> Option<MetricRow> {
             value(wire::METRIC_GPU_COMPUTE_BOUND_FRACTION, r.compute_ns as f64 / r.busy_ns as f64);
             value(wire::METRIC_REPLICA_STATE, r.state as f64);
             value(wire::METRIC_TRUE_SPEED_MULTIPLIER, r.speed);
+            // `prompt_tokens` accumulates on every admission regardless of a prefix model, so gating
+            // on it alone would put a permanent, meaningless 0% reading on every scenario that never
+            // asked for prefix caching. NaN when there is no prefix model, which `value` drops; a
+            // real cache with nothing admitted this window is also NaN (0/0) for the same reason.
+            value(
+                wire::METRIC_PREFIX_HIT_RATE,
+                if sc.prefix_roots > 0 { r.prefix_hit_tokens as f64 / r.prompt_tokens as f64 } else { f64::NAN },
+            );
             // Seconds as a double, like every other duration gauge and like export.rs's replica
             // row — not a distribution. Zero means the replica has not stepped yet, and a
             // duration of nothing is a gap. Raw `row.value` rather than the closure: this is the
@@ -943,6 +953,19 @@ pub fn row(f: &Frame, sc: &Scenario, spec: &RowSpec) -> Option<MetricRow> {
             let compute_sum: u64 = f.replicas.iter().map(|r| r.compute_ns).sum();
             value(wire::METRIC_GPU_UTILIZATION, gpu.iter().sum::<f64>() / n);
             value(wire::METRIC_GPU_COMPUTE_BOUND_FRACTION, compute_sum as f64 / busy_sum as f64);
+            // Ratio of sums, not a mean of per-replica ratios, so a replica with no prompt tokens
+            // this window does not skew the fleet number. Gated on `prefix_roots` for the same
+            // reason as the replica branch above: `prompt_tokens` is nonzero on every scenario, so
+            // the ratio alone can't tell "no cache" from "cache, nothing admitted" (both NaN-free
+            // zero would be misleading; NaN, which `value` drops, is correct for the former).
+            let prefix_hit_rate = if sc.prefix_roots > 0 {
+                let prompt_sum: u64 = f.replicas.iter().map(|r| r.prompt_tokens).sum();
+                let hit_sum: u64 = f.replicas.iter().map(|r| r.prefix_hit_tokens).sum();
+                hit_sum as f64 / prompt_sum as f64
+            } else {
+                f64::NAN
+            };
+            value(wire::METRIC_PREFIX_HIT_RATE, prefix_hit_rate);
             let default_percentiles = [50.0, 90.0, 99.0];
             let percentiles =
                 if spec.percentiles.is_empty() { &default_percentiles[..] } else { &spec.percentiles[..] };
