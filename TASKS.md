@@ -1,6 +1,6 @@
 # TASKS — things that need Issao
 
-Last updated: 2026-09-07 19:34 PDT by Claude.
+Last updated: 2026-09-07 19:40 PDT by Claude.
 
 **RESUMED 2026-09-07 19:13 PDT** at your "resume", relayed by main. The pause (11:22–19:13, quota) changed nothing on `master` but the tech lead's graph checkpoint (1a58186). The tech lead is `a56ff1d3950e7375f` now, resuming U79–U83 from the four WIP branches; U80 (Home in Live / Replay / Mock sections) landed at 023672d, 19:13, not yet deployed; `STATUS.md` has their state. Everything below stands as it was; one thing needs a word from you tonight, item 2.
 
@@ -10,8 +10,8 @@ links and I will review and wrap up tomorrow"*) and is back this morning: the te
 is on U79–U83, the Cloud Run live-server fix and your product-polish pass, per main. This file is the review
 list, stack ranked, each item with what Claude does if you say nothing. What is finished and live is in
 `STATUS.md`, whose top caveat is the known issue from `docs/wrap-up-2026-09-06.md` §5b: the live server on
-Cloud Run degrades after a handful of runs. U79 fixed it on `master` at 60327b7 (19:33); until main redeploys,
-open one tab at a time on lbsim.ai; replay (`?server=off`) is unaffected.
+Cloud Run degrades after a handful of runs. U79 fixed it on `master` at 60327b7 (19:33), deployed 19:39 as `lbsim-00014-gvp`;
+main's three harness runs against lbsim.ai are the confirmation, recorded in `STATUS.md` when they finish.
 
 ## 0. Read `docs/wrap-up-2026-09-06.md`
 
