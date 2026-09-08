@@ -331,7 +331,7 @@ function CompareBody({ a, b, mode, banner }: { a: RunHandle; b: RunHandle; mode:
 
   return (
     <div className="dash">
-      <PlaybackBar run={linked} />
+      <PlaybackBar run={linked} endOfRun={false} />
       {banner}
       <UpdateBanner run={a} />
       <UpdateBanner run={b} />

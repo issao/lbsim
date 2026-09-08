@@ -2,6 +2,7 @@
 // is view-only or physics. `scenarios/*.txt` in the repo root is the source for the preset numbers.
 
 import type { RoutingKind } from './types';
+import { queryParam } from './mode';
 
 export interface Workload {
   arrivalRps: number;
@@ -132,6 +133,16 @@ export const BASE: ScenarioConfig = {
   extra: { preemption: 'swap_to_dram', preemption_victim: 'newest', dram_capacity_tokens: 5480000 },
 };
 
+/**
+ * BASE with the Load Test page's own default run length (Issao, 2026-09-08: "make the default
+ * length of a run 10min in the loadtest dashboard page"). BASE itself has to stay scenarios/base.txt
+ * verbatim -- the transport self-test checks it field for field against the file, and the A/B page
+ * and every showcase script anchor their own runs on it -- so the Load Test page's default lives
+ * in a second config instead of changing BASE. Presets (below) still clone BASE, not this, so a
+ * preset that sets no duration of its own keeps BASE's (they have nothing to inherit this from).
+ */
+export const LOAD_TEST_DEFAULT: ScenarioConfig = { ...BASE, durationS: 600 };
+
 export function cloneConfig(c: ScenarioConfig): ScenarioConfig {
   return {
     ...c,
@@ -141,6 +152,23 @@ export function cloneConfig(c: ScenarioConfig): ScenarioConfig {
     slo: { ...c.slo },
     extra: { ...c.extra },
   };
+}
+
+/**
+ * LOAD_TEST_DEFAULT, unless the Load Test page's own link carries `duration_s` and/or `warmup_s`
+ * (`#/dashboard?duration_s=20&warmup_s=1`) -- `queryParam` is mode.ts's, so this reads a link's
+ * query the same way `?server=` and `?replay=` already do. The one user today is the QA harness
+ * (tools/qa/qa.js, `QA_SHORT_RUN`): a run has to actually reach STATE_COMPLETE to exercise the
+ * playback bar's Restart button (U120), and ten minutes at 1x is not a browser-test budget.
+ * `sim-leaf` refuses `warmup_s >= duration_s`, so a caller shortening one should shorten both.
+ */
+export function loadTestInitial(search: string, hash: string): ScenarioConfig {
+  const c = cloneConfig(LOAD_TEST_DEFAULT);
+  const d = Number(queryParam('duration_s', search, hash));
+  if (Number.isFinite(d) && d > 0) c.durationS = d;
+  const w = Number(queryParam('warmup_s', search, hash));
+  if (Number.isFinite(w) && w >= 0) c.warmupS = w;
+  return c;
 }
 
 export interface Preset {

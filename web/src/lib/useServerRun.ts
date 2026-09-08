@@ -895,6 +895,9 @@ export function useServerRun(initial: ScenarioConfig, opts: ServerRunOptions = {
       recordedToS: engine.recordedToS,
       durationS: engine.durationS,
       paused: engine.paused,
+      // Distinct from `paused`: STATE_PAUSED and a stream that finished before the poll caught up
+      // (`connection === 'complete'`) both pause without the run being over.
+      ended: engine.status?.state === 'STATE_COMPLETE',
       speed: engine.speed,
       resimulating: engine.resimulating,
       lastRewind: engine.lastRewind,

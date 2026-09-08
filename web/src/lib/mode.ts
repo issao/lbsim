@@ -115,7 +115,7 @@ export function replayOverride(search: string, hash: string): boolean | null {
 }
 
 /** A query parameter from the query string or from a hash route's own query (`#/dashboard?x=`): a link may carry either. */
-function queryParam(name: string, search: string, hash: string): string | null {
+export function queryParam(name: string, search: string, hash: string): string | null {
   const fromSearch = new URLSearchParams(search).get(name);
   if (fromSearch !== null) return fromSearch;
   const q = hash.indexOf('?');
