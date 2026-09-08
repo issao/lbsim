@@ -15,6 +15,7 @@ web/dist/
 .git/
 tests/
 bench/
+!bench/bode.py
 
 # docs/ is excluded wholesale and then findings.md is put back, because the image serves that one file
 # at /docs/findings.md. Order matters: the negation has to come after the exclusion.
