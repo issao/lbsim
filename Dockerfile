@@ -37,10 +37,14 @@ RUN cargo build --release --locked
 # run-demos.sh drives cargo through tools/build.sh, whose flock lives under LBSIM_LOCK_DIR; the
 # release binary is already built, so `cargo run --release` only links. Telemetry stays off: the
 # image carries what a reader looks at, not a few megabytes of CSV nobody asked for.
+# The report step keeps its own log in the image at /reports/build.log, because the deploy
+# identity cannot read Cloud Build's logs and two builds in a row failed with a bare exit code.
+# A failure here does not fail the build; it is read from the served log and fixed next build.
 RUN mkdir -p site/reports \
- && LBSIM_LOCK_DIR=/tmp ./run-demos.sh \
- && cp out/*.html site/reports/ \
- && ls site/reports
+ && (LBSIM_LOCK_DIR=/tmp ./run-demos.sh > site/reports/build.log 2>&1; echo "run-demos exit $?" >> site/reports/build.log; \
+     command -v bash flock python3 cargo >> site/reports/build.log 2>&1; ls tools bench >> site/reports/build.log 2>&1; true) \
+ && (cp out/*.html site/reports/ 2>>site/reports/build.log || true) \
+ && ls site/reports >> site/reports/build.log
 RUN ./target/release/sim-run export --demos --dir site
 
 # --- 3. runtime -------------------------------------------------------------
