@@ -66,6 +66,8 @@ export function Utilization({
     [{ scope: 'FLEET' }, { scope: 'POOL', id: 1 }],
     [
       Metric.KV_UTILIZATION,
+      Metric.GPU_UTILIZATION,
+      Metric.GPU_COMPUTE_BOUND_FRACTION,
       Metric.TIER_UTILIZATION,
       Metric.TIER_BANDWIDTH_UTILIZATION,
       Metric.WASTED_GPU_FRACTION,

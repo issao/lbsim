@@ -33,6 +33,8 @@ export const Metric = {
   LOAD_IMBALANCE_CV: 64,
   WASTED_GPU_FRACTION: 65,
   SLO_ATTAINMENT: 66,
+  GPU_UTILIZATION: 67,
+  GPU_COMPUTE_BOUND_FRACTION: 68,
 } as const;
 export type MetricId = (typeof Metric)[keyof typeof Metric];
 
