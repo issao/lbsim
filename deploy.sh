@@ -98,6 +98,9 @@ fi
 # calls storage.buckets.get, which this account deliberately does not have; writing a plain object
 # does not. See the header of cloudbuild.yaml.
 #
+# bench/ is kept except bench/queue (half a megabyte of queue benchmarks): run-demos.sh calls
+# bench/bode.py inside the image, and this tar is the context, so .dockerignore's re-include of that
+# one file could never take effect. Three builds failed on it before the served build log said why.
 # The excludes mirror .gcloudignore and .dockerignore. They are spelled out here because tar does
 # not understand gitignore syntax, so the three lists have to be kept in step by hand. .cargo is the
 # one that is not merely about upload size: .cargo/config.toml pins an absolute target-dir on this
@@ -109,7 +112,7 @@ tar czf "$TARBALL" \
   --exclude=./.git \
   --exclude=./target \
   --exclude=./out \
-  --exclude=./bench \
+  --exclude=./bench/queue \
   --exclude=./tests \
   --exclude=./web/node_modules \
   --exclude=./web/dist \
