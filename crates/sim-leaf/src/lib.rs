@@ -248,56 +248,72 @@ impl RunResult {
 /// process consumed all memory and swap on the machine it was running on before anyone could read an
 /// error message.
 ///
-/// The fix for that bug is in. These caps are the second line of defence, because the next bug of
-/// this shape should cost one confusing error message rather than a machine.
-const MAX_EVENTS: u64 = 50_000_000;
-const MAX_IN_FLIGHT: usize = 2_000_000;
-const MAX_RECORDS: usize = 20_000_000;
-const MAX_QUEUE_LEN: usize = 5_000_000;
+/// The fix for that bug is in, and the retry path is tested now, so the fixed *total-event* ceiling
+/// that used to guard against it is gone (it tripped on legitimate large runs well before anything
+/// was actually wrong -- a 10,000-replica, 25,000 rps, 120 s run used only 56% of it). What is left is
+/// a direct memory guard (below) plus these three state ceilings, each now scaled to the run instead
+/// of held fixed, with the old fixed values kept as floors so a small scenario is exactly as protected
+/// as it always was.
+const MAX_IN_FLIGHT_FLOOR: usize = 2_000_000;
+const MAX_RECORDS_FLOOR: usize = 20_000_000;
+const MAX_QUEUE_LEN_FLOOR: usize = 5_000_000;
 
 /// The peak offered rate a scenario implies, once a configured load step is in effect. Shared by
-/// `validate`'s record-count estimate and `event_ceiling` below, so the two stay consistent.
+/// `validate`'s and `max_records`'s record-count estimate.
 fn peak_rps(sc: &Scenario) -> f64 {
     sc.arrival_rps * sc.load_step_factor.max(1.0)
 }
 
-/// `MAX_EVENTS` is a floor, not the number actually enforced: a large, legitimate run can
-/// dispatch far more than 50M events without anything having gone wrong, since the retry-fork
-/// bug this ceiling exists to catch is a runaway *rate*, not a runaway total. `event_ceiling`
-/// scales the tripwire with the run instead of holding it fixed.
-///
-/// Coefficients are from a release-build, one-core measurement at `route_p2c`, ~0.3 offered/
-/// capacity: 1,000 replicas @ 2,500 rps ran 120 sim-s in 2.1 s wall at 9.0M events (~30 events per
-/// completed request); 10,000 replicas @ 25,000 rps ran 60 sim-s in 38.8 s at 1.14M events/s,
-/// i.e. ~114 step events per replica-second. 40 events/request and 200 step-events/replica-second
-/// (sized to a 5 ms step) give both headroom.
-pub fn event_ceiling(sc: &Scenario) -> u64 {
-    let by_requests = peak_rps(sc) * sc.duration_s * 40.0;
-    let by_steps = sc.replicas as f64 * sc.duration_s * 200.0;
-    (MAX_EVENTS as f64).max(by_requests + by_steps) as u64
+/// How many requests a run can plausibly have in flight or queued at once, scaled with replica count
+/// and duration so a legitimately large, long fleet does not trip a ceiling meant for a runaway.
+fn max_in_flight(sc: &Scenario) -> usize {
+    (MAX_IN_FLIGHT_FLOOR as f64).max(sc.replicas as f64 * sc.duration_s * 20.0) as usize
+}
+fn max_queue_len(sc: &Scenario) -> usize {
+    (MAX_QUEUE_LEN_FLOOR as f64).max(sc.replicas as f64 * sc.duration_s * 20.0) as usize
 }
 
-/// Guard resident memory directly: the ceilings above bound the state this simulator tracks, not
-/// memory a future bug of a different shape allocates outside it. Checked only every 1M
-/// dispatched events, so the cost of the guard itself stays negligible.
+/// How many `RequestRecord`s a run can plausibly produce, scaled with offered load, duration and the
+/// retry budget. Shared by `validate` (rejecting a scenario that implies more than this before any
+/// work starts) and `Sim::new` (the ceiling actually enforced while running), so the two stay
+/// consistent.
+fn max_records(sc: &Scenario) -> usize {
+    (MAX_RECORDS_FLOOR as f64).max(peak_rps(sc) * sc.duration_s * sc.max_attempts as f64 * 2.0) as usize
+}
+
+/// The memory budget in MiB: `LBSIM_MEMORY_BUDGET_MB`, read once at run start. Absent or malformed
+/// falls back to 20000 (this project's 24 GB machine ceiling, minus headroom); the Dockerfile sets
+/// this to ~80% of the container's memory for a cloud backend.
+pub fn memory_budget_mb() -> u64 {
+    std::env::var("LBSIM_MEMORY_BUDGET_MB")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(20_000)
+}
+
+/// Guard resident memory directly against a budget: the ceilings above bound the state this
+/// simulator tracks, not memory a future bug of a different shape allocates outside it. Checked only
+/// every `interval` dispatched events (1,000,000 in a real run; a test shrinks this so a tiny budget
+/// trips inside a short run), so the cost of the guard itself stays negligible.
 #[cfg(target_os = "linux")]
-fn rss_over_guard(dispatched: u64) -> Option<String> {
-    const GUARD_BYTES: u64 = 8 * 1024 * 1024 * 1024;
-    if dispatched == 0 || dispatched % 1_000_000 != 0 {
+fn rss_over_budget(dispatched: u64, interval: u64, budget_bytes: u64) -> Option<String> {
+    if interval == 0 || dispatched == 0 || dispatched % interval != 0 {
         return None;
     }
     let statm = std::fs::read_to_string("/proc/self/statm").ok()?;
     let pages: u64 = statm.split_whitespace().nth(1)?.parse().ok()?;
     let bytes = pages * 4096;
-    (bytes > GUARD_BYTES).then(|| {
+    (bytes > budget_bytes).then(|| {
         format!(
-            "memory ceiling: {bytes} bytes resident after {dispatched} events, above the 8 GiB \
-             guard. Shorten the run, lower the rate, or raise the guard deliberately"
+            "resident memory {} MB exceeds the LBSIM_MEMORY_BUDGET_MB budget of {} MB; lower \
+             replicas, duration or arrival, or raise the budget",
+            bytes / (1024 * 1024),
+            budget_bytes / (1024 * 1024)
         )
     })
 }
 #[cfg(not(target_os = "linux"))]
-fn rss_over_guard(_dispatched: u64) -> Option<String> {
+fn rss_over_budget(_dispatched: u64, _interval: u64, _budget_bytes: u64) -> Option<String> {
     None
 }
 
@@ -356,12 +372,13 @@ fn validate(sc: &Scenario) -> Result<(), String> {
     // The estimate that would actually have caught the runaway: how much state this run implies.
     let peak = peak_rps(sc);
     let expected_arrivals = peak * sc.duration_s * sc.max_attempts as f64;
-    if expected_arrivals > MAX_RECORDS as f64 {
+    let cap = max_records(sc);
+    if expected_arrivals > cap as f64 {
         bad.push(format!(
             "this scenario implies about {:.0} requests ({:.0} rps x {:.0} s x {} attempts), \
-             above the {} record ceiling. Shorten the run, lower the rate, or raise MAX_RECORDS \
-             deliberately",
-            expected_arrivals, peak, sc.duration_s, sc.max_attempts, MAX_RECORDS
+             above the {} record ceiling this run implies. Shorten the run, lower the rate, or \
+             lower max_attempts",
+            expected_arrivals, peak, sc.duration_s, sc.max_attempts, cap
         ));
     }
     let samples = sc.duration_s * 1000.0 / sc.sample_interval_ms * sc.replicas as f64;
@@ -560,9 +577,16 @@ pub struct Sim {
     window: Window,
     frames: Vec<Frame>,
 
-    /// This run's event ceiling, computed from `sc` by `event_ceiling` in `Sim::new` rather than
-    /// held as a constant. See `event_ceiling`'s doc comment for the formula.
-    event_ceiling: u64,
+    /// This run's state ceilings, computed from `sc` in `Sim::new` rather than held as constants.
+    /// See `max_in_flight`, `max_queue_len` and `max_records` for the formulas.
+    max_in_flight: usize,
+    max_queue_len: usize,
+    max_records: usize,
+    /// The memory guard: a budget in bytes (from `memory_budget_mb`, or overridden by
+    /// `set_memory_budget_bytes` for a test) and how often, in dispatched events, to check
+    /// resident memory against it (overridden by `set_memory_check_interval` for a test).
+    memory_budget_bytes: u64,
+    memory_check_interval: u64,
     /// Set by a tripwire; the run is over and `into_result` reports why.
     tripped: Option<String>,
     /// Set once the loop would have exited: an event past the end, an empty queue, or a trip.
@@ -785,7 +809,11 @@ impl Sim {
             first_attempts: 0,
             window: Window::default(),
             frames: Vec::new(),
-            event_ceiling: event_ceiling(sc),
+            max_in_flight: max_in_flight(sc),
+            max_queue_len: max_queue_len(sc),
+            max_records: max_records(sc),
+            memory_budget_bytes: memory_budget_mb() * 1024 * 1024,
+            memory_check_interval: 1_000_000,
             tripped: None,
             finished: false,
         })
@@ -851,6 +879,16 @@ impl Sim {
     }
     pub fn finished(&self) -> bool {
         self.finished
+    }
+    /// Override the memory guard's budget, in bytes. For a test that wants to exercise the guard
+    /// without touching `LBSIM_MEMORY_BUDGET_MB` in the environment.
+    pub fn set_memory_budget_bytes(&mut self, bytes: u64) {
+        self.memory_budget_bytes = bytes;
+    }
+    /// Override how often, in dispatched events, the memory guard checks resident memory. For a
+    /// test: 1,000,000 dispatched events is too many for a short run to reach.
+    pub fn set_memory_check_interval(&mut self, events: u64) {
+        self.memory_check_interval = events;
     }
     /// The frames closed so far. Available while the run is in progress, which is the point.
     pub fn frames(&self) -> &[Frame] {
@@ -950,25 +988,14 @@ impl Sim {
                 self.finished = true;
                 break;
             }
-            if self.q.dispatched > self.event_ceiling {
-                self.tripped = Some(format!(
-                    "event ceiling: {} events dispatched against a ceiling of {} with {:.0}% of the \
-                     run remaining. Something is scheduling work faster than it retires; suspect a \
-                     feedback loop in the arrival or retry path. Shorten the run, lower the rate, or \
-                     raise MAX_EVENTS deliberately",
-                    self.q.dispatched,
-                    self.event_ceiling,
-                    100.0 * (end.saturating_sub(now)) as f64 / (end - start).max(1) as f64
-                ));
-                self.finished = true;
-                break;
-            }
-            if let Some(msg) = rss_over_guard(self.q.dispatched) {
+            if let Some(msg) = rss_over_budget(
+                self.q.dispatched, self.memory_check_interval, self.memory_budget_bytes,
+            ) {
                 self.tripped = Some(msg);
                 self.finished = true;
                 break;
             }
-            if self.records.len() > MAX_RECORDS || self.placed.len() > MAX_IN_FLIGHT {
+            if self.records.len() > self.max_records || self.placed.len() > self.max_in_flight {
                 self.tripped = Some(format!(
                     "state ceiling: {} records and {} tracked requests. Offered load is far above what \
                      this fleet retires, or requests are never completing",
@@ -978,7 +1005,7 @@ impl Sim {
                 self.finished = true;
                 break;
             }
-            if self.q.len() > MAX_QUEUE_LEN {
+            if self.q.len() > self.max_queue_len {
                 self.tripped = Some(format!(
                     "queue ceiling: {} pending events. Almost always a self-scheduling event that never \
                      terminates",
