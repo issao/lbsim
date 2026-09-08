@@ -349,6 +349,55 @@ const finalLine = extraFail => {
     await page.close();
   }
 
+  // h. layout stability (U99): a card's height must not change because text -- the wasted-GPU
+  // note, a refusal, a connection phase, a sample count -- happened to show up or disappear this
+  // frame. Boxes are measured three times, five seconds apart, and compared as-is.
+  const layoutBoxes = page => page.$$eval('.tile, .panel, .banner, .statusbar', els => els.map(e => {
+    const r = e.getBoundingClientRect();
+    return [e.className, e.id, Math.round(r.height), Math.round(r.width)];
+  }));
+  const layoutDiffs = samples => samples[0]
+    .map((b, i) => [b, ...samples.slice(1).map(s => s[i])])
+    .filter(row => row.some(box => !box || box[2] !== row[0][2] || box[3] !== row[0][3]));
+  {
+    const { page, body, until } = await fresh('#/dashboard');
+    await until(async () => { const b = await body(); return !/waiting for the first sample/i.test(b) ? b : null; }, 12000);
+    await page.click('button[data-tab="observe:quality"]').catch(() => null);
+    await sleep(300);
+    const boxSamples = [];
+    const wastedHeights = [];
+    for (let i = 0; i < 3; i++) {
+      boxSamples.push(await layoutBoxes(page));
+      wastedHeights.push(await page.$eval('[data-tile="wasted"]', el => Math.round(el.getBoundingClientRect().height)).catch(() => null));
+      if (i < 2) await sleep(5000);
+    }
+    const diffs = layoutDiffs(boxSamples);
+    check('layout: no card changes height on the live dashboard (U99)', diffs.length === 0, JSON.stringify(diffs.slice(0, 5)));
+    check('layout: service quality headline wasted tile keeps its height (U99)',
+      wastedHeights.every(h => h !== null && h === wastedHeights[0]), JSON.stringify(wastedHeights));
+    await page.close();
+  }
+  {
+    const { page, until } = await fresh('#/showcase');
+    await until(() => cardCount(page), 10000);
+    const card = await page.$('button.card');
+    if (!card) {
+      check('layout: no card changes height on the showcase first card (U99)', false, 'no card found');
+    } else {
+      await card.click();
+      await until(async () => (await layoutBoxes(page)).length > 0, 15000);
+      const boxSamples = [];
+      for (let i = 0; i < 3; i++) {
+        boxSamples.push(await layoutBoxes(page));
+        if (i < 2) await sleep(5000);
+      }
+      const diffs = layoutDiffs(boxSamples);
+      check('layout: no card changes height on the showcase first card (U99)', diffs.length === 0, JSON.stringify(diffs.slice(0, 5)));
+    }
+    await page.close();
+    await stopRuns();
+  }
+
   await stopRuns();
   // Best effort: the server's own view of what the harness left running.
   try {

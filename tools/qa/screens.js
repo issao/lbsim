@@ -10,6 +10,9 @@ const path = require('path');
 
 const BASE = process.env.QA_BASE || 'http://localhost:8181';
 const OUT = process.env.QA_SHOTS || '/tmp/lbsim-screens';
+// U99: instead of the route walkthrough below, measure card/panel/banner/statusbar boxes three
+// times five seconds apart and report which ones changed size -- the same jump a person would see.
+const STABILITY = process.env.QA_STABILITY === '1';
 const CHROME = [
   '/home/agents/.cache/ms-playwright/chromium-1140/chrome-linux/chrome',
   '/home/agents/.cache/ms-playwright/chromium_headless_shell-1234/chrome-linux/headless_shell',
@@ -58,8 +61,49 @@ setTimeout(() => { console.log('screens: global timeout'); process.exit(1); }, 5
       await sleep(250);
     }
   };
+  // U99: the boxes a jumpy layout would resize. Compared as [className, id, height, width] so a
+  // diff names exactly which element and which dimension moved.
+  const measureBoxes = page => page.evaluate(() => [...document.querySelectorAll('.tile, .panel, .banner, .statusbar')].map(e => {
+    const r = e.getBoundingClientRect();
+    return [e.className, e.id, Math.round(r.height), Math.round(r.width)];
+  }));
+  const diffBoxes = samples => samples[0]
+    .map((b, i) => [b, ...samples.slice(1).map(s => s[i])])
+    .filter(row => row.some(box => !box || box[2] !== row[0][2] || box[3] !== row[0][3]));
+  const stability = async (page, name) => {
+    const samples = [];
+    for (let i = 0; i < 3; i++) {
+      samples.push(await measureBoxes(page));
+      await shot(page, `${name}-stability-${i}`);
+      if (i < 2) await sleep(5000);
+    }
+    const diffs = diffBoxes(samples);
+    console.log(`stability ${name}: ${diffs.length} box(es) differ across the three samples`);
+    if (diffs.length) console.log(JSON.stringify(diffs, null, 2));
+  };
 
   try {
+    if (STABILITY) {
+      {
+        const page = await open('#/dashboard', 500);
+        await untilSamples(page, 15000);
+        await stability(page, 'dashboard');
+        await page.close();
+      }
+      {
+        const page = await open('#/showcase', 1500);
+        const card = await page.$('button.card');
+        if (card) {
+          await card.click();
+          await untilSamples(page, 20000);
+          await stability(page, 'showcase-card');
+        } else {
+          console.log('stability showcase-card: no card found');
+        }
+        await page.close();
+      }
+      return; // the outer `finally` still stops runs and closes the browser
+    }
     {
       const page = await open('#/', 1500);
       await shot(page, 'home');

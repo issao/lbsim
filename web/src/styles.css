@@ -161,7 +161,7 @@ a:hover { text-decoration: underline; }
 .panel-head {
   display: flex; align-items: baseline; gap: 8px;
   padding: 6px 8px 5px; border-bottom: 1px solid var(--line);
-  flex: 0 0 auto;
+  flex: 0 0 auto; min-height: 26px;
 }
 .panel-title {
   font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em;
@@ -180,7 +180,9 @@ a:hover { text-decoration: underline; }
 }
 
 /* U95: the inline explanation a partial panel shows in its body when it is otherwise wearing the
-   run's own word (live/replay) -- the same sentence that sits in the tag's title. */
+   run's own word (live/replay) -- the same sentence that sits in the tag's title.
+   (U99 once reserved this line's height; U95b replaced the mechanism with per-cell `Unwired`
+   placeholders on this branch, which cost no line, so there was nothing left here to stabilize.) */
 .note.partial-note { color: var(--mock); margin: 0 0 6px; }
 
 .panel.highlight {
@@ -279,14 +281,18 @@ label.check input { accent-color: var(--accent); }
 
 .banner {
   display: flex; align-items: baseline; gap: 8px; flex: 0 0 auto;
-  padding: 4px 10px; font-size: 11px;
+  padding: 4px 10px; font-size: 11px; min-height: 24px; overflow: hidden;
   border-bottom: 1px solid var(--line);
   background: var(--surface-2); color: var(--ink-2);
 }
 .banner.resim { background: var(--mock-bg); color: var(--mock); border-bottom-color: var(--mock-line); }
 .banner.rejected { color: var(--serious); border-bottom-color: var(--serious); }
-.banner .tagline { font-family: var(--mono); font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; }
+.banner .tagline { font-family: var(--mono); font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; flex: 0 0 auto; }
 .banner .btn { margin-left: auto; }
+/* U99: the run id / sample-count / speed line, and the connection-phase or refusal text that can
+   replace it, share this one line rather than wrapping to a second -- min-width: 0 lets a flex
+   item shrink below its content size so the ellipsis actually engages instead of overflowing. */
+.banner > span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 
 /* A control the live server does not take: still visible, so the scenario reads whole, but inert. */
 fieldset.dropped { border: 0; padding: 0; margin: 0; min-width: 0; opacity: 0.5; }
@@ -312,15 +318,19 @@ fieldset.dropped .dropped-why { display: block; color: var(--ink-3); font-family
 
 /* ---------------------------------------------------------------- stat tiles */
 
-.tile { border: 1px solid var(--line); border-radius: var(--r); padding: 6px 8px; background: var(--surface-1); min-width: 0; }
-.tile-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* U99: label + value + flag + note, at their fixed heights below, plus the 6px top/bottom padding
+   -- a tile's floor, so a status flag or note appearing this frame never grows the card. */
+.tile { border: 1px solid var(--line); border-radius: var(--r); padding: 6px 8px; background: var(--surface-1); min-width: 0; min-height: 74px; }
+.tile-label { font-size: 10px; line-height: 14px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tile-value { font-family: var(--mono); font-size: 17px; line-height: 1.2; color: var(--ink-1); }
 .tile-value small { font-size: 11px; color: var(--ink-3); margin-left: 2px; }
-.tile-note { font-size: 10px; color: var(--ink-3); }
+.tile-note { font-size: 10px; color: var(--ink-3); height: 13px; line-height: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tile.status-good .tile-value { color: var(--good); }
 .tile.status-warning .tile-value { color: var(--ink-1); }
 .tile.status-critical .tile-value { color: var(--critical); }
-.tile-flag { font-size: 10px; display: inline-flex; gap: 4px; align-items: center; }
+.tile-flag { font-size: 10px; display: inline-flex; gap: 4px; align-items: center; height: 14px; max-width: 100%; }
+.tile-flag span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tile-flag.empty, .tile-note.empty { visibility: hidden; }
 .dot { width: 6px; height: 6px; border-radius: 50%; display: inline-block; flex: 0 0 auto; }
 .dot.good { background: var(--good); }
 .dot.warning { background: var(--warning); }
@@ -483,10 +493,16 @@ table.data caption { caption-side: bottom; text-align: left; padding: 5px 6px; f
 .events .d { padding-top: 4px; }
 .events .x { color: var(--ink-2); }
 
+/* U99: one fixed line, never two -- flex-wrap: wrap let the row fold onto a second line whenever
+   the byOwner list or the mode sentence happened to be long, which changed the bar's height. A
+   single nowrap row that scrolls sideways instead keeps the height constant; each span still
+   ellipsises its own text and carries a title with the full line for hover. */
 .statusbar {
-  display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  display: flex; align-items: center; gap: 14px; flex-wrap: nowrap;
   padding: 3px 10px; flex: 0 0 auto; font-size: 10.5px; color: var(--ink-3);
   border-top: 1px solid var(--line); background: var(--surface-1);
+  min-height: 22px; overflow-x: auto; overflow-y: hidden;
 }
 .statusbar b { font-family: var(--mono); font-weight: 500; color: var(--ink-2); }
 .statusbar .warn { color: var(--serious); }
+.statusbar > span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 0 1 auto; }

@@ -70,6 +70,7 @@ export function ServiceQuality({
           <Tile label="goodput" value={fmtNum(gp, 0)} unit=" tok/s" note="delivered within SLO" />
           <Tile label="throughput" value={fmtNum(tp, 0)} unit=" tok/s" note="delivered at all" />
           <Tile
+            dataTile="wasted"
             label="wasted"
             value={fmtPct(1 - (tp > 0 ? gp / tp : 1), 1)}
             note="tokens produced that earn no goodput"

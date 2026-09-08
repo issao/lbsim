@@ -87,20 +87,27 @@ function ServerBanner({ run }: { run: ServerRunHandle }) {
       <div className="banner">
         <span className="tagline">live</span>
         <span className="note">{dataSourceGloss('server')}</span>
-        <span title={`stream ${run.connection}${run.subscriptionId ? ` (${run.subscriptionId})` : ''}`}>
-          run <code>{run.runId ?? '…'}</code> &middot; {run.engine.frames.length} samples at {run.config.samplesPerSimSecond}
-          /sim s &middot; speed {speedLabel(run.status, run.paused, run.achievedFactor)}
+        {/* U99: the connection-phase / refusal message replaces this line's own content rather
+            than adding a second banner underneath, so the row's height never changes with it. */}
+        <span
+          title={
+            run.error ? run.error : `stream ${run.connection}${run.subscriptionId ? ` (${run.subscriptionId})` : ''}`
+          }
+        >
+          {run.error ? (
+            <span style={{ color: 'var(--critical)' }}>{run.error}</span>
+          ) : (
+            <>
+              run <code>{run.runId ?? '…'}</code> &middot; <span className="num">{run.engine.frames.length}</span>{' '}
+              samples at <span className="num">{run.config.samplesPerSimSecond}</span>/sim s &middot; speed{' '}
+              {speedLabel(run.status, run.paused, run.achievedFactor)}
+            </>
+          )}
         </span>
         <span style={{ marginLeft: 'auto', color: 'var(--ink-3)' }} title={run.disabledReason}>
           rewind is off on a live run
         </span>
       </div>
-      {run.error ? (
-        <div className="banner">
-          <span className="tagline">server</span>
-          <span style={{ color: 'var(--critical)' }}>{run.error}</span>
-        </div>
-      ) : null}
       {run.refused ? (
         <div className="banner">
           <span className="tagline">not applied</span>
@@ -227,8 +234,9 @@ function ReplayBanner({ run, picker }: { run: ReplayRunHandle; picker: ReactNode
         <span
           title={`runs/${e.runId} · ${1000 / e.sampleIntervalMs} samples/sim s · seed ${r.seed.toString()} · checksum ${r.stateChecksum.toString()}`}
         >
-          routing {e.routing} &middot; {e.replicas} replicas &middot; {run.loaded.frames.length} samples over{' '}
-          {runDurationS(e).toFixed(0)} s
+          routing {e.routing} &middot; <span className="num">{e.replicas}</span> replicas &middot;{' '}
+          <span className="num">{run.loaded.frames.length}</span> samples over{' '}
+          <span className="num">{runDurationS(e).toFixed(0)}</span> s
         </span>
         <span style={{ marginLeft: 'auto', color: 'var(--ink-3)' }} title={run.disabledReason}>
           rewind and changes are off on a replay
