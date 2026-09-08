@@ -694,6 +694,11 @@ pub const DEMOS: &[Demo] = &[
         files: &["affinity_off.txt", "affinity_spread.txt", "affinity_sticky.txt"],
         sweep: None,
     },
+    Demo {
+        group: "15-gray-failure",
+        files: &["gray_failure_none.txt", "gray_failure_eject.txt"],
+        sweep: None,
+    },
 ];
 
 /// Set one key, through the text form so there is exactly one place that knows the key names. The

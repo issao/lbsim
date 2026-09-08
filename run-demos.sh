@@ -68,5 +68,9 @@ echo; echo "== 14. prefix affinity against load spreading: p2c, then affinity at
 $S compare scenarios/affinity_off.txt scenarios/affinity_spread.txt scenarios/affinity_sticky.txt \
            --out out/14-affinity.html
 
+echo; echo "== 15. gray failure: a replica at 0.3x that announces healthy, with and without outlier ejection on the delayed view =="
+$S compare scenarios/gray_failure_none.txt scenarios/gray_failure_eject.txt \
+           --out out/15-gray-failure.html
+
 echo; echo "reports in out/"
 echo "for machine-readable telemetry, add: --telemetry out/NAME.tele [--telemetry-budget-mb N]"

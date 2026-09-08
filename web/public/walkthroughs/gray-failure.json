@@ -3,12 +3,15 @@
   "dynamic": 10,
   "title": "Gray failure and detection latency",
   "summary": "The failure mode that breaks real fleets is a replica that reports healthy while serving at a fraction of its speed, because load balancers keep sending it work.",
+  "run": "15-gray-failure/gray-failure-none",
+  "compare": "15-gray-failure/gray-failure-eject",
   "scenario": {
     "name": "showcase: gray failure",
     "seed": 20260906,
     "durationS": 120,
+    "fleet.replicas": 256,
     "routing.kind": "power_of_two_choices",
-    "workload.arrivalRps": 100
+    "workload.arrivalRps": 560
   },
   "steps": [
     {
@@ -19,58 +22,58 @@
       "highlight": "fleet-state",
       "title": "A healthy fleet, before anything happens",
       "body": [
-        "Thirty-two replicas ready, none warming, none draining, none ejected. Every replica is announcing healthy and every replica is in fact healthy.",
-        "The scripted failure schedule starts in a few seconds. Watch the ready count: it will not change."
+        "Two hundred and fifty-six replicas ready, none ejected, p2c routing at 560 requests a second against a rated 1878. Every replica is announcing healthy and every replica is in fact healthy: SLO attainment is 97 percent and TTFT p99 is 3.4 seconds.",
+        "The scripted failure schedule fires at t=60 s. Watch the ready count: it will not change, in either run."
       ],
-      "look_for": "All four counters, and the empty failure-events panel."
+      "look_for": "The counters, and the empty failure-events panel."
     },
     {
       "at_sim_s": 60,
       "speed": 2,
       "observe_tab": "cluster",
       "highlight": "gray",
-      "title": "One replica is now serving at 0.28x, and says it is fine",
+      "title": "Replica 5 is now serving at 0.3x, and says it is fine",
       "body": [
-        "Health is a vector, not a boolean. The announced state is still healthy, because nothing crashed; the true speed multiplier is 0.28, which the simulator knows and no policy does.",
-        "A policy can only infer this, from queue depth that will not drain, from step times that are three times the fleet median, from requests that time out on one replica and nowhere else."
+        "Health is a vector, not a boolean. The announced state is still healthy, because nothing crashed; the true speed multiplier is 0.3, which the simulator knows and no policy does.",
+        "p2c compares in-flight counts, and in-flight counts equalise: a replica that finishes slowly is sent less only in proportion to its slowness, never nothing. Every request it gets is slow. The one tell in the delayed view is its step time, 34 ms decoding where the fleet median is 11, and 156 ms when it carries a prefill chunk where a healthy replica takes 48."
       ],
-      "look_for": "The 'announcing healthy, degraded' tile at one, while the ready count is still full."
+      "look_for": "The ready count still at 256, while the machine tab's step-time column has grown one outlier."
     },
     {
-      "at_sim_s": 68,
+      "at_sim_s": 63,
       "speed": 1,
       "observe_tab": "machine",
       "highlight": "replicas",
       "title": "What the inference would look like",
       "body": [
-        "Sort the table by step time, descending. One replica sits at roughly three times the others, and its queue is not draining. That is the signal a detection policy has to act on, and everything else in the fleet looks normal.",
-        "The row shows the true speed multiplier because this is a simulator and it is allowed to. A real console cannot show you this column, which is exactly why detection latency is a policy property worth measuring."
+        "Sort the table by step time, descending. One replica sits at three to fourteen times the others, depending on whether the view caught it decoding or prefilling. That is the signal a detection policy has to act on, and everything else in the fleet looks normal.",
+        "It is a blunt signal. A healthy replica's step time is bimodal, 11 ms decoding and 48 ms carrying a 1024-token prefill chunk, a 4.4x spread inside one healthy fleet. A detector that ejects at three times the median ejected half of this fleet by t=20 s in a run with no failure at all. Eight times the median separates the two, and the price is that the gray replica's decode-only views, at three times, look healthy."
       ],
-      "look_for": "The outlier row, and how little else distinguishes it from a replica that is merely busy."
+      "look_for": "The outlier row, and how little else distinguishes it from a replica that is merely mid-prefill."
     },
     {
-      "at_sim_s": 76,
+      "at_sim_s": 65,
       "speed": 1,
       "observe_tab": "cluster",
       "highlight": "events",
-      "title": "Detected, and ejected, nineteen seconds late",
+      "title": "Detected, and ejected, 4.3 seconds late",
       "body": [
-        "The detection policy ejected the replica from routing. Nineteen simulated seconds passed between the onset of the degradation and the ejection, and during all of them the router kept sending it a full share of traffic.",
-        "Detection latency is the number to optimise here, and it trades directly against false positives: eject a merely-busy replica and you have removed capacity from a fleet that needed it."
+        "In the compared run the outlier policy ejected replica 5 at t=64.3 s: three consecutive one-second views above eight times the fleet median, each delivered 200 ms late. During those 4.3 seconds the router kept sending it work, and every one of those requests missed its SLO.",
+        "Detection latency is the number to optimise here, and it trades directly against false positives: eject a replica that was merely carrying a long prefill and you have removed capacity from a fleet that needed it. Here the view count and the ratio are the two knobs, and both were set by measuring the healthy spread first."
       ],
-      "look_for": "The two events in the timeline, and the ejected counter going to one while ready falls to 31."
+      "look_for": "The ejected counter at one in the compared run, and at zero in this one."
     },
     {
-      "at_sim_s": 96,
-      "speed": 2,
-      "observe_tab": "cluster",
-      "highlight": "arrivals",
-      "title": "Then the autoscaler notices, far too slowly to help",
+      "at_sim_s": 100,
+      "speed": 4,
+      "observe_tab": "quality",
+      "highlight": "slo",
+      "title": "Thirty seconds out, then judged again",
       "body": [
-        "Two replicas were requested and are warming. Cold start here is 28 seconds, against a degradation that developed in one and was detected in nineteen.",
-        "This is the actuator delay that makes reactive scaling unable to catch a burst. It is not a tuning problem; it is a comparison of time constants."
+        "The cooldown ended at t=94.3 s and the replica was re-admitted with a clean record. It was still at 0.3x, and three fresh views later, at t=100.3 s, it was out again. A cooldown is a re-assessment, not a pardon.",
+        "The fleet-level numbers barely move, because one replica is 0.4 percent of 256: SLO attainment 97.1 percent in both runs, TTFT p99 3355 ms without ejection against 3322 with, no timeouts in either. The difference lives on the replica: 49 requests reached it after the onset without detection and 48 of them missed their SLO; with ejection 20 reached it, all before detection or during the re-admission window, and all 20 missed. Fleet-wide, 883 SLO misses after t=60 became 853."
       ],
-      "look_for": "The warming count, and how much of the run is over before those replicas are ready."
+      "look_for": "The SLO attainment line, and how a 1-in-256 failure hides inside it."
     }
   ]
 }

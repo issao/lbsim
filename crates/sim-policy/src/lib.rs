@@ -7,17 +7,17 @@
 //! dynamics in section 6 are a property of the architecture. The one exception is an explicit probe,
 //! [`RouteContext::probe`], which pays a modelled round trip so the cost of freshness is visible.
 //!
-//! **Adding a policy is one file.** Write `src/<name>.rs` implementing [`RoutingPolicy`] or
-//! [`AdmissionPolicy`], with a first line declaring it:
+//! **Adding a policy is one file.** Write `src/<name>.rs` implementing [`RoutingPolicy`],
+//! [`AdmissionPolicy`] or [`HealthPolicy`], with a first line declaring it:
 //!
 //! ```text
 //! //! lbsim-policy: routing names=<canonical>,<alias>...
 //! ```
 //!
 //! `build.rs` reads that header from every file in `src/` and generates the `mod` lines and the
-//! [`ROUTING`] and [`ADMISSION`] tables, sorted by file name. Nothing in the engine changes; the engine
-//! resolves the scenario's `routing` and `admission` names through [`make_routing`] and
-//! [`make_admission`]. The registry used to be a hand-written table here, and three policy branches
+//! [`ROUTING`], [`ADMISSION`] and [`HEALTH`] tables, sorted by file name. Nothing in the engine changes;
+//! the engine resolves the scenario's `routing`, `admission` and `ejection` names through
+//! [`make_routing`], [`make_admission`] and [`make_health`]. The registry used to be a hand-written table here, and three policy branches
 //! written in parallel conflicted on it in one afternoon; a generated table cannot conflict. This is
 //! also how the arena's generated policies work: a generated policy is a file with that header like any
 //! other, and `PolicyEntry::file` is what a run records the source hash of.
@@ -29,9 +29,11 @@
 
 
 pub mod admission;
+pub mod health;
 pub mod routing;
 
 pub use admission::{Admission, AdmissionContext, AdmissionPolicy};
+pub use health::HealthPolicy;
 pub use routing::{NoPrefixIndex, PrefixIndex, ReplicaView, RequestView, RouteContext, RoutingPolicy};
 
 use sim_scenario::Scenario;
@@ -70,6 +72,14 @@ pub fn make_admission(sc: &Scenario) -> Result<Box<dyn AdmissionPolicy>, String>
     }
 }
 
+/// Resolve the scenario's `ejection` name.
+pub fn make_health(sc: &Scenario) -> Result<Box<dyn HealthPolicy>, String> {
+    match lookup(HEALTH, sc.ejection.as_str()) {
+        Some(e) => Ok((e.make)(sc)),
+        None => Err(format!("unknown ejection policy {:?}", sc.ejection)),
+    }
+}
+
 /// Canonical names of every routing policy, for the arena and the CLI.
 pub fn routing_names() -> Vec<&'static str> {
     ROUTING.iter().map(|e| e.names[0]).collect()
@@ -96,6 +106,13 @@ mod tests {
                 assert!(seen.insert(*n), "admission name {n} registered twice");
             }
         }
+        let mut seen = std::collections::BTreeSet::new();
+        for e in HEALTH {
+            assert!(dir.join(e.file).is_file(), "{} is registered but missing", e.file);
+            for n in e.names {
+                assert!(seen.insert(*n), "health name {n} registered twice");
+            }
+        }
     }
 
     #[test]
@@ -108,5 +125,9 @@ mod tests {
         sc.admission = "bouncer".into();
         let err = make_admission(&sc).err().expect("unknown admission name must be an error");
         assert!(err.contains("bouncer"), "{err}");
+        sc.admission = "accept_all".into();
+        sc.ejection = "oracle".into();
+        let err = make_health(&sc).err().expect("unknown ejection name must be an error");
+        assert!(err.contains("oracle"), "{err}");
     }
 }

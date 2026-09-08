@@ -137,10 +137,12 @@ const EXPORTED_RUN_IDS = new Set([
   '14-affinity/affinity-off',
   '14-affinity/affinity-spread',
   '14-affinity/affinity-sticky',
+  '15-gray-failure/gray-failure-none',
+  '15-gray-failure/gray-failure-eject',
 ]);
 
-/** U48's ten selected dynamics, plus spec-decode (U26b) and prefix affinity (U27b): every one of
- * these must have a script with a `run` field. */
+/** U48's ten selected dynamics, plus spec-decode (U26b), prefix affinity (U27b) and gray failure
+ * (U31b): every one of these must have a script with a `run` field. */
 const SELECTED_IDS = [
   'rolling-hotspot',
   'stale-telemetry',
@@ -155,6 +157,7 @@ const SELECTED_IDS = [
   'spec-decode',
   'herd-fleet-size',
   'affinity-vs-spread',
+  'gray-failure',
 ];
 
 // ---------------------------------------------------------------------------

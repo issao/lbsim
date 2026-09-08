@@ -1,0 +1,60 @@
+# Gray failure with outlier ejection: the treatment half of demo 15. The same replica runs at 0.3x from
+# t=60 s and still announces healthy; the health policy reads the one tell in the delayed view, its
+# step time against the fleet median, and ejects it after three consecutive outlying views. The
+# finding is the detection latency, and what the tail recovers once the replica is out of rotation.
+name = gray_failure_eject
+seed = 20260906
+duration_s = 120
+warmup_s = 15
+
+# Fleet. A 70B-class model on 8xH100 per replica; step_base_ms is calibrated in
+# bench/validate_epochs.py against a published batch-1 measurement.
+replicas = 256
+# Sequence cap and token budget both present, because which one binds is the point. At a ~3.2k mean
+# context the token budget allows about 420 sequences, so the count cap binds for ordinary traffic
+# and the token budget binds once long prompts arrive.
+max_batch = 256
+kv_capacity_tokens = 1370000
+# Weight read for a 70B model on 8xH100 at 70% bandwidth utilization, 7.46 ms, plus 2.75 ms of fixed
+# overhead. With the bandwidth term below this reproduces bench/validate_epochs.py to within 0.05 ms.
+step_base_ms = 10.2
+step_per_seq_ms = 0.0
+step_per_kv_ktoken_ms = 0.0175
+prefill_tokens_per_s = 28286
+step_token_budget = 1024
+max_queue = 400
+
+# Workload. A mixture, not a single distribution: interactive chat plus long-document work in the
+# same queue. The mixture is what creates head-of-line blocking, so a unimodal load would hide the
+# phenomenon being studied.
+arrival_rps = 560
+prompt_mean = 1200
+prompt_cv = 1.2
+output_mean = 300
+output_cv = 1.5
+long_probability = 0.08
+long_prompt_mean = 24000
+long_output_mean = 400
+
+routing = p2c
+# Detection: an outlier is eight times the fleet median step time, on three consecutive one-second
+# views, and stays out for thirty seconds before it is judged again. Eight, not three: a healthy
+# replica's step is 11 ms decoding and 48 ms when it carries a 1024-token prefill chunk, a 4.4x
+# spread inside one healthy fleet, and at a ratio of 3 that spread ejected half the fleet by t=20 s.
+# The 0.3x replica reports 200 ms and more, near 20x, so eight separates them with margin.
+ejection = outlier
+ejection_ratio = 8
+ejection_views = 3
+ejection_cooldown_s = 30
+telemetry_interval_ms = 1000
+telemetry_delay_ms = 200
+
+client_timeout_s = 60
+max_attempts = 1
+ttft_slo_ms = 2000
+itl_slo_ms = 80
+e2e_slo_s = 60
+sample_interval_ms = 250
+
+# Gray failure: silent, unannounced, and still in the rotation.
+failures = t=60,replica=5,kind=slow=0.3

@@ -119,6 +119,14 @@ pub struct Scenario {
     pub admission_headroom: f64,
     /// For weighted fair share: how far a tenant may burst above its share before being shed.
     pub fair_share_burst: f64,
+    /// Which health policy decides ejection from the delayed view: `none` leaves only announced
+    /// crashes out of the rotation; `outlier` ejects on step time against the fleet median.
+    pub ejection: String,
+    /// For outlier ejection: how many times the fleet median step time counts as an outlier, how many
+    /// consecutive views must say so before the verdict, and how long the replica then stays out.
+    pub ejection_ratio: f64,
+    pub ejection_views: u32,
+    pub ejection_cooldown_s: f64,
 
     // -- tenants ---------------------------------------------------------------
     /// How many tenants share the fleet. One means no tenancy at all.
@@ -351,6 +359,10 @@ impl Default for Scenario {
             admission: "accept_all".into(),
             admission_headroom: 0.5,
             fair_share_burst: 2.0,
+            ejection: "none".into(),
+            ejection_ratio: 3.0,
+            ejection_views: 3,
+            ejection_cooldown_s: 30.0,
             tenants: 1,
             tenant_weights: Vec::new(),
             tenant_demand: Vec::new(),
@@ -462,6 +474,10 @@ impl Scenario {
                 "admission" => s.admission = v.clone(),
                 "admission_headroom" => s.admission_headroom = f("admission_headroom"),
                 "fair_share_burst" => s.fair_share_burst = f("fair_share_burst"),
+                "ejection" => s.ejection = v.clone(),
+                "ejection_ratio" => s.ejection_ratio = f("ejection_ratio"),
+                "ejection_views" => s.ejection_views = f("ejection_views") as u32,
+                "ejection_cooldown_s" => s.ejection_cooldown_s = f("ejection_cooldown_s"),
                 "tenants" => s.tenants = f("tenants") as usize,
                 "tenant_weights" | "tenant_demand" => {
                     let mut ws = Vec::new();
@@ -639,6 +655,7 @@ impl Scenario {
             }
             "routing" | "p2c_choices" | "probe_live" | "admission" | "admission_headroom"
             | "fair_share_burst" | "preemption" | "preemption_victim"
+            | "ejection" | "ejection_ratio" | "ejection_views" | "ejection_cooldown_s"
             | "affinity_max_load_ratio" | "affinity_fallback_choices" => OverrideKind::Policy,
             _ => OverrideKind::Structural,
         }
@@ -680,6 +697,7 @@ impl Scenario {
              affinity_fallback_choices = {}\nload_step_at_s = {}\n\
              load_step_factor = {}\nload_step_until_s = {}\nrouting = {}\np2c_choices = {}\n\
              probe_live = {}\nadmission = {}\nadmission_headroom = {}\nfair_share_burst = {}\n\
+             ejection = {}\nejection_ratio = {}\nejection_views = {}\nejection_cooldown_s = {}\n\
              tenants = {}\ntenant_weights = {}\ntenant_demand = {}\n\
              telemetry_interval_ms = {}\ntelemetry_delay_ms = {}\n\
              client_timeout_s = {}\nmax_attempts = {}\nretry_budget_fraction = {}\n\
@@ -700,6 +718,7 @@ impl Scenario {
             self.affinity_fallback_choices, self.load_step_at_s,
             self.load_step_factor, self.load_step_until_s, self.routing, self.p2c_choices,
             self.probe_live, self.admission, self.admission_headroom, self.fair_share_burst,
+            self.ejection, self.ejection_ratio, self.ejection_views, self.ejection_cooldown_s,
             self.tenants,
             self.tenant_weights.iter().map(|w| w.to_string()).collect::<Vec<_>>().join(","),
             self.tenant_demand.iter().map(|w| w.to_string()).collect::<Vec<_>>().join(","),
