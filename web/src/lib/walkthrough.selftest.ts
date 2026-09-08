@@ -144,11 +144,18 @@ const EXPORTED_RUN_IDS = new Set([
   '16-scheduling/sched-deadline',
   '17-cascade/cascade-p2c',
   '17-cascade/cascade-affinity',
+  '18-bode/perturb_frequency_hz=0.01',
+  '18-bode/perturb_frequency_hz=0.02',
+  '18-bode/perturb_frequency_hz=0.05',
+  '18-bode/perturb_frequency_hz=0.1',
+  '18-bode/perturb_frequency_hz=0.2',
+  '18-bode/perturb_frequency_hz=0.5',
+  '18-bode/perturb_frequency_hz=1.0',
 ]);
 
 /** U48's ten selected dynamics, plus spec-decode (U26b), prefix affinity (U27b), gray failure
- * (U31b), the affinity failover cascade (U27d) and the scheduling seam's slo-classes (U108): every
- * one of these must have a script with a `run` field. */
+ * (U31b), the affinity failover cascade (U27d), the scheduling seam's slo-classes (U108) and the
+ * staleness loop's Bode plot (U33): every one of these must have a script with a `run` field. */
 const SELECTED_IDS = [
   'rolling-hotspot',
   'stale-telemetry',
@@ -166,6 +173,7 @@ const SELECTED_IDS = [
   'gray-failure',
   'affinity-cascade',
   'slo-classes',
+  'stale-oscillation',
 ];
 
 // ---------------------------------------------------------------------------

@@ -112,6 +112,10 @@ export function Home() {
           <a href="reports/17-cascade.html">17. Affinity hotspot failover cascade: a crashed holder's prefixes land cold</a>
           <p>The hottest holder crashes at 60 s and returns cold at 90 s; p2c against affinity at max load ratio 2.2.</p>
         </li>
+        <li>
+          <a href="reports/18-bode.html">18. The staleness loop's Bode plot: gain, phase, and where it oscillates on its own</a>
+          <p>A 30% sine on offered load swept from 0.01 to 1 Hz; least_requests on a 1 s / 200 ms delayed snapshot over 32 replicas.</p>
+        </li>
       </ul>
       <p>
         Every number on every page is engine data. A quantity the engine does not simulate yet shows a dash and says

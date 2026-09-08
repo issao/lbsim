@@ -185,10 +185,15 @@ impl Workload {
         let stepping = sc.load_step_at_s >= 0.0
             && elapsed_s >= sc.load_step_at_s
             && (sc.load_step_until_s < 0.0 || elapsed_s < sc.load_step_until_s);
-        if stepping {
-            sc.arrival_rps * sc.load_step_factor
+        let base = if stepping { sc.arrival_rps * sc.load_step_factor } else { sc.arrival_rps };
+        // Only `sine` touches the arithmetic: `none` must leave every existing fingerprint where it
+        // is, and a multiplication by exactly 1.0 is not the same as no multiplication for an f64
+        // that the exponential draw then divides.
+        if sc.perturbation == "sine" {
+            let phase = 2.0 * std::f64::consts::PI * sc.perturb_frequency_hz * elapsed_s;
+            (base * (1.0 + sc.perturb_amplitude * phase.sin())).max(0.0)
         } else {
-            sc.arrival_rps
+            base
         }
     }
 
@@ -225,6 +230,9 @@ impl Workload {
                 None => end_ns.saturating_sub(elapsed_ns) + SECOND,
             };
         }
+        // A rate that varies within a gap is sampled at the gap's start. At the perturbation
+        // frequencies this is used for (at most a few hertz against tens of arrivals per second)
+        // the rate barely moves across one gap, so the error is well below the sampling noise.
         let rate = Self::rate_at(sc, elapsed_s).max(1e-9);
         let gap = self.arrivals.exponential(1.0 / rate);
         (gap * 1e9) as Nanos
