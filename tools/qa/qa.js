@@ -584,7 +584,11 @@ const finalLine = extraFail => {
     const { page, body, until } = await fresh('#/dashboard');
     // At 1400x900 the Cluster tab fits and the checks would pass without scrolling anything.
     await page.setViewportSize({ width: 1280, height: 720 });
-    await until(async () => !/waiting for the first sample/i.test(await body()), 12000);
+    // The shell exists only once the first sample has arrived; on the cloud instance that can take
+    // longer than the 12 s the text wait allowed, and the checks then ran against the placeholder.
+    // Wait for the panel body itself, up to 40 s.
+    await page.waitForSelector('#control .panel-body', { timeout: 40000 }).catch(() => undefined);
+    await until(async () => !/waiting for the first sample/i.test(await body()), 5000);
     const tab = await page.$('button[data-tab="control:cluster"]');
     if (tab) await tab.click();
     await sleep(400);
