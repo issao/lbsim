@@ -22,6 +22,7 @@
 //! names the index as the deviation. Everything else uses proto field names verbatim, and
 //! `tests/wire_export.rs` and `tests/trace_wire.rs` check that.
 
+use crate::run::distribution_over_replicas;
 use crate::trace_wire;
 use crate::wire::{self, Distribution, MetricRow, RunStatus, State, SubscriptionUpdate, Target};
 use sim_core::Nanos;
@@ -33,6 +34,12 @@ use std::path::{Path, PathBuf};
 
 /// The percentiles every exported distribution carries, whole-run and windowed alike.
 pub const PERCENTILES: &[f64] = &[50.0, 90.0, 99.0, 99.9];
+
+/// The percentiles for the two distributions taken over replicas rather than over time: `PERCENTILES`
+/// above is the wire's whole-run and windowed latency convention (with a 99.9 tail), but U94b's brief
+/// asks for 50/90/99 over replicas, which is a different question ("how many replicas are idle") and
+/// gets its own list rather than borrowing one shaped for latency tails.
+const REPLICA_PERCENTILES: &[f64] = &[50.0, 90.0, 99.0];
 
 /// The subscription id stamped on every exported update. A static file has no lease and no
 /// subscription; the field is kept because the document shape is the stream's, and a client that
@@ -224,6 +231,29 @@ pub fn fleet_rows(r: &RunResult) -> Vec<SubscriptionUpdate> {
         );
         row.value(wire::METRIC_LOAD_IMBALANCE_CV, imbalance_at(r, s));
         row.value(wire::METRIC_READY_REPLICAS, r.scenario.replicas as f64);
+        // GPU utilization and the KV-utilization band across replicas, from the same frame the
+        // per-replica rows below read. `busy_ns` never exceeds the window by construction; the ratio
+        // is clamped anyway rather than trust an upstream invariant.
+        let frame = &r.frames[s];
+        let window_ns = sample_interval(r) as f64;
+        let gpu: Vec<f64> =
+            frame.replicas.iter().map(|rep| (rep.busy_ns as f64 / window_ns).min(1.0)).collect();
+        let kv_ratios: Vec<f64> = frame
+            .replicas
+            .iter()
+            .map(|rep| rep.kv_tokens as f64 / r.scenario.kv_capacity_tokens.max(1.0))
+            .collect();
+        let busy_sum: u64 = frame.replicas.iter().map(|rep| rep.busy_ns).sum();
+        let compute_sum: u64 = frame.replicas.iter().map(|rep| rep.compute_ns).sum();
+        let replica_n = frame.replicas.len().max(1) as f64;
+        row.value(wire::METRIC_GPU_UTILIZATION, gpu.iter().sum::<f64>() / replica_n);
+        row.value(wire::METRIC_GPU_COMPUTE_BOUND_FRACTION, compute_sum as f64 / busy_sum as f64);
+        if let Some(d) = distribution_over_replicas(&gpu, REPLICA_PERCENTILES) {
+            row.distribution(wire::METRIC_GPU_UTILIZATION, d);
+        }
+        if let Some(d) = distribution_over_replicas(&kv_ratios, REPLICA_PERCENTILES) {
+            row.distribution(wire::METRIC_KV_UTILIZATION, d);
+        }
         row.distribution(wire::METRIC_TTFT, Distribution::exact(&mut w.ttft.clone(), PERCENTILES));
         row.distribution(wire::METRIC_ITL, Distribution::exact(&mut w.itl.clone(), PERCENTILES));
         row.distribution(wire::METRIC_E2E, Distribution::exact(&mut w.e2e.clone(), PERCENTILES));
@@ -260,6 +290,9 @@ pub fn replica_rows(r: &RunResult, s: usize) -> Vec<SubscriptionUpdate> {
         row.value(wire::METRIC_KV_TOKENS_RESIDENT, rep.kv_tokens as f64);
         row.value(wire::METRIC_KV_UTILIZATION, rep.kv_tokens as f64 / r.scenario.kv_capacity_tokens.max(1.0));
         row.value(wire::METRIC_STEP_TIME, rep.last_step_ns as f64 / 1e9);
+        let window_ns = sample_interval(r) as f64;
+        row.value(wire::METRIC_GPU_UTILIZATION, (rep.busy_ns as f64 / window_ns).min(1.0));
+        row.value(wire::METRIC_GPU_COMPUTE_BOUND_FRACTION, rep.compute_ns as f64 / rep.busy_ns as f64);
         out.push(SubscriptionUpdate {
             subscription_id: EXPORT_SUBSCRIPTION_ID.to_string(),
             sim_time_unix_ns: r.fleet_queue.t[s],

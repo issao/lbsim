@@ -686,6 +686,8 @@ pub const FLEET_METRICS: &[i32] = &[
     wire::METRIC_E2E,
     wire::METRIC_QUEUE_WAIT,
     wire::METRIC_READY_REPLICAS,
+    wire::METRIC_GPU_UTILIZATION,
+    wire::METRIC_GPU_COMPUTE_BOUND_FRACTION,
 ];
 pub const REPLICA_METRICS: &[i32] = &[
     wire::METRIC_QUEUED_SEQS,
@@ -693,6 +695,8 @@ pub const REPLICA_METRICS: &[i32] = &[
     wire::METRIC_KV_UTILIZATION,
     METRIC_KV_TOKENS_RESIDENT,
     METRIC_STEP_TIME,
+    wire::METRIC_GPU_UTILIZATION,
+    wire::METRIC_GPU_COMPUTE_BOUND_FRACTION,
 ];
 
 // Two metric numbers `wire.rs` does not name; the same table, and `metric_numbers_are_in_the_table`
@@ -714,6 +718,36 @@ fn distribution(h: &SparseHistogram, percentiles: &[f64]) -> Distribution {
     }
 }
 
+/// Exact percentiles of a per-replica scalar across the fleet at one instant, nearest-rank like
+/// `Distribution::exact`'s windowed sample. The question this answers is never "what is the average"
+/// but "how many replicas sit idle while others saturate", so it is a distribution over replicas
+/// rather than over time. `None` when no replica has a finite reading.
+pub fn distribution_over_replicas(values: &[f64], percentiles: &[f64]) -> Option<Distribution> {
+    let mut finite: Vec<f64> = values.iter().copied().filter(|v| v.is_finite()).collect();
+    if finite.is_empty() {
+        return None;
+    }
+    finite.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let n = finite.len();
+    let sum: f64 = finite.iter().sum();
+    let value = percentiles
+        .iter()
+        .map(|q| {
+            let rank = ((q / 100.0) * n as f64).ceil().max(1.0) as usize;
+            finite[rank.min(n) - 1]
+        })
+        .collect();
+    Some(Distribution {
+        count: n as u64,
+        mean: sum / n as f64,
+        min: finite[0],
+        max: finite[n - 1],
+        percentile: percentiles.to_vec(),
+        value,
+        from_merged_histogram: false,
+    })
+}
+
 /// One `MetricRow` for one frame. `None` when the target names a replica the scenario has not got.
 pub fn row(f: &Frame, sc: &Scenario, spec: &RowSpec) -> Option<MetricRow> {
     let mut row = MetricRow::new(spec.target);
@@ -730,6 +764,13 @@ pub fn row(f: &Frame, sc: &Scenario, spec: &RowSpec) -> Option<MetricRow> {
             value(wire::METRIC_RUNNING_SEQS, r.running as f64);
             value(wire::METRIC_KV_UTILIZATION, r.kv_tokens as f64 / cap);
             value(METRIC_KV_TOKENS_RESIDENT, r.kv_tokens as f64);
+            // Busy is not useful work: compute-bound is busy's complement of `WASTED_GPU_FRACTION`.
+            // `busy_ns` never exceeds the window by construction, but the ratio is clamped anyway
+            // rather than trust an upstream invariant. 0/0 (never stepped) is NaN, which `value`
+            // drops.
+            let window_ns = (sc.sample_interval_ms * 1e6).max(1e-9);
+            value(wire::METRIC_GPU_UTILIZATION, (r.busy_ns as f64 / window_ns).min(1.0));
+            value(wire::METRIC_GPU_COMPUTE_BOUND_FRACTION, r.compute_ns as f64 / r.busy_ns as f64);
             // Seconds as a double, like every other duration gauge and like export.rs's replica
             // row — not a distribution. Zero means the replica has not stepped yet, and a
             // duration of nothing is a gap.
@@ -767,6 +808,32 @@ pub fn row(f: &Frame, sc: &Scenario, spec: &RowSpec) -> Option<MetricRow> {
                 if ended == 0 { f64::NAN } else { f.within_slo as f64 / ended as f64 },
             );
             value(wire::METRIC_READY_REPLICAS, f.replicas.len() as f64);
+            // GPU utilization and the KV-utilization band: the mean is never the interesting
+            // number, it is how many replicas sit idle while others saturate. Same percentiles as
+            // the latency distributions below, falling back to 50/90/99 when the spec asked for
+            // none, because "no percentiles requested" means "give me the defaults", not "give me
+            // none".
+            let window_ns = (sc.sample_interval_ms * 1e6).max(1e-9);
+            let gpu: Vec<f64> =
+                f.replicas.iter().map(|r| (r.busy_ns as f64 / window_ns).min(1.0)).collect();
+            let kv_ratios: Vec<f64> = f.replicas.iter().map(|r| r.kv_tokens as f64 / cap).collect();
+            let busy_sum: u64 = f.replicas.iter().map(|r| r.busy_ns).sum();
+            let compute_sum: u64 = f.replicas.iter().map(|r| r.compute_ns).sum();
+            value(wire::METRIC_GPU_UTILIZATION, gpu.iter().sum::<f64>() / n);
+            value(wire::METRIC_GPU_COMPUTE_BOUND_FRACTION, compute_sum as f64 / busy_sum as f64);
+            let default_percentiles = [50.0, 90.0, 99.0];
+            let percentiles =
+                if spec.percentiles.is_empty() { &default_percentiles[..] } else { &spec.percentiles[..] };
+            if spec.wants(wire::METRIC_GPU_UTILIZATION) {
+                if let Some(d) = distribution_over_replicas(&gpu, percentiles) {
+                    row.distribution(wire::METRIC_GPU_UTILIZATION, d);
+                }
+            }
+            if spec.wants(wire::METRIC_KV_UTILIZATION) {
+                if let Some(d) = distribution_over_replicas(&kv_ratios, percentiles) {
+                    row.distribution(wire::METRIC_KV_UTILIZATION, d);
+                }
+            }
             for (m, h) in [
                 (wire::METRIC_TTFT, &f.ttft),
                 (wire::METRIC_ITL, &f.itl_max),
@@ -866,6 +933,47 @@ mod tests {
         let r = row(&frame, &sc, &spec).expect("replica 0 exists");
         assert_eq!(r.values.iter().find(|(m, _)| *m == METRIC_STEP_TIME).map(|(_, v)| *v), Some(0.002));
         assert!(r.distributions.iter().all(|(m, _)| *m != METRIC_STEP_TIME));
+    }
+
+    #[test]
+    fn fleet_gpu_utilization_is_the_mean_and_a_distribution_over_replicas() {
+        // U94b: one idle replica and one fully busy one for a whole window, so the mean is exactly
+        // 0.5 and every percentile lands in [0, 1] rather than collapsing to a single value.
+        let sc = Scenario::default();
+        let window_ns = (sc.sample_interval_ms * 1e6) as Nanos;
+        let frame = Frame {
+            t: 0,
+            offered_rps: 0.0,
+            admitted: 0,
+            completed: 0,
+            rejected: 0,
+            timed_out: 0,
+            within_slo: 0,
+            output_tokens: 0,
+            goodput_tokens: 0,
+            ttft: SparseHistogram::default(),
+            itl_max: SparseHistogram::default(),
+            e2e: SparseHistogram::default(),
+            queue_wait: SparseHistogram::default(),
+            preemptions: 0,
+            replicas: vec![
+                sim_metrics::ReplicaSample { busy_ns: 0, ..Default::default() },
+                sim_metrics::ReplicaSample { busy_ns: window_ns, ..Default::default() },
+            ],
+        };
+        let spec = RowSpec { target: Target::Fleet, metrics: Vec::new(), percentiles: Vec::new() };
+        let r = row(&frame, &sc, &spec).expect("fleet row");
+        let mean = r.values.iter().find(|(m, _)| *m == wire::METRIC_GPU_UTILIZATION).map(|(_, v)| *v);
+        assert_eq!(mean, Some(0.5));
+        let d = r
+            .distributions
+            .iter()
+            .find(|(m, _)| *m == wire::METRIC_GPU_UTILIZATION)
+            .map(|(_, d)| d)
+            .expect("gpu utilization distribution over replicas");
+        assert_eq!(d.percentile, vec![50.0, 90.0, 99.0]);
+        assert_eq!(d.count, 2);
+        assert!(d.value.iter().all(|v| (0.0..=1.0).contains(v)), "{:?}", d.value);
     }
 
     #[test]
