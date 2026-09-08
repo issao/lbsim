@@ -281,7 +281,7 @@ impl Default for Scenario {
             seed: 1,
             duration_s: 60.0,
             warmup_s: 5.0,
-            replicas: 32,
+            replicas: 256,
             max_batch: 32,
             // Weight read for a 70B model on 8xH100 at 70% bandwidth utilization, 7.46 ms, plus
             // 2.75 ms of fixed overhead calibrated against a published batch-1 measurement.
@@ -302,7 +302,7 @@ impl Default for Scenario {
             preemption_victim: "newest".into(),
             dram_capacity_tokens: 0.0,
             swap_gbps: 50.0,
-            arrival_rps: 40.0,
+            arrival_rps: 320.0,
             prompt_mean: 1200.0,
             prompt_cv: 1.2,
             output_mean: 300.0,

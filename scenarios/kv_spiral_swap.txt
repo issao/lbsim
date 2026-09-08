@@ -7,6 +7,7 @@ seed = 20260906
 duration_s = 120
 warmup_s = 15
 
+# Kept at 4 replicas: the finding depends on the small fleet (Issao, 2026-09-07).
 replicas = 4
 max_batch = 64
 kv_capacity_tokens = 30000

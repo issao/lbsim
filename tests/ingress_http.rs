@@ -424,8 +424,8 @@ fn a_subscription_streams_at_the_asked_cadence_renews_and_closes() {
         last_t = t;
         let row = u.get("row").unwrap();
         assert_eq!(row.get("target").unwrap().str("scope"), Some("SCOPE_FLEET"));
-        assert_eq!(metric_value(row, 40), Some(70.0), "offered rps is the scenario's");
-        assert_eq!(metric_value(row, 60), Some(32.0), "ready replicas");
+        assert_eq!(metric_value(row, 40), Some(560.0), "offered rps is the scenario's");
+        assert_eq!(metric_value(row, 60), Some(256.0), "ready replicas");
         assert!(metric_value(row, 23).is_some(), "queued");
         if let Some(d) = row.get("distributions").unwrap().get("1") {
             assert_eq!(d.get("percentile"), Some(&Json::Arr(vec![Json::Num(50.0), Json::Num(99.0)])));
@@ -467,7 +467,7 @@ fn a_subscription_streams_at_the_asked_cadence_renews_and_closes() {
     // Rejections are a 200 with `rejected_reason`, as the proto says; an unknown run is a 404.
     for bad in [
         format!("run_id={run_id}&scope=SCOPE_POOL&pool_id=1&samples_per_sim_second=1"),
-        format!("run_id={run_id}&scope=SCOPE_REPLICA&replica_id=99&samples_per_sim_second=1"),
+        format!("run_id={run_id}&scope=SCOPE_REPLICA&replica_id=999&samples_per_sim_second=1"),
         format!("run_id={run_id}&scope=SCOPE_FLEET&metrics=METRIC_NOPE&samples_per_sim_second=1"),
         format!("run_id={run_id}&scope=SCOPE_FLEET&metrics=METRIC_STEP_TIME&samples_per_sim_second=1"),
         format!("run_id={run_id}&scope=SCOPE_FLEET&samples_per_sim_second=0"),
@@ -774,7 +774,7 @@ fn update_workload_mid_run_raises_offered_rps() {
     step(addr, &run_id, 20 * S);
 
     // The run is paused: the update must land anyway, without waiting for the next advance.
-    let r = update(addr, "UpdateWorkload", &run_id, &[("arrival_rps", "210")]);
+    let r = update(addr, "UpdateWorkload", &run_id, &[("arrival_rps", "1680")]);
     assert_eq!(r.bool("accepted"), Some(true), "{r:?}");
     assert_eq!(r.bool("required_resimulation"), Some(false));
     assert_eq!(r.str("rewound_to_unix_ns"), Some("0"));

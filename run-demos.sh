@@ -24,7 +24,7 @@ $S sweep scenarios/route_p2c.txt \
 
 echo; echo "== 4. load curve: where the knee is =="
 $S sweep scenarios/route_p2c.txt \
-         --over arrival_rps=30,70,110,150,190,230 \
+         --over arrival_rps=240,560,880,1200,1520,1840 \
          --out out/4-load-curve.html
 
 echo; echo "== 5. long-context share: capacity is a token budget, not a request count =="
