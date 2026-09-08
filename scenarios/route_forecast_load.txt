@@ -10,7 +10,7 @@ warmup_s = 15
 
 # Fleet. A 70B-class model on 8xH100 per replica; step_base_ms is calibrated in
 # bench/validate_epochs.py against a published batch-1 measurement.
-replicas = 32
+replicas = 256
 # Sequence cap and token budget both present, because which one binds is the point. At a ~3.2k mean
 # context the token budget allows about 420 sequences, so the count cap binds for ordinary traffic
 # and the token budget binds once long prompts arrive.
@@ -28,7 +28,7 @@ max_queue = 400
 # Workload. A mixture, not a single distribution: interactive chat plus long-document work in the
 # same queue. The mixture is what creates head-of-line blocking, so a unimodal load would hide the
 # phenomenon being studied.
-arrival_rps = 70
+arrival_rps = 560
 prompt_mean = 1200
 prompt_cv = 1.2
 output_mean = 300

@@ -5,6 +5,7 @@ name = trace_replay
 seed = 20260906
 duration_s = 30
 warmup_s = 3
+# Kept at 32 replicas: the finding depends on the small fleet (Issao, 2026-09-07).
 replicas = 32
 max_batch = 256
 kv_capacity_tokens = 1370000

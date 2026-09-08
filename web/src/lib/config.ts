@@ -86,7 +86,7 @@ export const BASE: ScenarioConfig = {
   durationS: 120,
   warmupS: 15,
   workload: {
-    arrivalRps: 70,
+    arrivalRps: 560,
     promptMean: 1200,
     promptCv: 1.2,
     outputMean: 300,
@@ -99,7 +99,7 @@ export const BASE: ScenarioConfig = {
     perturbFrequencyHz: 0.05,
   },
   fleet: {
-    replicas: 32,
+    replicas: 256,
     maxBatch: 256,
     stepBaseMs: 10.2,
     stepPerSeqMs: 0.0,
@@ -152,7 +152,7 @@ export const PRESETS: Preset[] = [
     id: 'base',
     title: 'Baseline, round robin',
     file: 'scenarios/base.txt',
-    summary: '32 replicas, 70 rps, 8 % long requests. The shared baseline every comparison changes one thing from.',
+    summary: '256 replicas, 560 rps, 8 % long requests. The shared baseline every comparison changes one thing from.',
     apply: () => cloneConfig(BASE),
   },
   {
@@ -176,7 +176,7 @@ export const PRESETS: Preset[] = [
       const c = cloneConfig(BASE);
       c.name = 'rolling-hotspot';
       c.routing = { ...c.routing, kind: 'round_robin' };
-      c.workload = { ...c.workload, arrivalRps: 85, longProbability: 0.12 };
+      c.workload = { ...c.workload, arrivalRps: 680, longProbability: 0.12 };
       return c;
     },
   },
@@ -191,7 +191,7 @@ export const PRESETS: Preset[] = [
       c.routing = { ...c.routing, kind: 'least_kv_tokens' };
       c.telemetryDelayMs = 900;
       c.telemetryIntervalMs = 1500;
-      c.workload = { ...c.workload, arrivalRps: 105 };
+      c.workload = { ...c.workload, arrivalRps: 840 };
       return c;
     },
   },
@@ -203,7 +203,7 @@ export const PRESETS: Preset[] = [
     apply: () => {
       const c = cloneConfig(BASE);
       c.name = 'kv-pressure';
-      c.workload = { ...c.workload, arrivalRps: 55, longProbability: 0.25, longPromptMean: 16000 };
+      c.workload = { ...c.workload, arrivalRps: 440, longProbability: 0.25, longPromptMean: 16000 };
       c.fleet = { ...c.fleet, kvTokensPerReplica: 1140000 };
       return c;
     },
@@ -216,7 +216,7 @@ export const PRESETS: Preset[] = [
     apply: () => {
       const c = cloneConfig(BASE);
       c.name = 'overload';
-      c.workload = { ...c.workload, arrivalRps: 210 };
+      c.workload = { ...c.workload, arrivalRps: 1680 };
       c.routing = { ...c.routing, kind: 'power_of_two_choices' };
       return c;
     },

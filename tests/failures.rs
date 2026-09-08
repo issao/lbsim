@@ -42,15 +42,16 @@ fn routed(r: &RunResult) -> Vec<&RequestRecord> {
 }
 
 /// The failure path schedules nothing when the schedule is empty, so a run without failures must
-/// be the run it was before failures existed. Pinned from `origin/master` at 29fd8d5.
+/// be the run it was before failures existed. Re-pinned when the baseline fleet moved to 256 replicas
+/// at 560 rps (Issao, 2026-09-07).
 #[test]
 fn no_failures_is_byte_identical() {
     let text = std::fs::read_to_string("scenarios/route_p2c.txt").unwrap();
     let sc = Scenario::parse(&text).unwrap();
     assert!(sc.failures.is_empty());
     let r = sim::run(&sc).unwrap();
-    assert_eq!(r.fingerprint, 13155901060006219336, "the replica loop changed with no failures configured");
-    assert_eq!(r.events, 296643, "the event stream changed with no failures configured");
+    assert_eq!(r.fingerprint, 15913688846466930736, "the replica loop changed with no failures configured");
+    assert_eq!(r.events, 2391338, "the event stream changed with no failures configured");
 }
 
 /// A replica at 0.3x speed reports itself healthy, so a router that reads queue depth keeps sending

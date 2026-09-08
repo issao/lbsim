@@ -22,7 +22,9 @@ pub fn small() -> Scenario {
     s.warmup_s = 3.0;
     s.client_timeout_s = 8.0;
     s.routing = "p2c".into();
-    s.arrival_rps = 0.5 * Scenario::default().arrival_rps; // overwritten by most callers
+    // Pinned rather than derived from Scenario::default(): the fixture is 20 rps on 8 replicas, and
+    // the fingerprints tests pin against it must not move when the demo default fleet does.
+    s.arrival_rps = 20.0; // overwritten by most callers
     s
 }
 

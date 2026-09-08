@@ -11,8 +11,9 @@ use lbsim::sim;
 use lbsim::workload::Request;
 use lbsim::{EPOCH_BASE, SECOND};
 
-/// `1-routing/01-p2c` in bench/golden-fingerprints.txt at origin/master before this unit landed.
-const ROUTE_P2C_GOLDEN: u64 = 13155901060006219336;
+/// `1-routing/01-p2c` in bench/golden-fingerprints.txt, re-pinned when the baseline fleet moved to 256
+/// replicas at 560 rps (Issao, 2026-09-07).
+const ROUTE_P2C_GOLDEN: u64 = 15913688846466930736;
 
 const DRAFTS: u32 = 4;
 const ACCEPT: f64 = 0.7;

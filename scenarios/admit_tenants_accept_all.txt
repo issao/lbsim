@@ -7,6 +7,7 @@ warmup_s = 15
 
 # Fleet. A 70B-class model on 8xH100 per replica; step_base_ms is calibrated in
 # bench/validate_epochs.py against a published batch-1 measurement.
+# Kept at 32 replicas: the finding depends on the small fleet (Issao, 2026-09-07).
 replicas = 32
 # Sequence cap and token budget both present, because which one binds is the point. At a ~3.2k mean
 # context the token budget allows about 420 sequences, so the count cap binds for ordinary traffic
