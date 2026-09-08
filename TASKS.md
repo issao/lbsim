@@ -1,6 +1,6 @@
 # TASKS — things that need Issao
 
-Last updated: 2026-09-07 19:50 PDT by Claude.
+Last updated: 2026-09-07 19:53 PDT by Claude.
 
 **RESUMED 2026-09-07 19:13 PDT** at your "resume", relayed by main. The pause (11:22–19:13, quota) changed nothing on `master` but the tech lead's graph checkpoint (1a58186). The tech lead is `a56ff1d3950e7375f` now, resuming U79–U83 from the four WIP branches; U80 (Home in Live / Replay / Mock sections) landed at 023672d, 19:13, not yet deployed; `STATUS.md` has their state. Everything below stands as it was; one thing needs a word from you tonight, item 2.
 
@@ -72,8 +72,10 @@ the `docs/wrap-up-2026-09-06.md` §5b caveat (one tab at a time until U79 lands)
 `docs/execution-graph.md` at 5080f22 (merged 37893ca 11:19) carries the same words and the five briefs, U79–U82 spawned
 11:19, U83 queued behind U81; `STATUS.md` records each unit as it lands.
 **Done, all five, by 19:50 today:** U80 Home sections 023672d, U81 badge bd5ba3f, U82 finished-product text 837910b, U79 the
-live-server fix 60327b7 (deployed 19:39 as `lbsim-00014-gvp`), U83 the UI pass b5f5af7 (READY sent to main 19:50, deploy
-pending); U77 the live-run cap f4a119f rides the same deploy. Two follow-ups queued as U84 and U85.
+live-server fix 60327b7 (deployed 19:39 as `lbsim-00014-gvp`), U83 the UI pass b5f5af7 and U77 the live-run cap f4a119f, deployed 19:51 as
+`lbsim-00015-79v`. **The whole instruction is on <https://lbsim.ai> as of `lbsim-00015-79v`**, with U86 and the queued U84/U85 to come. Follow-ups queued, not spawned, under main's stop rule: U84, U85 from U83's report; U87–U89 from the
+reviewer's eleven findings over U83's screenshots (internal names out of the UI, view-only sliders as readouts, Showcase
+copy and empty states). U86, the one-in-fourteen showcase card stuck at 0 samples, is in flight.
 **If you say nothing:** the tech lead's reading of it in the graph stands.
 
 Nothing else routed since the checkpoint; the tree scans clean (`python3 tools/inbox.py`, 11:17 today). Nothing
