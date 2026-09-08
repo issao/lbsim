@@ -83,13 +83,20 @@ export function Panel({
     <section className={`panel${highlight ? ' highlight' : ''}`} id={id} data-panel={id}>
       <header className="panel-head">
         <span className="panel-title">{title}</span>
-        {sub ? <span className="panel-sub">{sub}</span> : null}
+        {sub ? (
+          <span className="panel-sub" title={typeof sub === 'string' ? sub : undefined}>
+            {sub}
+          </span>
+        ) : null}
         <span className="panel-head-right">
           {right}
           <MockTag what={tagWord} fields={data?.kind === 'partial' && tagWord === 'mock' ? data.mockFields : undefined} />
         </span>
       </header>
       <div className={`panel-body ${bodyClass}`}>
+        {/* U99 reserved a line here for the old partial-note sentence; U95b replaced that whole
+            mechanism with per-cell `Unwired` placeholders, which never add a line to a panel, so
+            there is nothing left for this unit to stabilize in the panel body. */}
         {children}
       </div>
     </section>
@@ -143,6 +150,8 @@ export function Tile({
   note,
   status,
   statusText,
+  id,
+  dataTile,
 }: {
   label: string;
   /** A formatted number, or `<Unwired/>` on a live or replay run for a field the engine does not produce yet. */
@@ -151,21 +160,31 @@ export function Tile({
   note?: ReactNode;
   status?: Status;
   statusText?: string;
+  id?: string;
+  dataTile?: string;
 }) {
+  // U99: the flag and note rows are always in the DOM, at a fixed height, so a tile never grows or
+  // shrinks because the status text or note happened to show up this frame -- `visibility: hidden`
+  // reserves the line instead of unmounting it.
+  const hasFlag = Boolean(status && statusText);
+  const hasNote = note !== undefined && note !== null && note !== '';
+  const noteTitle = typeof note === 'string' ? note : undefined;
   return (
-    <div className={`tile${status ? ` status-${status}` : ''}`}>
-      <div className="tile-label">{label}</div>
+    <div className={`tile${status ? ` status-${status}` : ''}`} id={id} data-tile={dataTile}>
+      <div className="tile-label" title={label}>
+        {label}
+      </div>
       <div className="tile-value num">
         {value}
         {unit ? <small>{unit}</small> : null}
       </div>
-      {status && statusText ? (
-        <div className="tile-flag">
-          <i className={`dot ${status}`} />
-          <span>{statusText}</span>
-        </div>
-      ) : null}
-      {note ? <div className="tile-note">{note}</div> : null}
+      <div className={`tile-flag${hasFlag ? '' : ' empty'}`} title={hasFlag ? statusText : undefined}>
+        <i className={`dot ${status ?? ''}`} />
+        <span>{statusText}</span>
+      </div>
+      <div className={`tile-note${hasNote ? '' : ' empty'}`} title={noteTitle}>
+        {note}
+      </div>
     </div>
   );
 }
