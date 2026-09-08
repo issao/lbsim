@@ -3,16 +3,15 @@
 //! malformed is either silently not a policy or a build panic; so the first test re-implements that
 //! parser's rules rather than importing a build script, and holds every variant to them.
 
+mod common;
+
 use lbsim::arena::catalog::{append, HEADER};
 use lbsim::arena::generator::{catalog_row, render, sha256_hex, write_policy, VARIANTS};
-use std::path::PathBuf;
 
 const CATALOG: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/docs/policy-catalog.md");
 
-fn temp_dir(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("lbsim-arena-generator-{}-{tag}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+fn temp_dir(tag: &str) -> common::ScratchDir {
+    common::scratch(&format!("arena-generator-{tag}"))
 }
 
 /// `build.rs::parse_header`, restated: prefix, a kind token in {routing, admission}, `names=` non-empty.
@@ -51,7 +50,6 @@ fn generated_policy_carries_the_registry_header() {
         let stem = path.file_stem().unwrap().to_str().unwrap();
         assert!(stem.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'), "{stem}");
     }
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -77,7 +75,6 @@ fn generated_source_hash_is_stable() {
         assert!(!seen.contains(&first), "{}: hash collides with another variant", v.name);
         seen.push(first);
     }
-    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -103,5 +100,4 @@ fn catalog_row_is_appended_once() {
     assert!(headers(&after) >= 1);
     assert!(headers(&after) >= headers(&before), "a table lost its header");
     assert!(after.contains(&row.source));
-    let _ = std::fs::remove_dir_all(&dir);
 }

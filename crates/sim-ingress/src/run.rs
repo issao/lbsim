@@ -1015,11 +1015,8 @@ mod tests {
         sc
     }
 
-    fn temp_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("lbsim-run-{}-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+    fn temp_dir(name: &str) -> crate::test_scratch::ScratchDir {
+        crate::test_scratch::scratch(&format!("run-{name}"))
     }
 
     /// One second of engine: enough closed frames to tell "kept" from "dropped".
@@ -1088,7 +1085,8 @@ mod tests {
 
     #[test]
     fn the_ninth_live_run_is_refused_until_one_ends() {
-        let reg = Arc::new(Registry::new(temp_dir("cap"), 3600 * 1_000_000_000));
+        let scratch = temp_dir("cap");
+        let reg = Arc::new(Registry::new(scratch.to_path_buf(), 3600 * 1_000_000_000));
         // Paced, so none of them finishes during the test.
         let ids: Vec<String> = (0..MAX_LIVE_RUNS).map(|_| reg.start(scenario("100"), 1.0).unwrap()).collect();
         let refused = reg.start(scenario("100"), 1.0).unwrap_err();
@@ -1123,7 +1121,8 @@ mod tests {
 
     #[test]
     fn an_idle_stopped_run_does_not_count_and_is_evicted_at_the_cap() {
-        let reg = Arc::new(Registry::new(temp_dir("cap-idle"), 50_000_000));
+        let scratch = temp_dir("cap-idle");
+        let reg = Arc::new(Registry::new(scratch.to_path_buf(), 50_000_000));
         // Paced with no lease: idle from birth, stopped by the guard within a few polls.
         let first_id = reg.start(scenario("100"), 1.0).unwrap();
         let first = reg.get(&first_id).unwrap();
@@ -1164,7 +1163,8 @@ mod tests {
 
     #[test]
     fn an_idle_stopped_run_is_reaped_after_twice_the_threshold() {
-        let reg = Arc::new(Registry::new(temp_dir("reap-idle"), 50_000_000));
+        let scratch = temp_dir("reap-idle");
+        let reg = Arc::new(Registry::new(scratch.to_path_buf(), 50_000_000));
         let id = reg.start(scenario("100"), 1.0).unwrap();
         let run = reg.get(&id).unwrap();
         wait_for("the reap", 2, || reg.get(&id).is_none());

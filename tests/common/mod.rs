@@ -10,6 +10,102 @@ use lbsim::scenario::Scenario;
 use lbsim::sim::RunResult;
 use lbsim::{Nanos, EPOCH_BASE};
 use std::collections::BTreeMap;
+use std::fs;
+use std::ops::Deref;
+use std::path::{Path, PathBuf};
+
+/// A scratch directory under `/tmp` that removes itself (`remove_dir_all`, errors ignored) when
+/// dropped, so a passing test leaves nothing behind. A failing test skips the removal —
+/// `std::thread::panicking()` is true while this guard's `Drop` runs during a panic's unwind — so
+/// its directory survives for inspection. `Deref<Target = Path>` lets call sites read `&dir`
+/// exactly as they did when this was a bare `PathBuf`.
+pub struct ScratchDir {
+    pub path: PathBuf,
+}
+
+impl Deref for ScratchDir {
+    type Target = Path;
+    fn deref(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl AsRef<Path> for ScratchDir {
+    fn as_ref(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for ScratchDir {
+    fn drop(&mut self) {
+        if !std::thread::panicking() {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+}
+
+/// A fresh, created directory `/tmp/lbsim-<name>-<pid>`. Sweeps sibling `/tmp/lbsim-*` directories
+/// older than an hour first, best effort, so leftovers from a killed run do not accumulate forever.
+pub fn scratch(name: &str) -> ScratchDir {
+    let tmp = std::env::temp_dir();
+    sweep_stale_scratch_dirs(&tmp);
+    let path = tmp.join(format!("lbsim-{name}-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&path);
+    fs::create_dir_all(&path).unwrap();
+    ScratchDir { path }
+}
+
+/// Best-effort sweep of leftovers from killed runs: any `lbsim-*` sibling directory (this test
+/// binary's or another one's) whose mtime is more than an hour old. Errors — permissions, a race
+/// with another process removing the same directory — are ignored; this is opportunistic
+/// housekeeping, not a correctness requirement.
+fn sweep_stale_scratch_dirs(tmp: &Path) {
+    let cutoff = std::time::SystemTime::now()
+        .checked_sub(std::time::Duration::from_secs(3600))
+        .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+    let Ok(entries) = fs::read_dir(tmp) else { return };
+    for entry in entries.flatten() {
+        if !entry.file_name().to_string_lossy().starts_with("lbsim-") {
+            continue;
+        }
+        let Ok(meta) = entry.metadata() else { continue };
+        if !meta.is_dir() {
+            continue;
+        }
+        if meta.modified().is_ok_and(|m| m < cutoff) {
+            let _ = fs::remove_dir_all(entry.path());
+        }
+    }
+}
+
+#[cfg(test)]
+mod scratch_dir_tests {
+    use super::*;
+
+    #[test]
+    fn scratch_dir_is_created_and_removed_on_drop() {
+        let path;
+        {
+            let dir = scratch("guard-basic");
+            path = dir.path.clone();
+            assert!(path.is_dir(), "scratch() must create the directory");
+        }
+        assert!(!path.exists(), "{path:?} must be gone after the guard drops");
+    }
+
+    #[test]
+    fn a_panicking_scope_keeps_its_directory() {
+        let dir = scratch("guard-panic");
+        let path = dir.path.clone();
+        let result = std::panic::catch_unwind(move || {
+            let _dir = dir; // moved in so it drops mid-unwind, with panicking() true
+            panic!("intentional, to exercise the panicking-drop path");
+        });
+        assert!(result.is_err());
+        assert!(path.is_dir(), "a panicking scope should keep its scratch dir: {path:?}");
+        let _ = fs::remove_dir_all(&path);
+    }
+}
 
 /// The standard small fleet. 8 replicas, 30 simulated seconds, 3 s of warmup.
 pub fn small() -> Scenario {

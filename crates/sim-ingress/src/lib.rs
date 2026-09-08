@@ -23,6 +23,38 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
+/// A scratch `/tmp` directory that removes itself on drop, shared by every `#[cfg(test)]` module
+/// in this crate that needs a real filesystem root (`run.rs`, `server.rs`, `export.rs`). A private
+/// copy of `tests/common`'s `ScratchDir` (U110b): a crate-internal test module cannot import a
+/// path under `tests/`, so the ten-odd lines live twice rather than once.
+#[cfg(test)]
+pub(crate) mod test_scratch {
+    pub(crate) struct ScratchDir(std::path::PathBuf);
+
+    impl std::ops::Deref for ScratchDir {
+        type Target = std::path::Path;
+        fn deref(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl Drop for ScratchDir {
+        fn drop(&mut self) {
+            if !std::thread::panicking() {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+    }
+
+    /// A fresh, created directory `/tmp/lbsim-<name>-<pid>`.
+    pub(crate) fn scratch(name: &str) -> ScratchDir {
+        let dir = std::env::temp_dir().join(format!("lbsim-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        ScratchDir(dir)
+    }
+}
+
 /// Cap on concurrent connections. A bound rather than a thread pool because the workload is a handful
 /// of browser tabs, and an unbounded thread-per-connection server is a way to be taken down by a port
 /// scanner.

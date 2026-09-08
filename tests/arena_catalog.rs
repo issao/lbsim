@@ -3,7 +3,10 @@
 //! well with any that it authors."* The document is hand-written; the generator appends; the header
 //! is the contract, and the first test is what stops the two from drifting apart.
 
+mod common;
+
 use lbsim::arena::catalog::{append, render_row, CatalogRow, HEADER};
+use std::ops::Deref;
 use std::path::{Path, PathBuf};
 
 const CATALOG: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/docs/policy-catalog.md");
@@ -20,13 +23,33 @@ fn row(name: &str, family: &str) -> CatalogRow {
     }
 }
 
+/// A file path that keeps its scratch directory alive (and self-removing) for as long as the path
+/// is in use. `Deref<Target = Path>` lets call sites read `&path` exactly as when this was a bare
+/// `PathBuf`.
+struct CatalogCopy {
+    _dir: common::ScratchDir,
+    path: PathBuf,
+}
+
+impl Deref for CatalogCopy {
+    type Target = Path;
+    fn deref(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl AsRef<Path> for CatalogCopy {
+    fn as_ref(&self) -> &Path {
+        &self.path
+    }
+}
+
 /// A private copy of the committed catalog, so a test never writes housekeeping's file.
-fn temp_copy(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("lbsim-arena-catalog-{}-{tag}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
+fn temp_copy(tag: &str) -> CatalogCopy {
+    let dir = common::scratch(&format!("arena-catalog-{tag}"));
     let path = dir.join("policy-catalog.md");
     std::fs::copy(CATALOG, &path).unwrap();
-    path
+    CatalogCopy { _dir: dir, path }
 }
 
 fn tables_with_header(text: &str) -> Vec<usize> {
