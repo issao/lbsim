@@ -162,6 +162,16 @@ message OpenSubscriptionRequest {
   // Wall-clock lease. The server drops the subscription when it expires, so a closed browser tab
   // cannot leave Ingress and every Leaf shipping data forever. Renew what is still on screen.
   uint64 lease_ns = 6;
+  // Smoothing applied before the row is built, in simulated nanoseconds: every scalar in `values` is
+  // the mean over the trailing window ending at the sample, and every `Distribution` is the merge of
+  // the sample windows inside it, so p99 over a 30 s window is the p99 of every request that finished
+  // in those 30 s, not an average of p99s. Zero means the raw sample cadence. It lives on the
+  // subscription rather than in the client because the same smoothing must mean the same thing on a
+  // live stream, a recording and a report, and because a viewer changing it reopens the subscription
+  // rather than re-deriving it from samples it may not hold. Issao: "a global selector of a window
+  // average to be applied on them, live selectable, to make it easier to smooth out
+  // variation/oscillatory patterns … ideally it is a metric subscription that we pass down to the leaves."
+  uint64 smoothing_window_ns = 7;
 }
 
 message OpenSubscriptionResponse {
