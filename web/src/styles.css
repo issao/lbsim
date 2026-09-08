@@ -203,6 +203,7 @@ a:hover { text-decoration: underline; }
 .field-value { font-family: var(--mono); font-size: 11px; color: var(--ink-1); text-align: right; }
 .field-note { grid-column: 1 / -1; font-size: 10.5px; color: var(--ink-3); }
 .field input[type="range"] { grid-column: 1 / -1; width: 100%; margin: 1px 0 0; accent-color: var(--accent); height: 14px; }
+.field-value + .field-value { grid-column: 1 / -1; height: 14px; margin: 1px 0 0; text-align: left; }
 
 select, input[type="text"], input[type="number"] {
   font: inherit; font-size: 11.5px; color: var(--ink-1);
@@ -294,7 +295,7 @@ fieldset.dropped .dropped-why { display: block; color: var(--ink-3); font-family
 @media (max-width: 1000px) { .dash-body { grid-template-columns: minmax(0, 1fr); } }
 
 .control-panel { display: flex; flex-direction: column; min-height: 0; }
-.control-panel .panel-body { overflow: auto; }
+.control-panel .panel-body { overflow: auto; flex: 1 1 auto; min-height: 0; }
 .observe-panel { display: flex; flex-direction: column; min-height: 0; }
 .observe-panel .panel-body { overflow: auto; flex: 1 1 auto; }
 

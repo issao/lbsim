@@ -257,8 +257,7 @@ function LoadTab({ c, set, dropped }: TabProps) {
         onChange={(v) => set((d) => { d.workload.longOutputMean = v; })}
       />
       <p className="note inset">
-        <code>UpdateWorkload</code> replaces the whole <code>LoadShape</code> rather than patching it: arrival rate,
-        lengths and prefix topology interact, so half a change would produce a load nobody asked for.
+        Changing the load replaces the whole shape: arrival rate, lengths and prefix topology all move together.
       </p>
     </>
   );
@@ -321,6 +320,7 @@ function PoliciesTab({ c, set, dropped }: TabProps) {
         step={100}
         format={(v) => `${v} ms`}
         onChange={(v) => set((d) => { d.slo.ttftMs = v; })}
+        readonly
       />
       <Slider
         label="ITL SLO"
@@ -330,6 +330,7 @@ function PoliciesTab({ c, set, dropped }: TabProps) {
         step={5}
         format={(v) => `${v} ms`}
         onChange={(v) => set((d) => { d.slo.itlMs = v; })}
+        readonly
       />
       <Slider
         label="end-to-end SLO"
@@ -339,11 +340,11 @@ function PoliciesTab({ c, set, dropped }: TabProps) {
         step={5}
         format={(v) => `${v} s`}
         onChange={(v) => set((d) => { d.slo.e2eS = v; })}
+        readonly
       />
       <p className="note inset">
         These three move goodput and attainment without re-simulating anything: {VIEW_ONLY_EXPLANATION['slo.ttftMs']}.
-        The banner above says <code>required_resimulation = false</code> when you move them, and true when you move
-        anything in Load, Policies or Cluster.
+        Moving a target changes only the score; nothing is re-simulated.
       </p>
     </>
   );
@@ -409,7 +410,7 @@ function RoutingParams({
         </>
       );
     default:
-      return <p className="note inset">This policy takes no parameters. <code>PolicySpec</code> has no fields for it, so the panel shows none.</p>;
+      return <p className="note inset">This policy has no settings.</p>;
   }
 }
 
@@ -513,8 +514,8 @@ function ClusterTab({ c, set, dropped }: TabProps) {
         onChange={(v) => set((d) => { d.fleet.prefillTokensPerS = v; })}
       />
       <p className="note inset">
-        <code>step_base_ms</code> is calibrated in <code>bench/validate_epochs.py</code> against a published batch-1
-        measurement. The numbers drawn from them here are not.
+        <code>step_base_ms</code> is calibrated against a published batch-1 measurement. The numbers drawn from them
+        here are not.
       </p>
     </>
   );
@@ -550,6 +551,7 @@ function RunTab({ run, set }: { run: RunHandle; set: (m: (d: ScenarioConfig) => 
         format={(v) => `${v}/sim s`}
         onChange={(v) => set((d) => { d.samplesPerSimSecond = v; })}
         note="points per simulated second, so chart density does not change when the speed does. View only."
+        readonly
       />
 
       <div className="sep" />
