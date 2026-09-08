@@ -17,13 +17,68 @@ fn workspace() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
 }
 
+/// A scratch directory that removes itself (`remove_dir_all`, errors ignored) when dropped, so a
+/// passing test leaves nothing behind in `/tmp`. A failing test skips the removal — a panic makes
+/// `std::thread::panicking()` true while this guard's `Drop` runs — so its directory survives for
+/// inspection.
+struct ScratchDir(PathBuf);
+
+impl std::ops::Deref for ScratchDir {
+    type Target = Path;
+    fn deref(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for ScratchDir {
+    fn drop(&mut self) {
+        if !std::thread::panicking() {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+}
+
+/// Best-effort sweep of leftovers from killed runs: any sibling scratch directory (this test
+/// binary's or an earlier process's) whose mtime is more than an hour old. Errors — permissions, a
+/// race with another process removing the same directory — are ignored; this is opportunistic
+/// housekeeping, not a correctness requirement.
+fn sweep_stale_scratch_dirs(tmp: &Path) {
+    let cutoff = std::time::SystemTime::now()
+        .checked_sub(std::time::Duration::from_secs(3600))
+        .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+    let Ok(entries) = fs::read_dir(tmp) else { return };
+    for entry in entries.flatten() {
+        if !entry.file_name().to_string_lossy().starts_with("lbsim-wire-export-") {
+            continue;
+        }
+        let Ok(meta) = entry.metadata() else { continue };
+        if !meta.is_dir() {
+            continue;
+        }
+        if meta.modified().is_ok_and(|m| m < cutoff) {
+            let _ = fs::remove_dir_all(entry.path());
+        }
+    }
+}
+
 /// A fresh directory per test, so tests can run in parallel and a stale index cannot leak between
-/// them.
-fn fresh_dir(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("lbsim-wire-export-{}-{name}", std::process::id()));
+/// them. Cleans itself up on drop; see `ScratchDir`.
+fn fresh_dir(name: &str) -> ScratchDir {
+    let tmp = std::env::temp_dir();
+    sweep_stale_scratch_dirs(&tmp);
+    let dir = tmp.join(format!("lbsim-wire-export-{}-{name}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).unwrap();
-    dir
+    ScratchDir(dir)
+}
+
+#[test]
+fn fresh_dir_guard_removes_its_directory_on_drop() {
+    let dir = fresh_dir("guard-smoke");
+    let path = dir.to_path_buf();
+    assert!(path.is_dir(), "fresh_dir must create the directory");
+    drop(dir);
+    assert!(!path.exists(), "ScratchDir must remove its directory on drop");
 }
 
 fn small_run() -> RunResult {
