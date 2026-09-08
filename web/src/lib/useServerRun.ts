@@ -52,6 +52,8 @@ import { LEASE_MS } from './subscriptions';
 export const STATUS_POLL_MS = 500;
 /** Bounded history, because a long run at a fine sample rate is otherwise unbounded browser memory. */
 export const MAX_SAMPLES = 4000;
+/** Window `achievedFactor` averages over: recent enough to react, wide enough not to be one frame's jitter. */
+export const PACE_WINDOW_MS = 2000;
 /** Why rewind is refused. Constant, so a panel can show it without importing the transport. */
 export const SERVER_DISABLED_REASON = 'the server does not support Rewind yet';
 /** What `lastUpdate` says when the server answers 501: the control is wired, the server is not. */
@@ -124,6 +126,12 @@ export class ServerRunEngine implements FrameSource {
   /** Scrubbing pins the cursor: the server keeps advancing, and a chart that snapped back to live
    *  the moment the user let go of the scrubber would be unusable. */
   pinnedS: number | null = null;
+  /** The pace actually observed, over the last `PACE_WINDOW_MS` of fleet updates: (Δsim ns / 1e9)
+   *  / (Δwall ms / 1000). NaN until two samples exist, so a stalled or fresh run reads as unknown
+   *  rather than as a false zero. */
+  achievedFactor = NaN;
+  /** Wall/sim pairs backing `achievedFactor`, oldest first, trimmed to `PACE_WINDOW_MS` of wall time. */
+  private paceSamples: { wallMs: number; simNs: bigint }[] = [];
 
   private readonly opts: ServerRunEngineOptions;
   private metrics: MetricName[];
@@ -402,9 +410,31 @@ export class ServerRunEngine implements FrameSource {
         if (last !== null && u.simTimeUnixNs <= last.simTimeUnixNs) return;
         this.frames.push(frameFromUpdate(u, t0, last === null ? 0 : last.tick + 1));
         if (this.frames.length > MAX_SAMPLES) this.frames.splice(0, this.frames.length - MAX_SAMPLES);
+        this.recordPace(u.simTimeUnixNs);
         this.changed();
       },
     });
+  }
+
+  /**
+   * Feeds `achievedFactor` from a fleet update's sim time: keeps the last `PACE_WINDOW_MS` of
+   * wall/sim pairs and divides the elapsed sim time by the elapsed wall time across that window.
+   * This is the pace the run actually made, as distinct from `status.realtimeFactor`, which is
+   * only the target asked of it.
+   */
+  private recordPace(simNs: bigint): void {
+    const wallMs = this.opts.now?.() ?? Date.now();
+    this.paceSamples.push({ wallMs, simNs });
+    while (this.paceSamples.length > 1 && wallMs - this.paceSamples[0].wallMs > PACE_WINDOW_MS) {
+      this.paceSamples.shift();
+    }
+    if (this.paceSamples.length < 2) {
+      this.achievedFactor = NaN;
+      return;
+    }
+    const first = this.paceSamples[0];
+    const dWallMs = wallMs - first.wallMs;
+    this.achievedFactor = dWallMs > 0 ? Number(simNs - first.simNs) / 1e9 / (dWallMs / 1000) : NaN;
   }
 
   /** Stop polling, close the subscription, and stop the run. */
@@ -606,6 +636,8 @@ export type ServerRunHandle = Omit<RunHandle, 'engine' | 'update' | 'source'> & 
   originUnixNs: bigint | null;
   runId: string | null;
   status: RunStatus | null;
+  /** The pace actually measured client-side; see `ServerRunEngine.achievedFactor`. */
+  achievedFactor: number;
   connection: StreamPhase;
   subscriptionId: string | null;
   dropped: string[];
@@ -626,12 +658,19 @@ export const HANDLE_SHAPES_AGREE: HandleShapesAgree = true;
 
 /**
  * The banner's word for the run's pace. A factor of 0 is a run an older client started unpaced;
- * this client never starts one, so "speed 0×" is never the right thing to print.
+ * this client never starts one, so "speed 0×" is never the right thing to print. `achievedFactor`
+ * is what the client actually measured (see `ServerRunEngine.recordPace`), not the target the
+ * server was asked for: a fleet too large to keep up shows the shortfall rather than the wish.
  */
-export function speedLabel(status: RunStatus | null, paused: boolean): string {
+export function speedLabel(status: RunStatus | null, paused: boolean, achievedFactor: number): string {
   if (paused) return 'paused';
   if (status === null) return '…';
-  return status.realtimeFactor > 0 ? `${status.realtimeFactor}×` : 'unpaced';
+  const achieved = Number.isFinite(achievedFactor) ? achievedFactor.toFixed(1) : null;
+  if (status.realtimeFactor <= 0) return achieved !== null ? `unpaced (${achieved}×)` : 'unpaced';
+  if (achieved !== null && achievedFactor < status.realtimeFactor * 0.9) {
+    return `${status.realtimeFactor}× (achieving ${achieved}×)`;
+  }
+  return `${status.realtimeFactor}×`;
 }
 
 export interface ServerRunOptions {
@@ -696,6 +735,7 @@ export function useServerRun(initial: ScenarioConfig, opts: ServerRunOptions = {
       originUnixNs: engine.originUnixNs,
       runId: engine.runId,
       status: engine.status,
+      achievedFactor: engine.achievedFactor,
       connection: engine.connection,
       subscriptionId: engine.subscriptionId,
       dropped: engine.dropped,
