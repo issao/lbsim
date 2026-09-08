@@ -14,7 +14,9 @@ web/node_modules/
 web/dist/
 .git/
 tests/
-bench/
+# bench/ stays out except the one script run-demos.sh calls. Docker cannot re-include a file under an
+# excluded directory, so the directory's *contents* are excluded and the file is put back.
+bench/*
 !bench/bode.py
 
 # docs/ is excluded wholesale and then findings.md is put back, because the image serves that one file
