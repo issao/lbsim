@@ -309,11 +309,15 @@ message SchedulingPolicy {
   }
   // Earliest deadline first over the queue.
   message EarliestDeadlineFirst {}
+  // Interactive classes before batch ones, and batch sequences are the first preemption victims;
+  // the scheduling half of the SLO classes. The classes themselves are `Workload.slo_classes`.
+  message ClassPriority {}
   oneof kind {
     Fcfs fcfs = 10;
     PrefillPriority prefill_priority = 11;
     DecodePriority decode_priority = 12;
     EarliestDeadlineFirst earliest_deadline_first = 13;
+    ClassPriority class_priority = 14;
     GeneratedPolicy generated = 99;
   }
 }
