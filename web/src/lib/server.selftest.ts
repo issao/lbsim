@@ -703,7 +703,7 @@ await checkAsync('(m) dispose_during_the_starting_SetSpeed_leaves_no_stream_and_
 // ---------------------------------------------------------------------------
 
 await checkAsync('(n) a structural edit stages a restart; restart sends StopRun then StartRun with the value', async () => {
-  // Issao: "where do i tune step token budget?" The knob was a slider whose every move ended in a
+  // Issao asked, verbatim, "where do i tune step token budget?" The knob was a slider whose every move ended in a
   // refusal banner, because no Update call carries a physics key. Now it stages.
   const { fake, engine } = rig({ liveUpdates: true });
   await engine.start(false);
