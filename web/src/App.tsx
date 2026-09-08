@@ -1,4 +1,4 @@
-import { useEffect, useState, useSyncExternalStore } from 'react';
+import { useEffect, useLayoutEffect, useState, useSyncExternalStore } from 'react';
 import { Home } from './pages/Home';
 import { LoadTest } from './pages/LoadTest';
 import { Compare } from './pages/Compare';
@@ -29,8 +29,15 @@ export function App() {
   // then, so it never shows a claim left over from whatever page was on screen before this one.
   const mode = useSyncExternalStore(subscribeActiveMode, activeMode, activeMode);
 
-  useEffect(() => {
+  // A layout effect, not a passive one: on mount, passive effects fire child-before-parent, so a
+  // page's own mount effect (Compare's `setActiveMode('mock')`, say) would run before this one and
+  // then get clobbered back to 'none'. All layout effects finish before any passive effect runs,
+  // so this always lands first regardless of where in the tree the page's own effect sits.
+  useLayoutEffect(() => {
     setActiveMode('none');
+  }, []);
+
+  useEffect(() => {
     const onHash = () => {
       setActiveMode('none');
       setRoute(currentRoute());
