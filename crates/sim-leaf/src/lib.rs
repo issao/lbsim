@@ -350,6 +350,11 @@ struct Window {
     e2e: Histogram,
     queue_wait: Histogram,
     preemptions: u64,
+    /// Each replica's step clock as of the previous close, so a frame carries the window's share
+    /// of busy time and not the run's. Indexed by position and grown with zeros, so a fleet that
+    /// changes size mid-run reads as new replicas that were idle until now.
+    prev_busy: Vec<Nanos>,
+    prev_compute: Vec<Nanos>,
 }
 
 impl Window {
@@ -380,7 +385,31 @@ impl Window {
 
     /// Freeze the window into a frame at `t` and start the next one.
     fn close(&mut self, t: Nanos, offered_rps: f64, replicas: &[Replica]) -> Frame {
-        let w = std::mem::take(self);
+        let mut w = std::mem::take(self);
+        w.prev_busy.resize(replicas.len(), 0);
+        w.prev_compute.resize(replicas.len(), 0);
+        let samples: Vec<ReplicaSample> = replicas
+            .iter()
+            .zip(w.prev_busy.iter_mut().zip(w.prev_compute.iter_mut()))
+            .map(|(r, (prev_busy, prev_compute))| {
+                let busy = r.busy_ns_through(t);
+                let compute = r.compute_ns_through(t);
+                let sample = ReplicaSample {
+                    queued: r.queued() as u32,
+                    running: r.running() as u32,
+                    kv_tokens: r.kv_tokens(),
+                    last_step_ns: r.last_step_ns(),
+                    busy_ns: busy - *prev_busy,
+                    compute_ns: compute - *prev_compute,
+                };
+                *prev_busy = busy;
+                *prev_compute = compute;
+                sample
+            })
+            .collect();
+        // The clocks outlive the window they were read in.
+        self.prev_busy = w.prev_busy;
+        self.prev_compute = w.prev_compute;
         Frame {
             t,
             offered_rps,
@@ -396,15 +425,7 @@ impl Window {
             e2e: w.e2e.to_sparse(),
             queue_wait: w.queue_wait.to_sparse(),
             preemptions: w.preemptions,
-            replicas: replicas
-                .iter()
-                .map(|r| ReplicaSample {
-                    queued: r.queued() as u32,
-                    running: r.running() as u32,
-                    kv_tokens: r.kv_tokens(),
-                    last_step_ns: r.last_step_ns(),
-                })
-                .collect(),
+            replicas: samples,
         }
     }
 }
