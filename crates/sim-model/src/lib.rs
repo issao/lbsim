@@ -21,7 +21,13 @@ use sim_core::Nanos;
 use sim_physics::CostModel;
 use sim_scenario::Scenario;
 use sim_workload::Request;
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
+
+pub use sim_workload::PrefixTree;
+
+/// The tree of a run with no prefix model. Nothing indexes it, since every request then carries
+/// node 0, and `step` needs something to hand `step_with_prefixes`.
+const NO_TREE: PrefixTree = PrefixTree::empty();
 
 pub mod trace;
 use trace::{ResourceSnapshot, Tracer};
@@ -152,6 +158,19 @@ pub struct Replica {
     speed: f64,
     /// Crashed: holds nothing, refuses everything, and telemetry says so after the delay.
     down: bool,
+    /// Prefix cache, `docs/ARCHITECTURE.md` section 7.3: node to last use. Residency is prefix-closed,
+    /// since a node is inserted with its ancestors, so the deepest resident node on a request's path
+    /// is the whole hit. A `BTreeMap` rather than a hash map so eviction order is deterministic.
+    prefix_cache: BTreeMap<u64, Nanos>,
+    /// Tokens the resident prefix nodes add up to, against `prefix_cache_tokens`.
+    prefix_used: u64,
+    /// Residency changes since the loop last asked, so it can keep a fleet-wide index.
+    prefix_inserted: Vec<u64>,
+    prefix_evicted: Vec<u64>,
+    /// Running totals of admitted prompt tokens and of the part a prefix hit or parked context
+    /// spared; the loop differences them per sample window.
+    prompt_total: u64,
+    hit_total: u64,
 }
 
 impl Default for Replica {
@@ -177,6 +196,12 @@ impl Default for Replica {
             tracer: Tracer::default(),
             speed: 1.0,
             down: false,
+            prefix_cache: BTreeMap::new(),
+            prefix_used: 0,
+            prefix_inserted: Vec::new(),
+            prefix_evicted: Vec::new(),
+            prompt_total: 0,
+            hit_total: 0,
         }
     }
 }
@@ -295,10 +320,80 @@ impl Replica {
         true
     }
 
+    /// Deepest resident node on `node`'s path, as the tokens it spares: the hit length the request
+    /// would see here. Zero for node 0 and for a cold cache.
+    pub fn prefix_hit(&self, tree: &PrefixTree, node: u64) -> u32 {
+        tree.path_tokens(self.prefix_hit_node(tree, node))
+    }
+
+    fn prefix_hit_node(&self, tree: &PrefixTree, node: u64) -> u64 {
+        let mut n = node;
+        while n != 0 && !self.prefix_cache.contains_key(&n) {
+            n = tree.parent(n);
+        }
+        n
+    }
+
+    /// Mark `node` and its ancestors used at `now`, inserting whichever were not resident, then
+    /// evict least recently used nodes until the budget holds. Ties go to the newest node id,
+    /// because an ancestor is touched whenever a descendant is and so never has the older use; the
+    /// deepest node of a chain therefore leaves first and residency stays prefix-closed.
+    fn prefix_touch(&mut self, tree: &PrefixTree, node: u64, now: Nanos, cap: u64) {
+        let mut n = node;
+        while n != 0 {
+            if self.prefix_cache.insert(n, now).is_none() {
+                self.prefix_used += tree.tokens(n) as u64;
+                self.prefix_inserted.push(n);
+            }
+            n = tree.parent(n);
+        }
+        while self.prefix_used > cap {
+            let Some((&victim, _)) =
+                self.prefix_cache.iter().min_by_key(|(id, &t)| (t, std::cmp::Reverse(**id)))
+            else {
+                break;
+            };
+            self.prefix_cache.remove(&victim);
+            self.prefix_used = self.prefix_used.saturating_sub(tree.tokens(victim) as u64);
+            self.prefix_evicted.push(victim);
+        }
+    }
+
+    /// Node ids inserted into and evicted from the prefix cache since the last call, in that
+    /// order of events within each list. A node that came and went in between appears in both.
+    pub fn drain_prefix_changes(&mut self) -> (Vec<u64>, Vec<u64>) {
+        (std::mem::take(&mut self.prefix_inserted), std::mem::take(&mut self.prefix_evicted))
+    }
+
+    /// Tokens the prefix cache holds.
+    pub fn prefix_cache_tokens(&self) -> u64 {
+        self.prefix_used
+    }
+    /// Prompt tokens admitted so far, and of those the tokens a prefix hit or parked context spared.
+    pub fn prompt_tokens_total(&self) -> u64 {
+        self.prompt_total
+    }
+    pub fn prefix_hit_tokens_total(&self) -> u64 {
+        self.hit_total
+    }
+
     /// One engine iteration at `now`. `None` when there was nothing to run, in which case the replica
-    /// has parked itself and the loop schedules nothing.
+    /// has parked itself and the loop schedules nothing. For a run without a prefix model; the tree
+    /// is only consulted for requests that carry a node, so an empty one is exact here.
     pub fn step(&mut self, sc: &Scenario, cost: &CostModel, now: Nanos) -> Option<StepOutcome> {
+        self.step_with_prefixes(sc, cost, now, &NO_TREE)
+    }
+
+    /// `step`, with the tree the requests' `prefix_node`s index.
+    pub fn step_with_prefixes(
+        &mut self,
+        sc: &Scenario,
+        cost: &CostModel,
+        now: Nanos,
+        tree: &PrefixTree,
+    ) -> Option<StepOutcome> {
         let r = self;
+        let prefix_cap = sc.prefix_cache_tokens as u64;
         // A crashed replica holds nothing and a hung one never finishes a step. Either way there is
         // no follow-up to schedule, so this reads as idle; what it holds waits for the client timeout.
         if r.down || r.speed <= 0.0 {
@@ -360,7 +455,14 @@ impl Replica {
             match r.queue.pop_front() {
                 Some(req) => {
                     r.queued_tokens = r.queued_tokens.saturating_sub(req.prompt as u64);
-                    let mut prefill_left = req.prompt;
+                    // Parked context and a prefix hit both spare prefill over the same leading
+                    // tokens, so the larger wins and they never add. The key-value charge is the
+                    // whole prompt either way: shared blocks are not modelled, a hit spares the
+                    // compute and not the memory.
+                    let hit_node =
+                        if prefix_cap > 0 { r.prefix_hit_node(tree, req.prefix_node) } else { 0 };
+                    let hit = tree.path_tokens(hit_node).min(req.prompt);
+                    let mut spared = hit;
                     if let Some(i) = r.parked.iter().position(|p| p.id == req.id) {
                         let p = r.parked.swap_remove(i);
                         let reused = p.tokens.min(req.prompt as u64);
@@ -371,10 +473,18 @@ impl Replica {
                         } else {
                             r.kv_tokens += req.prompt as u64 - reused;
                         }
-                        prefill_left = req.prompt - reused as u32;
+                        spared = spared.max(reused as u32);
                     } else {
                         r.kv_tokens += req.prompt as u64;
                     }
+                    let prefill_left = req.prompt - spared;
+                    // A hit refreshes what it reused; the request's own deeper nodes become
+                    // resident only once their prefill has actually run.
+                    if hit_node != 0 {
+                        r.prefix_touch(tree, hit_node, now, prefix_cap);
+                    }
+                    r.prompt_total += req.prompt as u64;
+                    r.hit_total += spared as u64;
                     r.running.push(Seq {
                         prefill_left,
                         output_left: req.output,
@@ -463,6 +573,9 @@ impl Replica {
         let tokens_per_step = cost.spec_tokens_per_step();
         let mut finished: Vec<usize> = Vec::new();
         let mut generated = 0u64;
+        // Prefills that completed this step: their prefixes become resident once the loop below is
+        // done with the batch, since the cache and the batch cannot be borrowed together.
+        let mut prefilled: Vec<u64> = Vec::new();
         for (idx, s) in r.running.iter_mut().enumerate() {
             if s.prefill_left > 0 {
                 continue;
@@ -473,6 +586,9 @@ impl Replica {
             let produced = (emit as u32).min(s.output_left);
             if s.first_token_at == 0 {
                 s.first_token_at = token_at;
+                if prefix_cap > 0 && s.req.prefix_node != 0 {
+                    prefilled.push(s.req.prefix_node);
+                }
             } else {
                 let gap = token_at - s.last_token_at;
                 s.max_itl = s.max_itl.max(gap);
@@ -488,6 +604,9 @@ impl Replica {
             }
         }
         r.kv_tokens += generated;
+        for node in prefilled {
+            r.prefix_touch(tree, node, token_at, prefix_cap);
+        }
 
         let mut retired: Vec<FinishedSeq> = Vec::with_capacity(finished.len());
         for idx in finished.iter().rev() {
@@ -633,6 +752,10 @@ impl Replica {
         r.queued_tokens = 0;
         r.kv_tokens = 0;
         r.dram_tokens = 0;
+        // The cache dies with the device, and the index must hear of every node it held.
+        r.prefix_evicted.extend(r.prefix_cache.keys().copied());
+        r.prefix_cache.clear();
+        r.prefix_used = 0;
         lost
     }
     /// Run at this fraction of modelled speed; 0 hangs. Nothing is announced.

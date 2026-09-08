@@ -32,7 +32,7 @@ pub mod admission;
 pub mod routing;
 
 pub use admission::{Admission, AdmissionContext, AdmissionPolicy};
-pub use routing::{ReplicaView, RequestView, RouteContext, RoutingPolicy};
+pub use routing::{NoPrefixIndex, PrefixIndex, ReplicaView, RequestView, RouteContext, RoutingPolicy};
 
 use sim_scenario::Scenario;
 

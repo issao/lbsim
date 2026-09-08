@@ -82,6 +82,25 @@ pub struct Scenario {
     /// geometric with this mean; one means every request is its own conversation.
     pub session_turns_mean: f64,
     pub session_think_s: f64,
+    /// Shared prefixes, `docs/ARCHITECTURE.md` section 7.3. Every request starts at one of this many
+    /// root system prompts, chosen Zipf(`prefix_zipf_s`) so a few roots carry most of the traffic;
+    /// a session's next turn extends its previous turn's node. Zero models no sharing at all and
+    /// leaves every existing run byte-identical.
+    pub prefix_roots: u32,
+    /// Mean tokens of a root system prompt, drawn once per root.
+    pub prefix_root_tokens: f64,
+    pub prefix_zipf_s: f64,
+    /// Probability that a fresh arrival forks off a recently completed request's prefix instead of
+    /// starting at a root: a sub-agent spawned from a parent's context.
+    pub session_fork_rate: f64,
+    /// Per-replica prefix cache, in tokens; what a replica keeps of completed prefills for reuse by
+    /// later requests that share them. Zero means no cache, and prefixes buy nothing.
+    pub prefix_cache_tokens: f64,
+    /// Read by the `prefix_affinity` router: how much more loaded than the fleet mean a replica
+    /// holding the prefix may be before the router spreads instead, and how many candidates it
+    /// samples when it does.
+    pub affinity_max_load_ratio: f64,
+    pub affinity_fallback_choices: u32,
     /// Step change in offered load, used to drive a collapse and then test recovery.
     pub load_step_at_s: f64,
     pub load_step_factor: f64,
@@ -316,6 +335,13 @@ impl Default for Scenario {
             long_output_mean: 400.0,
             session_turns_mean: 1.0,
             session_think_s: 0.0,
+            prefix_roots: 0,
+            prefix_root_tokens: 800.0,
+            prefix_zipf_s: 1.0,
+            session_fork_rate: 0.0,
+            prefix_cache_tokens: 0.0,
+            affinity_max_load_ratio: 1.3,
+            affinity_fallback_choices: 2,
             load_step_at_s: -1.0,
             load_step_factor: 1.0,
             load_step_until_s: -1.0,
@@ -418,6 +444,15 @@ impl Scenario {
                 "long_output_mean" => s.long_output_mean = f("long_output_mean"),
                 "session_turns_mean" => s.session_turns_mean = f("session_turns_mean"),
                 "session_think_s" => s.session_think_s = f("session_think_s"),
+                "prefix_roots" => s.prefix_roots = f("prefix_roots") as u32,
+                "prefix_root_tokens" => s.prefix_root_tokens = f("prefix_root_tokens"),
+                "prefix_zipf_s" => s.prefix_zipf_s = f("prefix_zipf_s"),
+                "session_fork_rate" => s.session_fork_rate = f("session_fork_rate"),
+                "prefix_cache_tokens" => s.prefix_cache_tokens = f("prefix_cache_tokens"),
+                "affinity_max_load_ratio" => s.affinity_max_load_ratio = f("affinity_max_load_ratio"),
+                "affinity_fallback_choices" => {
+                    s.affinity_fallback_choices = f("affinity_fallback_choices") as u32
+                }
                 "load_step_at_s" => s.load_step_at_s = f("load_step_at_s"),
                 "load_step_factor" => s.load_step_factor = f("load_step_factor"),
                 "load_step_until_s" => s.load_step_until_s = f("load_step_until_s"),
@@ -603,7 +638,8 @@ impl Scenario {
                 OverrideKind::Workload
             }
             "routing" | "p2c_choices" | "probe_live" | "admission" | "admission_headroom"
-            | "fair_share_burst" | "preemption" | "preemption_victim" => OverrideKind::Policy,
+            | "fair_share_burst" | "preemption" | "preemption_victim"
+            | "affinity_max_load_ratio" | "affinity_fallback_choices" => OverrideKind::Policy,
             _ => OverrideKind::Structural,
         }
     }
@@ -639,7 +675,9 @@ impl Scenario {
              arrival_rps_per_replica = {}\nprompt_mean = {}\n\
              prompt_cv = {}\noutput_mean = {}\noutput_cv = {}\nlong_probability = {}\n\
              long_prompt_mean = {}\nlong_output_mean = {}\nsession_turns_mean = {}\n\
-             session_think_s = {}\nload_step_at_s = {}\n\
+             session_think_s = {}\nprefix_roots = {}\nprefix_root_tokens = {}\nprefix_zipf_s = {}\n\
+             session_fork_rate = {}\nprefix_cache_tokens = {}\naffinity_max_load_ratio = {}\n\
+             affinity_fallback_choices = {}\nload_step_at_s = {}\n\
              load_step_factor = {}\nload_step_until_s = {}\nrouting = {}\np2c_choices = {}\n\
              probe_live = {}\nadmission = {}\nadmission_headroom = {}\nfair_share_burst = {}\n\
              tenants = {}\ntenant_weights = {}\ntenant_demand = {}\n\
@@ -657,7 +695,9 @@ impl Scenario {
             self.arrival_rps_per_replica, self.prompt_mean,
             self.prompt_cv, self.output_mean, self.output_cv, self.long_probability,
             self.long_prompt_mean, self.long_output_mean, self.session_turns_mean,
-            self.session_think_s, self.load_step_at_s,
+            self.session_think_s, self.prefix_roots, self.prefix_root_tokens, self.prefix_zipf_s,
+            self.session_fork_rate, self.prefix_cache_tokens, self.affinity_max_load_ratio,
+            self.affinity_fallback_choices, self.load_step_at_s,
             self.load_step_factor, self.load_step_until_s, self.routing, self.p2c_choices,
             self.probe_live, self.admission, self.admission_headroom, self.fair_share_burst,
             self.tenants,

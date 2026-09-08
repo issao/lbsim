@@ -44,6 +44,8 @@ fn req(id: u64, prompt: u32, output: u32) -> Request {
         is_long: false,
         tenant: 0,
         class: 0,
+        prefix_node: 0,
+        prefix_tokens: 0,
     }
 }
 

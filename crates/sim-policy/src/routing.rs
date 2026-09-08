@@ -29,6 +29,30 @@ pub struct RequestView {
     pub deadline: Nanos,
     pub tenant: u32,
     pub attempts: u32,
+    /// The shared prefix the prompt starts with, as a node of the workload's prefix tree, and how
+    /// many of `prompt_tokens` it covers. Zero when the scenario has no prefix model. A router may
+    /// ask `RouteContext::prefix_holders` which replicas hold it.
+    pub prefix_node: u64,
+    pub prefix_tokens: u32,
+}
+
+/// Where a prefix is resident, fleet-wide. What an affinity router keys on; the engine keeps it from
+/// what each replica's cache reports, so a router sees residency as the gateway would, not by asking
+/// replicas.
+pub trait PrefixIndex {
+    /// Replicas holding `node` or, failing that, its deepest held ancestor, each with the tokens the
+    /// request would find resident there: sorted by that hit descending, then replica index
+    /// ascending, at most four. Empty for node 0 and for a prefix nobody holds.
+    fn holders(&self, node: u64) -> Vec<(usize, u32)>;
+}
+
+/// No prefix model at all: nobody holds anything.
+pub struct NoPrefixIndex;
+
+impl PrefixIndex for NoPrefixIndex {
+    fn holders(&self, _node: u64) -> Vec<(usize, u32)> {
+        Vec::new()
+    }
 }
 
 /// Everything one routing decision is made from.
@@ -43,6 +67,7 @@ pub struct RouteContext<'a> {
     pub rng: &'a mut Rng,
     live: &'a dyn Fn(usize) -> ReplicaView,
     probes: u32,
+    prefix: &'a dyn PrefixIndex,
 }
 
 impl<'a> RouteContext<'a> {
@@ -52,8 +77,15 @@ impl<'a> RouteContext<'a> {
         request: &'a RequestView,
         rng: &'a mut Rng,
         live: &'a dyn Fn(usize) -> ReplicaView,
+        prefix: &'a dyn PrefixIndex,
     ) -> Self {
-        RouteContext { now, views, request, rng, live, probes: 0 }
+        RouteContext { now, views, request, rng, live, probes: 0, prefix }
+    }
+
+    /// Replicas holding `node` or its deepest held ancestor, with the hit in tokens; see
+    /// `PrefixIndex::holders`. Free, unlike a probe: residency is the gateway's own bookkeeping.
+    pub fn prefix_holders(&self, node: u64) -> Vec<(usize, u32)> {
+        self.prefix.holders(node)
     }
 
     /// The replica's state *now*, at the cost of a modelled round trip per call.

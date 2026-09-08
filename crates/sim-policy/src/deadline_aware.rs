@@ -129,7 +129,16 @@ mod tests {
     }
 
     fn request(deadline: Nanos) -> RequestView {
-        RequestView { id: 1, prompt_tokens: 100, arrived_at: 0, deadline, tenant: 0, attempts: 1 }
+        RequestView {
+            id: 1,
+            prompt_tokens: 100,
+            arrived_at: 0,
+            deadline,
+            tenant: 0,
+            attempts: 1,
+            prefix_node: 0,
+            prefix_tokens: 0,
+        }
     }
 
     /// A full batch with a queue behind it, stepping at 50 ms. With the default 300-token mean output

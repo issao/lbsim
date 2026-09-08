@@ -22,6 +22,71 @@ pub struct Request {
     pub tenant: u32,
     /// SLO class, an index into `sim_scenario::SLO_CLASSES` plus one. Zero when classes are off.
     pub class: u8,
+    /// The shared part of `prompt`, as a node of the `PrefixTree`; zero when the scenario has no
+    /// prefix model. The first `prefix_tokens` of the prompt are that node's path from the root,
+    /// and the remainder is this request's own suffix.
+    pub prefix_node: u64,
+    pub prefix_tokens: u32,
+}
+
+/// Shared prefixes as a tree of segments, `docs/ARCHITECTURE.md` section 7.3: a request carries one
+/// node and its unshared suffix length, and how much of a prompt is resident somewhere is a walk up
+/// this tree, never a comparison of content. Sharing is generated here rather than discovered: turn
+/// N of a session extends turn N-1's node, a shared system prompt is a common root, a fork creates
+/// siblings under a shared parent. Node 0 is "none"; roots are `1..=prefix_roots`.
+#[derive(Clone, Debug, Default)]
+pub struct PrefixTree {
+    parent: Vec<u64>,
+    tokens: Vec<u32>,
+}
+
+impl PrefixTree {
+    /// Roots created up front, their lengths drawn once from `stream`, so the topology is fixed by
+    /// the scenario and seed before the first arrival. Empty when the scenario has no prefix model.
+    pub fn new(sc: &Scenario, stream: &mut Rng) -> PrefixTree {
+        let mut t = PrefixTree { parent: vec![0], tokens: vec![0] };
+        for _ in 0..sc.prefix_roots {
+            let tokens = stream.lognormal(sc.prefix_root_tokens, 0.5).max(1.0) as u32;
+            t.child(0, tokens);
+        }
+        t
+    }
+
+    /// No nodes at all, not even the "none" node; every lookup answers zero. `const` so a replica
+    /// stepped without a prefix model can name one without allocating.
+    pub const fn empty() -> PrefixTree {
+        PrefixTree { parent: Vec::new(), tokens: Vec::new() }
+    }
+
+    pub fn child(&mut self, parent: u64, tokens: u32) -> u64 {
+        self.parent.push(parent);
+        self.tokens.push(tokens);
+        (self.parent.len() - 1) as u64
+    }
+
+    pub fn parent(&self, node: u64) -> u64 {
+        self.parent.get(node as usize).copied().unwrap_or(0)
+    }
+
+    pub fn tokens(&self, node: u64) -> u32 {
+        self.tokens.get(node as usize).copied().unwrap_or(0)
+    }
+
+    /// Tokens along the chain from the root to `node` inclusive: the length of the prefix it names.
+    pub fn path_tokens(&self, node: u64) -> u32 {
+        let mut n = node;
+        let mut sum = 0u32;
+        while n != 0 {
+            sum = sum.saturating_add(self.tokens(n));
+            n = self.parent(n);
+        }
+        sum
+    }
+
+    /// Nodes so far, the "none" node included.
+    pub fn nodes(&self) -> usize {
+        self.parent.len()
+    }
 }
 
 pub struct Workload {
@@ -33,6 +98,10 @@ pub struct Workload {
     tenants: Rng,
     /// Same reason as `tenants`: turning classes on relabels requests and nothing else.
     classes: Rng,
+    /// Root choice for the prefix model; its own stream so `prefix_roots = 0` draws nothing.
+    prefix: Rng,
+    /// Zipf CDF over the roots, built on first use because it depends on the scenario.
+    zipf: Option<Vec<f64>>,
     /// `Scenario::slo_class_shares()` re-parses text, and that is too much per arrival.
     class_shares: Option<Vec<(u8, f64)>>,
     /// Loaded on the first call in trace mode. `new` only sees the seed streams, and a synthetic run
@@ -99,6 +168,8 @@ impl Workload {
             shapes: seed_streams.stream("shape"),
             tenants: seed_streams.stream("tenant"),
             classes: seed_streams.stream("class"),
+            prefix: seed_streams.stream("prefix"),
+            zipf: None,
             class_shares: None,
             trace: None,
         }
@@ -178,7 +249,38 @@ impl Workload {
         last.0
     }
 
+    /// Which root a fresh arrival starts from: Zipf(`prefix_zipf_s`) over `1..=prefix_roots`, the
+    /// shape `docs/calibration.md` section 9.1 guesses for system-prompt popularity. Zero when the
+    /// scenario has no prefix model, and then nothing is drawn.
+    fn draw_root(&mut self, sc: &Scenario) -> u64 {
+        if sc.prefix_roots == 0 {
+            return 0;
+        }
+        let cdf = self.zipf.get_or_insert_with(|| {
+            let n = sc.prefix_roots as usize;
+            let mut acc = 0.0;
+            let mut w: Vec<f64> =
+                (1..=n).map(|k| (k as f64).powf(-sc.prefix_zipf_s)).collect();
+            let total: f64 = w.iter().sum();
+            for x in w.iter_mut() {
+                acc += *x / total;
+                *x = acc;
+            }
+            w
+        });
+        let u = self.prefix.f64();
+        let k = cdf.iter().position(|&c| u < c).unwrap_or(cdf.len() - 1);
+        (k + 1) as u64
+    }
+
+    /// The next arrival, for a run without a prefix model: every request carries node 0. The tree
+    /// is only read for a chosen root, so the empty one is exact here.
     pub fn make(&mut self, sc: &Scenario, now: Nanos) -> Request {
+        self.make_with_prefixes(sc, now, &PrefixTree::empty())
+    }
+
+    /// The next arrival, with the tree its `prefix_node` indexes.
+    pub fn make_with_prefixes(&mut self, sc: &Scenario, now: Nanos, tree: &PrefixTree) -> Request {
         self.next_id += 1;
         let class = self.draw_class(sc);
         if sc.workload == "trace" {
@@ -201,6 +303,9 @@ impl Workload {
                 // with more tenants than the scenario declares must not crash the run.
                 tenant: row.tenant.min(sc.tenants.saturating_sub(1) as u32),
                 class,
+                // A trace records lengths, not sharing; the prefix model is synthetic only.
+                prefix_node: 0,
+                prefix_tokens: 0,
             };
         }
         let long = self.shapes.f64() < sc.long_probability;
@@ -209,8 +314,13 @@ impl Workload {
         } else {
             (sc.prompt_mean, sc.output_mean)
         };
-        let prompt = self.shapes.lognormal(p_mean, sc.prompt_cv).max(1.0) as u32;
+        let mut prompt = self.shapes.lognormal(p_mean, sc.prompt_cv).max(1.0) as u32;
         let output = self.shapes.lognormal(o_mean, sc.output_cv).max(1.0) as u32;
+        let prefix_node = self.draw_root(sc);
+        let prefix_tokens = tree.path_tokens(prefix_node);
+        // The system prompt is part of the prompt, and a request always has at least one token of
+        // its own after it. With no prefix model this is `max(prompt, 1)`, a no-op.
+        prompt = prompt.max(prefix_tokens.saturating_add(1));
         let tenant = if sc.tenants > 1 {
             let u = self.tenants.f64();
             let mut acc = 0.0;
@@ -238,6 +348,8 @@ impl Workload {
             is_long: long,
             tenant,
             class,
+            prefix_node,
+            prefix_tokens,
         }
     }
 }

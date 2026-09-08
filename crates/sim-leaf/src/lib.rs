@@ -9,16 +9,19 @@
 use sim_leaf_api::{AdvanceRequest, AdvanceResponse, ConfigureShardResponse, Leaf};
 use sim_metrics::trace::{BandwidthOrCompute, MemoryTier, RequestTrace, ResourceState, SpanKind, TraceSampler, TraceSpan};
 use sim_metrics::{Frame, Histogram, Outcome, ReplicaSample, RequestRecord, Series};
-use sim_policy::{Admission, AdmissionContext, AdmissionPolicy, ReplicaView, RequestView, RouteContext, RoutingPolicy};
+use sim_policy::{
+    Admission, AdmissionContext, AdmissionPolicy, PrefixIndex, ReplicaView, RequestView, RouteContext,
+    RoutingPolicy,
+};
 use sim_core::queue::{EventQueue, PRIO_OBSERVE};
 use sim_core::rng::{Rng, Streams};
 use sim_model::trace::{ResourceSnapshot, StepEvent};
-use sim_model::Replica;
+use sim_model::{PrefixTree, Replica};
 use sim_scenario::{FailureEvent, FailureKind, OverrideKind, Scenario};
 use sim_workload::{Request, Workload};
 use sim_core::{Nanos, EPOCH_BASE, MILLI};
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, VecDeque};
 
 /// A modelled router-to-replica round trip, paid when a policy probes for fresh state instead of
 /// reading the delayed snapshot.
@@ -401,6 +404,8 @@ struct Window {
     /// changes size mid-run reads as new replicas that were idle until now.
     prev_busy: Vec<Nanos>,
     prev_compute: Vec<Nanos>,
+    prev_prompt: Vec<u64>,
+    prev_hit: Vec<u64>,
 }
 
 impl Window {
@@ -434,28 +439,38 @@ impl Window {
         let mut w = std::mem::take(self);
         w.prev_busy.resize(replicas.len(), 0);
         w.prev_compute.resize(replicas.len(), 0);
+        w.prev_prompt.resize(replicas.len(), 0);
+        w.prev_hit.resize(replicas.len(), 0);
         let samples: Vec<ReplicaSample> = replicas
             .iter()
-            .zip(w.prev_busy.iter_mut().zip(w.prev_compute.iter_mut()))
-            .map(|(r, (prev_busy, prev_compute))| {
+            .enumerate()
+            .map(|(i, r)| {
                 let busy = r.busy_ns_through(t);
                 let compute = r.compute_ns_through(t);
+                let prompt = r.prompt_tokens_total();
+                let hit = r.prefix_hit_tokens_total();
                 let sample = ReplicaSample {
                     queued: r.queued() as u32,
                     running: r.running() as u32,
                     kv_tokens: r.kv_tokens(),
                     last_step_ns: r.last_step_ns(),
-                    busy_ns: busy - *prev_busy,
-                    compute_ns: compute - *prev_compute,
+                    busy_ns: busy - w.prev_busy[i],
+                    compute_ns: compute - w.prev_compute[i],
+                    prompt_tokens: prompt - w.prev_prompt[i],
+                    prefix_hit_tokens: hit - w.prev_hit[i],
                 };
-                *prev_busy = busy;
-                *prev_compute = compute;
+                w.prev_busy[i] = busy;
+                w.prev_compute[i] = compute;
+                w.prev_prompt[i] = prompt;
+                w.prev_hit[i] = hit;
                 sample
             })
             .collect();
         // The clocks outlive the window they were read in.
         self.prev_busy = w.prev_busy;
         self.prev_compute = w.prev_compute;
+        self.prev_prompt = w.prev_prompt;
+        self.prev_hit = w.prev_hit;
         Frame {
             t,
             offered_rps,
@@ -501,6 +516,15 @@ pub struct Sim {
     session_rng: Rng,
     sessions_spawned: u64,
     workload: Workload,
+    /// The prefix topology every request's `prefix_node` indexes; grown by session turns.
+    tree: PrefixTree,
+    /// Which replicas hold which prefix, fed from each replica's cache after every step.
+    holders: PrefixHolders,
+    /// Its own stream, so a fork rate of zero draws nothing and perturbs nothing.
+    fork_rng: Rng,
+    /// Nodes of recently completed requests, the pool a fork picks its parent from. Bounded, so
+    /// the pool is the recent past and not the whole run.
+    recent_nodes: VecDeque<u64>,
 
     start: Nanos,
     end: Nanos,
@@ -548,12 +572,77 @@ pub struct Sim {
 /// Ids for session turns, above the first-attempt and retry ranges.
 const SESSION_ID_BASE: u64 = 1 << 40;
 
+/// How many recently completed nodes a fork can pick from.
+const FORK_POOL: usize = 256;
+
+/// Fleet-wide prefix residency, the gateway's view: node to the replicas whose cache holds it. Kept
+/// from what each replica reports after every step rather than by asking replicas at route time, so
+/// a lookup is a walk up the tree, O(depth), and never a scan of the fleet.
+#[derive(Default, Debug)]
+pub struct PrefixHolders {
+    by_node: BTreeMap<u64, Vec<usize>>,
+}
+
+impl PrefixHolders {
+    /// Fold one replica's cache changes in. Evictions are applied after insertions, since a node
+    /// inserted and evicted within one step is not resident.
+    pub fn apply(&mut self, replica: usize, inserted: &[u64], evicted: &[u64]) {
+        for &n in inserted {
+            let v = self.by_node.entry(n).or_default();
+            if !v.contains(&replica) {
+                v.push(replica);
+                v.sort_unstable();
+            }
+        }
+        for &n in evicted {
+            if let Some(v) = self.by_node.get_mut(&n) {
+                v.retain(|&r| r != replica);
+                if v.is_empty() {
+                    self.by_node.remove(&n);
+                }
+            }
+        }
+    }
+
+    /// See `sim_policy::PrefixIndex::holders`: the replicas holding `node` or its deepest held
+    /// ancestor, with the hit in tokens, best first, at most four.
+    pub fn holders(&self, tree: &PrefixTree, node: u64) -> Vec<(usize, u32)> {
+        let mut n = node;
+        while n != 0 {
+            if let Some(v) = self.by_node.get(&n) {
+                let hit = tree.path_tokens(n);
+                return v.iter().take(4).map(|&r| (r, hit)).collect();
+            }
+            n = tree.parent(n);
+        }
+        Vec::new()
+    }
+
+    /// The index as the routing seam sees it.
+    pub fn index<'a>(&'a self, tree: &'a PrefixTree) -> LeafPrefixIndex<'a> {
+        LeafPrefixIndex { tree, holders: self }
+    }
+}
+
+/// `PrefixHolders` bound to its tree, the shape the routing seam takes.
+pub struct LeafPrefixIndex<'a> {
+    tree: &'a PrefixTree,
+    holders: &'a PrefixHolders,
+}
+
+impl PrefixIndex for LeafPrefixIndex<'_> {
+    fn holders(&self, node: u64) -> Vec<(usize, u32)> {
+        self.holders.holders(self.tree, node)
+    }
+}
+
 /// Perhaps schedule the session's next turn after a completed one. The number of turns is geometric
 /// with mean `session_turns_mean`, the next turn carries the whole context so far plus a short new
 /// prompt, and it goes back to the replica that holds that context, which parks it in the meantime.
 /// The turn arrives at the gateway like any other request and admission may shed it, but routing
 /// may not move it: the point of keeping context resident is lost on any other replica, and a router
 /// that knew that would do the same.
+#[allow(clippy::too_many_arguments)]
 fn follow_up(
     sc: &Scenario,
     rng: &mut Rng,
@@ -561,6 +650,7 @@ fn follow_up(
     i: usize,
     replica: &mut Replica,
     q: &mut EventQueue<Ev>,
+    tree: &mut PrefixTree,
     prev: &Request,
     now: Nanos,
 ) {
@@ -575,6 +665,15 @@ fn follow_up(
     let new_prompt = 1 + rng.below(sc.prompt_mean.max(1.0) as u64) as u32;
     let output = 1 + rng.below((2.0 * sc.output_mean).max(1.0) as u64) as u32;
     let at = now + (sc.session_think_s * 1e9) as Nanos;
+    // The whole previous context is what the next turn shares, a node under the previous turn's;
+    // with no prefix model the tree stays empty and the turn carries node 0 as it always did.
+    let (prefix_node, prefix_tokens) = if sc.prefix_roots > 0 {
+        let own = (prev.prompt as u64 + prev.output as u64 - prev.prefix_tokens as u64) as u32;
+        let node = tree.child(prev.prefix_node, own);
+        (node, tree.path_tokens(node))
+    } else {
+        (0, 0)
+    };
     let req = Request {
         id: SESSION_ID_BASE + *spawned,
         arrived_at: at,
@@ -586,6 +685,8 @@ fn follow_up(
         is_long: prev.is_long,
         tenant: prev.tenant,
         class: prev.class,
+        prefix_node,
+        prefix_tokens,
     };
     replica.park(req.id, context, req.deadline, now);
     q.schedule(at, Ev::SessionTurn(i, req));
@@ -607,7 +708,9 @@ impl Sim {
         let streams = Streams::new(sc.seed);
         let route_rng: Rng = streams.stream("route");
         let session_rng: Rng = streams.stream("session");
+        let fork_rng: Rng = streams.stream("fork");
         let workload = Workload::new(&streams);
+        let tree = PrefixTree::new(sc, &mut streams.stream("prefix_tree"));
         let tracing = Tracing::new(&streams, sc);
 
         let start = EPOCH_BASE;
@@ -651,6 +754,10 @@ impl Sim {
             session_rng,
             sessions_spawned: 0,
             workload,
+            tree,
+            holders: PrefixHolders::default(),
+            fork_rng,
+            recent_nodes: VecDeque::new(),
             start,
             end,
             measured_from,
@@ -720,6 +827,7 @@ impl Sim {
             let d = dispatch(
                 &mut *self.router, &mut *self.admission, &self.views, &self.replicas,
                 &self.tenant_shares, &mut self.route_rng, sc, at, &again, traced.then_some(&mut probed),
+                &self.holders.index(&self.tree),
             );
             let (again_id, routed) = (again.id, matches!(d, Dispatch::Route { .. }));
             if traced {
@@ -747,6 +855,12 @@ impl Sim {
     /// The frames closed so far. Available while the run is in progress, which is the point.
     pub fn frames(&self) -> &[Frame] {
         &self.frames
+    }
+    pub fn prefix_tree(&self) -> &PrefixTree {
+        &self.tree
+    }
+    pub fn prefix_holders(&self) -> &PrefixHolders {
+        &self.holders
     }
     /// The frames closed since the last `drain_frames` call (or the start of the run, for the
     /// first), handing ownership to the caller instead of leaving a second copy behind. For a
@@ -880,13 +994,24 @@ impl Sim {
             match ev {
                 Ev::Arrival => {
                     let elapsed = (now - start) as f64 / 1e9;
-                    let req = self.workload.make(sc, now);
+                    let mut req = self.workload.make_with_prefixes(sc, now, &self.tree);
+                    // A fork: an agent spawned from a recently finished request's context shares
+                    // that whole prefix rather than starting at a root. Drawn before the pool is
+                    // consulted, so the stream advances the same way whether or not one is there.
+                    if sc.session_fork_rate > 0.0 && self.fork_rng.f64() < sc.session_fork_rate {
+                        if let Some(node) = self.recent_nodes.pop_back() {
+                            req.prefix_node = node;
+                            req.prefix_tokens = self.tree.path_tokens(node);
+                            req.prompt = req.prompt.max(req.prefix_tokens.saturating_add(1));
+                        }
+                    }
                     self.first_attempts += 1;
                     let traced = self.tracing.sample();
                     let mut probed = Vec::new();
                     let d = dispatch(
                         &mut *self.router, &mut *self.admission, &self.views, &self.replicas,
                         &self.tenant_shares, &mut self.route_rng, sc, now, &req, traced.then_some(&mut probed),
+                        &self.holders.index(&self.tree),
                     );
                     let (id, routed) = (req.id, matches!(d, Dispatch::Route { .. }));
                     if traced {
@@ -954,9 +1079,20 @@ impl Sim {
                 }
 
                 Ev::Step(i) => {
-                    let Some(out) = self.replicas[i].step(sc, &self.cost, now) else { continue };
+                    let Some(out) = self.replicas[i].step_with_prefixes(sc, &self.cost, now, &self.tree)
+                    else {
+                        continue
+                    };
+                    let (inserted, evicted) = self.replicas[i].drain_prefix_changes();
+                    self.holders.apply(i, &inserted, &evicted);
                     let token_at = out.token_at;
                     for s in out.finished {
+                        if s.req.prefix_node != 0 {
+                            if self.recent_nodes.len() == FORK_POOL {
+                                self.recent_nodes.pop_front();
+                            }
+                            self.recent_nodes.push_back(s.req.prefix_node);
+                        }
                         // An infinite ITL target saturates to Nanos::MAX in the cast, which is the
                         // intended "never fails on ITL".
                         let (ttft_ms, itl_ms, e2e_s) = sc.slo_for(s.req.class);
@@ -973,7 +1109,7 @@ impl Sim {
                         self.tracing.settle(s.req.id, &self.records, &mut self.replicas, i, &self.cost);
                         follow_up(
                             sc, &mut self.session_rng, &mut self.sessions_spawned, i,
-                            &mut self.replicas[i], &mut self.q, &s.req, token_at,
+                            &mut self.replicas[i], &mut self.q, &mut self.tree, &s.req, token_at,
                         );
                     }
                     self.window.preemptions += out.preempted as u64;
@@ -1023,6 +1159,8 @@ impl Sim {
                             for req in self.replicas[f.replica].crash() {
                                 self.abort(&req, f.replica, Outcome::TimeoutRunning, now);
                             }
+                            let (inserted, evicted) = self.replicas[f.replica].drain_prefix_changes();
+                            self.holders.apply(f.replica, &inserted, &evicted);
                         }
                         FailureKind::Slow(mult) => self.replicas[f.replica].set_speed(mult),
                         FailureKind::Hang => self.replicas[f.replica].set_speed(0.0),
@@ -1326,6 +1464,7 @@ fn dispatch(
     now: Nanos,
     req: &Request,
     probed: Option<&mut Vec<usize>>,
+    prefix: &dyn PrefixIndex,
 ) -> Dispatch {
     let request = request_view(req);
     if shed(admission, views, tenant_shares, now, &request) {
@@ -1340,7 +1479,7 @@ fn dispatch(
         }
         view_of(&replicas[i], now)
     };
-    let mut ctx = RouteContext::new(now, views, &request, rng, &live);
+    let mut ctx = RouteContext::new(now, views, &request, rng, &live, prefix);
     match router.choose(&mut ctx) {
         Some(target) => {
             let paid = ctx.probes() as Nanos + if sc.probe_live { 1 } else { 0 };
@@ -1376,6 +1515,8 @@ fn request_view(req: &Request) -> RequestView {
         deadline: req.deadline,
         tenant: req.tenant,
         attempts: req.attempts,
+        prefix_node: req.prefix_node,
+        prefix_tokens: req.prefix_tokens,
     }
 }
 
