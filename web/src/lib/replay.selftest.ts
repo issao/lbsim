@@ -630,6 +630,24 @@ check('an extra key the engine does not accept throws at encode time, not at the
   return threw;
 });
 
+check('scenarios/affinity_sticky.txt: the seven prefix-model keys parse, two into typed routing fields, five into `extra`', () => {
+  const src = repoFile('scenarios/affinity_sticky.txt');
+  const { config, unmapped } = replay.configFromScenarioText(src);
+  const prefixUnmapped = unmapped.filter((u) => /^(prefix_|session_fork_rate|affinity_)/.test(u));
+  eq(prefixUnmapped, [], 'no prefix-model key is unmapped');
+  eq(config.extra.prefix_roots, 100, 'prefix_roots');
+  eq(config.extra.prefix_root_tokens, 800, 'prefix_root_tokens');
+  eq(config.extra.prefix_zipf_s, 1, 'prefix_zipf_s');
+  eq(config.extra.session_fork_rate, 0.1, 'session_fork_rate');
+  eq(config.extra.prefix_cache_tokens, 400000, 'prefix_cache_tokens');
+  eq(config.routing.maxLoadRatio, 2.2, 'affinity_max_load_ratio');
+  // affinity_fallback_choices is not set in this file; the seventh key is the mapping itself, and
+  // BASE's default (2) is what a scenario that omits it should keep.
+  eq(config.routing.fallbackChoices, 2, 'affinity_fallback_choices (scenario omits it; default holds)');
+  eq(config.routing.kind, 'prefix_affinity', 'routing');
+  return 'all seven prefix-model keys land in typed fields or extra';
+});
+
 // ---------------------------------------------------------------------------
 
 console.log(`${cases} cases, ${cases - failures} passed, ${failures} failed`);

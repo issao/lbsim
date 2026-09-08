@@ -298,8 +298,8 @@ export const FIELD_LABEL: Record<string, string> = {
   'routing.kind': 'routing policy',
   'routing.choices': 'choices (d)',
   'routing.probeLive': 'probe live',
-  'routing.maxLoadRatio': 'max load ratio',
-  'routing.fallbackChoices': 'fallback choices',
+  'routing.maxLoadRatio': 'affinity max load ratio',
+  'routing.fallbackChoices': 'affinity fallback choices',
   telemetryIntervalMs: 'telemetry interval',
   telemetryDelayMs: 'telemetry delay',
   clientTimeoutS: 'client timeout',
@@ -308,6 +308,14 @@ export const FIELD_LABEL: Record<string, string> = {
   'slo.itlMs': 'ITL SLO',
   'slo.e2eS': 'end-to-end SLO',
   samplesPerSimSecond: 'sample rate',
+  // U27c: the prefix-caching model's engine keys. No typed field for these (unlike the affinity
+  // routing knobs above, which the mock engine also needs for its own simulation), so they ride in
+  // `ScenarioConfig.extra` and are labeled here under that prefix.
+  'extra.prefix_roots': 'prefix roots',
+  'extra.prefix_root_tokens': 'root prompt length',
+  'extra.prefix_zipf_s': 'root popularity skew',
+  'extra.session_fork_rate': 'session fork rate',
+  'extra.prefix_cache_tokens': 'prefix cache per replica',
 };
 
 function flat(c: ScenarioConfig): Record<string, unknown> {

@@ -25,7 +25,8 @@
       "title": "Affinity that yields to load almost immediately",
       "body": [
         "Max load ratio is 1.05: the router prefers a replica already holding the request's prefix, and abandons it as soon as that replica is five per cent above its estimate of the fleet mean.",
-        "Demo 14 measures this run against plain p2c on the same seed and the same prefix topology. p2c: goodput 147,043 tok/s, 98.7 % within SLO, load CV 0.32, TTFT p50 40 ms and p99 2,282 ms. At 1.05: 145,303 tok/s, 97.8 %, CV 0.37, p50 39 ms and p99 3,221 ms. The balance is kept and the tail already moves, because a holder is a hot spot for the second before its load shows."
+        "Demo 14 measures this run against plain p2c on the same seed and the same prefix topology. p2c: goodput 147,043 tok/s, 98.7 % within SLO, load CV 0.32, TTFT p50 40 ms and p99 2,282 ms. At 1.05: 145,303 tok/s, 97.8 %, CV 0.37, p50 39 ms and p99 3,221 ms. The balance is kept and the tail already moves, because a holder is a hot spot for the second before its load shows.",
+        "The measured prefix hit rate over the run is 18 % under plain p2c — a hit there is only ever luck, the router names no preference — and 20 % at 1.05, barely above luck, because the ceiling gives up on a holder almost as soon as it takes a second request."
       ],
       "look_for": "A low imbalance coefficient of variation in the Machine level tab, and p99 TTFT a little above the p2c comparison run."
     },
@@ -41,7 +42,7 @@
       "title": "Now let affinity win",
       "body": [
         "At 2.2 the router tolerates a candidate more than twice as loaded as the fleet mean before it gives up on the cache. Measured: goodput 141,314 tok/s, 96.4 % within SLO, load CV 0.75, TTFT p50 40 ms, p90 789 ms, p99 3,959 ms.",
-        "The knob is monotone: sweeping the ratio through 1.05, 1.5, 2.2 and 4.0 gives a CV of 0.37, 0.48, 0.75 and 1.36. What it does not do here is pay. A hit skips an 800-token prefill, about 28 ms at this prefill rate, and the runs are decode-bound, so the capacity a hit returns is smaller than the queueing the concentration costs."
+        "The knob is monotone: sweeping the ratio through 1.05, 1.5, 2.2 and 4.0 gives a CV of 0.37, 0.48, 0.75 and 1.36. The hit rate climbs far more slowly behind it — 18, 20 and 24 % measured at p2c, 1.05 and 2.2. What it does not do here is pay. A hit skips an 800-token prefill, about 28 ms at this prefill rate, and the runs are decode-bound, so the capacity those six extra points of hit rate return is smaller than the queueing the concentration costs."
       ],
       "look_for": "The heatmap in the Machine level tab developing persistent hot rows as the ratio rises."
     },
