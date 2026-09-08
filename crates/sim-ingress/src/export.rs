@@ -581,7 +581,7 @@ pub const DEMOS: &[Demo] = &[
     },
     Demo {
         group: "2-staleness",
-        files: &["route_least_requests.txt"],
+        files: &["staleness_least_requests.txt"],
         sweep: Some(("telemetry_interval_ms", &["100", "250", "500", "1000", "2000", "4000"])),
     },
     Demo {

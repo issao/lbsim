@@ -13,7 +13,7 @@ $S compare scenarios/route_round_robin.txt scenarios/route_p2c.txt \
            --out out/1-routing.html
 
 echo; echo "== 2. telemetry staleness: how herding grows with it =="
-$S sweep scenarios/route_least_requests.txt \
+$S sweep scenarios/staleness_least_requests.txt \
          --over telemetry_interval_ms=100,250,500,1000,2000,4000 \
          --out out/2-staleness.html
 
