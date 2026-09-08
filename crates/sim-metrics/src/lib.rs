@@ -254,6 +254,9 @@ pub struct ReplicaSample {
     /// replica got its first token this window.
     pub ttft_sum_ns: u64,
     pub ttft_count: u64,
+    /// Contexts this replica evicted in the window, running or parked. The engine's counter is
+    /// cumulative; the sampler takes the delta, like `busy_ns`.
+    pub preemptions: u64,
 }
 
 /// Everything observable about one sample interval, closed at `t`.
@@ -289,6 +292,9 @@ pub struct Frame {
     /// Contexts evicted from a cache in the window, running or parked; the dashboard's preemption
     /// rate.
     pub preemptions: u64,
+    /// Retry attempts scheduled in the window: the client-side amplification a slowdown produces,
+    /// `METRIC_RETRIES_PER_S` at fleet scope. `RunResult::retries` is the same count run-wide.
+    pub retries: u64,
     pub replicas: Vec<ReplicaSample>,
 }
 

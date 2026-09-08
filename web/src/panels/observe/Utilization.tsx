@@ -3,7 +3,7 @@ import type { ScenarioConfig } from '../../lib/config';
 import { fractionPercentileSeries, percentilesOver, series, xs } from '../../lib/derive';
 import { Panel, Tile, Unwired } from '../../components/ui';
 import { LineChart } from '../../components/charts/LineChart';
-import { fmtPct } from '../../lib/format';
+import { fmtNum, fmtPct } from '../../lib/format';
 
 /** The percentiles the wire reports across replicas; the same three the fallback computes. */
 const UTIL_PCTS = [50, 90, 99];
@@ -32,8 +32,16 @@ function bands(frames: Frame[], mean: (f: Frame) => number, pick: (f: Frame) => 
   ];
 }
 
-// Wasted GPU, preemptions, prefix hits and the memory tiers are not on the wire yet: the tiles
-// say so, and there is no chart for a quantity the engine does not measure.
+/** The engine's `preemption` key as the KV panel states it; `never` is the engine default. */
+const PREEMPTION_MODE: Record<string, string> = {
+  never: 'never',
+  recompute: 'recompute',
+  swap_to_dram: 'swap',
+  swap_else_recompute: 'swap, else recompute',
+};
+
+// Wasted GPU, prefix hits and the memory tiers are not on the wire yet: the tiles say so, and there
+// is no chart for a quantity the engine does not measure. Preemptions are (U115).
 export function Utilization({
   frames,
   frame,
@@ -48,6 +56,8 @@ export function Utilization({
   const x = xs(frames);
   const gpuSpread = (f: Frame) => spread(f, f.gpuUtilizationP, (r) => r.gpuUtilization);
   const kvSpread = (f: Frame) => spread(f, f.kvUtilizationP, (r) => r.kvUtilization);
+  const preemption = String(config.extra.preemption ?? 'never');
+  const victim = String(config.extra.preemption_victim ?? 'newest');
 
   return (
     <div className="grid c2">
@@ -83,7 +93,7 @@ export function Utilization({
             statusText={frame.kvUtilization > 0.95 ? 'preempting' : frame.kvUtilization > 0.85 ? 'tight' : 'headroom'}
           />
           <Tile label="wasted gpu" value={<Unwired what="wastedGpuFraction" />} note="on tokens never delivered" />
-          <Tile label="preemptions" value={<Unwired what="preemptionsPerS" />} />
+          <Tile label="preemptions" value={`${fmtNum(frame.preemptionsPerS, 1)} /s`} note="contexts evicted" />
           <Tile
             label="prefix hit rate"
             value={<Unwired what="prefixHitRate" />}
@@ -101,12 +111,27 @@ export function Utilization({
           height={116}
           thresholds={[{ value: 0.96, label: 'preempt' }]}
         />
+        {/* Issao (U115): a full cache showed no preemptions. Under `never` that is the engine's
+            behaviour, not a missing wire, so the panel says which it is. */}
+        <p className="note" style={{ margin: '7px 0 0' }}>
+          {preemption === 'never' ? (
+            <>preemption: never &mdash; arrivals wait for space instead of evicting</>
+          ) : (
+            <>
+              preemption: {PREEMPTION_MODE[preemption] ?? preemption} ({victim.replace(/_/g, ' ')} victim) &middot;{' '}
+              {fmtNum(frame.preemptionsPerS, 1)}/s
+            </>
+          )}
+        </p>
       </Panel>
 
-      <Panel title="Shed load" sub="the expensive failure" highlight={highlight === 'preempt'} id="preempt">
+      <Panel title="Shed load and preemptions" sub="the expensive failures" highlight={highlight === 'preempt'} id="preempt">
         <LineChart
           xs={x}
-          series={[{ key: 'shed', label: 'shed', color: 'var(--series-1)', points: series(frames, (f) => f.rejectedRps) }]}
+          series={[
+            { key: 'shed', label: 'shed', color: 'var(--series-1)', points: series(frames, (f) => f.rejectedRps) },
+            { key: 'preempt', label: 'preempted', color: 'var(--series-2)', points: series(frames, (f) => f.preemptionsPerS) },
+          ]}
           format={(v) => v.toFixed(1)}
           unit=" /s"
           height={116}

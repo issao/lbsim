@@ -469,6 +469,22 @@ const finalLine = extraFail => {
     const txt = await until(async () => { const t = await tile(); return /\d+(\.\d+)?%/.test(t) ? t : null; }, 8000) || await tile();
     const pct = Number((txt.match(/(\d+(?:\.\d+)?)%/) || [0, '0'])[1]);
     check(`utilization ${label}: gpu chart with non-zero mean (U94)`, pct > 0, txt.slice(0, 80) || 'no gpu tile');
+    if (label === 'live') {
+      // U115 (Issao: a full cache showed no preemptions). The KV panel states the mode the run is
+      // under, and the tile carries a number once the wire serves metric 46: zero is allowed, a
+      // fleet with headroom evicts nothing, so the check is presence, not magnitude.
+      const kvText = await page.$eval('#kv', e => e.innerText.replace(/\s+/g, ' ')).catch(() => '');
+      check('utilization: kv panel states the preemption mode (U115)', /preemption: swap/i.test(kvText), kvText.slice(0, 120));
+      const preTile = async () => page.$$eval('#capacity *', els => {
+        const lab = els.find(e => e.children.length === 0 && /^preemptions$/i.test((e.textContent || '').trim()));
+        const box = lab && lab.parentElement;
+        return box ? box.innerText.replace(/\s+/g, ' ') : '';
+      }).catch(() => '');
+      await sleep(10000);
+      const pre = await until(async () => { const t = await preTile(); return /\d+(\.\d+)? \/s/.test(t) ? t : null; }, 10000) || await preTile();
+      const rate = Number((pre.match(/(\d+(?:\.\d+)?) \/s/) || [0, 'NaN'])[1]);
+      check('utilization: preemptions per second is a number, not blank (U115)', Number.isFinite(rate), pre.slice(0, 80) || 'no preemptions tile');
+    }
     await page.close();
   }
 

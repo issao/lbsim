@@ -416,6 +416,7 @@ struct Window {
     e2e: Histogram,
     queue_wait: Histogram,
     preemptions: u64,
+    retries: u64,
     /// Each replica's step clock as of the previous close, so a frame carries the window's share
     /// of busy time and not the run's. Indexed by position and grown with zeros, so a fleet that
     /// changes size mid-run reads as new replicas that were idle until now.
@@ -427,6 +428,7 @@ struct Window {
     /// window's delta, not the run's.
     prev_ttft_sum: Vec<u64>,
     prev_ttft_count: Vec<u64>,
+    prev_preemptions: Vec<u64>,
 }
 
 impl Window {
@@ -464,6 +466,7 @@ impl Window {
         w.prev_hit.resize(replicas.len(), 0);
         w.prev_ttft_sum.resize(replicas.len(), 0);
         w.prev_ttft_count.resize(replicas.len(), 0);
+        w.prev_preemptions.resize(replicas.len(), 0);
         let samples: Vec<ReplicaSample> = replicas
             .iter()
             .enumerate()
@@ -474,6 +477,7 @@ impl Window {
                 let hit = r.prefix_hit_tokens_total();
                 let ttft_sum = r.ttft_sum_ns();
                 let ttft_count = r.ttft_count();
+                let preemptions = r.preemptions();
                 let sample = ReplicaSample {
                     queued: r.queued() as u32,
                     running: r.running() as u32,
@@ -487,6 +491,7 @@ impl Window {
                     speed: r.speed(),
                     ttft_sum_ns: ttft_sum - w.prev_ttft_sum[i],
                     ttft_count: ttft_count - w.prev_ttft_count[i],
+                    preemptions: preemptions - w.prev_preemptions[i],
                 };
                 w.prev_busy[i] = busy;
                 w.prev_compute[i] = compute;
@@ -494,6 +499,7 @@ impl Window {
                 w.prev_hit[i] = hit;
                 w.prev_ttft_sum[i] = ttft_sum;
                 w.prev_ttft_count[i] = ttft_count;
+                w.prev_preemptions[i] = preemptions;
                 sample
             })
             .collect();
@@ -504,6 +510,7 @@ impl Window {
         self.prev_hit = w.prev_hit;
         self.prev_ttft_sum = w.prev_ttft_sum;
         self.prev_ttft_count = w.prev_ttft_count;
+        self.prev_preemptions = w.prev_preemptions;
         Frame {
             t,
             offered_rps,
@@ -519,6 +526,7 @@ impl Window {
             e2e: w.e2e.to_sparse(),
             queue_wait: w.queue_wait.to_sparse(),
             preemptions: w.preemptions,
+            retries: w.retries,
             replicas: samples,
         }
     }
@@ -868,6 +876,7 @@ impl Sim {
             <= sc.retry_budget_fraction * self.first_attempts.max(1) as f64;
         if req.attempts < sc.max_attempts && budget_ok {
             self.retries += 1;
+            self.window.retries += 1;
             let mut again = req.clone();
             again.attempts += 1;
             again.attempt_at = now + (sc.retry_backoff_s * 1e9) as Nanos;

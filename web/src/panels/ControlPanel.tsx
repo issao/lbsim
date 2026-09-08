@@ -451,6 +451,30 @@ function ClusterTab({ c, set, dropped, readonly }: TabProps) {
         onChange={(v) => set((d) => { d.fleet.kvTokensPerReplica = v; })}
         note="lower it until preemption starts and throughput falls as load rises"
       />
+      {/* U115: engine keys on `extra`, so a change is physics and stages a restart like the sliders above. */}
+      <Select
+        label="preemption"
+        value={String(c.extra.preemption ?? 'never')}
+        options={[
+          { value: 'never', label: 'never' },
+          { value: 'swap_to_dram', label: 'swap to host memory' },
+          { value: 'recompute', label: 'recompute' },
+          { value: 'swap_else_recompute', label: 'swap, else recompute' },
+        ]}
+        onChange={(v) => set((d) => { d.extra.preemption = v; })}
+        note="what a full cache does: never parks the arrival until space frees; swap pays the host link, recompute pays the prefill again"
+      />
+      <Select
+        label="preemption victim"
+        value={String(c.extra.preemption_victim ?? 'newest')}
+        options={[
+          { value: 'newest', label: 'newest' },
+          { value: 'largest_kv', label: 'largest KV' },
+          { value: 'latest_deadline', label: 'latest deadline' },
+        ]}
+        onChange={(v) => set((d) => { d.extra.preemption_victim = v; })}
+        note="which resident context goes first: newest is what vLLM does; latest deadline evicts the request with the most slack"
+      />
       <Slider
         label="max queue"
         value={c.fleet.maxQueue}
