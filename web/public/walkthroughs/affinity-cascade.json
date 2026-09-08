@@ -10,6 +10,11 @@
     "routing.kind": "prefix_affinity",
     "routing.maxLoadRatio": 2.2,
     "routing.fallbackChoices": 2,
+    "prefix_roots": 100,
+    "prefix_root_tokens": 800,
+    "prefix_zipf_s": 1.0,
+    "session_fork_rate": 0.1,
+    "prefix_cache_tokens": 400000,
     "workload.arrivalRps": 560,
     "workload.promptMean": 1200
   },
