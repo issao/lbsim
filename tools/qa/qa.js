@@ -9,11 +9,14 @@ const fs = require('fs');
 const BASE = process.env.QA_BASE || 'http://localhost:8181';
 const MIN_CARDS = 19;
 const EXPECTED_REPORTS = 18;
-// Two cards whose scenario overrides are the whole point of the demo; a walkthrough that runs
+// Cards whose scenario overrides are the whole point of the demo; a walkthrough that runs
 // without them looks fine and shows nothing.
 const REQUIRED_KEYS = {
   'KV preemption spiral at low load': [/preemption\s*=\s*never\b/, /session_turns_mean\s*=\s*8\b/],
   'Speculative decoding value and cost': [/spec_draft_tokens\s*=\s*4\b/],
+  // U113: SCENARIO_KEYS lacked the prefix-topology keys and ROUTING_TO_ENGINE nulled
+  // prefix_affinity, so this card's live run silently ran p2c without a prefix model at all.
+  'Prefix affinity against load spreading': [/prefix_roots\s*=\s*100\b/, /routing\s*=\s*prefix_affinity\b/],
 };
 const CHROME = [
   '/home/agents/.cache/ms-playwright/chromium-1140/chrome-linux/chrome',

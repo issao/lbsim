@@ -25,9 +25,24 @@ async function load<T>(name: string): Promise<T> {
   return (await import(`./${name}.ts`)) as T;
 }
 
+// replay.ts imports its siblings extensionless, the way the app does, which Vite resolves and
+// Node's ESM loader does not; the same hook replay.selftest.ts uses so this file can load it too.
+const moduleModule = 'node:module';
+const { register } = (await import(moduleModule)) as { register: (specifier: string, parentUrl: string) => void };
+const resolveTsHook = `
+export async function resolve(specifier, context, next) {
+  if (/^\\.\\.?\\//.test(specifier) && !/\\.[a-z]+$/.test(specifier)) {
+    try { return await next(specifier + '.ts', context); }
+    catch (e) { if (!e || e.code !== 'ERR_MODULE_NOT_FOUND') throw e; }
+  }
+  return next(specifier, context);
+}`;
+register(`data:text/javascript,${encodeURIComponent(resolveTsHook)}`, import.meta.url);
+
 const api = await load<typeof import('./api')>('api');
 const fx = await load<typeof import('./apiFixtures')>('apiFixtures');
 const mode = await load<typeof import('./mode')>('mode');
+const replay = await load<typeof import('./replay')>('replay');
 const { BASE, cloneConfig } = await load<typeof import('./config')>('config');
 
 // Node's fs, without @types/node: a variable specifier keeps tsc out of it, and this file is the
@@ -697,7 +712,7 @@ check('config.ts BASE matches scenarios/base.txt key for key', () => {
   return `${Object.keys(file).length} keys in base.txt, every one equal (replicas ${file.replicas}, max_batch ${file.max_batch}, kv ${file.kv_capacity_tokens}, rps ${file.arrival_rps})`;
 });
 
-check('the two engine name mismatches are translated, and prefix affinity is refused', () => {
+check('the two engine name mismatches are translated, and prefix affinity sends its two knobs', () => {
   const leastKv = cloneConfig(BASE);
   leastKv.routing = { ...leastKv.routing, kind: 'least_kv_tokens' };
   eq(api.scenarioConfigToWire(leastKv).fields.routing, 'least_queue_tokens', 'least_kv_tokens maps to the engine name');
@@ -705,12 +720,72 @@ check('the two engine name mismatches are translated, and prefix affinity is ref
   p2c.routing = { ...p2c.routing, kind: 'power_of_two_choices' };
   eq(api.scenarioConfigToWire(p2c).fields.routing, 'p2c', 'power_of_two_choices is spelled as scenarios/route_p2c.txt spells it');
   const affinity = cloneConfig(BASE);
-  affinity.routing = { ...affinity.routing, kind: 'prefix_affinity' };
+  affinity.routing = { ...affinity.routing, kind: 'prefix_affinity', maxLoadRatio: 1.05, fallbackChoices: 3 };
   const enc = api.scenarioConfigToWire(affinity);
-  eq('routing' in enc.fields, false, 'no routing key is sent for a policy the engine lacks');
-  eq(enc.dropped.includes('routing.kind'), true, 'routing.kind is reported dropped');
+  eq(enc.fields.routing, 'prefix_affinity', 'prefix_affinity now has an engine implementation and is sent');
+  eq(enc.fields.affinity_max_load_ratio, 1.05, 'routing.maxLoadRatio -> affinity_max_load_ratio');
+  eq(enc.fields.affinity_fallback_choices, 3, 'routing.fallbackChoices -> affinity_fallback_choices');
+  ok(!enc.dropped.includes('routing.kind'), 'routing.kind is no longer dropped');
+  ok(!enc.dropped.includes('routing.maxLoadRatio') && !enc.dropped.includes('routing.fallbackChoices'), 'the affinity knobs are no longer dropped');
   eq(api.unacceptedKeys(enc.fields), [], 'still only accepted keys');
-  return 'least_kv_tokens -> least_queue_tokens; power_of_two_choices -> p2c; prefix_affinity dropped, not sent';
+  // Any other policy still has nothing on the wire to receive these two knobs.
+  eq(api.scenarioConfigToWire(p2c).dropped.includes('routing.maxLoadRatio'), true, 'dropped for a policy that is not prefix_affinity');
+  return 'least_kv_tokens -> least_queue_tokens; power_of_two_choices -> p2c; prefix_affinity -> prefix_affinity with its two knobs';
+});
+
+check("SCENARIO_KEYS tracks every key Scenario::parse accepts (crates/sim-scenario/src/lib.rs), so the two lists cannot drift", () => {
+  const src = repoFile('crates/sim-scenario/src/lib.rs');
+  const start = src.indexOf('match k.as_str() {');
+  ok(start >= 0, 'match k.as_str() { not found in crates/sim-scenario/src/lib.rs; did Scenario::parse move or get renamed?');
+  const end = src.indexOf('other => unknown.push', start);
+  ok(end > start, 'the wildcard "other" arm was not found after the match; did the match body change shape?');
+  const body = src.slice(start, end);
+  // Every arm pattern line: one or more quoted key literals, `|`-joined, immediately before `=>`.
+  // Anchored at line start so a quoted string inside an arm's body (e.g. an error message) is not
+  // mistaken for a key.
+  const engineKeys = new Set<string>();
+  for (const line of body.split('\n')) {
+    const m = /^\s*((?:"[a-z0-9_]+"\s*\|\s*)*"[a-z0-9_]+")\s*=>/.exec(line);
+    if (!m) continue;
+    for (const km of m[1].matchAll(/"([a-z0-9_]+)"/g)) engineKeys.add(km[1]);
+  }
+  ok(engineKeys.size >= 60, `only found ${engineKeys.size} parser-arm keys; the scan likely missed the match block`);
+  const web = new Set<string>(api.SCENARIO_KEYS);
+  const missing = [...engineKeys].filter((k) => !web.has(k)).sort();
+  eq(missing, [], "keys Scenario::parse accepts that api.ts's SCENARIO_KEYS (PANEL_KEYS + EXTRA_KEYS) lacks");
+  const stale = [...web].filter((k) => !engineKeys.has(k)).sort();
+  eq(stale, [], 'keys in SCENARIO_KEYS that Scenario::parse no longer accepts (a stale entry)');
+  return `${engineKeys.size} parser-arm keys, every one present in SCENARIO_KEYS`;
+});
+
+check('every EXTRA_KEYS entry round-trips through configFromScenarioText: encode, to text, decode, re-encode', () => {
+  const PROBE = 12345.5; // distinct from every field's default, and numeric so both directions agree on its text
+  const failures: string[] = [];
+  for (const key of api.EXTRA_KEYS) {
+    const c = cloneConfig(BASE);
+    // prefix_affinity so the two affinity knobs (typed fields, not `extra`) are on the wire too,
+    // exercised the same as every other key under test.
+    c.routing = { ...c.routing, kind: 'prefix_affinity' };
+    if (key === 'affinity_max_load_ratio') c.routing.maxLoadRatio = PROBE;
+    else if (key === 'affinity_fallback_choices') c.routing.fallbackChoices = PROBE;
+    else c.extra[key] = PROBE;
+
+    const fields1 = api.scenarioConfigToWire(c).fields;
+    if (fields1[key] !== PROBE) {
+      failures.push(`${key}: not encoded (got ${JSON.stringify(fields1[key])})`);
+      continue;
+    }
+    const text = api.scenarioText(fields1);
+    const { config: decoded, unmapped } = replay.configFromScenarioText(text);
+    if (unmapped.some((u) => u.startsWith(`${key} =`))) {
+      failures.push(`${key}: configFromScenarioText reported it unmapped`);
+      continue;
+    }
+    const fields2 = api.scenarioConfigToWire(decoded).fields;
+    if (fields2[key] !== PROBE) failures.push(`${key}: lost on the way back (got ${JSON.stringify(fields2[key])})`);
+  }
+  eq(failures, [], 'EXTRA_KEYS entries that do not round-trip');
+  return `${api.EXTRA_KEYS.length} EXTRA_KEYS entries round-trip through encode -> scenario text -> decode -> encode`;
 });
 
 check('workload and policy updates carry only their own keys, as string overrides', () => {
