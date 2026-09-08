@@ -107,6 +107,7 @@ fn emitted_field_names_exist_in_the_protos() {
     let index_keys = json_keys(&read(&dir.join("runs/index.json")));
     let expected: BTreeSet<String> = [
         "run_id", "name", "routing", "sim_start_unix_ns", "sim_end_unix_ns", "sample_interval_ms", "replicas",
+        "replica_sample_stride",
     ]
     .into_iter()
     .map(String::from)
@@ -338,6 +339,54 @@ fn replica_rows_follow_the_frames() {
         }
         assert_eq!(queued, metric_value(fleet_line, wire::METRIC_QUEUED_SEQS).unwrap(), "sample {s}: queued");
         assert_eq!(running, metric_value(fleet_line, wire::METRIC_RUNNING_SEQS).unwrap(), "sample {s}: running");
+    }
+    for (i, line) in lines.iter().enumerate() {
+        let last = i + 1 == lines.len();
+        assert!(line.ends_with(if last { r#","final":true}"# } else { r#","final":false}"# }), "line {i}: {line}");
+    }
+}
+
+/// A run whose per-replica rows would outgrow `REPLICA_ROWS_BUDGET_BYTES` (the 256-replica demos:
+/// 40 MB, past Cloud Run's 32 MiB response cap) keeps every `stride`-th sample and the last, says
+/// so in the index, and leaves everything else in the export untouched.
+#[test]
+fn replica_rows_are_thinned_to_a_sample_stride_within_the_budget() {
+    let r = small_run();
+    let full = fresh_dir("stride-full");
+    let full_dir = export::export_run_from(&r, "s", None, &full).unwrap();
+    let full_bytes = fs::metadata(full_dir.join("replicas.jsonl")).unwrap().len();
+    assert!(read(&full.join("runs/index.json")).contains(r#""replica_sample_stride":1"#), "a run that fits keeps every sample");
+
+    let budget = full_bytes / 3;
+    let dir = fresh_dir("stride");
+    let run_dir = export::export_run_bounded(&r, "s", None, &dir, budget).unwrap();
+    let bytes = fs::metadata(run_dir.join("replicas.jsonl")).unwrap().len();
+    assert!(bytes <= budget, "replicas.jsonl is {bytes} bytes over a {budget} budget");
+    assert_eq!(read(&run_dir.join("fleet.jsonl")), read(&full_dir.join("fleet.jsonl")), "the fleet stream is never thinned");
+
+    let index = read(&dir.join("runs/index.json"));
+    let stride: usize = index
+        .split(r#""replica_sample_stride":"#)
+        .nth(1)
+        .and_then(|rest| rest.split(|c: char| !c.is_ascii_digit()).next())
+        .and_then(|d| d.parse().ok())
+        .expect("the index carries the stride");
+    assert!(stride >= 3, "a third of the budget needs a stride of at least 3, got {stride}");
+
+    let n = r.frames.len();
+    let replicas = r.scenario.replicas as usize;
+    let kept: Vec<usize> = (0..n).filter(|&s| export::is_replica_sample(s, n, stride)).collect();
+    assert_eq!(kept[0], 0, "the first sample is kept");
+    assert_eq!(*kept.last().unwrap(), n - 1, "the last sample is kept");
+    let lines: Vec<String> = read(&run_dir.join("replicas.jsonl")).lines().map(String::from).collect();
+    assert_eq!(lines.len(), kept.len() * replicas, "every kept sample carries every replica");
+    for (k, &s) in kept.iter().enumerate() {
+        let t = format!(r#""sim_time_unix_ns":"{}""#, r.fleet_queue.t[s]);
+        for id in 0..replicas {
+            let line = &lines[k * replicas + id];
+            assert!(line.contains(&t), "kept sample {s} replica {id}: {line}");
+            assert!(line.contains(&format!(r#""replica_id":"{id}""#)), "kept sample {s} replica {id}: {line}");
+        }
     }
     for (i, line) in lines.iter().enumerate() {
         let last = i + 1 == lines.len();

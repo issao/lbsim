@@ -426,6 +426,32 @@ await checkAsync('loadRun fetches the four documents relative to runs/ and decod
   return `4 documents, 2 frames, config ${run.config.routing.kind} at ${run.config.workload.arrivalRps} rps`;
 });
 
+check('the index says the replica sample stride, and an index older than the field is stride 1', () => {
+  const runs = replay.decodeRunIndex(JSON.parse(INDEX));
+  eq(runs.map((r) => r.replicaSampleStride), [1, 1, 1], 'no field: stride 1');
+  const withStride = JSON.parse(INDEX.replace('"replicas":32}', '"replicas":32,"replica_sample_stride":6}'));
+  eq(replay.decodeRunIndex(withStride)[0].replicaSampleStride, 6, 'the exporter\'s stride');
+  return 'absent: 1; declared 6: 6';
+});
+
+check('at a stride above 1, frames between sampled instants carry the last sampled rows, never past a stride', () => {
+  const rep = (t: bigint, id: number, queued: number) =>
+    `{"subscription_id":"export","sim_time_unix_ns":"${t}","realtime_factor":0,"row":{"target":{"scope":"SCOPE_REPLICA","replica_id":"${id}"},"values":{"23":${queued}},"distributions":{}},"final":false}`;
+  const t = (i: number) => 1767225600250000000n + BigInt(i) * 250000000n;
+  // Six fleet samples; the exporter kept rows at 0 and 3 (stride 3) and the last (5).
+  const fleet = [0, 1, 2, 3, 4, 5].map((i) => rowAt(ROW_EMPTY, t(i))).join('\n') + '\n';
+  const groups = replay.parseReplicasJsonl([rep(t(0), 0, 1), rep(t(3), 0, 4), rep(t(5), 0, 6)].join('\n'));
+  const frames = replay.parseFleetJsonl(fleet, origin, groups, 3);
+  eq(frames.map((f) => f.replicas[0]?.queuedSeqs ?? -1), [1, 1, 1, 4, 4, 6], 'each frame reads the last sampled instant');
+  // A gap wider than the stride is a gap: the rows at 0 do not reach past frame 2.
+  const sparse = replay.parseFleetJsonl(fleet, origin, replay.parseReplicasJsonl(rep(t(0), 0, 1)), 3);
+  eq(sparse.map((f) => f.replicas.length), [1, 1, 1, 0, 0, 0], 'carried for fewer than a stride, then none');
+  // Stride 1 is the old contract: an instant without rows has none.
+  const one = replay.parseFleetJsonl(fleet, origin, groups, 1);
+  eq(one.map((f) => f.replicas.length), [1, 0, 0, 1, 0, 1], 'stride 1 carries nothing');
+  return 'stride 3: [1,1,1,4,4,6]; sparse: 3 frames then none; stride 1: own rows only';
+});
+
 check('replicas.jsonl fills Frame.replicas: ids and values from the wire, NaN where it is silent', () => {
   const rep = (t: bigint, id: number, queued: number, running: number, kv: number, util: number, step: number, final = false) =>
     `{"subscription_id":"export","sim_time_unix_ns":"${t}","realtime_factor":0,"row":{"target":{"scope":"SCOPE_REPLICA","replica_id":"${id}"},"values":{"8":${step},"20":${util},"21":${kv},"22":${running},"23":${queued}},"distributions":{}},"final":${final}}`;

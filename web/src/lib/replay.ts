@@ -54,6 +54,11 @@ export interface RunIndexEntry {
   simEndUnixNs: bigint;
   sampleIntervalMs: number;
   replicas: number;
+  /**
+   * Every this-many-th fleet sample (and the last) carries per-replica rows in `replicas.jsonl`;
+   * 1 when the run fit the exporter's budget whole, and for an index older than the field.
+   */
+  replicaSampleStride: number;
   /** The demo group, i.e. the run id's directory (`1-routing`), or `''` for a flat id. */
   group: string;
   /** The run id's last segment, what the picker shows inside a group. */
@@ -77,6 +82,7 @@ export function decodeRunIndex(v: Json): RunIndexEntry[] {
       simEndUnixNs: u64(e.sim_end_unix_ns, `${where}.sim_end_unix_ns`),
       sampleIntervalMs: dbl(e.sample_interval_ms, `${where}.sample_interval_ms`),
       replicas: i32(e.replicas, `${where}.replicas`),
+      replicaSampleStride: e.replica_sample_stride === undefined ? 1 : Math.max(1, i32(e.replica_sample_stride, `${where}.replica_sample_stride`)),
       group: slash === -1 ? '' : runId.slice(0, slash),
       label: slash === -1 ? runId : runId.slice(slash + 1),
     };
@@ -188,7 +194,7 @@ export async function loadRun(entry: RunIndexEntry, f: FetchLike = defaultFetch(
   const result = decodeRunResult(resultJson, `${entry.runId}/result.json`);
   const { config, unmapped } = configFromScenarioText(scenarioText);
   const replicas = replicasText === null ? new Map() : parseReplicasJsonl(replicasText);
-  const frames = parseFleetJsonl(fleetText, entry.simStartUnixNs, replicas);
+  const frames = parseFleetJsonl(fleetText, entry.simStartUnixNs, replicas, entry.replicaSampleStride);
   if (frames.length === 0) throw new Error(`${entry.runId}/fleet.jsonl: no samples`);
   return { entry, status, result, scenarioText, config, unmapped, frames };
 }
@@ -242,15 +248,32 @@ function parseUpdates(text: string, name: string): SubscriptionUpdate[] {
  * `fleet.jsonl`: one SubscriptionUpdate per line, frames in file order. `replicas` is
  * `parseReplicasJsonl`'s grouping; a frame takes the replica rows recorded at its own instant, and
  * an export without them (older than U23) gives every frame an empty fleet.
+ *
+ * `stride` is the index's `replica_sample_stride`: the exporter thins a large run's rows to every
+ * stride-th sample (and the last) to keep `replicas.jsonl` under its budget, so at a stride above 1
+ * a frame with no rows of its own shows the last sampled instant's rows, for fewer than a stride
+ * of frames. At stride 1 an instant without rows has none: that is a gap, not a cadence.
  */
 export function parseFleetJsonl(
   text: string,
   originUnixNs: bigint,
-  replicas: ReadonlyMap<bigint, SubscriptionUpdate[]> = new Map()
+  replicas: ReadonlyMap<bigint, SubscriptionUpdate[]> = new Map(),
+  stride = 1
 ): ReplayFrame[] {
-  return parseUpdates(text, 'fleet.jsonl').map((u, i) =>
-    frameFromUpdate(u, originUnixNs, i, replicas.get(u.simTimeUnixNs) ?? [])
-  );
+  let carried: SubscriptionUpdate[] = [];
+  let behind = 0;
+  return parseUpdates(text, 'fleet.jsonl').map((u, i) => {
+    const own = replicas.get(u.simTimeUnixNs);
+    if (own !== undefined) {
+      carried = own;
+      behind = 0;
+    } else if (stride > 1 && behind + 1 < stride) {
+      behind++;
+    } else {
+      carried = [];
+    }
+    return frameFromUpdate(u, originUnixNs, i, carried);
+  });
 }
 
 /**

@@ -239,14 +239,15 @@ runs/<group>/<run>/scenario.txt      the resolved flat scenario
 runs/<group>/<run>/result.json       metrics.proto RunResult, verbatim: run_id, seed, event_count,
                                      state_checksum (the fingerprint), overall Scorecard
 runs/<group>/<run>/fleet.jsonl       one SubscriptionUpdate per sample instant, SCOPE_FLEET, last has final
-runs/<group>/<run>/replicas.jsonl    one SubscriptionUpdate per replica per sample, SCOPE_REPLICA, ordered by
-                                     sample then replica_id, same instants as fleet.jsonl, last has final
+runs/<group>/<run>/replicas.jsonl    one SubscriptionUpdate per replica per sampled instant, SCOPE_REPLICA,
+                                     ordered by sample then replica_id; every replica_sample_stride-th
+                                     fleet.jsonl instant and the last one, last has final
 ```
 
 Settled while building it, and binding on the server too:
 
 - `index.json` is the one document with no proto: `{run_id, name, routing, scenario_file, sim_start_unix_ns,
-  sim_end_unix_ns, sample_interval_ms, replicas}`.
+  sim_end_unix_ns, sample_interval_ms, replicas, replica_sample_stride}`.
 - A gauge that is undefined in a window (SLO attainment with no completions, imbalance on an idle fleet)
   and a distribution with `count` 0 are **omitted** from the maps, never written as 0.
 - `METRIC_KV_UTILIZATION` is a **fraction** on the wire; the engine's series is a percentage.
@@ -257,3 +258,11 @@ Settled while building it, and binding on the server too:
 - Per-replica rows (`SCOPE_REPLICA`) come from `RunResult.frames[].replicas` and go to `replicas.jsonl`,
   a file of their own so a reader that wants only the fleet charts never parses them. Absent in exports
   older than U23; a dashboard treats that as a run with no replica breakdown, not an error.
+- `replicas.jsonl` is bounded to 8 MiB per run (`export::REPLICA_ROWS_BUDGET_BYTES`). A run that fits
+  carries every fleet sample; one that does not carries every `replica_sample_stride`-th sample from the
+  first, plus the last, with the smallest stride that fits, and the index says which. Cloud Run refuses
+  a response with a `Content-Length` above 32 MiB, and the 256-replica demos had reached 40 MB. A
+  dashboard reads a frame with no rows of its own as carrying the last sampled instant's rows while it
+  is fewer than a stride behind; an index without the field is stride 1, which is what those exports
+  were. The server also sends any static file above 4 MiB as `Transfer-Encoding: chunked`
+  (`CHUNKED_THRESHOLD_BYTES`), so no document can hit the cap whatever its size.

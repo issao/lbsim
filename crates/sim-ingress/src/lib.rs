@@ -63,6 +63,14 @@ const MAX_REQUEST_BYTES: usize = 16 * 1024;
 /// A `StartRun` body is a scenario file plus overrides, a few kilobytes; this is the ceiling on any
 /// request body, well above that and well below anything that could exhaust the box.
 const MAX_BODY_BYTES: usize = 1024 * 1024;
+/// A static file above this size goes out with `Transfer-Encoding: chunked` instead of a
+/// `Content-Length`. Cloud Run caps a response that declares its length at 32 MiB and answers the
+/// client with a 500 and an empty body past it, which is how `replicas.jsonl` at 256 replicas took
+/// the replay dashboard down on 2026-09-08 while every smaller document served. A chunked response
+/// has no such cap. 4 MiB is far enough under the cap that no file can reach it, and above every
+/// document a dashboard load fetches apart from the per-replica rows.
+pub const CHUNKED_THRESHOLD_BYTES: u64 = 4 * 1024 * 1024;
+const CHUNK_BYTES: usize = 64 * 1024;
 
 pub fn serve(dir: &str, port: u16) -> Result<(), String> {
     let root = std::fs::canonicalize(dir).map_err(|e| format!("{dir}: {e}"))?;
@@ -172,17 +180,18 @@ fn handle(mut stream: TcpStream, server: &Server) -> std::io::Result<()> {
     let Some(file) = resolve(&server.root, path_only) else {
         return respond(stream, 404, "text/plain", b"not found");
     };
-    let mut body = Vec::new();
-    match std::fs::File::open(&file) {
-        Ok(mut f) => {
-            f.read_to_end(&mut body)?;
-        }
-        Err(_) => return respond(stream, 404, "text/plain", b"not found"),
-    }
+    let Ok(mut f) = std::fs::File::open(&file) else {
+        return respond(stream, 404, "text/plain", b"not found");
+    };
     let ctype = content_type(&file);
     if method == "HEAD" {
-        body.clear();
+        return respond(stream, 200, ctype, b"");
     }
+    if f.metadata()?.len() > CHUNKED_THRESHOLD_BYTES {
+        return respond_chunked(stream, ctype, &mut f);
+    }
+    let mut body = Vec::new();
+    f.read_to_end(&mut body)?;
     respond(stream, 200, ctype, &body)
 }
 
@@ -288,6 +297,30 @@ pub(crate) fn respond(mut stream: TcpStream, code: u16, ctype: &str, body: &[u8]
     stream.flush()
 }
 
+/// A 200 whose body is streamed from `file` as HTTP/1.1 chunks: the head, then `CHUNK_BYTES`-sized
+/// chunks as `<hex length>\r\n<bytes>\r\n`, then the terminating `0\r\n\r\n`. See
+/// `CHUNKED_THRESHOLD_BYTES` for why a large file is never sent with a `Content-Length`.
+fn respond_chunked(stream: TcpStream, ctype: &str, file: &mut std::fs::File) -> std::io::Result<()> {
+    let mut out = std::io::BufWriter::with_capacity(CHUNK_BYTES + 64, stream);
+    write!(
+        out,
+        "HTTP/1.1 200 OK\r\nContent-Type: {ctype}\r\nTransfer-Encoding: chunked\r\n\
+         X-Content-Type-Options: nosniff\r\nConnection: close\r\n\r\n"
+    )?;
+    let mut buf = vec![0u8; CHUNK_BYTES];
+    loop {
+        let n = file.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        write!(out, "{n:x}\r\n")?;
+        out.write_all(&buf[..n])?;
+        out.write_all(b"\r\n")?;
+    }
+    out.write_all(b"0\r\n\r\n")?;
+    out.flush()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -312,5 +345,66 @@ mod tests {
     fn jsonl_is_served_as_text() {
         // U55: fleet.jsonl was falling through to application/octet-stream.
         assert_eq!(content_type(Path::new("fleet.jsonl")), "text/plain; charset=utf-8");
+    }
+
+    /// One GET over TCP, the whole response read to EOF (the server closes every connection), the
+    /// body de-chunked when the head says it is chunked. Returns the headers and the body.
+    fn get_whole(addr: std::net::SocketAddr, path: &str) -> (Vec<(String, String)>, Vec<u8>) {
+        let mut stream = TcpStream::connect(addr).unwrap();
+        stream.set_read_timeout(Some(std::time::Duration::from_secs(60))).unwrap();
+        write!(stream, "GET {path} HTTP/1.1\r\nHost: localhost\r\n\r\n").unwrap();
+        let mut raw = Vec::new();
+        stream.read_to_end(&mut raw).unwrap();
+        let head_end = raw.windows(4).position(|w| w == b"\r\n\r\n").expect("end of head");
+        let head = std::str::from_utf8(&raw[..head_end]).unwrap();
+        let mut lines = head.split("\r\n");
+        assert!(lines.next().unwrap().starts_with("HTTP/1.1 200 "), "{head}");
+        let headers: Vec<(String, String)> = lines
+            .filter_map(|l| l.split_once(':'))
+            .map(|(k, v)| (k.trim().to_ascii_lowercase(), v.trim().to_string()))
+            .collect();
+        let mut rest = &raw[head_end + 4..];
+        if !headers.iter().any(|(k, v)| k == "transfer-encoding" && v == "chunked") {
+            return (headers, rest.to_vec());
+        }
+        let mut body = Vec::new();
+        loop {
+            let eol = rest.windows(2).position(|w| w == b"\r\n").expect("chunk size line");
+            let n = usize::from_str_radix(std::str::from_utf8(&rest[..eol]).unwrap(), 16).unwrap();
+            rest = &rest[eol + 2..];
+            if n == 0 {
+                assert_eq!(rest, b"\r\n", "nothing follows the terminating chunk");
+                return (headers, body);
+            }
+            body.extend_from_slice(&rest[..n]);
+            assert_eq!(&rest[n..n + 2], b"\r\n", "every chunk ends in CRLF");
+            rest = &rest[n + 2..];
+        }
+    }
+
+    #[test]
+    fn a_large_static_file_is_chunked_and_arrives_whole() {
+        let dir = test_scratch::scratch("chunked");
+        // 40 MB, above Cloud Run's 32 MiB cap on a response with a length, in a pattern that is
+        // not periodic at the chunk size, so a dropped, repeated or reordered chunk changes it.
+        let big: Vec<u8> = (0..40_000_000u32).map(|i| (i.wrapping_mul(2_654_435_761) >> 24) as u8).collect();
+        std::fs::write(dir.join("replicas.jsonl"), &big).unwrap();
+        std::fs::write(dir.join("small.json"), b"{}\n").unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = Arc::new(Server::new(dir.to_path_buf(), 3600 * 1_000_000_000));
+        std::thread::spawn(move || serve_on(server, listener));
+
+        let (headers, body) = get_whole(addr, "/replicas.jsonl");
+        assert!(headers.iter().any(|(k, v)| k == "transfer-encoding" && v == "chunked"), "{headers:?}");
+        assert!(!headers.iter().any(|(k, _)| k == "content-length"), "{headers:?}");
+        assert_eq!(body.len(), big.len());
+        assert!(body == big, "the de-chunked body is the file");
+
+        // Below the threshold nothing changes: a length, no chunking.
+        let (headers, body) = get_whole(addr, "/small.json");
+        assert!(headers.iter().any(|(k, v)| k == "content-length" && v == "3"), "{headers:?}");
+        assert!(!headers.iter().any(|(k, _)| k == "transfer-encoding"), "{headers:?}");
+        assert_eq!(body, b"{}\n");
     }
 }
