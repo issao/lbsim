@@ -10,9 +10,11 @@
     "routing.kind": "prefix_affinity",
     "routing.maxLoadRatio": 1.05,
     "routing.fallbackChoices": 2,
-    "workload.arrivalRps": 95,
-    "workload.promptMean": 2400
+    "workload.arrivalRps": 560,
+    "workload.promptMean": 1200
   },
+  "run": "14-affinity/affinity-off",
+  "compare": "14-affinity/affinity-sticky",
   "steps": [
     {
       "at_sim_s": 14,
@@ -30,7 +32,9 @@
     {
       "at_sim_s": 40,
       "speed": 2,
-      "set": { "routing.maxLoadRatio": 2.2 },
+      "set": {
+        "routing.maxLoadRatio": 2.2
+      },
       "control_tab": "policies",
       "observe_tab": "utilization",
       "highlight": "capacity",

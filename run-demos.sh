@@ -64,5 +64,9 @@ echo; echo "== 13. herding gets worse as the fleet grows: least_requests over 32
 $S sweep scenarios/herd_fleet.txt --over replicas=32,64,128,256,512 \
            --out out/13-herd-fleet.html
 
+echo; echo "== 14. prefix affinity against load spreading: p2c, then affinity at max load ratio 1.05 and 2.2 =="
+$S compare scenarios/affinity_off.txt scenarios/affinity_spread.txt scenarios/affinity_sticky.txt \
+           --out out/14-affinity.html
+
 echo; echo "reports in out/"
 echo "for machine-readable telemetry, add: --telemetry out/NAME.tele [--telemetry-budget-mb N]"

@@ -1,0 +1,63 @@
+# Dynamic 9 of docs/scope-today.md: prefix affinity against load spreading. A cache hit skips the
+# shared prefix's prefill; routing a root's traffic to the replicas already holding it earns hits at
+# the cost of concentrating load. The three affinity_* scenarios differ from route_p2c.txt only in
+# the prefix topology below (identical across the three) and in routing / affinity_max_load_ratio,
+# same seed, so a difference in outcome is a difference in policy.
+#
+# The topology is a [GUESS] per docs/calibration.md section 9.1: 100 roots of 800 tokens, Zipf
+# s = 1.0 popularity, 10 % of requests forking an existing session, a prefix cache of about 30 % of
+# each replica's KV. Nothing here is measured; sweep it before believing a number from it.
+# affinity_sticky: prefix_affinity that tolerates a holder more than twice as loaded as the fleet
+# mean before falling back, so hits are maximised and the imbalance is what it costs.
+name = affinity_sticky
+seed = 20260906
+duration_s = 120
+warmup_s = 15
+
+# Fleet. A 70B-class model on 8xH100 per replica; step_base_ms is calibrated in
+# bench/validate_epochs.py against a published batch-1 measurement.
+replicas = 256
+# Sequence cap and token budget both present, because which one binds is the point. At a ~3.2k mean
+# context the token budget allows about 420 sequences, so the count cap binds for ordinary traffic
+# and the token budget binds once long prompts arrive.
+max_batch = 256
+kv_capacity_tokens = 1370000
+# Weight read for a 70B model on 8xH100 at 70% bandwidth utilization, 7.46 ms, plus 2.75 ms of fixed
+# overhead. With the bandwidth term below this reproduces bench/validate_epochs.py to within 0.05 ms.
+step_base_ms = 10.2
+step_per_seq_ms = 0.0
+step_per_kv_ktoken_ms = 0.0175
+prefill_tokens_per_s = 28286
+step_token_budget = 1024
+max_queue = 400
+
+# Workload. A mixture, not a single distribution: interactive chat plus long-document work in the
+# same queue. The mixture is what creates head-of-line blocking, so a unimodal load would hide the
+# phenomenon being studied.
+arrival_rps = 560
+prompt_mean = 1200
+prompt_cv = 1.2
+output_mean = 300
+output_cv = 1.5
+long_probability = 0.08
+long_prompt_mean = 24000
+long_output_mean = 400
+
+# Prefix topology (shared by affinity_off / affinity_spread / affinity_sticky).
+prefix_roots = 100
+prefix_root_tokens = 800
+prefix_zipf_s = 1.0
+session_fork_rate = 0.1
+prefix_cache_tokens = 400000
+
+routing = prefix_affinity
+affinity_max_load_ratio = 2.2
+telemetry_interval_ms = 1000
+telemetry_delay_ms = 200
+
+client_timeout_s = 60
+max_attempts = 1
+ttft_slo_ms = 2000
+itl_slo_ms = 80
+e2e_slo_s = 60
+sample_interval_ms = 250
