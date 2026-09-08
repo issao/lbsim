@@ -69,17 +69,13 @@ export function Showcase() {
         <MockTag what="mock, replay or live" />
       </div>
       <p className="note" style={{ maxWidth: '80ch', marginTop: 0 }}>
-        One card per dynamic in <code>docs/ARCHITECTURE.md</code> section 12, stack ranked as it is there. Clicking a
-        card with a script starts a scripted walkthrough: the run advances, pauses at the moments that matter, says what
-        is interesting, and offers resume. When an Ingress server is on, the script runs live on it. Otherwise a script
-        that names a recorded run plays that recording when the runs index is served, and drives the mock engine when
-        it does not. The scripts are JSON files in{' '}
-        <code>web/public/walkthroughs/</code>, loaded at runtime; the format is in{' '}
-        <a href={`${import.meta.env.BASE_URL}walkthroughs/schema.md`}>schema.md</a>.
+        One card per dynamic, stack ranked. A card with a walkthrough steps through a run: it advances, pauses at the
+        moments that matter, and says what to look at. With a server the walkthrough drives a live run; otherwise it
+        plays a recording, or the mock engine when none is served.
       </p>
       {error ? <p style={{ color: 'var(--critical)' }}>{error}</p> : null}
       {!index ? (
-        <p className="note">loading the card index…</p>
+        <p className="note">loading…</p>
       ) : (
         <>
           {[1, 2, 3].map((phase) => (
@@ -97,13 +93,13 @@ export function Showcase() {
                       className="card"
                       disabled={!c.script}
                       onClick={() => open(c)}
-                      title={c.script ? 'run the scripted walkthrough' : 'no script yet'}
+                      title={c.script ? 'run the walkthrough' : 'no walkthrough yet'}
                     >
                       <span className="card-num">dynamic {c.dynamic}</span>
                       <span className="card-title">{c.title}</span>
                       <p className="card-body">{c.summary}</p>
                       <span className="card-foot">
-                        <span className="phase">{c.script ? 'walkthrough' : 'not scripted yet'}</span>
+                        <span className="phase">{c.script ? 'walkthrough' : 'coming'}</span>
                         <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                           needs: {c.requires}
                         </span>
@@ -172,7 +168,7 @@ function Walkthrough({ script, onExit }: { script: WalkthroughScript; onExit: ()
       if (d.state === 'server') setSource({ kind: 'server' });
       else if (d.state === 'replay' && wanted && d.runs.some((r) => r.runId === wanted)) setSource({ kind: 'replay', run: wanted });
       else if (d.state === 'replay' && wanted)
-        setSource({ kind: 'mock', note: `recording ${wanted} is not in the served runs index; playing the mock instead` });
+        setSource({ kind: 'mock', note: `no recording of ${wanted} is served; showing the mock engine instead` });
       else setSource({ kind: 'mock' });
     });
     return () => {

@@ -31,7 +31,7 @@
       "highlight": "queue",
       "title": "During the spike, this run has no retry budget",
       "body": [
-        "This recording is the unbudgeted policy: 3 retry attempts, no cap on what fraction of traffic may be retries. Each timeout during the spike adds load precisely when the fleet is least able to absorb it.",
+        "This run is the unbudgeted policy: 3 retry attempts, no cap on what fraction of traffic may be retries. Each timeout during the spike adds load precisely when the fleet is least able to absorb it.",
         "A request that times out after twenty seconds has already consumed twenty seconds of device time producing tokens nobody will read — retries here are far more expensive than in a stateless service."
       ],
       "look_for": "Queue depth climbing well past its pre-spike level of 2 while the retry count in the corner rises fast."
