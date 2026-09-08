@@ -2,12 +2,18 @@ import { useEffect, useMemo, useState } from 'react';
 import type { ReplayRunHandle, RunHandle } from '../../lib/useRun';
 import { useServerTraces } from '../../lib/useServerRun';
 import { loadTraces } from '../../lib/replay';
-import { relSeconds, type OutcomeName, type TraceBucketName, type WireRequestTrace } from '../../lib/api';
+import type { OutcomeName, WireRequestTrace } from '../../lib/api';
 import { OUTCOMES, TRACE_BUCKETS, type Outcome, type TraceBucket } from '../../lib/types';
+import { shapeTraceRows, sortTraceRows, type TraceRow, type TraceSortKey } from '../../lib/traceRows';
 import { Waterfall } from '../../components/charts/Waterfall';
-import { fmtMs } from '../../lib/format';
+import { fmtMs, fmtTokens } from '../../lib/format';
 
-const BUCKET_LABEL: Record<TraceBucketName, TraceBucket | null> = {
+/** The table's own row height, so the wrapper's fixed height (`TABLE_VISIBLE_ROWS` of them, plus
+ * the header) is a CSS constant rather than something measured after the fact. */
+const ROW_H = 20;
+const TABLE_VISIBLE_ROWS = 10;
+
+const BUCKET_LABEL: Record<TraceRow['bucket'], TraceBucket | null> = {
   TRACE_BUCKET_UNSPECIFIED: null,
   TRACE_BUCKET_P50: 'p50',
   TRACE_BUCKET_P90: 'p90',
@@ -15,7 +21,7 @@ const BUCKET_LABEL: Record<TraceBucketName, TraceBucket | null> = {
   TRACE_BUCKET_P999: 'p99.9',
 };
 
-function outcomeLabel(o: OutcomeName): Outcome | null {
+function outcomeLabel(o: TraceRow['outcome']): Outcome | null {
   return o === 'OUTCOME_UNSPECIFIED' ? null : (o.slice('OUTCOME_'.length) as Outcome);
 }
 
@@ -26,14 +32,22 @@ function originOf(run: RunHandle): bigint | null {
   return origin ?? null;
 }
 
+const SORT_LABEL: Record<TraceSortKey, string> = { arrived: 'arrived', ttft: 'ttft', e2e: 'e2e' };
+
 /**
- * Sampled request journeys, as the engine recorded them: a table of the newest, filtered by outcome
- * and latency bucket, and the selected one span by span. Live, the server is polled; on a
- * recording, `traces.jsonl` is read once. Nothing here is computed in the browser beyond units.
+ * Sampled request journeys, as the engine recorded them. Per Issao: "for the traces view, show
+ * the table with sampled requests at the top" — one row per sample, sortable by the latency
+ * columns, fixed at `TABLE_VISIBLE_ROWS` rows tall with its own scroll (U99/U107's rule: the page
+ * and the panel never jump as rows stream in). The selected row's span timeline and resource-state
+ * detail render below the table, never above or beside it. Live, the server is polled; on a
+ * recording, `traces.jsonl` is read once. Nothing here is computed in the browser beyond units,
+ * sorting and filtering.
  */
 export function Traces({ run }: { run: RunHandle }) {
   const [outcome, setOutcome] = useState<Outcome | ''>('');
   const [bucket, setBucket] = useState<TraceBucket | ''>('');
+  const [sort, setSort] = useState<TraceSortKey | null>(null);
+  const [dir, setDir] = useState<'asc' | 'desc'>('desc');
   const [selected, setSelected] = useState<bigint | null>(null);
 
   const liveRunId = run.source?.kind === 'server' && run.source.runId ? run.source.runId : null;
@@ -54,18 +68,31 @@ export function Traces({ run }: { run: RunHandle }) {
   }, [replayRunId]);
 
   const origin = originOf(run);
-  const rows = useMemo(() => {
-    let all: WireRequestTrace[];
-    if (liveRunId) all = live.traces;
-    else if (replayRunId && replay?.runId === replayRunId && replay.traces) {
+  const traces = useMemo(() => {
+    if (liveRunId) return live.traces;
+    if (replayRunId && replay?.runId === replayRunId && replay.traces) {
       // The file is in the engine's completion order; the table reads newest first like the server.
-      all = replay.traces.slice().sort((a, b) => (a.record.finishedAtUnixNs < b.record.finishedAtUnixNs ? 1 : a.record.finishedAtUnixNs > b.record.finishedAtUnixNs ? -1 : 0));
-    } else all = [];
-    return all.filter((t) => (outcome === '' || outcomeLabel(t.record.outcome) === outcome) && (bucket === '' || BUCKET_LABEL[t.bucket] === bucket));
-  }, [liveRunId, live.traces, replayRunId, replay, outcome, bucket]);
+      return replay.traces
+        .slice()
+        .sort((a, b) => (a.record.finishedAtUnixNs < b.record.finishedAtUnixNs ? 1 : a.record.finishedAtUnixNs > b.record.finishedAtUnixNs ? -1 : 0));
+    }
+    return [];
+  }, [liveRunId, live.traces, replayRunId, replay]);
 
-  const current = rows.find((t) => t.record.id === selected) ?? rows[0] ?? null;
+  const rows = useMemo(() => {
+    const shaped = shapeTraceRows(traces, origin);
+    const filtered = shaped.filter(
+      (r) => (outcome === '' || outcomeLabel(r.outcome) === outcome) && (bucket === '' || BUCKET_LABEL[r.bucket] === bucket)
+    );
+    return sort === null ? filtered : sortTraceRows(filtered, sort, dir);
+  }, [traces, origin, outcome, bucket, sort, dir]);
 
+  // The selection is an id, not a row reference, so it survives a new page of samples arriving:
+  // as long as the id is still in the (bounded) set the source carries, the same row stays picked.
+  const current = rows.find((r) => r.id === selected) ?? rows[0] ?? null;
+  const currentTrace = current ? traces.find((t) => t.record.id === current.id) ?? null : null;
+
+  const rate = '1 in 20 requests (5%)';
   let note: string | null = null;
   if (!liveRunId && !replayRunId) note = 'no run';
   else if (liveRunId && live.error) note = `traces: ${live.error}`;
@@ -73,7 +100,26 @@ export function Traces({ run }: { run: RunHandle }) {
   else if (replayRunId && replay?.runId !== replayRunId) note = 'traces: loading traces.jsonl';
   else if (replayRunId && replay?.error) note = `traces: ${replay.error}`;
   else if (replayRunId && replay?.traces === null) note = 'traces: this recording carries no traces.jsonl';
-  else if (rows.length === 0) note = liveRunId ? 'traces: none sampled yet (1 in 20 requests is kept; the first appear with the first completions)' : 'traces: none match';
+  else if (traces.length === 0) note = `no sampled requests yet — the engine keeps ${rate}${liveRunId ? '; the first appear with the first completions' : ''}`;
+  else if (rows.length === 0) note = 'traces: none match the filter';
+
+  const header = (key: TraceSortKey, label: string) => (
+    <th
+      key={key}
+      aria-sort={sort === key ? (dir === 'desc' ? 'descending' : 'ascending') : undefined}
+      title="sortable"
+      onClick={() => {
+        if (sort === key) setDir(dir === 'desc' ? 'asc' : 'desc');
+        else {
+          setSort(key);
+          setDir('desc');
+        }
+      }}
+    >
+      {label}
+      {sort === key ? (dir === 'desc' ? ' ↓' : ' ↑') : ''}
+    </th>
+  );
 
   return (
     <div className="traces" id="trace-list">
@@ -102,7 +148,8 @@ export function Traces({ run }: { run: RunHandle }) {
         </label>
         <span className="note" style={{ margin: 0 }}>
           {rows.length} sampled request{rows.length === 1 ? '' : 's'}
-          {liveRunId ? ', newest first, polled every 2 s' : ''}
+          {liveRunId ? ', polled every 2 s' : ''}
+          {sort ? `, sorted by ${SORT_LABEL[sort]} ${dir === 'desc' ? 'high to low' : 'low to high'}` : ', newest first'}
         </span>
       </div>
       {note ? (
@@ -110,48 +157,55 @@ export function Traces({ run }: { run: RunHandle }) {
           {note}
         </p>
       ) : null}
-      {current ? <Waterfall key={current.record.id.toString()} trace={current} /> : null}
       {rows.length > 0 ? (
-        <table className="data" style={{ marginTop: 8 }}>
-          <thead>
-            <tr>
-              <th>id</th>
-              <th>outcome</th>
-              <th>bucket</th>
-              <th>tenant</th>
-              <th>arrived</th>
-              <th>queue wait</th>
-              <th>ttft</th>
-              <th>e2e</th>
-              <th>replica</th>
-              <th>spans</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((t) => {
-              const r = t.record;
-              const b = BUCKET_LABEL[t.bucket];
-              const o = outcomeLabel(r.outcome);
-              const finished = r.outcome === 'OUTCOME_OK' || r.outcome === 'OUTCOME_OK_SLO_VIOLATED';
-              return (
-                <tr key={r.id.toString()} className={current && current.record.id === r.id ? 'sel' : ''} onClick={() => setSelected(r.id)} style={{ cursor: 'pointer' }}>
-                  <td className="n">{r.id.toString()}</td>
-                  <td>{o ? o.toLowerCase() : '—'}</td>
-                  <td>{b ?? '—'}</td>
-                  <td className="n">{r.tenantId.toString()}</td>
-                  <td className="n">{origin === null ? '—' : `${relSeconds(r.arrivedAtUnixNs, origin).toFixed(3)} s`}</td>
-                  <td className="n">{fmtMs(Number(r.queueWaitNs) / 1e6)}</td>
-                  <td className="n">{r.ttftNs > 0n ? fmtMs(Number(r.ttftNs) / 1e6) : '—'}</td>
-                  <td className="n">{r.e2eNs > 0n ? fmtMs(Number(r.e2eNs) / 1e6) : '—'}</td>
-                  <td className="n" data-replica={finished ? r.replicaId.toString() : undefined}>
-                    {finished ? r.replicaId.toString() : '—'}
-                  </td>
-                  <td className="n">{t.spans.length}</td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+        <div className="trace-table-wrap" style={{ maxHeight: (TABLE_VISIBLE_ROWS + 1) * ROW_H + 2, overflowY: 'auto' }}>
+          <table className="data">
+            <thead>
+              <tr>
+                <th>id</th>
+                <th>bucket</th>
+                {header('arrived', 'arrived')}
+                {header('ttft', 'ttft')}
+                {header('e2e', 'e2e')}
+                <th>output tok</th>
+                <th>outcome</th>
+                <th>replica</th>
+                <th>spans</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r) => {
+                const b = BUCKET_LABEL[r.bucket];
+                const o = outcomeLabel(r.outcome);
+                return (
+                  <tr
+                    key={r.id.toString()}
+                    className={current && current.id === r.id ? 'sel' : ''}
+                    onClick={() => setSelected(r.id)}
+                    style={{ cursor: 'pointer', height: ROW_H }}
+                  >
+                    <td className="n">{r.id.toString()}</td>
+                    <td>{b ?? '—'}</td>
+                    <td className="n">{r.arrivedS === null ? '—' : `${r.arrivedS.toFixed(3)} s`}</td>
+                    <td className="n">{r.ttftMs === null ? '—' : fmtMs(r.ttftMs)}</td>
+                    <td className="n">{r.e2eMs === null ? '—' : fmtMs(r.e2eMs)}</td>
+                    <td className="n">{r.outputTokens > 0 ? fmtTokens(r.outputTokens) : '—'}</td>
+                    <td>{o ? o.toLowerCase() : '—'}</td>
+                    <td className="n" data-replica={r.replicaId !== null ? r.replicaId.toString() : undefined}>
+                      {r.replicaId !== null ? r.replicaId.toString() : '—'}
+                    </td>
+                    <td className="n">{r.spanCount}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
+      {currentTrace ? (
+        <div className="trace-detail" style={{ marginTop: 8 }}>
+          <Waterfall key={current!.id.toString()} trace={currentTrace} />
+        </div>
       ) : null}
     </div>
   );

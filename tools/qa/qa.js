@@ -215,6 +215,25 @@ const finalLine = extraFail => {
       const strays = ready === null ? ids : ids.filter(id => !(Number.isInteger(id) && id >= 0 && id < ready));
       check('traces: live run lists sampled requests with real replica ids (U104)', Boolean(seen) && ready !== null && ready > 0 && strays.length === 0,
         seen ? `${seen} rows, ${ids.length} replica ids shown, ${ready} ready${strays.length ? `, strays ${strays.slice(0, 5).join(',')}` : ''}` : ready === null ? 'no ready tile on the Cluster tab' : 'no trace row within 10 s');
+
+      // Issao: "for the traces view, show the table with sampled requests at the top." The table
+      // renders above the detail (never below or beside it), and clicking a row draws that
+      // request's span timeline underneath.
+      if (seen) {
+        const box = async sel => page.$eval(sel, el => el.getBoundingClientRect()).catch(() => null);
+        const tableBox = await box('#trace-list table.data');
+        const rowCount = await page.$$eval('#trace-list tbody tr', trs => trs.length).catch(() => 0);
+        // Row 2 if there is one, so the detail is proven to follow the click rather than showing
+        // whichever row was already selected by default.
+        await page.click(`#trace-list tbody tr:nth-child(${Math.min(2, rowCount)})`).catch(() => null);
+        const detailBox = await box('#trace-list .trace-detail');
+        const spans = await page.$$eval('#trace-list .trace-detail svg', els => els.length).catch(() => 0);
+        check('traces: the sample table renders above the span timeline, not below or beside it',
+          Boolean(tableBox && detailBox && tableBox.top < detailBox.top && spans > 0),
+          tableBox && detailBox
+            ? `table top ${tableBox.top.toFixed(0)}, detail top ${detailBox.top.toFixed(0)}, ${spans} span timeline(s)`
+            : `table ${JSON.stringify(tableBox)}, detail ${JSON.stringify(detailBox)}`);
+      }
     }
     await noInvented(page, 'dashboard: no invented numbers on live (U95b)');
 
