@@ -7,6 +7,7 @@
 //! that trip makes a saved scenario un-reproducible.
 
 use lbsim::scenario::Scenario;
+use lbsim::sim;
 
 /// Every key `parse` accepts, which is also every key `to_text` must emit.
 const KEYS: [&str; 57] = [
@@ -288,4 +289,46 @@ fn rated_capacity_scales_with_the_fleet_and_the_cost_of_a_request() {
     s.output_mean = Scenario::default().output_mean;
     s.prompt_mean *= 4.0;
     assert!(s.rated_rps() < base, "quadrupling prompt length did not reduce rated capacity");
+}
+
+/// The event ceiling scales with the run instead of being a fixed constant, so a legitimately
+/// large fleet does not trip a tripwire meant for a runaway rate. A modest scenario should still
+/// land on the 50M floor.
+#[test]
+fn event_ceiling_floors_at_the_constant_for_a_modest_scenario() {
+    let sc = Scenario::default();
+    assert_eq!(sim::event_ceiling(&sc), 50_000_000);
+}
+
+/// A fleet and load big enough to matter (10,000 replicas at 25,000 rps for 120 s) both validates
+/// -- `Sim::new` reaches the run loop -- and raises the ceiling well past the 50M floor.
+#[test]
+fn event_ceiling_scales_up_and_a_large_fleet_still_validates() {
+    let sc = Scenario { replicas: 10_000, arrival_rps: 25_000.0, duration_s: 120.0, ..Scenario::default() };
+    assert!(
+        sim::Sim::new(&sc).is_ok(),
+        "a 10,000-replica, 25,000 rps, 120 s scenario should validate and reach the run loop"
+    );
+    assert!(
+        sim::event_ceiling(&sc) >= 120_000_000 + 240_000_000,
+        "ceiling {} should be at least 40 events/request x 25,000 rps x 120s (120,000,000) plus \
+         200 step-events/replica-second x 10,000 replicas x 120s (240,000,000)",
+        sim::event_ceiling(&sc)
+    );
+}
+
+/// A short run against a 10,000-replica fleet actually completes -- the point of the scaled
+/// ceiling is that this no longer trips the old fixed 50M tripwire partway through.
+#[test]
+fn a_short_run_against_a_ten_thousand_replica_fleet_completes() {
+    let sc = Scenario {
+        replicas: 10_000,
+        arrival_rps: 25_000.0,
+        duration_s: 3.0,
+        warmup_s: 1.0,
+        ..Scenario::default()
+    };
+    if let Err(why) = sim::run(&sc) {
+        panic!("expected a short 10,000-replica run to complete: {why}");
+    }
 }
