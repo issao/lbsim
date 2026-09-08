@@ -1,0 +1,94 @@
+{
+  "id": "kv-tiering",
+  "dynamic": 13,
+  "title": "KV memory tiering, DRAM and SSD",
+  "summary": "The spiral's evicted context given somewhere to go: a cluster DRAM pool a quarter the size of what it would swap, an SSD pool under it at a single drive's bandwidth, and then one shared fabric that every migration has to cross.",
+  "scenario": {
+    "name": "showcase: kv tiering",
+    "seed": 20260906,
+    "durationS": 120,
+    "fleet.replicas": 4,
+    "fleet.maxBatch": 64,
+    "fleet.kvTokensPerReplica": 30000,
+    "workload.arrivalRps": 2,
+    "workload.promptMean": 400,
+    "workload.promptCv": 0.8,
+    "workload.outputMean": 150,
+    "workload.outputCv": 1.0,
+    "workload.longProbability": 0,
+    "session_turns_mean": 8,
+    "session_think_s": 8,
+    "preemption": "swap_to_dram",
+    "dram_pool_tokens": 28000,
+    "routing.kind": "power_of_two_choices"
+  },
+  "run": "19-tiering/tier-dram",
+  "compare": "19-tiering/tier-contended",
+  "steps": [
+    {
+      "at_sim_s": 12,
+      "speed": 2,
+      "control_tab": "cluster",
+      "observe_tab": "utilization",
+      "highlight": "kv",
+      "title": "The same spiral: parked context fills HBM at two sessions a second",
+      "body": [
+        "Four replicas with a 30,000-token cache each, chat sessions of eight turns with eight seconds of thinking between them. Every parked session holds its whole context between turns, and the cache is full inside a minute at an offered load the devices could serve fifty times over. This is finding 8's kv-spiral, with the swap path kept.",
+        "What changes here is where the evicted context goes. In kv-spiral-swap each replica had four caches' worth of host DRAM to itself and parked up to 111,000 tokens fleet-wide at its peak. This run, tier-dram, gives the fleet one cluster DRAM pool of 28,000 tokens, about a quarter of that, and nothing under it."
+      ],
+      "look_for": "KV utilization at the cap on every replica while queue depth stays near zero; the preemption rate settling at about 2.3 a second, the same as the swap run's 2.2."
+    },
+    {
+      "at_sim_s": 34,
+      "speed": 2,
+      "observe_tab": "utilization",
+      "highlight": "preempt",
+      "title": "A quarter-sized DRAM pool absorbs it, and what overflows is recomputed",
+      "body": [
+        "The pool fills: DRAM utilization (tier 1 of METRIC_TIER_UTILIZATION on the fleet row) runs at 43% on average and touches 99.8% at its peak. A victim that finds it full is dropped and pays its prefill again when its turn comes, chunked at 1,024 tokens a step like any other prompt.",
+        "That is three quarters of the cure taken away, and the run does not mind: 1,421 tokens/s of goodput at 100% attainment, against kv-spiral-swap's 1,376 at 97.6%. The overflow costs time to first token, p99 233 ms against 84 ms, because a returning turn waits for its recompute. It buys inter-token latency, p99 70 ms against 82 ms, because a synchronous 26 ms copy no longer lands in every decoding sequence's gap. Under an 80 ms ITL objective that trade is a win."
+      ],
+      "look_for": "Preemptions continuing at 2.3 a second with attainment at 100%; the DRAM path busy for 2% of each window on average, never above 23%."
+    },
+    {
+      "at_sim_s": 58,
+      "speed": 2,
+      "set": { "ssd_pool_tokens": 120000, "ssd_gbps": 10 },
+      "observe_tab": "quality",
+      "highlight": "goodput",
+      "title": "An SSD pool under it, at a single drive's 10 GB/s: five times the transfer, and worse than dropping",
+      "body": [
+        "tier-dram-ssd adds a 120,000-token cluster SSD pool, large enough for everything the swap run ever parked, at 10 GB/s: one Gen5 drive rather than the 50 GB/s of eight striped, which section 7.2 gives as the default. Nothing is dropped any more. SSD fills to 14% on average and 58% at peak, and its path is busy 13% of the time, saturated for whole windows at the worst moments.",
+        "Every one of those transfers takes five times as long as the DRAM copy it replaced, 131 ms for a 4,000-token context, and it is charged to the step that made it. Throughput holds at 1,411 tokens/s, so the tier is doing its job as capacity. Goodput falls to 893 and attainment to 70.3%: ITL p99 is 361 ms, TTFT p99 323 ms. In the last third of the run only 42% of requests meet every objective. A tier slower than the ITL budget is worse than no tier."
+      ],
+      "look_for": "Throughput flat while goodput drops by a third; ITL p99 four and a half times the objective."
+    },
+    {
+      "at_sim_s": 84,
+      "speed": 2,
+      "set": { "fabric_gbps": 10 },
+      "control_tab": "run",
+      "observe_tab": "quality",
+      "highlight": "headline",
+      "title": "One 10 GB/s fabric shared by every migration: swap becomes a queue",
+      "body": [
+        "Open the A/B view with A = tier-dram (this run) and B = tier-contended: the same pools behind one shared fabric of 10 GB/s. A migration now starts when the fabric is free and its wall time, queueing included, is what the step is charged. METRIC_TIER_BANDWIDTH_UTILIZATION reads 22% busy on average and pinned at 100% in 12% of all windows, which is the queue forming.",
+        "Goodput 666 tokens/s at 59.6% attainment, TTFT p99 4.2 s, ITL p99 2.4 s, 15% of late requests within objective. Throughput drops to 1,174 because the devices spend their time waiting for copies. Preemptions rise to 2.4 a second. This is section 7.2's \"until the shared bandwidth saturates\": at 666 the swap advantage has inverted, barely above the 608 of the run that never swaps at all."
+      ],
+      "look_for": "A and B separating on every headline: attainment 100% against 59.6%, TTFT p99 233 ms against 4.2 s, with the same offered load and the same preemption rate."
+    },
+    {
+      "at_sim_s": 110,
+      "speed": 1,
+      "control_tab": "cluster",
+      "observe_tab": "utilization",
+      "highlight": "kv",
+      "title": "A tier is a cure only when its transfer fits the ITL budget and its fabric is not shared with the migrations it creates",
+      "body": [
+        "Three rungs, one workload: a quarter-sized DRAM pool serves the spiral at 100% attainment and 1,421 tokens/s; a single-drive SSD tier that catches every overflow drops attainment to 70.3%; a 10 GB/s fabric shared by every migration drops it to 59.6% and turns swap into a queue.",
+        "The sizing question is not how much tier capacity to buy. Dropping three quarters of the victims and recomputing them cost nothing that mattered. It is whether a migration's transfer time, queueing included, stays under the inter-token objective, because that is where a synchronous copy lands."
+      ],
+      "look_for": "DRAM utilization still peaking near 100% in this run while attainment holds at 100%: the pool is small and full, and that is fine."
+    }
+  ]
+}

@@ -16,7 +16,7 @@ use sim_policy::{
 use sim_core::queue::{EventQueue, PRIO_OBSERVE};
 use sim_core::rng::{Rng, Streams};
 use sim_model::trace::{ResourceSnapshot, StepEvent};
-use sim_model::{PrefixTree, Replica};
+use sim_model::{PrefixTree, Replica, Tiers};
 use sim_scenario::{FailureEvent, FailureKind, OverrideKind, Scenario};
 use sim_workload::{Request, Workload};
 use sim_core::{Nanos, EPOCH_BASE, MILLI};
@@ -429,6 +429,9 @@ struct Window {
     prev_ttft_sum: Vec<u64>,
     prev_ttft_count: Vec<u64>,
     prev_preemptions: Vec<u64>,
+    /// The tier clocks as of the previous close, same pattern.
+    prev_dram_busy: Nanos,
+    prev_ssd_busy: Nanos,
 }
 
 impl Window {
@@ -458,7 +461,7 @@ impl Window {
     }
 
     /// Freeze the window into a frame at `t` and start the next one.
-    fn close(&mut self, t: Nanos, offered_rps: f64, replicas: &[Replica]) -> Frame {
+    fn close(&mut self, t: Nanos, offered_rps: f64, replicas: &[Replica], tiers: &Tiers) -> Frame {
         let mut w = std::mem::take(self);
         w.prev_busy.resize(replicas.len(), 0);
         w.prev_compute.resize(replicas.len(), 0);
@@ -511,6 +514,11 @@ impl Window {
         self.prev_ttft_sum = w.prev_ttft_sum;
         self.prev_ttft_count = w.prev_ttft_count;
         self.prev_preemptions = w.prev_preemptions;
+        let (dram_busy, ssd_busy) = tiers.busy_ns();
+        let tier_dram_busy_ns = dram_busy - w.prev_dram_busy;
+        let tier_ssd_busy_ns = ssd_busy - w.prev_ssd_busy;
+        self.prev_dram_busy = dram_busy;
+        self.prev_ssd_busy = ssd_busy;
         Frame {
             t,
             offered_rps,
@@ -527,6 +535,12 @@ impl Window {
             queue_wait: w.queue_wait.to_sparse(),
             preemptions: w.preemptions,
             retries: w.retries,
+            // Summed over replicas rather than read from the pools, so the gauge is right with or
+            // without cluster pools: each replica always knows what it holds in each tier.
+            tier_dram_used: replicas.iter().map(|r| r.dram_tokens()).sum(),
+            tier_ssd_used: replicas.iter().map(|r| r.ssd_tokens()).sum(),
+            tier_dram_busy_ns,
+            tier_ssd_busy_ns,
             replicas: samples,
         }
     }
@@ -593,6 +607,9 @@ pub struct Sim {
     tracing: Tracing,
 
     cost: sim_physics::CostModel,
+    /// The cluster's memory tiers and their shared fabric: the one piece of simulated state every
+    /// replica's step touches, because the pools are cluster-wide.
+    tiers: Tiers,
     sample_iv: Nanos,
     tele_iv: Nanos,
     tele_delay: Nanos,
@@ -784,6 +801,7 @@ impl Sim {
         let views: Vec<ReplicaView> = vec![ReplicaView::default(); sc.replicas];
 
         let cost = sc.cost_model();
+        let tiers = Tiers::new(sc);
         let sample_iv = (sc.sample_interval_ms * 1e6) as Nanos;
         let tele_iv = (sc.telemetry_interval_ms * 1e6) as Nanos;
         let tele_delay = (sc.telemetry_delay_ms * 1e6) as Nanos;
@@ -834,6 +852,7 @@ impl Sim {
             records: Vec::new(),
             tracing,
             cost,
+            tiers,
             sample_iv,
             tele_iv,
             tele_delay,
@@ -1123,6 +1142,7 @@ impl Sim {
                     if matches!(d, Dispatch::Rejected) {
                         // The turn that would have reused the parked context is not coming.
                         self.replicas[i].remove(req.id);
+                        self.tiers.reclaim(&mut self.replicas[i]);
                     }
                     place(
                         &mut self.q, &mut self.records, &mut self.outcomes, &mut self.done,
@@ -1144,6 +1164,7 @@ impl Sim {
                         // distinct in the outcome from one that fails after burning work. A session
                         // turn shed here releases the context parked for it.
                         r.remove(id);
+                        self.tiers.reclaim(r);
                         finish(
                             &mut self.records, &mut self.outcomes, &mut self.done, &mut self.window,
                             Outcome::Rejected, &req, now, target, 0, 0, 0, 0,
@@ -1165,12 +1186,13 @@ impl Sim {
                 }
 
                 Ev::Step(i) => {
-                    let Some(out) = self.replicas[i].step_scheduled(
+                    let Some(out) = self.replicas[i].step_tiered(
                         sc,
                         &self.cost,
                         now,
                         &self.tree,
                         &mut *self.schedulers[i],
+                        &mut self.tiers,
                     ) else {
                         continue
                     };
@@ -1238,7 +1260,9 @@ impl Sim {
                         continue;
                     }
                     let Some(&i) = self.placed.get(&id) else { continue };
-                    if let Some((req, was_running)) = self.replicas[i].remove(id) {
+                    let removed = self.replicas[i].remove(id);
+                    self.tiers.reclaim(&mut self.replicas[i]);
+                    if let Some((req, was_running)) = removed {
                         let outcome = if was_running {
                             Outcome::TimeoutRunning
                         } else {
@@ -1257,6 +1281,7 @@ impl Sim {
                             for req in self.replicas[f.replica].crash() {
                                 self.abort(&req, f.replica, Outcome::TimeoutRunning, now);
                             }
+                            self.tiers.reclaim(&mut self.replicas[f.replica]);
                             let (inserted, evicted) = self.replicas[f.replica].drain_prefix_changes();
                             self.holders.apply(f.replica, &inserted, &evicted);
                         }
@@ -1293,7 +1318,7 @@ impl Sim {
                     let window_start_ns = window_end_ns.saturating_sub(self.sample_iv);
                     let rate = self.workload.offered_rps(sc, window_start_ns, window_end_ns);
                     self.offered.push(now, rate);
-                    self.frames.push(self.window.close(now, rate, &self.replicas));
+                    self.frames.push(self.window.close(now, rate, &self.replicas, &self.tiers));
                     self.q.schedule_prio(now + self.sample_iv, PRIO_OBSERVE, Ev::Sample);
                 }
             }

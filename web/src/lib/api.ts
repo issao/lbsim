@@ -1423,6 +1423,7 @@ export const EXTRA_KEYS = [
   'disable_decode', 'spec_draft_tokens', 'spec_accept_rate',
   'preemption', 'preemption_victim', 'scheduling', 'dram_capacity_tokens', 'swap_gbps',
   'arrival_rps_per_replica',
+  'dram_pool_tokens', 'ssd_pool_tokens', 'ssd_gbps', 'fabric_gbps',
   'session_turns_mean', 'session_think_s',
   'prefix_roots', 'prefix_root_tokens', 'prefix_zipf_s', 'session_fork_rate', 'prefix_cache_tokens',
   'affinity_max_load_ratio', 'affinity_fallback_choices',

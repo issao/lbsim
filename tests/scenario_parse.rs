@@ -10,11 +10,11 @@ use lbsim::scenario::Scenario;
 use lbsim::sim;
 
 /// Every key `parse` accepts, which is also every key `to_text` must emit.
-const KEYS: [&str; 73] = [
+const KEYS: [&str; 77] = [
     "name", "seed", "duration_s", "warmup_s", "replicas", "max_batch", "step_base_ms",
     "step_per_seq_ms", "step_per_kv_ktoken_ms", "kv_capacity_tokens", "prefill_tokens_per_s",
     "step_token_budget", "max_queue", "disable_decode", "preemption", "preemption_victim", "scheduling",
-    "dram_capacity_tokens", "swap_gbps", "arrival_rps", "arrival_rps_per_replica", "prompt_mean", "prompt_cv", "output_mean",
+    "dram_capacity_tokens", "swap_gbps", "dram_pool_tokens", "ssd_pool_tokens", "ssd_gbps", "fabric_gbps", "arrival_rps", "arrival_rps_per_replica", "prompt_mean", "prompt_cv", "output_mean",
     "output_cv", "long_probability", "long_prompt_mean", "long_output_mean", "session_turns_mean",
     "session_think_s", "prefix_roots", "prefix_root_tokens", "prefix_zipf_s", "session_fork_rate",
     "prefix_cache_tokens", "affinity_max_load_ratio", "affinity_fallback_choices", "load_step_at_s",
@@ -53,6 +53,10 @@ fn all_fields_distinct() -> Scenario {
         scheduling: "class_priority".into(),
         dram_capacity_tokens: 2_222_000.0,
         swap_gbps: 32.5,
+        dram_pool_tokens: 3_333_000.0,
+        ssd_pool_tokens: 4_444_000.0,
+        ssd_gbps: 12.5,
+        fabric_gbps: 37.5,
         arrival_rps: 19.5,
         // Stays at its unused value: anything else would derive arrival_rps on the way back in.
         arrival_rps_per_replica: 0.0,
@@ -134,6 +138,10 @@ fn to_text_then_parse_preserves_every_field() {
     assert_eq!(got.scheduling, want.scheduling);
     assert_eq!(got.dram_capacity_tokens, want.dram_capacity_tokens);
     assert_eq!(got.swap_gbps, want.swap_gbps);
+    assert_eq!(got.dram_pool_tokens, want.dram_pool_tokens);
+    assert_eq!(got.ssd_pool_tokens, want.ssd_pool_tokens);
+    assert_eq!(got.ssd_gbps, want.ssd_gbps);
+    assert_eq!(got.fabric_gbps, want.fabric_gbps);
     assert_eq!(got.arrival_rps, want.arrival_rps);
     assert_eq!(got.arrival_rps_per_replica, want.arrival_rps_per_replica);
     assert_eq!(got.prompt_mean, want.prompt_mean);

@@ -30,6 +30,9 @@
 18-bode/04-perturb_frequency_hz___0_2.summary.csv            fingerprint=7024446377438780746    events=541795    summary_md5=0214d423809d
 18-bode/05-perturb_frequency_hz___0_5.summary.csv            fingerprint=17326921118432512415   events=541413    summary_md5=98027412f743
 18-bode/06-perturb_frequency_hz___1_0.summary.csv            fingerprint=17128901454353504163   events=542958    summary_md5=6b9e8944d6ea
+19-tiering/00-tier_dram.summary.csv                          fingerprint=18413918292581603253   events=44866     summary_md5=2f049bb4aeba
+19-tiering/01-tier_dram_ssd.summary.csv                      fingerprint=5667821528820087996    events=44151     summary_md5=5427f1f45155
+19-tiering/02-tier_contended.summary.csv                     fingerprint=15269152053531283348   events=37505     summary_md5=c621e1843544
 2-staleness/00-telemetry_interval_ms___100.summary.csv       fingerprint=16393865130379415143   events=352465    summary_md5=c09138c8d42c
 2-staleness/01-telemetry_interval_ms___250.summary.csv       fingerprint=16416231017560174181   events=307351    summary_md5=23480d60a3ee
 2-staleness/02-telemetry_interval_ms___500.summary.csv       fingerprint=11216039682751027244   events=279763    summary_md5=a21fee97deba
@@ -83,6 +86,7 @@ h-h8-retry-storm/00-h8_retry_storm.summary.csv               fingerprint=4264169
 16-scheduling.html                                           html_md5=1790a75ffdb8
 17-cascade.html                                              html_md5=28619e49d46f
 18-bode.html                                                 html_md5=ccc293a5ee12
+19-tiering.html                                              html_md5=f77945f4cc46
 2-staleness.html                                             html_md5=9013dd9c4627
 3-chunking.html                                              html_md5=1e9a42424201
 4-load-curve.html                                            html_md5=c81e2f1f6dbc

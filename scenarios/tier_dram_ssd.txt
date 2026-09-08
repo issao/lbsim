@@ -1,0 +1,51 @@
+# Memory tiering, second rung: tier_dram.txt's 28,000-token DRAM pool with a 120,000-token cluster
+# SSD pool under it, large enough for everything the swap run parks. Context that finds DRAM full
+# goes to SSD instead of being dropped, at a single drive's 10 GB/s rather than the 50 GB/s of the
+# striped default (section 7.2 gives both), so each of those transfers takes five times as long as
+# the DRAM copy it replaces. The fabric is still unlimited.
+name = tier_dram_ssd
+seed = 20260906
+duration_s = 120
+warmup_s = 15
+
+# Kept at 4 replicas: the finding depends on the small fleet (Issao, 2026-09-07).
+replicas = 4
+max_batch = 64
+kv_capacity_tokens = 30000
+step_base_ms = 10.2
+step_per_seq_ms = 0.0
+step_per_kv_ktoken_ms = 0.0175
+prefill_tokens_per_s = 28286
+step_token_budget = 1024
+max_queue = 400
+
+# Sessions of eight turns on average, eight seconds of thinking between them, short prompts and
+# answers: the kind of chat traffic that looks harmless by request count. Every turn carries the
+# whole previous context, so a session's footprint grows by a prompt and an answer each turn.
+arrival_rps = 2
+prompt_mean = 400
+prompt_cv = 0.8
+output_mean = 150
+output_cv = 1.0
+long_probability = 0.0
+session_turns_mean = 8
+session_think_s = 8
+
+preemption = swap_to_dram
+preemption_victim = newest
+swap_gbps = 50
+dram_pool_tokens = 28000
+ssd_pool_tokens = 120000
+ssd_gbps = 10
+fabric_gbps = 0
+
+routing = p2c
+telemetry_interval_ms = 1000
+telemetry_delay_ms = 200
+
+client_timeout_s = 60
+max_attempts = 1
+ttft_slo_ms = 2000
+itl_slo_ms = 80
+e2e_slo_s = 60
+sample_interval_ms = 250
