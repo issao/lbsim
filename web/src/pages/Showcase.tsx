@@ -11,6 +11,7 @@ import {
 import { probeDataSource, type RunHandle } from '../lib/useRun';
 import type { ScenarioConfig } from '../lib/config';
 import { type RunnerHandle, type StepState, WalkthroughRunner } from '../lib/walkthroughRunner';
+import { type PlaybackOverride, PlaybackOverrideContext } from '../components/PlaybackBar';
 import { Dashboard, type TabHint } from './Dashboard';
 
 /**
@@ -227,7 +228,17 @@ function WalkthroughOver({
     [script]
   );
 
-  const current = st ?? { index: 0, step: script.steps[0], advancing: true, done: false };
+  // U102: one action behind the card's Play and the playback bar's play, so pressing either
+  // resumes at the step's predetermined speed; the bar's pause shows on the card as paused.
+  const playback = useMemo<PlaybackOverride>(
+    () => ({
+      onPlay: () => runnerRef.current && void runnerRef.current.resume().then(setSt),
+      onPause: () => runnerRef.current && setSt(runnerRef.current.pauseHere()),
+    }),
+    []
+  );
+
+  const current = st ?? { index: 0, step: script.steps[0], advancing: true, paused: false, done: false };
   const hint = useMemo<TabHint>(
     () => ({ control: current.step.control_tab, observe: current.step.observe_tab, nonce: current.index + 1 }),
     [current.step, current.index]
@@ -241,6 +252,7 @@ function WalkthroughOver({
   const refusalPrefix = source.kind === 'replay' ? 'not applied (replay):' : 'not applied (live, refused):';
 
   return (
+    <PlaybackOverrideContext.Provider value={playback}>
     <Dashboard
       key={script.id}
       initial={initial}
@@ -264,11 +276,22 @@ function WalkthroughOver({
             </span>
             <span className="wt-mode">{narration}</span>
             <span className="wt-title">{current.advancing ? 'advancing…' : step.title}</span>
+            <button
+              className="btn wt-play"
+              aria-label="play"
+              title="play to the next stop"
+              disabled={current.advancing && !current.paused}
+              onClick={playback.onPlay}
+            >
+              play
+            </button>
           </div>
           {current.advancing ? (
             <div className="wt-body">
               <p className="note" style={{ margin: 0 }}>
-                Running to {step.at_sim_s} s. It will pause there.
+                {current.paused
+                  ? `paused at ${runRef.current?.cursorS ?? 0} s; play to continue to ${step.at_sim_s} s`
+                  : `advancing scenario… to ${step.at_sim_s} s at ${runnerRef.current?.speedOf(step) ?? step.speed ?? 1}×`}
               </p>
             </div>
           ) : (
@@ -310,14 +333,11 @@ function WalkthroughOver({
               <button className="btn primary" onClick={onExit}>
                 done
               </button>
-            ) : (
-              <button className="btn primary" onClick={() => runnerRef.current && void runnerRef.current.next().then(setSt)}>
-                resume
-              </button>
-            )}
+            ) : null}
           </div>
         </div>
       }
     />
+    </PlaybackOverrideContext.Provider>
   );
 }

@@ -297,5 +297,72 @@ await check('a_run_that_ends_early_settles_with_a_reason', async () => {
   return s.reason ?? '';
 });
 
+// U102: one action behind the card's Play and the bar's play. Issao: "include a 'play' button
+// there that resumes the scenario at the predetermined speed ... Using the play button in the play
+// bar should have the same effect."
+await check('resume on a settled step is next(): set, then the step speed, then play', async () => {
+  const h = fakeHandle('server');
+  const r = new runner.WalkthroughRunner(script, h);
+  await r.next();
+  h.moveTo(60);
+  r.tick();
+  h.log.length = 0;
+  const s = await r.resume();
+  eq(s.index, 1, 'moved to step two');
+  ok(s.advancing && !s.paused, 'advancing, not paused');
+  eq(h.log, ['update workload.rps', 'speed 5', 'play'], 'set, speed, play');
+  return h.log.join(' > ');
+});
+
+await check('resume while advancing is a no-op', async () => {
+  const h = fakeHandle('server');
+  const r = new runner.WalkthroughRunner(script, h);
+  const before = await r.next();
+  h.log.length = 0;
+  const s = await r.resume();
+  ok(s === before, 'same state object');
+  eq(h.log, [], 'nothing sent to the run');
+  return 'no calls';
+});
+
+await check('pauseHere then resume plays again at the segment speed without re-applying set', async () => {
+  const h = fakeHandle('server');
+  const r = new runner.WalkthroughRunner(script, h);
+  await r.next();
+  h.moveTo(60);
+  r.tick();
+  await r.next(); // step two: set + speed 5, advancing toward 120
+  h.moveTo(90);
+  h.log.length = 0;
+  const p = r.pauseHere();
+  ok(p.paused && p.advancing, 'paused mid-segment, still on the way');
+  eq(p.index, 1, 'still step two');
+  eq(h.log, ['pause'], 'paused the run');
+  const s = await r.resume();
+  ok(!s.paused && s.advancing, 'playing again, still advancing');
+  eq(s.index, 1, 'no step change');
+  eq(h.log, ['pause', 'speed 5', 'play'], 'speed and play, no update');
+  h.moveTo(120);
+  ok(!r.tick().advancing, 'still settles at the timestamp');
+  return h.log.join(' > ');
+});
+
+await check('pauseHere on a settled step is a no-op, and resume on the last step is a no-op', async () => {
+  const h = fakeHandle('server');
+  const r = new runner.WalkthroughRunner(script, h);
+  for (let i = 0; i < script.steps.length; i++) {
+    const s = await r.next();
+    h.moveTo(s.step.at_sim_s);
+    r.tick();
+  }
+  const last = r.state();
+  ok(last.done, 'on the last step');
+  h.log.length = 0;
+  ok(r.pauseHere() === last, 'pauseHere when already paused changes nothing');
+  ok((await r.resume()) === last, 'resume on the last step changes nothing');
+  eq(h.log, [], 'nothing sent to the run');
+  return `done at ${last.step.at_sim_s}s`;
+});
+
 console.log(`${cases - failures}/${cases} passed`);
 if (failures > 0) throw new Error(`${failures} walkthrough runner case(s) failed`);
