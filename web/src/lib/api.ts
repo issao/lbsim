@@ -1414,6 +1414,11 @@ const PANEL_KEYS = [
  */
 export const EXTRA_KEYS = [
   'load_step_at_s', 'load_step_factor', 'load_step_until_s',
+  // U33 landed while this unit was in flight: `perturbation`/`perturb_amplitude`/
+  // `perturb_frequency_hz` are new engine keys, but config.ts's `workload.perturbation` fields
+  // still have no encoder wired to them (see `workloadToWire`'s `dropped`), so these three are
+  // accepted, verbatim `extra` keys only, same as any engine key with no panel binding yet.
+  'perturbation', 'perturb_amplitude', 'perturb_frequency_hz',
   'retry_budget_fraction', 'retry_backoff_s',
   'disable_decode', 'spec_draft_tokens', 'spec_accept_rate',
   'preemption', 'preemption_victim', 'scheduling', 'dram_capacity_tokens', 'swap_gbps',
