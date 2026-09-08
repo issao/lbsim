@@ -100,9 +100,7 @@ export function Showcase() {
                       <p className="card-body">{c.summary}</p>
                       <span className="card-foot">
                         <span className="phase">{c.script ? 'walkthrough' : 'coming'}</span>
-                        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                          needs: {c.requires}
-                        </span>
+                        <span className="card-needs">needs: {c.requires}</span>
                       </span>
                     </button>
                   ))}
@@ -229,7 +227,7 @@ function WalkthroughOver({
     [current.step, current.index]
   );
   const step = current.step;
-  const notes = [source.note, compare ? `compare ${compare}: this page has no A/B view yet, so the second run is not opened` : null].filter(
+  const notes = [source.note, compare ? `compare ${compare}: this walkthrough shows one run; the comparison run is not opened` : null].filter(
     (n): n is string => n !== null && n !== undefined
   );
   const refusal = current.reason ?? lateReason;

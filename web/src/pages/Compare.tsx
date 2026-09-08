@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo } from 'react';
 import { BASE, cloneConfig, comparability, FIELD_LABEL, PRESETS, ROUTING_LABEL, type ScenarioConfig } from '../lib/config';
 import { setActiveMode } from '../lib/mode';
 import type { RoutingKind } from '../lib/types';
@@ -37,7 +37,6 @@ export function Compare() {
   useEffect(() => setActiveMode('mock'), []);
   const a = useRun(A0, true);
   const b = useRun(B0, true);
-  const [drift, setDrift] = useState(false);
 
   const gate = comparability(a.config, b.config);
   const linked = useLinked(a, b);
@@ -103,33 +102,11 @@ export function Compare() {
               format={(v) => `${v} ms`}
               onChange={(v) => setBoth((d) => { d.telemetryDelayMs = v; })}
             />
-            <div>
-              <p className="section-label">Prove the refusal</p>
-              <label className="check">
-                <input
-                  type="checkbox"
-                  checked={drift}
-                  onChange={(e) => {
-                    setDrift(e.target.checked);
-                    const nb = cloneConfig(b.config);
-                    nb.seed = e.target.checked ? b.config.seed + 1 : a.config.seed;
-                    b.restart(nb);
-                    // Keep the two clocks together, or the panels would differ in time as well.
-                    b.scrubTo(a.cursorS);
-                  }}
-                />
-                <span>give run B a different seed</span>
-              </label>
-              <p className="note" style={{ marginTop: -4 }}>
-                The view should stop comparing and say why. This checkbox exists so you can check that it does.
-              </p>
-            </div>
           </div>
         </Panel>
 
         {!gate.ok ? (
           <Refusal a={a.config} b={b.config} blocking={gate.blocking} onFix={() => {
-              setDrift(false);
               b.restart({ ...cloneConfig(a.config), name: b.config.name, routing: { ...b.config.routing } });
               b.scrubTo(a.cursorS);
             }} />

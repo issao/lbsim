@@ -439,8 +439,9 @@ table.data caption { caption-side: bottom; text-align: left; padding: 5px 6px; f
 .card-num { font-family: var(--mono); font-size: 10px; color: var(--ink-3); letter-spacing: 0.04em; }
 .card-title { font-size: 12.5px; font-weight: 600; }
 .card-body { font-size: 11px; color: var(--ink-2); margin: 0; }
-.card-foot { margin-top: auto; display: flex; align-items: center; gap: 6px; font-size: 10px; color: var(--ink-3); }
-.card-foot .phase { border: 1px solid var(--line-strong); border-radius: 2px; padding: 0 4px; white-space: nowrap; }
+.card-foot { margin-top: auto; display: flex; align-items: center; gap: 6px; font-size: 10px; color: var(--ink-3); min-width: 0; width: 100%; }
+.card-foot .phase { border: 1px solid var(--line-strong); border-radius: 2px; padding: 0 4px; white-space: nowrap; flex: 0 0 auto; }
+.card-foot .card-needs { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .walkthrough {
   position: fixed; right: 16px; bottom: 16px; width: 340px; z-index: 40;

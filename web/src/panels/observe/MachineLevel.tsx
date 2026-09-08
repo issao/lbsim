@@ -190,22 +190,28 @@ export function MachineLevel({
           </tbody>
         </table>
         <div className="pager">
-          <button className="btn" disabled={p === 0} onClick={() => setPage(p - 1)}>
-            prev
-          </button>
-          <button className="btn" disabled={p >= pages - 1} onClick={() => setPage(p + 1)}>
-            next
-          </button>
-          <span>
-            rows{' '}
-            <span className="seg">
-              {PAGE_SIZES.map((n) => (
-                <button key={n} aria-pressed={pageSize === n} onClick={() => { setPageSize(n); setPage(0); }}>
-                  {n}
-                </button>
-              ))}
+          {sorted.length > Math.min(...PAGE_SIZES) ? (
+            <>
+              <button className="btn" disabled={p === 0} onClick={() => setPage(p - 1)}>
+                prev
+              </button>
+              <button className="btn" disabled={p >= pages - 1} onClick={() => setPage(p + 1)}>
+                next
+              </button>
+            </>
+          ) : null}
+          {sorted.length > 0 ? (
+            <span>
+              rows{' '}
+              <span className="seg">
+                {PAGE_SIZES.map((n) => (
+                  <button key={n} aria-pressed={pageSize === n} onClick={() => { setPageSize(n); setPage(0); }}>
+                    {n}
+                  </button>
+                ))}
+              </span>
             </span>
-          </span>
+          ) : null}
           <span className="grow">
             {sorted.length} replicas exist. Sorting is local and instant, so it ranks the coarse cluster summary used to
             choose this page; only the {visible.length} rows on screen carry live per-replica subscriptions.
