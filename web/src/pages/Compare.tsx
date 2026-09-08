@@ -45,6 +45,7 @@ export function Compare() {
   const src = useDataSource(true);
   useEffect(() => {
     if (src.state === 'probing') setActiveMode('connecting');
+    else if (src.state === 'none') setActiveMode('none');
   }, [src.state]);
   if (src.state === 'probing') return <div className="page-pad">looking for a server or recorded runs…</div>;
   if (src.state === 'server') return <ServerCompare />;

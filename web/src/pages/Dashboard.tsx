@@ -53,7 +53,9 @@ export function Dashboard(props: DashboardProps) {
   const src = useDataSource(data === 'auto');
   const state = data === 'server' ? 'server' : src.state;
   useEffect(() => {
+    // `none` is set explicitly, or the badge would keep the probe's "connecting" after it ended in nothing.
     if (state === 'probing') setActiveMode('connecting');
+    else if (state === 'none') setActiveMode('none');
   }, [state]);
   if (state === 'probing') return <div className="page-pad">looking for a server or recorded runs…</div>;
   if (state === 'server') return <ServerDashboard {...props} />;

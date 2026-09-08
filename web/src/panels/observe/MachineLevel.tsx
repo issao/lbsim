@@ -221,16 +221,14 @@ export function MachineLevel({
           </tbody>
         </table>
         <div className="pager">
-          {sorted.length > Math.min(...PAGE_SIZES) ? (
-            <>
-              <button className="btn" disabled={p === 0} onClick={() => setPage(p - 1)}>
-                prev
-              </button>
-              <button className="btn" disabled={p >= pages - 1} onClick={() => setPage(p + 1)}>
-                next
-              </button>
-            </>
-          ) : null}
+          {/* U99: always present, disabled when there is nowhere to go, so the pager's height never
+              changes with the row count. */}
+          <button className="btn" disabled={p === 0} onClick={() => setPage(p - 1)}>
+            prev
+          </button>
+          <button className="btn" disabled={p >= pages - 1} onClick={() => setPage(p + 1)}>
+            next
+          </button>
           <span>
             rows{' '}
             <span className="seg">
