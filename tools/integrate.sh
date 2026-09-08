@@ -22,6 +22,7 @@
 #   5  the branch touched web/ and `npm run build` fails
 #   6  the master checkout at $MAIN is dirty, or is not a fast-forward of origin/master
 #   7  the push did not land, or master on origin does not contain the branch afterwards
+#   8  `/tmp` grew by more than 100 MB across stages 3 and 4: a test left scratch behind (U110b)
 #   1  anything else: bad arguments, missing branch, worktree trouble
 #
 # Docs-only fast path (U68). If every path in the rebased branch's diff against origin/master
@@ -121,12 +122,22 @@ branch_diff=$(git -C "$QUEUE" diff --name-only origin/master...HEAD)
 if docs_only "$branch_diff"; then
   say "docs-only diff: tests and fingerprints skipped"
 else
+  # A test that leaves scratch behind in /tmp is the gate's own business (U110b): every test that
+  # touches /tmp owns a guard that removes it, and this measures whether that held across the
+  # whole test-plus-fingerprint run rather than trusting each test's own bookkeeping.
+  tmp_before_mb=$(df --output=used -m /tmp | tail -1)
   ( cd "$QUEUE" && tools/build.sh test --workspace -q >"$QUEUE/.integrate-test.log" 2>&1 ) \
     || { tail -40 "$QUEUE/.integrate-test.log"; die 3 "workspace tests fail"; }
   say "tests pass"
   ( cd "$QUEUE" && ./check-fingerprints.sh >"$QUEUE/.integrate-fp.log" 2>&1 ) \
     || { cat "$QUEUE/.integrate-fp.log"; die 4 "fingerprints moved without a baseline update"; }
   say "fingerprints match"
+  tmp_after_mb=$(df --output=used -m /tmp | tail -1)
+  tmp_growth_mb=$((tmp_after_mb - tmp_before_mb))
+  if [ "$tmp_growth_mb" -gt 100 ]; then
+    die 8 "gate grew /tmp by $tmp_growth_mb MB (limit 100): a test is leaving scratch behind"
+  fi
+  say "gate grew /tmp by $tmp_growth_mb MB"
 fi
 if [ -n "$(git -C "$QUEUE" diff --name-only origin/master...HEAD -- web/)" ]; then
   ( cd "$QUEUE/web" && npm ci --prefer-offline --no-audit --no-fund >/dev/null 2>&1 && npm run build >"$QUEUE/.integrate-web.log" 2>&1 ) \

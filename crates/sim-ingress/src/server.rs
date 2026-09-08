@@ -1024,16 +1024,16 @@ mod tests {
     use std::net::{SocketAddr, TcpListener};
     use std::sync::mpsc;
 
-    fn start_server(name: &str) -> (SocketAddr, Arc<Server>) {
-        let dir = std::env::temp_dir().join(format!("lbsim-server-{}-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+    /// The server outlives this function on a background thread, so the scratch directory guard
+    /// must be returned and kept bound at the call site for as long as the server runs.
+    fn start_server(name: &str) -> (SocketAddr, Arc<Server>, crate::test_scratch::ScratchDir) {
+        let dir = crate::test_scratch::scratch(&format!("server-{name}"));
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
-        let server = Arc::new(Server::new(dir, 3600 * 1_000_000_000));
+        let server = Arc::new(Server::new(dir.to_path_buf(), 3600 * 1_000_000_000));
         let handle = Arc::clone(&server);
         std::thread::spawn(move || crate::serve_on(handle, listener));
-        (addr, server)
+        (addr, server, dir)
     }
 
     /// One unary RPC over the wire: status and body.
@@ -1123,7 +1123,7 @@ mod tests {
 
     #[test]
     fn a_stop_before_the_first_frame_ends_the_stream_instead_of_parking_the_server() {
-        let (addr, server) = start_server("stop-before-frame");
+        let (addr, server, _dir) = start_server("stop-before-frame");
         let run_id = start_slow_run(addr);
         let stream = open_subscription_within(addr, &run_id, Duration::from_secs(30));
         assert_eq!(server.open_subscriptions(), 1);
@@ -1143,7 +1143,7 @@ mod tests {
     fn the_server_still_opens_subscriptions_after_a_stream_ended_on_a_stop() {
         // The consequence on the public instance, not the cause: after one stream ended this way
         // every later open on any run went unanswered, because each parked at `subs().insert`.
-        let (addr, server) = start_server("opens-after-stop");
+        let (addr, server, _dir) = start_server("opens-after-stop");
         let first = start_slow_run(addr);
         let stream = open_subscription_within(addr, &first, Duration::from_secs(30));
         let (status, body) = post(addr, "StopRun", &format!("{{\"run_id\":\"{first}\"}}"));
@@ -1159,7 +1159,7 @@ mod tests {
 
     #[test]
     fn the_request_log_carries_every_rpc_and_each_stream_end() {
-        let (addr, server) = start_server("request-log");
+        let (addr, server, _dir) = start_server("request-log");
         let run_id = start_slow_run(addr);
         let (status, _) = post(addr, "GetRun", &format!("{{\"run_id\":\"{run_id}\"}}"));
         assert_eq!(status, 200);
@@ -1187,7 +1187,7 @@ mod tests {
         // A subscription whose final update went out but whose sub survived (the write failed after
         // `finished` was set, so a reconnect within the lease is allowed), resumed at the final id:
         // the ring has nothing newer, `finished` is set, and the stream must end, not park.
-        let (_addr, server) = start_server("reconnect-at-final");
+        let (_addr, server, _dir) = start_server("reconnect-at-final");
         let sc = Scenario::parse(&read("../../scenarios/route_p2c.txt")).unwrap();
         let run = Arc::new(Run {
             state: Mutex::new(run::RunState::new("r-1".into(), sc, 1.0)),

@@ -4,6 +4,8 @@
 //! is therefore a property of the encoder, the filters, the sampler and the export, and none of it
 //! changes when the engine starts filling the struct.
 
+mod common;
+
 use lbsim::metrics::trace::{fixtures, RequestTrace, TraceBucket, TraceSampler};
 use lbsim::metrics::{Outcome, RequestRecord};
 use lbsim::rng::Rng;
@@ -12,17 +14,16 @@ use sim_ingress::export;
 use sim_ingress::trace_wire::{self, GetTracesRequest, OutcomeFilter};
 use std::collections::BTreeSet;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 fn workspace() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR"))
 }
 
-fn fresh_dir(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("lbsim-trace-wire-{}-{name}", std::process::id()));
-    let _ = fs::remove_dir_all(&dir);
-    fs::create_dir_all(&dir).unwrap();
-    dir
+/// `common::scratch` under this file's own naming, kept so a leftover from before U110b (which
+/// moved the guard to `tests/common`) is still swept by the `lbsim-*` glob.
+fn fresh_dir(name: &str) -> common::ScratchDir {
+    common::scratch(&format!("trace-wire-{name}"))
 }
 
 /// Every `"key":` in a JSON document; the same scan `tests/wire_export.rs` uses.

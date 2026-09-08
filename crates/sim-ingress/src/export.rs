@@ -804,14 +804,12 @@ mod tests {
 
     #[test]
     fn index_merge_replaces_by_run_id_and_sorts() {
-        let dir = std::env::temp_dir().join(format!("lbsim-index-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = crate::test_scratch::scratch("index");
         let path = dir.join("index.json");
         merge_index(&path, r#"{"run_id":"b","name":"1"}"#).unwrap();
         merge_index(&path, r#"{"run_id":"a","name":"2"}"#).unwrap();
         merge_index(&path, r#"{"run_id":"b","name":"3"}"#).unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
         assert_eq!(text, "[\n{\"run_id\":\"a\",\"name\":\"2\"},\n{\"run_id\":\"b\",\"name\":\"3\"}\n]\n");
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

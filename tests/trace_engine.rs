@@ -14,7 +14,7 @@ use lbsim::scenario::Scenario;
 use lbsim::sim::{self, RunResult};
 use sim_ingress::{export, trace_wire};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 fn p2c(rate: f64) -> Scenario {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("scenarios/route_p2c.txt");
@@ -31,11 +31,8 @@ fn short(rate: f64) -> Scenario {
     s
 }
 
-fn fresh_dir(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("lbsim-trace-engine-{}-{name}", std::process::id()));
-    let _ = fs::remove_dir_all(&dir);
-    fs::create_dir_all(&dir).unwrap();
-    dir
+fn fresh_dir(name: &str) -> common::ScratchDir {
+    common::scratch(&format!("trace-engine-{name}"))
 }
 
 #[test]

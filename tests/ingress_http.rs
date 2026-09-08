@@ -6,12 +6,14 @@
 //! lines of `std::net`: no HTTP library, because the point is that the wire is plain HTTP/1.1 and
 //! plain server-sent events, readable with nothing else.
 
+mod common;
+
 use sim_ingress::server::{parse_json, Json};
 use sim_ingress::Server;
 use std::collections::BTreeSet;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -22,21 +24,24 @@ fn workspace() -> &'static Path {
 }
 
 /// A server on an ephemeral port serving a fresh directory. Returns the address, the server (for
-/// the one thing the wire does not expose, a run's frame count) and the directory, which is where
-/// an idle checkpoint lands.
-fn start_server(name: &str, idle_threshold_ns: u64) -> (SocketAddr, Arc<Server>, PathBuf) {
+/// the one thing the wire does not expose, a run's frame count) and the directory guard, which is
+/// where an idle checkpoint lands and which must stay bound at the call site for the server's
+/// whole lifetime: it removes the directory on drop.
+fn start_server(name: &str, idle_threshold_ns: u64) -> (SocketAddr, Arc<Server>, common::ScratchDir) {
     start_server_with(name, idle_threshold_ns, sim_ingress::server::SSE_WRITE_TIMEOUT)
 }
 
 /// As `start_server`, with the SSE write timeout chosen by the test: the production 30 s is right
 /// for a browser behind a slow proxy and wrong for a test that wants to see the timeout fire.
-fn start_server_with(name: &str, idle_threshold_ns: u64, sse_write_timeout: Duration) -> (SocketAddr, Arc<Server>, PathBuf) {
-    let dir = std::env::temp_dir().join(format!("lbsim-ingress-http-{}-{name}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
+fn start_server_with(
+    name: &str,
+    idle_threshold_ns: u64,
+    sse_write_timeout: Duration,
+) -> (SocketAddr, Arc<Server>, common::ScratchDir) {
+    let dir = common::scratch(&format!("ingress-http-{name}"));
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
-    let server = Arc::new(Server::new(dir.clone(), idle_threshold_ns).with_sse_write_timeout(sse_write_timeout));
+    let server = Arc::new(Server::new(dir.to_path_buf(), idle_threshold_ns).with_sse_write_timeout(sse_write_timeout));
     let handle = Arc::clone(&server);
     std::thread::spawn(move || sim_ingress::serve_on(handle, listener));
     (addr, server, dir)
