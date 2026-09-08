@@ -309,9 +309,14 @@ export class ServerRunEngine implements FrameSource {
     }
     this.changed();
     await settled;
+    // Disposed or restarted while that control was in flight, which is where a closing page lands:
+    // a subscription and a poll set now would have no owner, and the next start would overwrite
+    // the interval's handle and leave it ticking for good.
+    if (gen !== this.generation) return null;
     this.subscribe();
     const every = this.opts.statusPollMs ?? STATUS_POLL_MS;
     if (every > 0) {
+      if (this.poll !== null) clearInterval(this.poll);
       void this.pollStatus();
       this.poll = setInterval(() => void this.pollStatus(), every);
     }

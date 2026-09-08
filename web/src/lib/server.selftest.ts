@@ -644,6 +644,57 @@ await checkAsync('(l) a_play_racing_the_starting_pause_wins_in_either_server_ord
 });
 
 // ---------------------------------------------------------------------------
+// (m) dispose during the starting SetSpeed leaves no stream, no poll, and no leaked interval
+// ---------------------------------------------------------------------------
+
+await checkAsync('(m) dispose_during_the_starting_SetSpeed_leaves_no_stream_and_no_poll', async () => {
+  // The harness closes the page while start's SetSpeed is in flight. start then went on to open a
+  // subscription and set a status poll on a disposed engine; a later start (React's double mount,
+  // a restart) reset `disposed` and overwrote `poll`, leaving the earlier interval with no handle.
+  let speed!: ReturnType<typeof gate>;
+  let starting!: ReturnType<typeof gate>;
+  const r = rig({}, { fetch: (f) => (starting = gate((speed = gate(f, 'SetSpeed')).fetch, 'StartRun', true)).fetch, statusPollMs: 20 });
+  const s1 = r.engine.start(false);
+  await speed.arrived();
+  r.engine.dispose();
+  speed.release();
+  eq(await s1, null, 'a start that lost its owner during its SetSpeed returns nothing');
+  await until(() => calls(r.fake, 'StopRun').length === 1, 'the StopRun');
+  const opens = calls(r.fake, 'OpenSubscription').length;
+  const polls = calls(r.fake, 'GetRun').length;
+  await new Promise<void>((res) => setTimeout(res, 60));
+  eq(calls(r.fake, 'OpenSubscription').length, opens, 'no subscription opened after dispose');
+  eq(opens, 0, 'none at all');
+  eq(calls(r.fake, 'GetRun').length, polls, 'no GetRun after dispose');
+  eq(r.fake.openStreams(), 0, 'no stream left open');
+
+  // start, dispose during SetSpeed, start again, dispose: the second start must not inherit an
+  // interval from the first. A third start whose StartRun never answers exposes one: `disposed`
+  // is false and the old id is still held, so a leaked interval polls GetRun while nothing else does.
+  speed.hold();
+  const s2 = r.engine.start(false);
+  await speed.arrived();
+  r.engine.dispose();
+  const s3 = r.engine.start(false);
+  speed.release();
+  await s2;
+  eq(await s3, 'r-3', 'the third run starts');
+  r.engine.dispose();
+  await until(() => calls(r.fake, 'StopRun').length === 3, 'every run stopped');
+  starting.hold();
+  const s4 = r.engine.start(false);
+  const before = calls(r.fake, 'GetRun').length;
+  await new Promise<void>((res) => setTimeout(res, 60));
+  eq(calls(r.fake, 'GetRun').length, before, 'no GetRun while a start is waiting on StartRun: no interval survived the disposes');
+  r.engine.dispose();
+  starting.release();
+  await s4;
+  await until(() => calls(r.fake, 'StopRun').some((c) => c.body.run_id === 'r-4'), 'the fourth run is stopped by the dispose that beat its StartRun');
+  eq(r.fake.openStreams(), 0, 'no stream left open');
+  return 'no OpenSubscription or GetRun after a dispose mid-SetSpeed; no interval outlives start/dispose/start/dispose';
+});
+
+// ---------------------------------------------------------------------------
 
 console.log(`${cases} cases, ${cases - failures} passed, ${failures} failed`);
 if (failures > 0) throw new Error(`${failures} case(s) failed`);
