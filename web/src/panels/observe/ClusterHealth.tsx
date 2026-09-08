@@ -4,6 +4,7 @@ import { healthCounts, series, xs } from '../../lib/derive';
 import { Panel, Tile, Unwired } from '../../components/ui';
 import { LineChart } from '../../components/charts/LineChart';
 import { fmtNum } from '../../lib/format';
+import { smoothingLabel, useSmoothing } from '../../lib/smoothing';
 
 // The warming, draining and ejected counts and the failure events are not on the wire yet: the
 // tiles say so, and the fleet-state chart draws the one series the engine measures.
@@ -20,6 +21,7 @@ export function ClusterHealth({
 }) {
   const h = healthCounts(frame);
   const x = xs(frames);
+  const window = smoothingLabel(useSmoothing());
 
   return (
     <div className="grid c2">
@@ -40,7 +42,7 @@ export function ClusterHealth({
         </div>
       </Panel>
 
-      <Panel title="Health is a vector, not a boolean" sub="announced state against true speed" highlight={highlight === 'gray'} id="gray">
+      <Panel title="Health is a vector, not a boolean" sub={`announced state against true speed · ${window}`} highlight={highlight === 'gray'} id="gray">
         <div className="grid c2" style={{ gap: 6 }}>
           <Tile
             label="announcing healthy, degraded"
@@ -68,7 +70,7 @@ export function ClusterHealth({
         </div>
       </Panel>
 
-      <Panel title="Throughput against arrivals" sub="offered, admitted, shed" highlight={highlight === 'arrivals'} id="arrivals">
+      <Panel title="Throughput against arrivals" sub={`offered, completed, shed · ${window}`} highlight={highlight === 'arrivals'} id="arrivals">
         <LineChart
           xs={x}
           series={[

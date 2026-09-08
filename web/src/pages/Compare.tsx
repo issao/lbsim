@@ -13,6 +13,7 @@ import { Panel, Select, Slider, Tile } from '../components/ui';
 import { LineChart } from '../components/charts/LineChart';
 import { Heatmap } from '../components/charts/Heatmap';
 import { fmtMs, fmtNum, fmtPct } from '../lib/format';
+import { smoothingLabel, useSmoothing } from '../lib/smoothing';
 
 const A0: ScenarioConfig = (() => {
   const c = cloneConfig(BASE);
@@ -489,6 +490,7 @@ function Side({
 }) {
   const frames = windowFrames(run.engine, cursorS);
   const last = frames[frames.length - 1];
+  const window = smoothingLabel(useSmoothing());
   const kinds = Object.keys(ROUTING_LABEL) as RoutingKind[];
   const preset = PRESETS.find((p) => p.id === 'p2c');
   const heatRows = useMemo(() => {
@@ -563,7 +565,7 @@ function Side({
         />
       </Panel>
 
-      <Panel title="Time to first token" sub="p50 and p99">
+      <Panel title="Time to first token" sub={`p50 and p99 · ${window}`}>
         <LineChart
           xs={xs(frames)}
           series={[
@@ -576,7 +578,7 @@ function Side({
         />
       </Panel>
 
-      <Panel title="Goodput against throughput">
+      <Panel title="Goodput against throughput" sub={window}>
         <LineChart
           xs={xs(frames)}
           series={[

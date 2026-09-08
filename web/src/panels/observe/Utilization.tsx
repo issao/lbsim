@@ -4,6 +4,7 @@ import { fractionPercentileSeries, percentilesOver, series, xs } from '../../lib
 import { Panel, Tile, Unwired } from '../../components/ui';
 import { LineChart } from '../../components/charts/LineChart';
 import { fmtNum, fmtPct } from '../../lib/format';
+import { smoothingLabel, useSmoothing } from '../../lib/smoothing';
 
 /** The percentiles the wire reports across replicas; the same three the fallback computes. */
 const UTIL_PCTS = [50, 90, 99];
@@ -54,6 +55,7 @@ export function Utilization({
   highlight?: string | null;
 }) {
   const x = xs(frames);
+  const window = smoothingLabel(useSmoothing());
   const gpuSpread = (f: Frame) => spread(f, f.gpuUtilizationP, (r) => r.gpuUtilization);
   const kvSpread = (f: Frame) => spread(f, f.kvUtilizationP, (r) => r.kvUtilization);
   const preemption = String(config.extra.preemption ?? 'never');
@@ -61,7 +63,7 @@ export function Utilization({
 
   return (
     <div className="grid c2">
-      <Panel title="GPU utilization" sub="fleet mean and percentiles across replicas" highlight={highlight === 'gpu'} id="gpu">
+      <Panel title="GPU utilization" sub={`fleet mean and percentiles across replicas · ${window}`} highlight={highlight === 'gpu'} id="gpu">
         <LineChart
           xs={x}
           series={bands(frames, (f) => f.gpuUtilization, gpuSpread)}
@@ -77,7 +79,7 @@ export function Utilization({
         </p>
       </Panel>
 
-      <Panel title="Where the capacity goes" highlight={highlight === 'capacity'} id="capacity">
+      <Panel title="Where the capacity goes" sub={window} highlight={highlight === 'capacity'} id="capacity">
         <div className="grid" style={{ gap: 6, gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))' }}>
           <Tile
             label="gpu utilization"
@@ -102,7 +104,7 @@ export function Utilization({
         </div>
       </Panel>
 
-      <Panel title="Key-value cache utilization" sub="fleet mean and percentiles across replicas" highlight={highlight === 'kv'} id="kv">
+      <Panel title="Key-value cache utilization" sub={`fleet mean and percentiles across replicas · ${window}`} highlight={highlight === 'kv'} id="kv">
         <LineChart
           xs={x}
           series={bands(frames, (f) => f.kvUtilization, kvSpread)}
@@ -125,7 +127,7 @@ export function Utilization({
         </p>
       </Panel>
 
-      <Panel title="Shed load and preemptions" sub="the expensive failures" highlight={highlight === 'preempt'} id="preempt">
+      <Panel title="Shed load and preemptions" sub={`the expensive failures · ${window}`} highlight={highlight === 'preempt'} id="preempt">
         <LineChart
           xs={x}
           series={[

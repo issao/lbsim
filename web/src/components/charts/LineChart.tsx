@@ -188,6 +188,11 @@ export function LineChart({
             ? logPathRuns(xs, s.points, sx, sy, y0).map((run, ri) => (
                 <path
                   key={`${s.key}-${ri}`}
+                  data-key={s.key}
+                  // The drawn values, for a reader outside the page (tools/qa/qa.js checks that a
+                  // smoothing window lowers a series' variance); pixels cannot say that, since the
+                  // axis rescales.
+                  data-values={s.points.map((p) => (p === null ? '' : p.toPrecision(5))).join(',')}
                   d={run.d}
                   fill="none"
                   stroke={s.color}
@@ -200,6 +205,11 @@ export function LineChart({
             : [
                 <path
                   key={s.key}
+                  data-key={s.key}
+                  // The drawn values, for a reader outside the page (tools/qa/qa.js checks that a
+                  // smoothing window lowers a series' variance); pixels cannot say that, since the
+                  // axis rescales.
+                  data-values={s.points.map((p) => (p === null ? '' : p.toPrecision(5))).join(',')}
                   d={pathOf(xs, s.points, sx, sy)}
                   fill="none"
                   stroke={s.color}

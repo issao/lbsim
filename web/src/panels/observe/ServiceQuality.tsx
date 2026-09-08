@@ -9,6 +9,7 @@ import { Panel, Tile } from '../../components/ui';
 import { LineChart } from '../../components/charts/LineChart';
 import { HistogramChart } from '../../components/charts/Histogram';
 import { fmtMs, fmtNum, fmtPct } from '../../lib/format';
+import { smoothingLabel, useSmoothing } from '../../lib/smoothing';
 
 const PCTS = [50, 90, 99, 99.9];
 
@@ -53,6 +54,7 @@ export function ServiceQuality({
   highlight?: string | null;
 }) {
   const x = xs(frames);
+  const window = smoothingLabel(useSmoothing());
   const att = attainment(frame, config.slo);
   const gp = goodput(frame, config.slo);
   const tp = frame.outputTokensPerS;
@@ -73,7 +75,7 @@ export function ServiceQuality({
     <div className="grid c2">
       <Panel
         title="Headline"
-        sub={`over the ${config.slo.ttftMs} ms / ${config.slo.itlMs} ms / ${config.slo.e2eS} s targets`}
+        sub={`over the ${config.slo.ttftMs} ms / ${config.slo.itlMs} ms / ${config.slo.e2eS} s targets · ${window}`}
         highlight={highlight === 'headline'}
         id="headline"
       >
@@ -101,7 +103,7 @@ export function ServiceQuality({
         </p>
       </Panel>
 
-      <Panel title="Goodput against throughput" sub="same unit, same axis" highlight={highlight === 'goodput'} id="goodput">
+      <Panel title="Goodput against throughput" sub={`same unit, same axis · ${window}`} highlight={highlight === 'goodput'} id="goodput">
         <LineChart
           xs={x}
           series={[
@@ -116,7 +118,7 @@ export function ServiceQuality({
 
       <Panel
         title="Badput"
-        sub="1 − goodput / throughput, log scale so the region near 100% goodput has resolution"
+        sub={`1 − goodput / throughput, log scale so the region near 100% goodput has resolution · ${window}`}
         highlight={highlight === 'badput'}
         id="badput"
       >
@@ -144,7 +146,7 @@ export function ServiceQuality({
         </p>
       </Panel>
 
-      <Panel title="Time to first token" sub="percentiles, requested [50, 90, 99, 99.9]" highlight={highlight === 'ttft'} id="ttft">
+      <Panel title="Time to first token" sub={`p50, p90, p99, p99.9 · ${window}`} highlight={highlight === 'ttft'} id="ttft">
         <LineChart
           xs={x}
           series={PCTS.map((p, i) => ({
@@ -160,7 +162,7 @@ export function ServiceQuality({
         />
       </Panel>
 
-      <Panel title="Inter-token latency" sub="percentiles; step time is the floor" highlight={highlight === 'itl'} id="itl">
+      <Panel title="Inter-token latency" sub={`percentiles, step time is the floor · ${window}`} highlight={highlight === 'itl'} id="itl">
         <LineChart
           xs={x}
           series={PCTS.map((p, i) => ({

@@ -19,6 +19,8 @@ import { cloneConfig, diffConfig, FIELD_LABEL } from './config';
 import type { RewindResponse, UpdateResponse } from './types';
 import { type DataMode, type ServerMode, REPLAY_BANNER, dataModeFrom, probeServer, replayOverride, serverMode } from './mode';
 import { IngressClient } from './api';
+import { smoothFrames } from './adapter';
+import { smoothingSeconds, useSmoothing } from './smoothing';
 import {
   type LoadedRun,
   REPLAY_DISABLED_REASON,
@@ -104,7 +106,12 @@ export interface ReplayRunHandle extends RunHandle {
  * is refused and named. `restart` is refused too: the way to see a different run is to pick one.
  */
 export function useReplayRun(loaded: LoadedRun, autoplay = true): ReplayRunHandle {
-  const engine = useMemo(() => new ReplayEngine(loaded.frames, cloneConfig(loaded.config)), [loaded]);
+  // The smoothing window is applied to the recording here, by the same trailing-window definition
+  // the server applies to a live stream; the cursor, the pause and the speed live in this hook, so
+  // a new window swaps the frames under them and moves nothing.
+  const smooth = useSmoothing();
+  const frames = useMemo(() => smoothFrames(loaded.frames, smoothingSeconds(smooth)), [loaded, smooth]);
+  const engine = useMemo(() => new ReplayEngine(frames, cloneConfig(loaded.config)), [frames, loaded]);
   const durationS = engine.durationS;
   // Open where the recording has its first completion. The exporter buckets only the measured
   // records (`RunResult.records` excludes warm-up), so every window before warm-up ends has zero

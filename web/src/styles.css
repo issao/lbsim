@@ -236,6 +236,7 @@ label.check input { accent-color: var(--accent); }
 }
 .seg button:last-child { border-right: 0; }
 .seg button[aria-pressed="true"] { background: var(--accent); color: #fff; }
+.seg .seg-label { padding: 0 6px; font-size: 10px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--ink-3); align-self: center; border-right: 1px solid var(--line); }
 
 /* ---------------------------------------------------------------- playback */
 

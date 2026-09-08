@@ -32,6 +32,7 @@ import {
   type MetricName,
   type RunStatus,
   type StreamPhase,
+  type SubscriptionUpdate,
   type SubscribeOptions,
   type SubscriptionHandle,
   type WireDistribution,
@@ -49,6 +50,7 @@ import {
   uiTargetToWire,
 } from './api';
 import { modeBanner, serverMode } from './mode';
+import { smoothingWindowNs, useSmoothing } from './smoothing';
 
 // ---------------------------------------------------------------------------
 // Stream budget
@@ -170,6 +172,8 @@ export interface ServerRunEngineOptions {
   /** 0 disables the status poll; the self-test calls `pollStatus()` itself. */
   statusPollMs?: number;
   leaseNs?: bigint;
+  /** The smoothing window every subscription opens with; `setSmoothing` changes it live. */
+  smoothingWindowNs?: bigint;
   /** Seams handed to `subscribeToTarget`, so the self-test reconnects without a clock. */
   rnd?: () => number;
   sleep?: (ms: number) => Promise<void>;
@@ -226,6 +230,14 @@ export class ServerRunEngine implements FrameSource {
 
   private readonly opts: ServerRunEngineOptions;
   private metrics: MetricName[];
+  /** `OpenSubscriptionRequest.smoothing_window_ns` on the fleet stream; 0n is the raw cadence. */
+  smoothingWindowNs: bigint;
+  /**
+   * Frames arriving from a subscription reopened under a new window, held here until they have
+   * caught up with the frames on screen and then swapped in at once, so the chart never empties
+   * while the server re-streams the run's history smoothed. Null when no reopen is in progress.
+   */
+  private staging: ReplayFrame[] | null = null;
   /** Metrics this server refused for the fleet scope, dropped from the subscription and named in the banner. */
   unserved: MetricName[] = [];
   private sub: SubscriptionHandle | null = null;
@@ -260,6 +272,7 @@ export class ServerRunEngine implements FrameSource {
     this.startedFrom = this.config;
     this.opts = opts;
     this.metrics = opts.metrics ?? FLEET_METRICS;
+    this.smoothingWindowNs = opts.smoothingWindowNs ?? 0n;
   }
 
   // -- FrameSource ----------------------------------------------------------
@@ -471,6 +484,7 @@ export class ServerRunEngine implements FrameSource {
       samplesPerSimSecond: this.config.samplesPerSimSecond,
       percentiles: DEFAULT_PERCENTILES,
       leaseNs: this.opts.leaseNs ?? LEASE_NS,
+      smoothingWindowNs: this.smoothingWindowNs,
       rnd: this.opts.rnd,
       sleep: this.opts.sleep,
       now: this.opts.now,
@@ -498,6 +512,10 @@ export class ServerRunEngine implements FrameSource {
       onUpdate: (u) => {
         if (this.runId !== id) return;
         const t0 = this.origin(u.simTimeUnixNs);
+        if (this.staging !== null) {
+          this.stageFrame(u, t0);
+          return;
+        }
         // A resumed stream replays from `Last-Event-ID`, and a reopened one from wherever the
         // server starts; either way a sample at or before the last one held is already here.
         const last = this.frames.length ? this.frames[this.frames.length - 1] : null;
@@ -508,6 +526,40 @@ export class ServerRunEngine implements FrameSource {
         this.changed();
       },
     });
+  }
+
+  /**
+   * A fresh subscription streams the run from its first frame, now built over the new window. The
+   * frames on screen keep their place until the new stream has reached the last of them, then the
+   * whole history is replaced in one splice (same array, so every reader sees the swap), and from
+   * there the stream appends as usual. The pace window is not fed with the backlog, which arrives
+   * as fast as the server can encode it and is not the run's pace.
+   */
+  private stageFrame(u: SubscriptionUpdate, t0: bigint): void {
+    const s = this.staging as ReplayFrame[];
+    const prev = s.length ? s[s.length - 1] : null;
+    if (prev !== null && u.simTimeUnixNs <= prev.simTimeUnixNs) return;
+    s.push(frameFromUpdate(u, t0, prev === null ? 0 : prev.tick + 1));
+    if (s.length > MAX_SAMPLES) s.splice(0, s.length - MAX_SAMPLES);
+    const held = this.frames.length ? this.frames[this.frames.length - 1] : null;
+    if (held !== null && u.simTimeUnixNs < held.simTimeUnixNs) return;
+    this.frames.splice(0, this.frames.length, ...s);
+    this.staging = null;
+    this.changed();
+  }
+
+  /**
+   * Change the smoothing window live: the fleet subscription is reopened with it, and nothing else
+   * moves. The run keeps running or stays paused as it was (a fresh open lifts only an idle stop,
+   * never a pause), the cursor stays pinned where it is, and the history is re-streamed smoothed
+   * rather than left half raw. A change before the run exists is applied by the first subscribe.
+   */
+  setSmoothing(windowNs: bigint): void {
+    if (windowNs === this.smoothingWindowNs) return;
+    this.smoothingWindowNs = windowNs;
+    if (!this.runId || this.sub === null || this.disposed) return;
+    this.staging = [];
+    this.subscribe();
   }
 
   /**
@@ -704,6 +756,7 @@ export class ServerRunEngine implements FrameSource {
     this.runId = null;
     this.status = null;
     this.frames.length = 0;
+    this.staging = null;
     this.lastUpdate = null;
     this.refused = null;
     this.pinnedS = null;
@@ -800,13 +853,25 @@ export function useServerRun(initial: ScenarioConfig, opts: ServerRunOptions = {
   const mode = useMemo(() => serverMode(), []);
   const client = useMemo(() => opts.client ?? new IngressClient({ baseUrl: mode.baseUrl }), [opts.client, mode.baseUrl]);
   const [version, bump] = useReducer((n: number) => n + 1, 0);
+  const smooth = useSmoothing();
 
-  // One engine per mount, seeded from the initial config.
+  // One engine per mount, seeded from the initial config and the smoothing window in force, so the
+  // first subscription already carries it rather than opening raw and reopening a render later.
   const engineRef = useRef<ServerRunEngine | null>(null);
   if (engineRef.current === null) {
-    engineRef.current = new ServerRunEngine(initial, { client, metrics: opts.metrics, recordTraces: opts.recordTraces, onChange: bump });
+    engineRef.current = new ServerRunEngine(initial, {
+      client,
+      metrics: opts.metrics,
+      recordTraces: opts.recordTraces,
+      smoothingWindowNs: smoothingWindowNs(smooth),
+      onChange: bump,
+    });
   }
   const engine = engineRef.current;
+
+  useEffect(() => {
+    engine.setSmoothing(smoothingWindowNs(smooth));
+  }, [engine, smooth]);
 
   useEffect(() => {
     void engine.start(autoplay);
@@ -1025,6 +1090,8 @@ export interface ReplicaStreamsOptions {
   /** The page, in the order the slots go round. */
   ids: number[];
   samplesPerSimSecond: number;
+  /** The same window the fleet stream is on, so a row and the chart above it agree. */
+  smoothingWindowNs?: bigint;
   budget: number;
   onRow: (id: number, row: ReplicaSample) => void;
   openStreamImpl?: SubscribeOptions['openStreamImpl'];
@@ -1088,6 +1155,7 @@ export class ReplicaStreams {
         samplesPerSimSecond: this.o.samplesPerSimSecond,
         percentiles: DEFAULT_PERCENTILES,
         leaseNs: LEASE_NS,
+        smoothingWindowNs: this.o.smoothingWindowNs,
         openStreamImpl: this.o.openStreamImpl,
         onUpdate: (u) => this.o.onRow(id, replicaFromUpdate(u)),
       });
@@ -1107,6 +1175,7 @@ export function useServerReplicas(
   runId: string | null,
   ids: number[],
   samplesPerSimSecond: number,
+  smoothingWindowNs = 0n,
   client?: IngressClient
 ): ServerReplicas {
   const mode = useMemo(() => serverMode(), []);
@@ -1114,9 +1183,11 @@ export function useServerReplicas(
   const [state, setState] = useState<ServerReplicas>(EMPTY_REPLICAS);
   const key = JSON.stringify([...new Set(ids)].sort((a, b) => a - b));
 
+  // A new window is a new set of streams and a new history: rows smoothed two ways must not sit in
+  // one sparkline.
   useEffect(() => {
     setState(EMPTY_REPLICAS);
-  }, [c, runId]);
+  }, [c, runId, smoothingWindowNs]);
 
   useEffect(() => {
     if (!runId) return;
@@ -1127,6 +1198,7 @@ export function useServerReplicas(
       runId,
       ids,
       samplesPerSimSecond,
+      smoothingWindowNs,
       budget: streamBudget(),
       onRow: (id, row) =>
         setState((prev) => {
@@ -1155,7 +1227,7 @@ export function useServerReplicas(
       streams.close();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [c, runId, key, samplesPerSimSecond]);
+  }, [c, runId, key, samplesPerSimSecond, smoothingWindowNs]);
 
   return state;
 }

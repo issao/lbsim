@@ -3,6 +3,7 @@ import type { RunHandle } from '../lib/useRun';
 import { SPEEDS, STEP_S } from '../lib/useRun';
 import { fmtTime } from '../lib/format';
 import { updateBannerText } from '../lib/updateBanner';
+import { SMOOTHING_OPTIONS, setSmoothing, useSmoothing } from '../lib/smoothing';
 
 /**
  * Playback lives across the top of the dashboard and the A/B view rather than inside a tab, per
@@ -35,6 +36,7 @@ export function PlaybackBar({ run, dense = false }: { run: RunHandle; dense?: bo
     else override.onPause();
   };
   const [drag, setDrag] = useState<number | null>(null);
+  const smooth = useSmoothing();
 
   const timeAt = useCallback(
     (clientX: number): number => {
@@ -108,6 +110,24 @@ export function PlaybackBar({ run, dense = false }: { run: RunHandle; dense?: bo
         {SPEEDS.map((s) => (
           <button key={s} aria-pressed={run.speed === s} onClick={() => run.setSpeed(s)}>
             {s}&times;
+          </button>
+        ))}
+      </div>
+
+      {/* Issao: "a global selector of a window average to be applied on them, live selectable".
+          One selector for every time-series chart on every surface that shares this bar: live, the
+          subscriptions are reopened with the window; on a replay the recorded frames are smoothed
+          the same way. The heatmap's replica states and the trace list stay per sample. */}
+      <div
+        className="seg smooth"
+        role="group"
+        aria-label="smoothing window"
+        title="smoothing: every time-series chart shows the trailing mean over this much simulated time; latency percentiles are over every request in the window"
+      >
+        <span className="seg-label">avg</span>
+        {SMOOTHING_OPTIONS.map((o) => (
+          <button key={o.id} data-smooth={o.id} aria-pressed={smooth === o.id} onClick={() => setSmoothing(o.id)}>
+            {o.label}
           </button>
         ))}
       </div>

@@ -842,6 +842,8 @@ export interface OpenSubscriptionRequest {
   samplesPerSimSecond: number;
   percentiles?: number[];
   leaseNs?: bigint;
+  /** Simulated nanoseconds the server builds every row over (WIRE.md "Smoothing"); 0 or absent is raw. */
+  smoothingWindowNs?: bigint;
 }
 
 /**
@@ -858,6 +860,8 @@ export function encodeOpenSubscriptionQuery(req: OpenSubscriptionRequest, subscr
     samples_per_sim_second: req.samplesPerSimSecond,
     percentiles: req.percentiles ?? [],
     lease_ns: req.leaseNs,
+    // Zero is the server's default; left off the query so a raw subscription's URL stays as it was.
+    smoothing_window_ns: req.smoothingWindowNs !== undefined && req.smoothingWindowNs > 0n ? req.smoothingWindowNs : undefined,
     subscription_id: subscriptionId,
   }) as Record<string, string | number | bigint | readonly (string | number)[] | undefined>);
 }
@@ -1154,6 +1158,7 @@ export interface SubscribeOptions {
   samplesPerSimSecond: number;
   percentiles?: number[];
   leaseNs?: bigint;
+  smoothingWindowNs?: bigint;
   onUpdate: (u: SubscriptionUpdate) => void;
   onPhase?: (phase: StreamPhase, detail?: string) => void;
   /** Seams, so the selftest can drive this without a clock or a network. */
@@ -1207,6 +1212,7 @@ export function subscribeToTarget(client: IngressClient, o: SubscribeOptions): S
     samplesPerSimSecond: o.samplesPerSimSecond,
     percentiles: o.percentiles,
     leaseNs,
+    smoothingWindowNs: o.smoothingWindowNs,
   };
 
   let phase: StreamPhase = 'opening';

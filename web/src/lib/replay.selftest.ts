@@ -42,6 +42,7 @@ const hist = await load<typeof import('./hist')>('hist');
 const engine = await load<typeof import('./frame')>('frame');
 const mode = await load<typeof import('./mode')>('mode');
 const fixtures = await load<typeof import('./apiFixtures')>('apiFixtures');
+const smoothing = await load<typeof import('./smoothing')>('smoothing');
 
 // ---------------------------------------------------------------------------
 // harness
@@ -673,6 +674,134 @@ check('scenarios/affinity_sticky.txt: the seven prefix-model keys parse, two int
   eq(config.routing.kind, 'prefix_affinity', 'routing');
   return 'all seven prefix-model keys land in typed fields or extra';
 });
+
+// ---------------------------------------------------------------------------
+// Smoothing: the replay half of `smoothing_window_ns`
+// ---------------------------------------------------------------------------
+
+check('smoothFrames: an offered rate alternating 0/100 per sample smooths to 50 over any even window, as the server defines it', () => {
+  // Twenty real frames of the p2c excerpt at 4/s, with the offered rate and the fleet queue made to
+  // oscillate one sample long: the server's own test (run.rs) asks the same of `row_over`.
+  const raw = replay.parseFleetJsonl(fixtures.FLEET_JSONL_EXCERPT, BigInt(fixtures.FLEET_EXCERPT_ORIGIN)).map((f, i) => ({
+    ...f,
+    offeredRps: i % 2 === 0 ? 0 : 100,
+    queuedSeqs: i % 2 === 0 ? 0 : 10,
+  }));
+  eq(raw.length, 20, 'fixture rows');
+  eq(adapter.framesInWindow(0, 0.25), 1, 'zero is raw');
+  eq(adapter.framesInWindow(0.1, 0.25), 1, 'shorter than a sample is raw');
+  eq(adapter.framesInWindow(1, 0.25), 4, '1 s at 4/s');
+  eq(adapter.framesInWindow(1.1, 0.25), 5, '(t - 1.1 s, t] holds five frames');
+  eq(adapter.framesInWindow(30, 0.25), 120, '30 s at 4/s');
+  eq(adapter.framesInWindow(30, 0.1), 300, '30 s at 10/s, in whole milliseconds');
+  ok(adapter.smoothFrames(raw, 0) === raw, 'off is the same array');
+  ok(adapter.smoothFrames(raw, 0.25) === raw, 'a window of one sample is the same array');
+  for (const windowS of [0.5, 1, 2, 5]) {
+    const m = adapter.framesInWindow(windowS, 0.25);
+    const out = adapter.smoothFrames(raw, windowS);
+    eq(out.length, raw.length, `${windowS} s: one frame per input frame`);
+    for (let i = m - 1; i < out.length; i++) {
+      eq(out[i].offeredRps, 50, `${windowS} s: offered at frame ${i}`);
+      eq(out[i].queuedSeqs, 5, `${windowS} s: queued at frame ${i}`);
+    }
+    eq(out[0].offeredRps, raw[0].offeredRps, `${windowS} s: the first frame is its own window`);
+    for (let i = 0; i < out.length; i++) {
+      eq(out[i].simS, raw[i].simS, `${windowS} s: instant kept at ${i}`);
+      eq(out[i].tick, raw[i].tick, `${windowS} s: tick kept at ${i}`);
+      eq(out[i].readyReplicas, raw[i].readyReplicas, `${windowS} s: ready count is the sample's`);
+    }
+  }
+  // Every other gauge and rate is the mean of the raw frames in its window, and a metric the
+  // engine does not produce is never invented.
+  const out = adapter.smoothFrames(raw, 1);
+  const mean = (xs: number[]) => xs.reduce((a, b) => a + b, 0) / xs.length;
+  for (let i = 0; i < out.length; i++) {
+    const window = raw.slice(Math.max(0, i - 3), i + 1);
+    near(out[i].completedRps, mean(window.map((f) => f.completedRps)), 1e-9, `frame ${i}: completed rate is the window mean`);
+    near(out[i].kvUtilization, mean(window.map((f) => f.kvUtilization)), 1e-12, `frame ${i}: kv utilization is the window mean`);
+  }
+  ok(out.every((f) => Number.isNaN(f.wastedGpuFraction)), 'a metric the engine does not produce stays NaN');
+  return `0/100 -> 50 over 2, 4, 8 and 20 frames; ${raw.length} frames in, ${out.length} out`;
+});
+
+check('smoothFrames: latency histograms merge over the window, and exact reads off the merge', () => {
+  const raw = replay.parseFleetJsonl(fixtures.FLEET_JSONL_EXCERPT, BigInt(fixtures.FLEET_EXCERPT_ORIGIN));
+  const out = adapter.smoothFrames(raw, 1);
+  for (let i = 0; i < raw.length; i++) {
+    const window = raw.slice(Math.max(0, i - 3), i + 1);
+    const merged = engine.mergeWindow(window, (f) => f.ttft);
+    // Float32 bucket masses summed in a different order: equal to a part in a million, not to the bit.
+    near(out[i].ttft.count, merged.count, 1e-6 * Math.max(1, merged.count), `frame ${i}: ttft count is the window's`);
+    near(out[i].ttft.sum, merged.sum, 1e-6 * Math.max(1, merged.sum), `frame ${i}: ttft sum`);
+    near(hist.quantile(out[i].ttft, 99), hist.quantile(merged, 99), 1e-6 * Math.max(1, merged.max), `frame ${i}: p99 is the merged p99`);
+    eq(out[i].ttft.min, merged.min, `frame ${i}: min`);
+    eq(out[i].ttft.max, merged.max, `frame ${i}: max`);
+    const e = out[i].exact.ttft;
+    if (merged.count > 0) {
+      ok(e !== undefined && e.fromMergedHistogram, `frame ${i}: exact says it came from the merge`);
+      near(e?.count ?? NaN, merged.count, 1e-6 * Math.max(1, merged.count), `frame ${i}: exact count`);
+      eq(adapter.latencyMs(out[i], 'ttft', 99), hist.quantile(out[i].ttft, 99), `frame ${i}: latencyMs p99 reads the merge`);
+    } else {
+      eq(e, undefined, `frame ${i}: no exact without completions`);
+    }
+  }
+  const last = raw.length - 1;
+  const single = adapter.latencyMs(raw[last], 'ttft', 99);
+  const smoothed = adapter.latencyMs(out[last], 'ttft', 99);
+  return `frame ${last}: p99 ${single.toFixed(0)} ms per sample, ${smoothed.toFixed(0)} ms over 1 s (${out[last].ttft.count} requests)`;
+});
+
+check('smoothFrames: replica rows average per replica over the window; state and presence are the sample\'s', () => {
+  const raw = replay.parseFleetJsonl(fixtures.FLEET_JSONL_EXCERPT, BigInt(fixtures.FLEET_EXCERPT_ORIGIN)).map((f, i) => ({
+    ...f,
+    replicas: [
+      { ...blankReplica(0), state: i % 2 === 0 ? ('READY' as const) : ('DEGRADED' as const), queuedSeqs: i % 2 === 0 ? 0 : 10, kvUtilization: 0.5 },
+      { ...blankReplica(1), queuedSeqs: i, kvUtilization: NaN },
+    ],
+  }));
+  const out = adapter.smoothFrames(raw, 1);
+  eq(out[7].replicas[0].queuedSeqs, 5, 'replica 0 queue over frames 4..7');
+  eq(out[7].replicas[0].state, 'DEGRADED', 'state is frame 7\'s own');
+  eq(out[6].replicas[0].state, 'READY', 'state is frame 6\'s own');
+  eq(out[7].replicas[1].queuedSeqs, 5.5, 'replica 1 queue is the mean of 4,5,6,7');
+  ok(Number.isNaN(out[7].replicas[1].kvUtilization), 'a value never carried stays NaN');
+  eq(out[7].replicas[0].kvUtilization, 0.5, 'a steady value stays');
+  eq(out[19].replicas[1].queuedSeqs, 17.5, 'the window slides: 16..19');
+  return 'replica 0: 0/10 -> 5, state per sample; replica 1: 4..7 -> 5.5, 16..19 -> 17.5';
+});
+
+check('smoothing selector: the URL wins over storage, storage over the default; off leaves the query alone', () => {
+  eq(smoothing.parseSmoothingId('30s'), '30s', 'parse');
+  eq(smoothing.parseSmoothingId(' 2M '), '2m', 'parse trims and lowers');
+  eq(smoothing.parseSmoothingId('7s'), null, 'not an option');
+  eq(smoothing.parseSmoothingId(null), null, 'absent');
+  eq(smoothing.smoothingFromUrl('?server=off&smooth=30s', ''), '30s', 'query string');
+  eq(smoothing.smoothingFromUrl('', '#/dashboard?smooth=5s'), '5s', 'hash route query');
+  eq(smoothing.smoothingFromUrl('?smooth=bogus', '#/x?smooth=5s'), null, 'a bad query value is not overridden by the hash');
+  eq(smoothing.initialSmoothing('?smooth=15s', '', '1s'), '15s', 'URL over storage');
+  eq(smoothing.initialSmoothing('', '', '1s'), '1s', 'storage over default');
+  eq(smoothing.initialSmoothing('', '', null), 'off', 'default');
+  eq(smoothing.withSmoothingInSearch('?server=off', '30s'), '?server=off&smooth=30s', 'written beside other parameters');
+  eq(smoothing.withSmoothingInSearch('?server=off&smooth=30s', 'off'), '?server=off', 'off removes it');
+  eq(smoothing.withSmoothingInSearch('?smooth=30s', 'off'), '', 'nothing left');
+  eq(smoothing.smoothingWindowNs('30s'), 30_000_000_000n, 'wire form');
+  eq(smoothing.smoothingWindowNs('off'), 0n, 'off is zero');
+  eq(smoothing.smoothingLabel('30s'), '30 s window', 'readout');
+  eq(smoothing.smoothingLabel('2m'), '2 min window', 'readout, minutes');
+  eq(smoothing.smoothingLabel('off'), 'per sample', 'readout when off');
+  eq(smoothing.SMOOTHING_OPTIONS.map((o) => o.seconds), [0, 1, 5, 15, 30, 120], 'off · 1 s · 5 s · 15 s · 30 s · 2 min');
+  return 'six options; ?smooth= over localStorage over off';
+});
+
+/** A replica row with nothing measured, for windows built by hand. */
+function blankReplica(id: number): import('./frame').ReplicaSample {
+  return {
+    id, present: true, state: 'READY', weight: 1, queuedSeqs: NaN, runningSeqs: NaN, batchSize: NaN, kvTokensResident: NaN,
+    kvUtilization: NaN, gpuUtilization: NaN, gpuComputeBoundFraction: NaN, stepTimeMs: NaN, queueWaitMs: NaN, ttftMeanMs: NaN,
+    itlMeanMs: NaN, prefixHitRate: NaN, admittedRps: NaN, completedRps: NaN, preemptionsPerS: NaN, trueSpeedMultiplier: NaN,
+    telemetryStalenessMs: NaN,
+  };
+}
 
 // ---------------------------------------------------------------------------
 
