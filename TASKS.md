@@ -1,8 +1,8 @@
 # TASKS — things that need Issao
 
-Last updated: 2026-09-07 11:22 PDT by Claude.
+Last updated: 2026-09-07 19:13 PDT by Claude.
 
-**PAUSED 2026-09-07 11:22 PDT, quota**, per you via main: *"actually, pause everything, we are almost out of quota. we will resume when we are back within limit"*. U79–U83 are paused in flight with the tech lead's graph entry pending; everything below stands as it was. Resume by a message from main; agents re-spawned from `docs/agents/`.
+**RESUMED 2026-09-07 19:13 PDT** at your "resume", relayed by main. The pause (11:22–19:13, quota) changed nothing on `master` but the tech lead's graph checkpoint (1a58186). The tech lead is `a56ff1d3950e7375f` now, resuming U79–U83 from the four WIP branches; U80's checkpoint is already merged (023672d, 19:13); `STATUS.md` has their state. Everything below stands as it was; one thing needs a word from you tonight, item 2.
 
 **Resumed 2026-09-07 11:17 PDT.** The fleet stopped at 21:00 on 2026-09-06 at your request (*"we are approaching
 limit... tie up loose ends... give me a doc summarizing the state and most interesting outcomes with deep
@@ -41,8 +41,10 @@ far-away items and eight requirements no plan document mentions: the `disable_de
 latency forecasting, redundancy policies, model-weight locality, per-machine trace spans, the fluid
 limit, and the training-versus-serving question.
 
-**If you say nothing:** it is deleted at the next housekeeping round after 24 hours, 2026-09-07 16:19. The
-reading is stale by a day of work now; `docs/execution-graph.md` and `STATUS.md` are current.
+**The default window passed during the pause** (16:19 today; the fleet was stopped from 11:22 to 19:13), so the file is
+still on `master` and Claude will not delete it tonight without your word. One line from you settles it: *"delete
+vision-progress"* or *"keep it"*. **If you say nothing:** it stays until the first housekeeping round after you next
+push; the reading is stale by a day of work now, `docs/execution-graph.md` and `STATUS.md` are current.
 
 ## 3. Delete the stale `claude/*` branches on `origin`
 
