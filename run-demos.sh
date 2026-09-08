@@ -89,5 +89,9 @@ echo; echo "== 19. KV memory tiering: a cluster DRAM pool, an SSD pool under it,
 $S compare scenarios/tier_dram.txt scenarios/tier_dram_ssd.txt scenarios/tier_contended.txt \
            --out out/19-tiering.html
 
+echo; echo "== 20. autoscaling with a cold start: a 200 s day on a fixed 256-replica fleet, against target-utilization scaling that turns up in 30 s and in 5 s =="
+$S compare scenarios/autoscale_none.txt scenarios/autoscale_cold30.txt scenarios/autoscale_cold5.txt \
+           --out out/20-autoscaling.html
+
 echo; echo "reports in out/"
 echo "for machine-readable telemetry, add: --telemetry out/NAME.tele [--telemetry-budget-mb N]"

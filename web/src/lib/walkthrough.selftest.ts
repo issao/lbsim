@@ -154,12 +154,15 @@ const EXPORTED_RUN_IDS = new Set([
   '19-tiering/tier-dram',
   '19-tiering/tier-dram-ssd',
   '19-tiering/tier-contended',
+  '20-autoscaling/autoscale-none',
+  '20-autoscaling/autoscale-cold30',
+  '20-autoscaling/autoscale-cold5',
 ]);
 
 /** U48's ten selected dynamics, plus spec-decode (U26b), prefix affinity (U27b), gray failure
  * (U31b), the affinity failover cascade (U27d), the scheduling seam's slo-classes (U108), the
- * staleness loop's Bode plot (U33) and KV tiering (U30): every one of these must have a script with
- * a `run` field. */
+ * staleness loop's Bode plot (U33), KV tiering (U30) and autoscaling with a cold start (U32):
+ * every one of these must have a script with a `run` field. */
 const SELECTED_IDS = [
   'rolling-hotspot',
   'stale-telemetry',
@@ -179,6 +182,7 @@ const SELECTED_IDS = [
   'slo-classes',
   'stale-oscillation',
   'kv-tiering',
+  'diurnal-autoscale',
 ];
 
 // ---------------------------------------------------------------------------

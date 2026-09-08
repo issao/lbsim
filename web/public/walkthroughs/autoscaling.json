@@ -1,0 +1,91 @@
+{
+  "id": "diurnal-autoscale",
+  "dynamic": 12,
+  "title": "Diurnal autoscaling with a cold start",
+  "summary": "A fleet that sizes itself from the delayed view pays twice for a rise in load: once for the controller's lag and once for the cold start. A 5 s turn-up, the warm-pool case, against a 30 s one; single cluster.",
+  "run": "20-autoscaling/autoscale-cold30",
+  "compare": "20-autoscaling/autoscale-cold5",
+  "scenario": {
+    "name": "showcase: diurnal autoscaling",
+    "seed": 20260906,
+    "durationS": 400,
+    "fleet.replicas": 256,
+    "routing.kind": "power_of_two_choices",
+    "workload.arrivalRps": 560
+  },
+  "steps": [
+    {
+      "at_sim_s": 12,
+      "speed": 4,
+      "control_tab": "run",
+      "observe_tab": "cluster",
+      "highlight": "fleet-state",
+      "title": "The first decision trims a fleet that is still filling",
+      "body": [
+        "Two hundred and fifty-six replicas, a 200 s day: offered load is a sine from 224 to 896 requests a second around the base fleet's 560. The controller reads the delayed views every 10 s and holds mean running per ready replica at 0.7 of a batch of 32, up when it is over, down only when it is under half of that, at most 32 replicas a decision, never down within 30 s of an up. The fleet may go from 64 to 384 slots.",
+        "Its first view, at t=10 s, shows a fleet that started empty and is still filling: six sequences running per replica, 0.19 of a batch. That is below the dead band, so it drains 32. The other 224 are already at 13 by the time the drain lands. A controller's first mistake is always to believe the first sample."
+      ],
+      "look_for": "Ready at 224 and draining at 30: the fleet-state counters, and that the ready count moved before the load did."
+    },
+    {
+      "at_sim_s": 60,
+      "speed": 4,
+      "observe_tab": "cluster",
+      "highlight": "fleet-state",
+      "title": "The day's peak arrives before the replicas do",
+      "body": [
+        "Offered load crosses 0.7 of the fleet's batch at t=40 s and the controller turns replicas up. Here they warm for 30 s, so at the peak, t=50 s, there are 22 warming and none of them serving; at t=60 s there are 31. They come ready between t=70 and t=90 s, on a load that is already falling.",
+        "In the compared run the same decision at t=40 s has replicas serving by t=45 s: 234 ready at the peak, 245 at t=60 s. Day one costs little either way, 0.94 to 0.96 attainment against the fixed fleet's 0.96, because the controller started from 256 and only had 32 to win back. The rise that hurts is the one that starts from the floor."
+      ],
+      "look_for": "Warming at 31 while ready holds at 224 in this run; ready already at 245 in the compared one."
+    },
+    {
+      "at_sim_s": 150,
+      "speed": 4,
+      "observe_tab": "cluster",
+      "highlight": "fleet-state",
+      "title": "Scaling down is a drain, not a switch",
+      "body": [
+        "From t=100 s the trough: utilization falls under 0.35 and the controller drains 32 replicas a decision, the ones the view shows lightest. A drained replica takes no new work and finishes what it holds, and with an output tail of a thousand tokens or more that is ten to twenty seconds, so the draining count sits between 65 and 68 for forty seconds while the ready count steps down to the floor of 64 at t=160 s.",
+        "The fixed fleet is at 256 for the same trough, running three and a half sequences per replica. Over the measured window both autoscaled fleets average 181 replicas ready or warming against 256: 29 percent fewer replica-seconds. That is the saving; what follows is its price."
+      ],
+      "look_for": "Draining in the sixties and ready falling by 32 every 10 s, in both runs alike."
+    },
+    {
+      "at_sim_s": 200,
+      "speed": 2,
+      "observe_tab": "quality",
+      "highlight": "slo",
+      "title": "The rise from the floor: the signal saturates, and the cold start sets the clock",
+      "body": [
+        "Sixty-four replicas serve 288 requests a second at rated capacity; by t=190 s the day offers 509. Every batch is full, so the view says utilization 1.0 and cannot say more: a proportional controller on a signal that tops out at one can only ask for ready divided by target, 1.43 times the fleet, per decision cycle. With a 30 s cold start the cycle is the cold start: 64 to 92 to 132 to 189 to 252 ready, each step thirty seconds after the last, while the queue goes from 639 at t=180 s to 4854 at t=200 s and attainment falls to 0.10.",
+        "The compared run has the same ceiling and a 5 s cycle: 87 to 124 to 156 to 188 to 220 to 244 ready between t=190 and t=240 s, one step per tick. Its queue peaks at 1124, attainment dips to 0.67 at t=210 s and is back at 0.93 by t=240 s. Same controller, same day, same signal; the cold start is the only difference and it is the whole difference."
+      ],
+      "look_for": "The attainment line at 0.10 here against 0.79 in the compared run, and the queue depth on the cluster tab if you flip back."
+    },
+    {
+      "at_sim_s": 300,
+      "speed": 4,
+      "observe_tab": "quality",
+      "highlight": "slo",
+      "title": "The queue outlives the peak",
+      "body": [
+        "The peak was at t=250 s. The queue peaks at 30,437 requests at t=280 s and the fleet does not reach 252 ready until t=350 s, when offered load is back at the trough. Attainment stays between 0.02 and 0.21 from t=220 to t=340 s, and 9,020 requests time out at the 60 s client limit against 317 in the fixed fleet and 431 in the 5 s run.",
+        "Over the run: 96.7 percent attainment for the fixed 256, 91.6 for the 5 s turn-up, 51.3 for the 30 s one. The drain's cost is inside the 431: a draining replica almost always finishes inside its 60 s timeout, so what the scale-down loses is bounded by about a hundred requests in 190,000. The cold start, not the drain, is where the money went."
+      ],
+      "look_for": "The SLO line still on the floor here while the compared run has been back above 0.9 for a minute."
+    },
+    {
+      "at_sim_s": 380,
+      "speed": 4,
+      "observe_tab": "cluster",
+      "highlight": "fleet-state",
+      "title": "What this is a proxy for, and what it is not",
+      "body": [
+        "The 5 s run stands in for a warm pool: a machine already up that only has to load weights. The 30 s run is a turn-up from nothing at the optimistic end; real cold starts run to minutes, and every minute is another 1.43x cycle the fleet cannot make. The fix that matters is on the signal side: a queue-aware target takes the ceiling off, because queue depth does not saturate at one.",
+        "Not modelled: more than one cluster, geography, or predictive scaling on the day's shape, which is dynamic 12's other half. The day itself is a guess, a 200 s sine so the demo runs in seconds; a real diurnal ramp is gentler and the controller's cycle correspondingly less punishing. The numbers here are the shape of the cost, not its size."
+      ],
+      "look_for": "Ready back at the floor and draining again: the second night, in both runs, indistinguishable."
+    }
+  ]
+}

@@ -39,6 +39,9 @@
 2-staleness/03-telemetry_interval_ms___1000.summary.csv      fingerprint=16448447818164244385   events=245191    summary_md5=9847d8b22c81
 2-staleness/04-telemetry_interval_ms___2000.summary.csv      fingerprint=7251813521880172349    events=183639    summary_md5=ee40f7991bb9
 2-staleness/05-telemetry_interval_ms___4000.summary.csv      fingerprint=17180289366105092703   events=70869     summary_md5=f72b7ca7e5c7
+20-autoscaling/00-autoscale_none.summary.csv                 fingerprint=5386345349897519539    events=8029441   summary_md5=8ff26a66e202
+20-autoscaling/01-autoscale_cold30.summary.csv               fingerprint=13060766991648619877   events=5243408   summary_md5=0b57e1b8cb42
+20-autoscaling/02-autoscale_cold5.summary.csv                fingerprint=8937971653094848932    events=5966691   summary_md5=149853c25f68
 3-chunking/00-step_token_budget___512.summary.csv            fingerprint=10009565252466278158   events=2379996   summary_md5=84cf6a70c20a
 3-chunking/01-step_token_budget___1024.summary.csv           fingerprint=15913688846466930736   events=2391338   summary_md5=dc576838d6f9
 3-chunking/02-step_token_budget___2048.summary.csv           fingerprint=18263792306167486998   events=2397207   summary_md5=f7d15119fa56
@@ -105,3 +108,33 @@ h-h5-bursty-step.html                                        html_md5=7be626dd47
 h-h6-low-rate-heavy-context.html                             html_md5=c2352524a16e
 h-h7-code-completion.html                                    html_md5=d4635cdff6ac
 h-h8-retry-storm.html                                        html_md5=e2e4641c5111
+1-routing.html                                               html_md5=dad494155b1b
+10-probes.html                                               html_md5=55909168ff62
+11-preemption.html                                           html_md5=f3a627100d48
+12-forecast-load.html                                        html_md5=86adc182f694
+13-forecast-latency.html                                     html_md5=399a015492ae
+13-herd-fleet.html                                           html_md5=f27aa3d107c4
+14-affinity.html                                             html_md5=f82024f046e9
+15-gray-failure.html                                         html_md5=11e6c6d7dfc3
+16-scheduling.html                                           html_md5=d73cc7f1669c
+17-cascade.html                                              html_md5=e9e503a41201
+18-bode.html                                                 html_md5=4bd107b90b4f
+2-staleness.html                                             html_md5=270b4c12e04d
+20-autoscaling.html                                          html_md5=fb22d23698fe
+3-chunking.html                                              html_md5=743b2ccf7fe8
+4-load-curve.html                                            html_md5=764d90715347
+5-long-context.html                                          html_md5=14690f7574f4
+6-retry.html                                                 html_md5=e4306419a3a2
+7-least-queue-tokens.html                                    html_md5=078ae3f6f569
+7-no-decode.html                                             html_md5=b568a3f4a9a9
+8-admission.html                                             html_md5=53ac28d4e526
+8-probe-live.html                                            html_md5=fc57dab499f0
+9-fair-share.html                                            html_md5=b87216b8e6ab
+h-h1-light-chat.html                                         html_md5=7e746d7b5323
+h-h2-near-rated-chat.html                                    html_md5=1b632ff85bc4
+h-h3-over-rated-chat.html                                    html_md5=113026b79260
+h-h4-long-prompt-mixture.html                                html_md5=d04ae03fafa8
+h-h5-bursty-step.html                                        html_md5=fe7dcdd3f026
+h-h6-low-rate-heavy-context.html                             html_md5=76203cf17002
+h-h7-code-completion.html                                    html_md5=178b174f1a1d
+h-h8-retry-storm.html                                        html_md5=d8d178cb5cab

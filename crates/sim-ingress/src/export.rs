@@ -763,6 +763,11 @@ pub const DEMOS: &[Demo] = &[
         files: &["tier_dram.txt", "tier_dram_ssd.txt", "tier_contended.txt"],
         sweep: None,
     },
+    Demo {
+        group: "20-autoscaling",
+        files: &["autoscale_none.txt", "autoscale_cold30.txt", "autoscale_cold5.txt"],
+        sweep: None,
+    },
 ];
 
 /// Set one key, through the text form so there is exactly one place that knows the key names. The
