@@ -205,7 +205,7 @@ function WalkthroughOver({
   const [sourceLabel, setSourceLabel] = useState('');
   // A refusal the handle reports after the fact (the server's update is fire-and-forget).
   const [lateReason, setLateReason] = useState<string | null>(null);
-  // Issao: "can you make the showcase card draggable?" The card itself is not remounted between
+  // Issao asked, verbatim, "can you make the showcase card draggable?" The card itself is not remounted between
   // steps -- the runner swaps `current` and the JSX below re-renders in place -- so the offset
   // lives on this one element across the whole walkthrough. One storage key for every script: the
   // position is a browser habit ("I keep it over there"), not a per-walkthrough setting.
