@@ -1,8 +1,8 @@
 // The walkthrough state machine, with no framework and no engine in it. A script is a list of
 // steps, each a simulated timestamp with conditions to set first; the runner applies the
 // conditions, moves the run to the timestamp, pauses, and says which step it is on. It is
-// written over the smallest handle that can do that, so the same machine drives the mock engine,
-// a recording and a live server run, and the self-test drives it with a fake.
+// written over the smallest handle that can do that, so the same machine drives a recording and a
+// live server run, and the self-test drives it with a fake.
 //
 // Refusals are state, not exceptions. A recording cannot take an override, and a server may
 // answer an update with 501 until the call is implemented; either way the step still plays and
@@ -38,8 +38,8 @@ export interface StepState {
 
 export const REPLAY_SET_REFUSED = 'replay of a recording; overrides need a live run';
 
-/** The mock has always run its walkthroughs at 2x; a server run is real work per second. */
-export const DEFAULT_SPEED: Record<DataMode, number> = { mock: 2, server: 1, replay: 1 };
+/** A server run is real work per second, and a recording plays at the same pace so the two read alike. */
+export const DEFAULT_SPEED: Record<DataMode, number> = { server: 1, replay: 1 };
 
 export class WalkthroughRunner {
   private st: StepState;

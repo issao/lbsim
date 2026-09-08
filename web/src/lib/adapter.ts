@@ -1,7 +1,7 @@
 // SubscriptionUpdate row -> the panels' Frame.
 //
-// The panels were written against the mock engine's per-tick `Frame`, and they never see the wire.
-// This is the one place the two meet: a fleet-scope `MetricRow` becomes a `Frame` with the fields the
+// The panels read a per-sample `Frame`, and they never see the wire. This is the one place the two
+// meet: a fleet-scope `MetricRow` becomes a `Frame` with the fields the
 // engine really produced filled in and everything else left honest. Per docs/dashboard-plan.md
 // section 3 and WIRE.md's metric table:
 //
@@ -24,7 +24,8 @@
 // decoder. A window with no completions has no distribution at all: the histogram stays empty and
 // `exact` stays absent, which `latencyMs` reports as NaN. Zero would be a lie.
 
-import type { FractionPercentiles, Frame, ReplicaSample } from './engine';
+import type { FractionPercentiles, Frame, ReplicaSample } from './frame';
+import type { ReplicaState } from './types';
 import type { MetricName, SubscriptionUpdate, WireDistribution } from './api';
 import { relSeconds } from './api';
 import { type Histogram, HIST_BUCKETS, newHistogram, record } from './hist';
@@ -65,20 +66,24 @@ const LATENCY_METRIC: Record<LatencyKind, MetricName> = {
 
 const NS_PER_MS = 1e6;
 
+/** `METRIC_REPLICA_STATE` is the state's enum number on the wire; anything else is a row that did not carry it. */
+const REPLICA_STATE: Record<number, ReplicaState> = { 1: 'READY', 2: 'DEGRADED', 3: 'EJECTED' };
+
 /**
- * One replica-scope update as the heatmap's row. The engine records queued, running, KV and the last
- * step; everything else the interface has is NaN, so a column the wire never carried reads as
- * missing rather than as a measured zero. `present` and `state` are what a static fleet is: there
- * is no lifecycle in the engine yet, so every replica in the row exists and is ready.
+ * One replica-scope update as the heatmap's row. The engine records queued, running, KV, the last
+ * step, GPU utilization, the state, the true speed and the window's TTFT; everything else the
+ * interface has is NaN (or `UNKNOWN`), so a column the wire never carried reads as missing rather
+ * than as a measured zero. `present` is what a static fleet is: every replica in the row exists.
  */
 export function replicaFromUpdate(u: SubscriptionUpdate): ReplicaSample {
   const v = (m: MetricName): number => u.row.values[m] ?? NaN;
   const runningSeqs = v('METRIC_RUNNING_SEQS');
   const stepTimeS = v('METRIC_STEP_TIME');
+  const ttft = u.row.distributions.METRIC_TTFT;
   return {
     id: Number(u.row.target.replicaId ?? -1n),
     present: true,
-    state: 'READY',
+    state: REPLICA_STATE[v('METRIC_REPLICA_STATE')] ?? 'UNKNOWN',
     weight: 1,
     queuedSeqs: v('METRIC_QUEUED_SEQS'),
     runningSeqs,
@@ -89,13 +94,14 @@ export function replicaFromUpdate(u: SubscriptionUpdate): ReplicaSample {
     gpuComputeBoundFraction: v('METRIC_GPU_COMPUTE_BOUND_FRACTION'),
     stepTimeMs: stepTimeS * 1000,
     queueWaitMs: NaN,
-    ttftMeanMs: NaN,
+    // A window with no completions has no TTFT at all, NaN rather than a zero that reads as fast.
+    ttftMeanMs: ttft !== undefined && ttft.count > 0n ? ttft.mean / NS_PER_MS : NaN,
     itlMeanMs: NaN,
     prefixHitRate: NaN,
     admittedRps: NaN,
     completedRps: NaN,
     preemptionsPerS: NaN,
-    trueSpeedMultiplier: NaN,
+    trueSpeedMultiplier: v('METRIC_TRUE_SPEED_MULTIPLIER'),
     telemetryStalenessMs: NaN,
   };
 }

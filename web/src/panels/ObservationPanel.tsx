@@ -5,7 +5,7 @@ import { ServiceQuality } from './observe/ServiceQuality';
 import { MachineLevel } from './observe/MachineLevel';
 import { Utilization } from './observe/Utilization';
 import { Traces } from './observe/Traces';
-import type { Frame } from '../lib/engine';
+import type { Frame } from '../lib/frame';
 
 export type ObserveTab = 'cluster' | 'quality' | 'machine' | 'utilization' | 'traces';
 
@@ -19,8 +19,8 @@ const TABS: TabDef<ObserveTab>[] = [
 
 /**
  * Only the active tab is mounted. That is the data budget rule from docs/ui-spec.md section 3
- * expressed as component structure: switching tabs unmounts the previous panel, which closes its
- * subscriptions, and nothing has to remember to do it.
+ * expressed as component structure: switching tabs unmounts the previous panel, which closes the
+ * per-replica subscriptions the machine-level view holds, and nothing has to remember to do it.
  */
 export function ObservationPanel({
   run,
@@ -41,16 +41,7 @@ export function ObservationPanel({
     <section className="panel observe-panel">
       <Tabs tabs={TABS} value={tab} onChange={onTab} scope="observe" />
       <div className="panel-body scroll">
-        {tab === 'cluster' ? (
-          <ClusterHealth
-            engine={run.engine}
-            frames={frames}
-            frame={frame}
-            config={run.config}
-            cursorS={run.cursorS}
-            highlight={highlight}
-          />
-        ) : null}
+        {tab === 'cluster' ? <ClusterHealth frames={frames} frame={frame} config={run.config} highlight={highlight} /> : null}
         {tab === 'quality' ? (
           <ServiceQuality frames={frames} frame={frame} config={run.config} highlight={highlight} />
         ) : null}
@@ -66,15 +57,7 @@ export function ObservationPanel({
         {tab === 'utilization' ? (
           <Utilization frames={frames} frame={frame} config={run.config} highlight={highlight} />
         ) : null}
-        {tab === 'traces' ? (
-          <Traces
-            frames={frames}
-            config={run.config}
-            paused={run.paused}
-            onPause={run.setPaused}
-            highlight={highlight}
-          />
-        ) : null}
+        {tab === 'traces' ? <Traces /> : null}
       </div>
     </section>
   );

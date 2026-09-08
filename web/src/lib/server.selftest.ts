@@ -190,9 +190,9 @@ await checkAsync('(a) ListRuns answers and dataModeFrom picks server', async () 
   eq(mode.dataModeFrom(UNCONFIGURED, false, null, true), 'server', 'reachable, no index, no override');
   eq(mode.dataModeFrom(UNCONFIGURED, true, null, true), 'server', 'reachable beats a served index');
   eq(mode.dataModeFrom(UNCONFIGURED, true, true, true), 'replay', '?replay=1 asks for the recording instead');
-  eq(mode.dataModeFrom(UNCONFIGURED, true, false, true), 'mock', '?replay=0 forces mock');
+  eq(mode.dataModeFrom(UNCONFIGURED, true, false, true), 'none', '?replay=0 skips the recordings');
   eq(mode.dataModeFrom(UNCONFIGURED, true, null, false), 'replay', 'unreachable falls back to the index');
-  eq(mode.dataModeFrom(UNCONFIGURED, false, null, false), 'mock', 'unreachable and no index is mock');
+  eq(mode.dataModeFrom(UNCONFIGURED, false, null, false), 'none', 'unreachable and no index is none');
 
   const refusing = new api.IngressClient({ baseUrl: '', fetchImpl: async () => new Response('<!doctype html>', { status: 200 }) });
   eq(await mode.probeServer(refusing, UNCONFIGURED), false, 'a dev server answering HTML is not a server');

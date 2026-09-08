@@ -158,7 +158,7 @@ const script: WalkthroughScript = {
 // ---------------------------------------------------------------------------
 
 await check('(a) steps advance in order to each at_sim_s', async () => {
-  const h = fakeHandle('mock');
+  const h = fakeHandle('server');
   const r = new runner.WalkthroughRunner(script, h);
   eq(r.state().index, -1, 'before the first step');
   const reached: number[] = [];
@@ -223,7 +223,7 @@ await check('(d) a rejected live update yields its reason, and the step still ad
 });
 
 await check('(e) done after the last step, and next() past it is a no-op', async () => {
-  const h = fakeHandle('mock');
+  const h = fakeHandle('server');
   const r = new runner.WalkthroughRunner(script, h);
   for (let i = 0; i < script.steps.length; i++) {
     const s = await r.next();
@@ -239,7 +239,7 @@ await check('(e) done after the last step, and next() past it is a no-op', async
 });
 
 await check('skip seeks to the timestamp and pauses; idle skip is a no-op', async () => {
-  const h = fakeHandle('mock');
+  const h = fakeHandle('server');
   const r = new runner.WalkthroughRunner(script, h);
   const before = await r.next();
   const s = r.skip();

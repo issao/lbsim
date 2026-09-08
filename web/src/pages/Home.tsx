@@ -6,7 +6,7 @@ export function Home() {
       <h1>lbsim</h1>
       <p className="lede">
         lbsim is a discrete-event simulator of a cloud LLM inference fleet and the load balancer in front of it.
-        Everything below is one of three kinds: live, replay or mock.
+        Everything below is one of two kinds: live or replay.
       </p>
 
       <h2 className="section-label" style={{ fontSize: 13, fontWeight: 600, margin: '26px 0 6px' }}>
@@ -103,20 +103,9 @@ export function Home() {
           <p>No detection against outlier ejection on the delayed view's step time.</p>
         </li>
       </ul>
-
-      <h2 className="section-label" style={{ fontSize: 13, fontWeight: 600, margin: '26px 0 6px' }}>
-        Mock
-      </h2>
-      <p className="lede">{DATA_SOURCE_GLOSS.mock}.</p>
-      <ul className="surfaces">
-        <li>
-          <a href="?server=off&replay=off#/ab">A/B view, mock</a>
-          <p>the same two-run view over the browser's mock engine, for a build with no server and no recordings</p>
-        </li>
-      </ul>
       <p>
-        In live and replay every panel is engine data except those tagged <b>mock</b>, which cover dynamics the
-        engine does not simulate yet.
+        Every number on every page is engine data. A quantity the engine does not simulate yet shows a dash and says
+        so on hover.
       </p>
     </div>
   );

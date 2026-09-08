@@ -3,7 +3,7 @@ import type { RunHandle } from '../lib/useRun';
 import type { RoutingConfig, ScenarioConfig } from '../lib/config';
 import { cloneConfig, PRESETS, ROUTING_LABEL, ROUTING_NOTE, VIEW_ONLY_EXPLANATION, diffConfig } from '../lib/config';
 import type { RoutingKind } from '../lib/types';
-import { estimatedFleetRps, ratedFleetRps } from '../lib/engine';
+import { ratedFleetRps } from '../lib/config';
 import { Check, Panel, Select, Slider, Tabs, type TabDef } from '../components/ui';
 import { fmtNum, fmtTime, fmtTokens } from '../lib/format';
 
@@ -61,7 +61,6 @@ export function ControlPanel({
       bodyClass="tight"
       highlight={highlight === 'control'}
       id="control"
-      data={{ kind: 'real', mockFields: [] }}
     >
       <Tabs tabs={TABS} value={tab} onChange={onTab} scope="control" />
       <div style={{ padding: 9, overflow: 'auto' }}>
@@ -125,8 +124,7 @@ function Dropped({ path, dropped, children }: { path: string; dropped?: string[]
 
 function LoadTab({ c, set, dropped }: TabProps) {
   const rated = ratedFleetRps(c);
-  const est = estimatedFleetRps(c);
-  const rho = c.workload.arrivalRps / Math.max(est, 1e-9);
+  const rho = c.workload.arrivalRps / Math.max(rated, 1e-9);
   return (
     <>
       <p className="section-label">Arrivals</p>
@@ -140,8 +138,8 @@ function LoadTab({ c, set, dropped }: TabProps) {
         onChange={(v) => set((d) => { d.workload.arrivalRps = v; })}
         note={
           <>
-            capacity {fmtNum(est, 0)} rps once parked sessions have their share of the cache, against a{' '}
-            {fmtNum(rated, 0)} rps nameplate &middot; offered/capacity{' '}
+            nameplate {fmtNum(rated, 0)} rps at full batch, from the fleet's own physics parameters; what the
+            engine achieves once the cache binds is measured, not estimated &middot; offered/nameplate{' '}
             <b style={{ color: rho > 1 ? 'var(--critical)' : rho > 0.85 ? 'var(--serious)' : 'var(--ink-2)' }}>
               {rho.toFixed(2)}
             </b>
@@ -307,10 +305,7 @@ function PoliciesTab({ c, set, dropped }: TabProps) {
 
       <div className="sep" />
       <p className="section-label">
-        SLO targets{' '}
-        <span className="mock-tag" style={{ textTransform: 'none' }}>
-          view only
-        </span>
+        SLO targets <span className="note">(view only)</span>
       </p>
       <Slider
         label="TTFT SLO"
@@ -531,7 +526,7 @@ function RunTab({ run, set }: { run: RunHandle; set: (m: (d: ScenarioConfig) => 
       <p className="section-label">Now</p>
       <dl className="kv">
         <dt>run id</dt>
-        <dd>{run.source?.runId ?? `mock-${c.name}-${c.seed}`}</dd>
+        <dd>{run.source?.runId ?? '—'}</dd>
         <dt>sim time</dt>
         <dd>{fmtTime(run.cursorS)}</dd>
         <dt>recorded to</dt>

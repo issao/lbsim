@@ -191,6 +191,8 @@ export const METRIC_NUMBER = {
   METRIC_SLO_ATTAINMENT: 66,
   METRIC_GPU_UTILIZATION: 67,
   METRIC_GPU_COMPUTE_BOUND_FRACTION: 68,
+  METRIC_REPLICA_STATE: 69,
+  METRIC_TRUE_SPEED_MULTIPLIER: 70,
 } as const;
 
 export type MetricName = keyof typeof METRIC_NUMBER;
@@ -1083,7 +1085,7 @@ export function openStream(url: string, o: StreamOptions): StreamHandle {
 // Subscription lifecycle: lease renewal, reconnection, reopening
 // ---------------------------------------------------------------------------
 
-export const DEFAULT_LEASE_NS = 60_000_000_000n; // 60 s, matching the mock registry's order of magnitude
+export const DEFAULT_LEASE_NS = 60_000_000_000n; // 60 s
 export const BACKOFF_BASE_MS = 250;
 export const BACKOFF_CAP_MS = 5_000;
 

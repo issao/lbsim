@@ -39,7 +39,7 @@ const api = await load<typeof import('./api')>('api');
 const adapter = await load<typeof import('./adapter')>('adapter');
 const replay = await load<typeof import('./replay')>('replay');
 const hist = await load<typeof import('./hist')>('hist');
-const engine = await load<typeof import('./engine')>('engine');
+const engine = await load<typeof import('./frame')>('frame');
 const mode = await load<typeof import('./mode')>('mode');
 const fixtures = await load<typeof import('./apiFixtures')>('apiFixtures');
 
@@ -449,7 +449,7 @@ check('replicas.jsonl fills Frame.replicas: ids and values from the wire, NaN wh
   eq(frames[1].replicas.map((r) => r.id), [0, 1, 2], 'ids at 25 s');
   const r1 = frames[1].replicas[1];
   eq(r1.present, true, 'present');
-  eq(r1.state, 'READY', 'ready: no lifecycle in the engine');
+  eq(r1.state, 'UNKNOWN', 'no METRIC_REPLICA_STATE on this row, so no state is claimed');
   eq(r1.weight, 1, 'weight');
   eq(r1.queuedSeqs, 0, 'queued');
   eq(r1.runningSeqs, 105, 'running');
@@ -524,7 +524,7 @@ check('scenario.txt -> ScenarioConfig is the inverse of scenarioConfigToWire, ke
 // the frame source and the cursor
 // ---------------------------------------------------------------------------
 
-check('ReplayEngine answers frameAt and window like the mock, over frames that already exist', () => {
+check('ReplayEngine answers frameAt and window over frames that already exist', () => {
   const lines = Array.from({ length: 8 }, (_, i) => rowAt(ROW_25S, origin + BigInt((i + 1) * 250_000_000)));
   const frames = replay.parseFleetJsonl(lines.join('\n') + '\n', origin);
   const { config } = replay.configFromScenarioText(SCENARIO);
@@ -543,7 +543,7 @@ check('ReplayEngine answers frameAt and window like the mock, over frames that a
   e.config = { ...config, samplesPerSimSecond: 2 };
   eq(e.window(0, 2).map((f) => f.tick), [0, 2, 4, 6, 7], 'half rate: every other frame plus the last');
   eq(e.eventsUpTo(120).length, 0, 'no events');
-  return '8 frames at 4/s; window and frameAt clamp; decimation matches the mock';
+  return '8 frames at 4/s; window and frameAt clamp; decimation matches the chart rate';
 });
 
 check('the replay cursor clamps to the recording: step stops at the end, scrub never leaves it', () => {
@@ -561,20 +561,20 @@ check('the replay cursor clamps to the recording: step stops at the end, scrub n
 // mode
 // ---------------------------------------------------------------------------
 
-check('replay is the mode when no server is configured and the index is served; mock stays the fallback', () => {
+check('replay is the mode when no server is configured and the index is served; none is the fallback', () => {
   const off = mode.serverModeFrom(undefined, '', '');
   const on = mode.serverModeFrom(undefined, '?server=1', '');
   eq(mode.dataModeFrom(off, true, null), 'replay', 'index served, no server');
-  eq(mode.dataModeFrom(off, false, null), 'mock', 'no index');
-  eq(mode.dataModeFrom(off, false, true), 'mock', '?replay=1 cannot conjure an index');
-  eq(mode.dataModeFrom(off, true, false), 'mock', '?replay=0 forces mock');
+  eq(mode.dataModeFrom(off, false, null), 'none', 'no index');
+  eq(mode.dataModeFrom(off, false, true), 'none', '?replay=1 cannot conjure an index');
+  eq(mode.dataModeFrom(off, true, false), 'none', '?replay=0 skips the recordings');
   eq(mode.dataModeFrom(on, true, null), 'server', 'a configured server wins');
   eq(mode.replayOverride('?replay=0', ''), false, '?replay=0');
   eq(mode.replayOverride('', '#/dashboard?replay=1'), true, 'hash-route query');
   eq(mode.replayOverride('', ''), null, 'absent');
-  eq(mode.dataModeBanner('mock'), mode.MOCK_BANNER, 'the mock marker is unchanged');
-  eq(mode.dataModeBanner('replay', undefined, '1-routing/p2c'), `${mode.REPLAY_BANNER}: 1-routing/p2c`, 'replay banner names the run');
-  eq(mode.dataModeBanner('server', on), mode.SERVER_BANNER, 'server banner unchanged');
+  eq(mode.badgeText({ mode: 'replay', runId: '1-routing/p2c' }), `${mode.REPLAY_BANNER}: 1-routing/p2c`, 'replay badge names the run');
+  eq(mode.badgeText({ mode: 'none' }), '', 'no source, no claim');
+  eq(mode.modeBanner(on), mode.SERVER_BANNER, 'server banner unchanged');
   eq(replay.REPLAY_DISABLED_REASON, 'replay of a recorded run; changing load or policy needs a live engine', 'the disabled reason');
   let notified = 0;
   const unsub = mode.subscribeActiveMode(() => notified++);
@@ -583,8 +583,8 @@ check('replay is the mode when no server is configured and the index is served; 
   unsub();
   eq(notified, 1, 'the header store notifies once per change');
   eq(mode.activeMode().mode, 'replay', 'and holds the mode');
-  mode.setActiveMode('mock');
-  return 'server > replay > mock; ?replay=0 forces mock; banners as specified';
+  mode.setActiveMode('none');
+  return 'server > replay > none; ?replay=0 skips the recordings; banners as specified';
 });
 
 // ---------------------------------------------------------------------------

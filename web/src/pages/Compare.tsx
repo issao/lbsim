@@ -1,16 +1,15 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
-import { BASE, cloneConfig, comparability, FIELD_LABEL, PRESETS, ROUTING_LABEL, type ScenarioConfig } from '../lib/config';
-import { DATA_SOURCE_LABEL, dataSourceGloss, setActiveMode, type DataMode } from '../lib/mode';
+import { BASE, cloneConfig, comparability, FIELD_LABEL, PRESETS, ratedFleetRps, ROUTING_LABEL, type ScenarioConfig } from '../lib/config';
+import { dataSourceGloss, setActiveMode, type DataMode } from '../lib/mode';
 import type { RoutingKind } from '../lib/types';
-import { useDataSource, useReplayRun, useRun, type ReplayRunHandle, type RunHandle } from '../lib/useRun';
+import { useDataSource, useReplayRun, type ReplayRunHandle, type RunHandle } from '../lib/useRun';
 import { speedLabel, useServerRun, type ServerRunHandle } from '../lib/useServerRun';
 import { loadRun, runDurationS, type LoadedRun, type RunIndexEntry } from '../lib/replay';
 import { loadIndex, loadScript } from '../lib/walkthrough';
 import { windowFrames, attainment, goodput, percentileSeries, series, xs } from '../lib/derive';
-import { estimatedFleetRps, type Frame } from '../lib/engine';
-import { realness } from '../lib/wired';
+import type { Frame } from '../lib/frame';
 import { PlaybackBar, UpdateBanner } from '../components/PlaybackBar';
-import { MockTag, Panel, Select, Slider, Tile, type PanelData } from '../components/ui';
+import { Panel, Select, Slider, Tile } from '../components/ui';
 import { LineChart } from '../components/charts/LineChart';
 import { Heatmap } from '../components/charts/Heatmap';
 import { fmtMs, fmtNum, fmtPct } from '../lib/format';
@@ -37,21 +36,20 @@ const B0: ScenarioConfig = (() => {
  * This view therefore refuses to place two runs side by side when anything but the policy differs,
  * and names the fields, rather than letting someone draw a conclusion from two unlike runs.
  *
- * Three sources, as on the dashboard: two runs started on the Ingress server from one scenario
- * text and one seed; two recordings a walkthrough declared as a pair; the browser's mock engine
- * otherwise. One body, `CompareBody`, draws all three, so what differs is only where the two
- * handles come from.
+ * Two sources, as on the dashboard: two runs started on the Ingress server from one scenario
+ * text and one seed, or two recordings a walkthrough declared as a pair. One body, `CompareBody`,
+ * draws both, so what differs is only where the two handles come from. With neither, the page
+ * says so and draws nothing.
  */
 export function Compare() {
   const src = useDataSource(true);
   useEffect(() => {
     if (src.state === 'probing') setActiveMode('connecting');
-    if (src.state === 'mock') setActiveMode('mock');
   }, [src.state]);
   if (src.state === 'probing') return <div className="page-pad">looking for a server or recorded runs…</div>;
   if (src.state === 'server') return <ServerCompare />;
   if (src.state === 'replay') return <ReplayCompare runs={src.runs} />;
-  return <MockCompare />;
+  return <div className="page-pad">no server and no recordings served</div>;
 }
 
 // ---------------------------------------------------------------------------
@@ -139,7 +137,7 @@ async function walkthroughPair(): Promise<Pair | null> {
 }
 
 function ReplayCompare({ runs }: { runs: RunIndexEntry[] }) {
-  // null: still looking; 'none': the index has no declared pair, so the mock stands in.
+  // null: still looking; 'none': the index has no declared pair, which the page says in words.
   const [pair, setPair] = useState<Pair | 'none' | null>(pairFromUrl);
   const [loaded, setLoaded] = useState<[LoadedRun, LoadedRun] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -184,9 +182,10 @@ function ReplayCompare({ runs }: { runs: RunIndexEntry[] }) {
 
   if (pair === 'none') {
     return (
-      <MockCompare
-        note="no walkthrough declares a recorded pair (`run` and `compare`), and the URL names none, so this is the mock"
-      />
+      <div className="page-pad">
+        no server answers, and no walkthrough declares a recorded pair (<code>run</code> and <code>compare</code>), and the
+        URL names none
+      </div>
     );
   }
   if (error) {
@@ -238,33 +237,11 @@ function ReplayPairBanner({ a, b }: { a: ReplayRunHandle; b: ReplayRunHandle }) 
 }
 
 // ---------------------------------------------------------------------------
-// Mock: the browser's engine, twice
-// ---------------------------------------------------------------------------
-
-function MockCompare({ note }: { note?: string }) {
-  const a = useRun(A0, true);
-  const b = useRun(B0, true);
-  useEffect(() => setActiveMode('mock'), []);
-  const banner = note ? (
-    <div className="banner">
-      <span className="tagline">mock</span>
-      <span className="note">{note}</span>
-    </div>
-  ) : null;
-  return <CompareBody a={a} b={b} mode="mock" banner={banner} />;
-}
-
-// ---------------------------------------------------------------------------
 // The surface, over any two handles
 // ---------------------------------------------------------------------------
 
-/** The Frame fields the panels below read, so each panel's tag can say what it is entitled to. */
-const RUN_READS = ['ttft', 'itl', 'e2e', 'outputTokensPerS', 'loadImbalanceCv'] as const;
-const DIFF_READS = [...RUN_READS, 'wastedGpuFraction', 'replicas'] as const;
-const REPLICA_READS = ['id', 'present', 'queuedSeqs'] as const;
-
 /**
- * The comparability gate. On live and mock it is `comparability()` as is. On a replay the pair is
+ * The comparability gate. On live it is `comparability()` as is. On a replay the pair is
  * a walkthrough author's declaration, and the policy it varies is usually an engine key under
  * `extra` (preemption, admission, tenants) rather than `routing`, so those differences are named
  * as the policy under comparison rather than refused; seed, workload and fleet still block.
@@ -325,7 +302,7 @@ function CompareBody({ a, b, mode, banner }: { a: RunHandle; b: RunHandle; mode:
         step={5}
         format={(v) => `${v} rps`}
         onChange={(v) => setBoth((d) => { d.workload.arrivalRps = v; })}
-        note={`capacity about ${fmtNum(estimatedFleetRps(a.config), 0)} rps, identical for both runs`}
+        note={`nameplate about ${fmtNum(ratedFleetRps(a.config), 0)} rps at full batch, identical for both runs`}
       />
       <Slider
         label="long-request probability (both)"
@@ -362,14 +339,12 @@ function CompareBody({ a, b, mode, banner }: { a: RunHandle; b: RunHandle; mode:
           Both runs draw from the same named streams, so the arrival sequence and the prompt and output lengths are
           identical. Only the policy differs.
         </span>
-        <MockTag what={DATA_SOURCE_LABEL[mode]} />
       </div>
 
       <div className="dash-body ab-body">
         <Panel
           title="Shared scenario"
           sub="applied to both runs at once, so they cannot drift apart by accident"
-          data={{ kind: 'real', mockFields: [] }}
         >
           {locked ? (
             <fieldset className="dropped" disabled title={a.source?.disabledReason ?? undefined}>
@@ -407,7 +382,6 @@ function CompareBody({ a, b, mode, banner }: { a: RunHandle; b: RunHandle; mode:
             title="Difference"
             sub={`${policyLabel(a.config, gate.policy)} against ${policyLabel(b.config, gate.policy)}, at ${cursorS.toFixed(0)} s`}
             bodyClass="tight"
-            data={realness(la, DIFF_READS, REPLICA_READS)}
           >
             <table className="data diff-table">
               <thead>
@@ -528,7 +502,6 @@ function Side({
   if (!last) return <Panel title={label} sub="warming up">{null}</Panel>;
   const att = attainment(last, run.config.slo);
   const own = policyLabel(run.config, policy);
-  const tag = (reads: readonly (keyof Frame)[]): PanelData => realness(last, reads, REPLICA_READS);
 
   const picker = (
     <Select
@@ -551,7 +524,6 @@ function Side({
       <Panel
         title={`Run ${label}`}
         sub={enabled ? own : `${own} — shown for reference, not comparable`}
-        data={tag(RUN_READS)}
       >
         {locked ? (
           <fieldset className="dropped" disabled title={run.source?.disabledReason ?? undefined}>
@@ -578,7 +550,7 @@ function Side({
         ) : null}
       </Panel>
 
-      <Panel title="Queue depth per replica" sub="same colour scale on both sides" data={tag(['replicas'])}>
+      <Panel title="Queue depth per replica" sub="same colour scale on both sides">
         <Heatmap
           rows={heatRows}
           colTimes={frames.map((f) => f.simS)}
@@ -590,7 +562,7 @@ function Side({
         />
       </Panel>
 
-      <Panel title="Time to first token" sub="p50 and p99" data={tag(['ttft'])}>
+      <Panel title="Time to first token" sub="p50 and p99">
         <LineChart
           xs={xs(frames)}
           series={[
@@ -603,7 +575,7 @@ function Side({
         />
       </Panel>
 
-      <Panel title="Goodput against throughput" data={tag(['outputTokensPerS', 'ttft', 'itl', 'e2e'])}>
+      <Panel title="Goodput against throughput">
         <LineChart
           xs={xs(frames)}
           series={[
