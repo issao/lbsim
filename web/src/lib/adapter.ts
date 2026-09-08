@@ -24,7 +24,7 @@
 // decoder. A window with no completions has no distribution at all: the histogram stays empty and
 // `exact` stays absent, which `latencyMs` reports as NaN. Zero would be a lie.
 
-import type { Frame, ReplicaSample } from './engine';
+import type { FractionPercentiles, Frame, ReplicaSample } from './engine';
 import type { MetricName, SubscriptionUpdate, WireDistribution } from './api';
 import { relSeconds } from './api';
 import { type Histogram, HIST_BUCKETS, newHistogram, record } from './hist';
@@ -85,6 +85,8 @@ export function replicaFromUpdate(u: SubscriptionUpdate): ReplicaSample {
     batchSize: runningSeqs,
     kvTokensResident: v('METRIC_KV_TOKENS_RESIDENT'),
     kvUtilization: v('METRIC_KV_UTILIZATION'),
+    gpuUtilization: v('METRIC_GPU_UTILIZATION'),
+    gpuComputeBoundFraction: v('METRIC_GPU_COMPUTE_BOUND_FRACTION'),
     stepTimeMs: stepTimeS * 1000,
     queueWaitMs: NaN,
     ttftMeanMs: NaN,
@@ -113,6 +115,11 @@ export function frameFromUpdate(
     const d = u.row.distributions[LATENCY_METRIC[k]];
     if (d === undefined || d.count === 0n) return { hist: newHistogram() };
     return { hist: histogramFromDistribution(d), exact: exactFromDistribution(d) };
+  };
+  // A fraction across replicas is read as it is; `exactFromDistribution` would divide it by 1e6.
+  const fraction = (m: MetricName): FractionPercentiles | null => {
+    const d = u.row.distributions[m];
+    return d === undefined || d.count === 0n ? null : fractionPercentilesFromDistribution(d);
   };
   const ttft = dist('ttft');
   const itl = dist('itl');
@@ -144,6 +151,10 @@ export function frameFromUpdate(
     drainingReplicas: u.row.values.METRIC_DRAINING_REPLICAS ?? 0,
     ejectedReplicas: 0,
     kvUtilization: kv,
+    gpuUtilization: v('METRIC_GPU_UTILIZATION'),
+    gpuComputeBoundFraction: v('METRIC_GPU_COMPUTE_BOUND_FRACTION'),
+    gpuUtilizationP: fraction('METRIC_GPU_UTILIZATION'),
+    kvUtilizationP: fraction('METRIC_KV_UTILIZATION'),
     prefixHitRate: v('METRIC_PREFIX_HIT_RATE'),
     tierUtilization: { hbm: kv, dram: NaN, ssd: NaN },
     tierBandwidth: { dram: NaN, ssd: NaN },
@@ -179,6 +190,18 @@ export function exactFromDistribution(d: WireDistribution): ExactPercentiles {
     percentile: d.percentile.slice(),
     valueMs: d.value.map((x) => x / NS_PER_MS),
     fromMergedHistogram: d.fromMergedHistogram,
+  };
+}
+
+/** A distribution of a 0..1 metric across replicas, kept in its own unit. */
+export function fractionPercentilesFromDistribution(d: WireDistribution): FractionPercentiles {
+  return {
+    count: Number(d.count),
+    mean: d.mean,
+    min: d.min,
+    max: d.max,
+    percentile: d.percentile.slice(),
+    value: d.value.slice(),
   };
 }
 

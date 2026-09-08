@@ -295,6 +295,14 @@ export const FLEET_JSONL_EXCERPT = `{"subscription_id":"export","sim_time_unix_n
 {"subscription_id":"export","sim_time_unix_ns":"1767225629750000000","realtime_factor":0,"row":{"target":{"scope":"SCOPE_FLEET"},"values":{"20":0.04380031934306569,"22":304,"23":1,"40":70,"41":92,"42":92,"43":0,"44":17112,"45":17112,"60":32,"64":0.33707230772507113,"66":1},"distributions":{"1":{"count":"23","mean":175316606.6956522,"min":20578960,"max":955079286,"percentile":[50,90,99,99.9],"value":[54560172,551176426,955079286,955079286],"from_merged_histogram":false},"2":{"count":"23","mean":43472749.69565217,"min":10524310,"max":50239964,"percentile":[50,90,99,99.9],"value":[47603466,48366904,50239964,50239964],"from_merged_histogram":false},"3":{"count":"23","mean":3298967073,"min":356459242,"max":13181511623,"percentile":[50,90,99,99.9],"value":[2487435555,6910313645,13181511623,13181511623],"from_merged_histogram":false},"4":{"count":"23","mean":7752433.173913044,"min":854572,"max":30051424,"percentile":[50,90,99,99.9],"value":[5577801,17828810,30051424,30051424],"from_merged_histogram":false}}},"final":false}
 `;
 
+/**
+ * A fleet row as U94b's server emits it: `METRIC_GPU_UTILIZATION` (67) as the fleet mean in `values`
+ * and as a distribution across replicas, and `METRIC_KV_UTILIZATION` (20) with the same
+ * distribution treatment. Hand-written, so the numbers are round; the excerpt above predates the
+ * metric and stays as exported.
+ */
+export const GPU_FLEET_ROW = `{"subscription_id":"export","sim_time_unix_ns":"1767225625000000000","realtime_factor":0,"row":{"target":{"scope":"SCOPE_FLEET"},"values":{"20":0.41,"40":70,"41":64,"42":64,"43":0,"60":32,"67":0.62,"68":0.35},"distributions":{"20":{"count":"32","mean":0.41,"min":0.05,"max":0.97,"percentile":[50,90,99],"value":[0.4,0.8,0.95],"from_merged_histogram":false},"67":{"count":"32","mean":0.62,"min":0.1,"max":0.99,"percentile":[50,90,99],"value":[0.6,0.9,0.98],"from_merged_histogram":false}}},"final":false}`;
+
 /** The same run's `scenario.txt`, resolved, so the fake can answer StartRun with a real one. */
 export const FLEET_EXCERPT_SCENARIO = `name = p2c
 seed = 20260906

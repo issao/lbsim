@@ -20,6 +20,10 @@ export const WIRED_FRAME_FIELDS: ReadonlySet<keyof Frame> = new Set<keyof Frame>
   'loadImbalanceCv',
   'readyReplicas',
   'kvUtilization',
+  'gpuUtilization',
+  'gpuComputeBoundFraction',
+  'gpuUtilizationP',
+  'kvUtilizationP',
   'ttft',
   'itl',
   'e2e',
@@ -41,6 +45,8 @@ export const WIRED_REPLICA_FIELDS: ReadonlySet<keyof ReplicaSample> = new Set<ke
   'batchSize',
   'kvTokensResident',
   'kvUtilization',
+  'gpuUtilization',
+  'gpuComputeBoundFraction',
   'stepTimeMs',
 ]);
 

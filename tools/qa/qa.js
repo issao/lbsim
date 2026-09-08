@@ -274,6 +274,26 @@ const finalLine = extraFail => {
     await page.close();
   }
 
+  // g. utilization: the GPU panel with its fleet mean (U94). The tile reads '-' until the wire
+  // carries metric 67 (U94b), so these two fail honestly on a build that predates it.
+  for (const [label, hash] of [['live', '#/dashboard'], ['replay', '?server=off#/dashboard']]) {
+    const { page, until } = await fresh(hash);
+    await until(() => page.$$eval('button', bs => bs.some(b => /^Utilization$/.test(b.textContent.trim()))), 12000);
+    await page.$$eval('button', bs => { const b = bs.find(b => /^Utilization$/.test(b.textContent.trim())); if (b) b.click(); });
+    const gpu = await until(() => page.$('#gpu'), 8000);
+    check(`utilization ${label}: gpu panel exists (U94)`, Boolean(gpu), gpu ? '#gpu' : 'no #gpu');
+    // The tile's value is a percentage; a dash means the frame carried NaN, a gap rather than a number.
+    const tile = async () => page.$$eval('#capacity *', els => {
+      const lab = els.find(e => e.children.length === 0 && /^gpu utilization$/i.test((e.textContent || '').trim()));
+      const box = lab && lab.parentElement;
+      return box ? box.innerText.replace(/\s+/g, ' ') : '';
+    }).catch(() => '');
+    const txt = await until(async () => { const t = await tile(); return /\d+(\.\d+)?%/.test(t) ? t : null; }, 8000) || await tile();
+    const pct = Number((txt.match(/(\d+(?:\.\d+)?)%/) || [0, '0'])[1]);
+    check(`utilization ${label}: gpu chart with non-zero mean (U94)`, pct > 0, txt.slice(0, 80) || 'no gpu tile');
+    await page.close();
+  }
+
   await stopRuns();
   // Best effort: the server's own view of what the harness left running.
   try {

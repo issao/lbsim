@@ -1,6 +1,6 @@
-import type { Frame } from '../../lib/engine';
+import type { FractionPercentiles, Frame } from '../../lib/engine';
 import type { ScenarioConfig } from '../../lib/config';
-import { series, xs } from '../../lib/derive';
+import { fractionPercentileSeries, percentilesOver, series, xs } from '../../lib/derive';
 import { Panel, Tile } from '../../components/ui';
 import { LineChart } from '../../components/charts/LineChart';
 import { fmtNum, fmtPct } from '../../lib/format';
@@ -10,7 +10,11 @@ import { realness } from '../../lib/wired';
 
 // Fields this panel reads off Frame. Keep this list honest: it drives the mock tag on every Panel below.
 const FRAME_READS: (keyof Frame)[] = [
+  'gpuUtilization',
+  'gpuComputeBoundFraction',
+  'gpuUtilizationP',
   'kvUtilization',
+  'kvUtilizationP',
   'wastedGpuFraction',
   'preemptionsPerS',
   'prefixHitRate',
@@ -18,6 +22,33 @@ const FRAME_READS: (keyof Frame)[] = [
   'tierBandwidth',
   'rejectedRps',
 ];
+
+/** The percentiles the wire reports across replicas; the same three the mock and the fallback compute. */
+const UTIL_PCTS = [50, 90, 99];
+
+/**
+ * The spread across replicas: the wire's distribution when the fleet row carried one, else recomputed
+ * from the per-replica rows when the frame has them (an older recording), else a gap.
+ */
+function spread(f: Frame, fleet: FractionPercentiles | null, perReplica: (r: Frame['replicas'][number]) => number): FractionPercentiles | null {
+  if (fleet) return fleet;
+  if (f.replicas.length === 0) return null;
+  return percentilesOver(f.replicas.filter((r) => r.present).map(perReplica), UTIL_PCTS);
+}
+
+/** Mean plus p50/p90/p99 bands, the latency panels' idiom on a fraction. */
+function bands(frames: Frame[], mean: (f: Frame) => number, pick: (f: Frame) => FractionPercentiles | null) {
+  return [
+    { key: 'mean', label: 'mean', color: 'var(--series-1)', points: series(frames, mean) },
+    ...UTIL_PCTS.map((p, i) => ({
+      key: `p${p}`,
+      label: `p${p}`,
+      color: `var(--series-${(i % 2) + 2})`,
+      dashed: p === 99,
+      points: fractionPercentileSeries(frames, pick, p),
+    })),
+  ];
+}
 
 export function Utilization({
   frames,
@@ -45,11 +76,36 @@ export function Utilization({
   );
   const x = xs(frames);
   const data = realness(frame, FRAME_READS);
+  const gpuSpread = (f: Frame) => spread(f, f.gpuUtilizationP, (r) => r.gpuUtilization);
+  const kvSpread = (f: Frame) => spread(f, f.kvUtilizationP, (r) => r.kvUtilization);
 
   return (
     <div className="grid c2">
+      <Panel title="GPU utilization" sub="fleet mean and percentiles across replicas" highlight={highlight === 'gpu'} id="gpu" data={data}>
+        <LineChart
+          xs={x}
+          series={bands(frames, (f) => f.gpuUtilization, gpuSpread)}
+          format={(v) => fmtPct(v, 0)}
+          yMax={1.05}
+          height={116}
+        />
+        <p className="note" style={{ margin: '7px 0 0' }}>
+          Wasted GPU fraction is invisible in a utilization metric: a decode-bound replica reports high utilization
+          across a wide range of actual useful work, which is why autoscaling on GPU utilization does not work here.
+          Compute-bound is the share of busy time under the compute roofline, {fmtPct(frame.gpuComputeBoundFraction, 0)} across
+          the fleet now; the rest is bandwidth-bound decode at small batch.
+        </p>
+      </Panel>
+
       <Panel title="Where the capacity goes" highlight={highlight === 'capacity'} id="capacity" data={data}>
-        <div className="grid c4" style={{ gap: 6 }}>
+        <div className="grid" style={{ gap: 6, gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))' }}>
+          <Tile
+            label="gpu utilization"
+            value={fmtPct(frame.gpuUtilization, 0)}
+            note="busy share of the window"
+            status={frame.gpuUtilization > 0.95 ? 'serious' : undefined}
+            statusText={frame.gpuUtilization > 0.95 ? 'saturated' : undefined}
+          />
           <Tile
             label="kv utilization"
             value={fmtPct(frame.kvUtilization, 0)}
@@ -66,18 +122,12 @@ export function Utilization({
           <Tile label="preemptions" value={fmtNum(frame.preemptionsPerS, 1)} unit=" /s" />
           <Tile label="prefix hit rate" value={fmtPct(frame.prefixHitRate, 0)} note={config.routing.kind === 'prefix_affinity' ? 'affinity routing' : 'incidental only'} />
         </div>
-        <p className="note" style={{ margin: '7px 0 0' }}>
-          Wasted GPU fraction is invisible in a utilization metric: a decode-bound replica reports high utilization
-          across a wide range of actual useful work, which is why autoscaling on GPU utilization does not work here.
-        </p>
       </Panel>
 
-      <Panel title="Key-value cache utilization" sub="fleet mean" highlight={highlight === 'kv'} id="kv" data={data}>
+      <Panel title="Key-value cache utilization" sub="fleet mean and percentiles across replicas" highlight={highlight === 'kv'} id="kv" data={data}>
         <LineChart
           xs={x}
-          series={[
-            { key: 'kv', label: 'kv utilization', color: 'var(--series-1)', points: series(frames, (f) => f.kvUtilization) },
-          ]}
+          series={bands(frames, (f) => f.kvUtilization, kvSpread)}
           format={(v) => fmtPct(v, 0)}
           yMax={1.05}
           height={116}
