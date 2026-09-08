@@ -11,6 +11,7 @@ export const WIRED_FRAME_FIELDS: ReadonlySet<keyof Frame> = new Set<keyof Frame>
   'completedRps',
   'rejectedRps',
   'outputTokensPerS',
+  'preemptionsPerS',
   'loadImbalanceCv',
   'readyReplicas',
   'kvUtilization',
@@ -44,6 +45,7 @@ export const WIRED_REPLICA_FIELDS: ReadonlySet<keyof ReplicaSample> = new Set<ke
   'gpuComputeBoundFraction',
   'stepTimeMs',
   'ttftMeanMs',
+  'preemptionsPerS',
   'trueSpeedMultiplier',
 ]);
 

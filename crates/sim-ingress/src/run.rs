@@ -758,6 +758,8 @@ pub const FLEET_METRICS: &[i32] = &[
     wire::METRIC_REJECTED_RPS,
     wire::METRIC_OUTPUT_TOKENS_PER_S,
     wire::METRIC_GOODPUT_TOKENS_PER_S,
+    wire::METRIC_PREEMPTIONS_PER_S,
+    wire::METRIC_RETRIES_PER_S,
     wire::METRIC_QUEUED_SEQS,
     wire::METRIC_RUNNING_SEQS,
     wire::METRIC_KV_UTILIZATION,
@@ -786,6 +788,7 @@ pub const REPLICA_METRICS: &[i32] = &[
     wire::METRIC_TRUE_SPEED_MULTIPLIER,
     wire::METRIC_TTFT,
     wire::METRIC_PREFIX_HIT_RATE,
+    wire::METRIC_PREEMPTIONS_PER_S,
 ];
 
 // Two metric numbers `wire.rs` does not name; the same table, and `metric_numbers_are_in_the_table`
@@ -862,6 +865,7 @@ pub fn row(f: &Frame, sc: &Scenario, spec: &RowSpec) -> Option<MetricRow> {
             value(wire::METRIC_GPU_COMPUTE_BOUND_FRACTION, r.compute_ns as f64 / r.busy_ns as f64);
             value(wire::METRIC_REPLICA_STATE, r.state as f64);
             value(wire::METRIC_TRUE_SPEED_MULTIPLIER, r.speed);
+            value(wire::METRIC_PREEMPTIONS_PER_S, r.preemptions as f64 / (window_ns / 1e9));
             // `prompt_tokens` accumulates on every admission regardless of a prefix model, so gating
             // on it alone would put a permanent, meaningless 0% reading on every scenario that never
             // asked for prefix caching. NaN when there is no prefix model, which `value` drops; a
@@ -915,6 +919,10 @@ pub fn row(f: &Frame, sc: &Scenario, spec: &RowSpec) -> Option<MetricRow> {
             value(wire::METRIC_REJECTED_RPS, f.rejected as f64 / iv_s);
             value(wire::METRIC_OUTPUT_TOKENS_PER_S, f.output_tokens as f64 / iv_s);
             value(wire::METRIC_GOODPUT_TOKENS_PER_S, f.goodput_tokens as f64 / iv_s);
+            // Rates, and explicit zeros: a fleet with headroom preempts nothing, and the panel must
+            // read that as 0/s rather than as a metric nobody serves (U115).
+            value(wire::METRIC_PREEMPTIONS_PER_S, f.preemptions as f64 / iv_s);
+            value(wire::METRIC_RETRIES_PER_S, f.retries as f64 / iv_s);
             value(wire::METRIC_QUEUED_SEQS, queued as f64);
             value(wire::METRIC_RUNNING_SEQS, running as f64);
             value(wire::METRIC_KV_UTILIZATION, kv as f64 / cap / n);
@@ -1071,6 +1079,7 @@ mod tests {
             e2e: SparseHistogram::default(),
             queue_wait: SparseHistogram::default(),
             preemptions: 0,
+            retries: 0,
             replicas: vec![sim_metrics::ReplicaSample { last_step_ns: 2_000_000, ..Default::default() }],
         };
         let sc = Scenario::default();
@@ -1101,6 +1110,7 @@ mod tests {
             e2e: SparseHistogram::default(),
             queue_wait: SparseHistogram::default(),
             preemptions: 0,
+            retries: 0,
             replicas: vec![
                 sim_metrics::ReplicaSample { busy_ns: 0, ..Default::default() },
                 sim_metrics::ReplicaSample { busy_ns: window_ns, ..Default::default() },

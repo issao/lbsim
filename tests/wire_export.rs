@@ -422,6 +422,50 @@ fn window_counts_sum_to_the_scorecard() {
 }
 
 #[test]
+fn preemptions_and_retries_are_windowed_rates() {
+    // U115: Issao saw no preemptions on the KV panel at a full cache. Metrics 46 and 47 had table
+    // rows but no server or exporter wrote them, so the panel read a gap. A cache-starved fleet of
+    // multi-turn sessions under `swap_to_dram` must show a positive preemption rate on some fleet
+    // row and on some replica row; a fleet with headroom shows an explicit zero, not an absence.
+    let dir = fresh_dir("preempt-off");
+    let r = small_run();
+    let run_dir = export::export_run_from(&r, "preempt-off", None, &dir).unwrap();
+    let fleet_lines: Vec<String> = read(&run_dir.join("fleet.jsonl")).lines().map(String::from).collect();
+    assert!(!fleet_lines.is_empty());
+    for line in &fleet_lines {
+        assert_eq!(metric_value(line, wire::METRIC_PREEMPTIONS_PER_S), Some(0.0), "{line}");
+        assert_eq!(metric_value(line, wire::METRIC_RETRIES_PER_S), Some(0.0), "{line}");
+    }
+
+    let dir = fresh_dir("preempt-on");
+    let mut sc = common::at_load(0.9);
+    sc.name = "wire \"export\" / small-preempt".into();
+    // kv_spiral_swap.txt's shape: sessions that hold context between turns, a cache that cannot
+    // hold them all, and eviction rather than waiting.
+    sc.kv_capacity_tokens = 4000.0;
+    sc.session_turns_mean = 8.0;
+    sc.session_think_s = 2.0;
+    sc.preemption = "swap_to_dram".into();
+    sc.preemption_victim = "newest".into();
+    let r = sim::run(&sc).expect("small preempting scenario runs");
+    let run_dir = export::export_run_from(&r, "preempt-on", None, &dir).unwrap();
+    let fleet_lines: Vec<String> = read(&run_dir.join("fleet.jsonl")).lines().map(String::from).collect();
+    let mut fleet_positive = false;
+    for line in &fleet_lines {
+        let v = metric_value(line, wire::METRIC_PREEMPTIONS_PER_S).unwrap_or_else(|| panic!("no 46 on {line}"));
+        assert!(v >= 0.0 && v.is_finite(), "{line}");
+        fleet_positive |= v > 0.0;
+    }
+    assert!(fleet_positive, "no fleet row shows a preemption under swap_to_dram at a 4k cache");
+    let replica_lines: Vec<String> = read(&run_dir.join("replicas.jsonl")).lines().map(String::from).collect();
+    let replica_sum: f64 = replica_lines
+        .iter()
+        .map(|l| metric_value(l, wire::METRIC_PREEMPTIONS_PER_S).unwrap_or_else(|| panic!("no 46 on {l}")))
+        .sum();
+    assert!(replica_sum > 0.0, "no replica row shows a preemption");
+}
+
+#[test]
 fn demos_export_writes_every_group() {
     let dir = fresh_dir("demos");
     let overrides = vec![("duration_s".to_string(), "20".to_string()), ("warmup_s".to_string(), "5".to_string())];

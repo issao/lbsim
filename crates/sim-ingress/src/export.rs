@@ -238,6 +238,8 @@ pub fn fleet_rows(r: &RunResult) -> Vec<SubscriptionUpdate> {
         // EJECTED) keeps its slot in `frame.replicas` so a client cannot see it dropped.
         let ready = frame.replicas.iter().filter(|rep| rep.state != 3).count();
         row.value(wire::METRIC_READY_REPLICAS, ready as f64);
+        row.value(wire::METRIC_PREEMPTIONS_PER_S, frame.preemptions as f64 / iv_s);
+        row.value(wire::METRIC_RETRIES_PER_S, frame.retries as f64 / iv_s);
         let window_ns = sample_interval(r) as f64;
         let gpu: Vec<f64> =
             frame.replicas.iter().map(|rep| (rep.busy_ns as f64 / window_ns).min(1.0)).collect();
@@ -310,6 +312,7 @@ pub fn replica_rows(r: &RunResult, s: usize) -> Vec<SubscriptionUpdate> {
         row.value(wire::METRIC_GPU_COMPUTE_BOUND_FRACTION, rep.compute_ns as f64 / rep.busy_ns as f64);
         row.value(wire::METRIC_REPLICA_STATE, rep.state as f64);
         row.value(wire::METRIC_TRUE_SPEED_MULTIPLIER, rep.speed);
+        row.value(wire::METRIC_PREEMPTIONS_PER_S, rep.preemptions as f64 / (window_ns / 1e9));
         // Gated on `prefix_roots`, like the fleet row above: `prompt_tokens` is nonzero on every
         // scenario, so the bare ratio can't distinguish "no cache" from "cache, nothing admitted".
         row.value(

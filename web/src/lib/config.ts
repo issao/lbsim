@@ -123,7 +123,13 @@ export const BASE: ScenarioConfig = {
   slo: { ttftMs: 2000, itlMs: 80, e2eS: 60 },
   // base.txt records at sample_interval_ms = 250.
   samplesPerSimSecond: 4,
-  extra: {},
+  // U115 (Issao: "not showing any preemptions to kv cache even when it looks like we are max").
+  // base.txt leaves `preemption` at the engine's `never`, under which a full cache parks arrivals
+  // instead of evicting, so a saturated fleet preempts nothing by construction. The dashboard's
+  // default evicts: newest victim swapped to host memory, with 4x the cache (5,480,000 tokens) to
+  // swap into, which is also what the engine's `dram_capacity_tokens = 0` means. The file itself is
+  // unchanged; this is the dashboard's default, and the Cluster tab exposes the choice.
+  extra: { preemption: 'swap_to_dram', preemption_victim: 'newest', dram_capacity_tokens: 5480000 },
 };
 
 export function cloneConfig(c: ScenarioConfig): ScenarioConfig {
@@ -316,6 +322,10 @@ export const FIELD_LABEL: Record<string, string> = {
   'extra.prefix_zipf_s': 'root popularity skew',
   'extra.session_fork_rate': 'session fork rate',
   'extra.prefix_cache_tokens': 'prefix cache per replica',
+  // U115: the preemption policy, staged on the Cluster tab.
+  'extra.preemption': 'preemption',
+  'extra.preemption_victim': 'preemption victim',
+  'extra.dram_capacity_tokens': 'host memory for swapped context',
 };
 
 function flat(c: ScenarioConfig): Record<string, unknown> {

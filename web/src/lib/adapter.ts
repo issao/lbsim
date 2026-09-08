@@ -100,7 +100,7 @@ export function replicaFromUpdate(u: SubscriptionUpdate): ReplicaSample {
     prefixHitRate: NaN,
     admittedRps: NaN,
     completedRps: NaN,
-    preemptionsPerS: NaN,
+    preemptionsPerS: v('METRIC_PREEMPTIONS_PER_S'),
     trueSpeedMultiplier: v('METRIC_TRUE_SPEED_MULTIPLIER'),
     telemetryStalenessMs: NaN,
   };

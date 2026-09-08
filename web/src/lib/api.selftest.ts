@@ -692,7 +692,10 @@ check('scenarioConfigToWire(BASE) sends only keys Scenario::parse accepts', () =
   eq(fields.ttft_slo_ms, 2000, 'ttft_slo_ms');
   eq(fields.e2e_slo_s, 60, 'e2e_slo_s');
   eq(fields.sample_interval_ms, 250, '4 samples per simulated second is a 250 ms interval');
-  eq(Object.keys(fields).length, 32, 'field count');
+  eq(fields.preemption, 'swap_to_dram', 'the dashboard default evicts rather than parks (U115)');
+  eq(fields.preemption_victim, 'newest', 'preemption_victim');
+  eq(fields.dram_capacity_tokens, 5480000, 'dram_capacity_tokens is 4x kv_capacity_tokens');
+  eq(Object.keys(fields).length, 35, 'field count: 32 panel keys plus the three preemption keys');
   return `${Object.keys(fields).length} keys, all accepted; dropped ${dropped.join(', ')}`;
 });
 
