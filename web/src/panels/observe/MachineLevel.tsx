@@ -244,7 +244,10 @@ export function MachineLevel({
               <>
                 {sorted.length} replicas exist. Sorting is local and instant, so it ranks only the rows this page has
                 streamed; a replica never shown yet sorts last, by id. Only the {visible.length} rows on screen carry
-                live per-replica subscriptions.
+                live per-replica subscriptions
+                {streamed.slots > 0 && streamed.slots < visible.length
+                  ? `, ${streamed.slots} at a time within the transport's stream budget; the rest keep their last row until their turn.`
+                  : '.'}
               </>
             ) : (
               <>

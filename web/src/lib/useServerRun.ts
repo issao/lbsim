@@ -18,7 +18,7 @@
 // Everything else -- cursor, playback, step, restart, the banners the UI is obliged to show -- is
 // the same shape and the same units (relative simulated seconds) as the replay handle's.
 
-import { useEffect, useMemo, useReducer, useRef, useState } from 'react';
+import { useEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore } from 'react';
 import type { FrameSource, RunHandle, RunSourceInfo } from './useRun';
 import { STEP_S } from './useRun';
 import type { FleetEvent, Frame, ReplicaSample } from './frame';
@@ -32,6 +32,7 @@ import {
   type MetricName,
   type RunStatus,
   type StreamPhase,
+  type SubscribeOptions,
   type SubscriptionHandle,
   type WireDistribution,
   type WireRequestTrace,
@@ -48,6 +49,79 @@ import {
   uiTargetToWire,
 } from './api';
 import { modeBanner, serverMode } from './mode';
+
+// ---------------------------------------------------------------------------
+// Stream budget
+// ---------------------------------------------------------------------------
+
+/**
+ * How many SSE streams this page may hold open at once, the fleet stream included.
+ *
+ * Every RPC (SetSpeed, GetRun, Renew) is a `fetch` to the same origin as the streams, and over
+ * HTTP/1.1 Chrome allows six connections per host. The Machines page opened one stream per visible
+ * row, so ten rows plus the fleet stream held eleven, and every RPC after them queued forever: the
+ * showcase's pause reached the server only sometimes (U102). Four is the fleet stream, three replica
+ * streams, and two connections left for RPCs. HTTP/2 and HTTP/3 multiplex every stream on one
+ * connection, so only the server's own limit applies there; lbsim.ai answers over HTTP/2 through
+ * Cloud Run, the local `sim-run serve` over HTTP/1.1.
+ */
+export const STREAM_BUDGET_H1 = 4;
+export const STREAM_BUDGET_H2 = 32;
+
+export function streamBudget(): number {
+  const nav =
+    typeof performance === 'undefined'
+      ? undefined
+      : (performance.getEntriesByType('navigation')[0] as { nextHopProtocol?: string } | undefined);
+  const proto = nav?.nextHopProtocol ?? '';
+  return proto === 'h2' || proto === 'h3' ? STREAM_BUDGET_H2 : STREAM_BUDGET_H1;
+}
+
+let openStreams = 0;
+const streamListeners = new Set<() => void>();
+function countStream(delta: number): void {
+  openStreams += delta;
+  for (const l of streamListeners) l();
+}
+/** Subscriptions open right now, from every hook and engine in the page. */
+export function openStreamCount(): number {
+  return openStreams;
+}
+/** The same number, as a React value, for the status bar. */
+export function useOpenStreams(): number {
+  return useSyncExternalStore(
+    (l) => {
+      streamListeners.add(l);
+      return () => streamListeners.delete(l);
+    },
+    () => openStreams,
+    () => 0
+  );
+}
+
+/**
+ * `subscribeToTarget`, counted: every stream this module opens goes through here, because the
+ * budget is enforced against the count. Released once, on `close()` or when the loop ends on its
+ * own (`complete`, `failed`), whichever is first.
+ */
+function countedSubscribe(client: IngressClient, o: SubscribeOptions): SubscriptionHandle {
+  const inner = subscribeToTarget(client, o);
+  let counted = true;
+  const release = () => {
+    if (!counted) return;
+    counted = false;
+    countStream(-1);
+  };
+  countStream(1);
+  void inner.done.then(release, release);
+  return {
+    ...inner,
+    close() {
+      inner.close();
+      release();
+    },
+  };
+}
 
 /** How often the run's status is polled. The stream carries metrics; this carries state and speed. */
 export const STATUS_POLL_MS = 500;
@@ -390,7 +464,7 @@ export class ServerRunEngine implements FrameSource {
     const id = this.runId;
     if (!id) return;
     this.sub?.close();
-    this.sub = subscribeToTarget(this.opts.client, {
+    this.sub = countedSubscribe(this.opts.client, {
       runId: id,
       target: fleetTarget(),
       metrics: this.metrics,
@@ -820,7 +894,7 @@ export function useServerTarget(
     if (!runId) return;
     setSamples([]);
     originRef.current = null;
-    const handle = subscribeToTarget(c, {
+    const handle = countedSubscribe(c, {
       runId,
       target: uiTargetToWire(targetRef.current),
       metrics,
@@ -935,9 +1009,92 @@ export interface ServerReplicas {
   latest: Map<number, ReplicaSample>;
   /** Oldest first, capped at `REPLICA_HISTORY` per replica. */
   history: Map<number, ReplicaSample[]>;
+  /** Replica streams open right now, and how many the budget lets this page hold at once. */
+  streaming: number[];
+  slots: number;
 }
 
-const EMPTY_REPLICAS: ServerReplicas = { latest: new Map(), history: new Map() };
+const EMPTY_REPLICAS: ServerReplicas = { latest: new Map(), history: new Map(), streaming: [], slots: 0 };
+
+/** How long each replica stream of a page larger than its slots lives before the next id takes its slot. */
+export const REPLICA_ROTATE_MS = 2000;
+
+export interface ReplicaStreamsOptions {
+  client: IngressClient;
+  runId: string;
+  /** The page, in the order the slots go round. */
+  ids: number[];
+  samplesPerSimSecond: number;
+  budget: number;
+  onRow: (id: number, row: ReplicaSample) => void;
+  openStreamImpl?: SubscribeOptions['openStreamImpl'];
+}
+
+/**
+ * The replica streams of one page, held within the budget: at most `budget - 1` at once, and fewer
+ * when other streams (the fleet's, an A/B pair's) already hold slots. A page larger than that takes
+ * turns: `tick()` closes the oldest open stream and opens the next id round-robin, so with a tick
+ * every `REPLICA_ROTATE_MS / slots` each stream lives `REPLICA_ROTATE_MS` and every row has streamed
+ * within `ceil(page / slots)` rotations, keeping its last row in between. No React and no clock,
+ * so the self-test drives it directly.
+ */
+export class ReplicaStreams {
+  private open: Array<{ id: number; handle: SubscriptionHandle }> = [];
+  private cursor = 0;
+  private closed = false;
+  private readonly o: ReplicaStreamsOptions;
+
+  constructor(o: ReplicaStreamsOptions) {
+    this.o = o;
+    this.fill();
+  }
+
+  /** Replica streams this page may hold at once, given what else is open. */
+  slots(): number {
+    const others = openStreams - this.open.length;
+    return Math.max(1, Math.min(this.o.budget - 1, this.o.budget - others));
+  }
+
+  /** A page that fits its slots streams whole and never rotates. */
+  rotates(): boolean {
+    return this.o.ids.length > this.slots();
+  }
+
+  streaming(): number[] {
+    return this.open.map((s) => s.id);
+  }
+
+  tick(): void {
+    if (this.closed || !this.rotates()) return;
+    this.open.shift()?.handle.close();
+    this.fill();
+  }
+
+  close(): void {
+    this.closed = true;
+    for (const s of this.open) s.handle.close();
+    this.open = [];
+  }
+
+  private fill(): void {
+    const { ids } = this.o;
+    while (!this.closed && this.open.length < this.slots() && this.open.length < ids.length) {
+      const id = ids[this.cursor % ids.length];
+      this.cursor++;
+      const handle = countedSubscribe(this.o.client, {
+        runId: this.o.runId,
+        target: uiTargetToWire({ scope: 'REPLICA', id }),
+        metrics: REPLICA_ROW_METRICS,
+        samplesPerSimSecond: this.o.samplesPerSimSecond,
+        percentiles: DEFAULT_PERCENTILES,
+        leaseNs: LEASE_NS,
+        openStreamImpl: this.o.openStreamImpl,
+        onUpdate: (u) => this.o.onRow(id, replicaFromUpdate(u)),
+      });
+      this.open.push({ id, handle });
+    }
+  }
+}
 
 /**
  * One subscription per replica id, for the machine-level page. The fleet stream carries no
@@ -963,31 +1120,39 @@ export function useServerReplicas(
 
   useEffect(() => {
     if (!runId) return;
-    const handles = (JSON.parse(key) as number[]).map((id) =>
-      subscribeToTarget(c, {
-        runId,
-        target: uiTargetToWire({ scope: 'REPLICA', id }),
-        metrics: REPLICA_ROW_METRICS,
-        samplesPerSimSecond,
-        percentiles: DEFAULT_PERCENTILES,
-        leaseNs: LEASE_NS,
-        onUpdate: (u) => {
-          const row = replicaFromUpdate(u);
-          setState((prev) => {
-            const latest = new Map(prev.latest);
-            latest.set(id, row);
-            const history = new Map(prev.history);
-            const had = prev.history.get(id) ?? [];
-            const next = had.length >= REPLICA_HISTORY ? had.slice(had.length - REPLICA_HISTORY + 1) : had.slice();
-            next.push(row);
-            history.set(id, next);
-            return { latest, history };
-          });
-        },
-      })
-    );
+    const ids = JSON.parse(key) as number[];
+    if (ids.length === 0) return;
+    const streams = new ReplicaStreams({
+      client: c,
+      runId,
+      ids,
+      samplesPerSimSecond,
+      budget: streamBudget(),
+      onRow: (id, row) =>
+        setState((prev) => {
+          const latest = new Map(prev.latest);
+          latest.set(id, row);
+          const history = new Map(prev.history);
+          const had = prev.history.get(id) ?? [];
+          const next = had.length >= REPLICA_HISTORY ? had.slice(had.length - REPLICA_HISTORY + 1) : had.slice();
+          next.push(row);
+          history.set(id, next);
+          return { ...prev, latest, history };
+        }),
+    });
+    const announce = () => setState((prev) => ({ ...prev, streaming: streams.streaming(), slots: streams.slots() }));
+    announce();
+    // One slot turns over per tick, so a stream lives a whole `REPLICA_ROTATE_MS` and the opens are
+    // spread out rather than all landing on the server at once.
+    const timer = streams.rotates()
+      ? setInterval(() => {
+          streams.tick();
+          announce();
+        }, REPLICA_ROTATE_MS / Math.max(1, streams.slots()))
+      : null;
     return () => {
-      for (const h of handles) h.close();
+      if (timer !== null) clearInterval(timer);
+      streams.close();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [c, runId, key, samplesPerSimSecond]);
