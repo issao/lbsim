@@ -23,13 +23,17 @@
 #   6  the master checkout at $MAIN is dirty, or is not a fast-forward of origin/master
 #   7  the push did not land, or master on origin does not contain the branch afterwards
 #   8  the gate's private TMPDIR held more than 100 MB after stages 3 and 4: a test left scratch behind (U110b)
+#   9  the branch touched web/ and a `web/src/lib/*.selftest.ts` fails. `npm run build` (stage 5)
+#      only proves the TypeScript compiles; it does not run these. This is the stage that would
+#      have caught the scenario/self-test drift that reached master once already, because nothing
+#      ran them on the way in.
 #   1  anything else: bad arguments, missing branch, worktree trouble
 #
 # Docs-only fast path (U68). If every path in the rebased branch's diff against origin/master
 # ends in .md, and there is at least one such path, stages 3 and 4 are skipped — a change that
 # touches no non-.md file cannot move a fingerprint or fail a Rust test — and one line is
-# printed instead: "docs-only diff: tests and fingerprints skipped". Stage 5 already skips
-# itself when the diff touches no web/ file. A mixed diff, or an empty one, runs the full gate.
+# printed instead: "docs-only diff: tests and fingerprints skipped". Stages 5 and 9 already skip
+# themselves when the diff touches no web/ file. A mixed diff, or an empty one, runs the full gate.
 #
 # Where it runs. All verification happens in one persistent worktree, $QUEUE, which no agent edits by
 # hand. Persistent, not per-branch, so its target directory stays warm across integrations; one, not
@@ -146,6 +150,17 @@ if [ -n "$(git -C "$QUEUE" diff --name-only origin/master...HEAD -- web/)" ]; th
   ( cd "$QUEUE/web" && npm ci --prefer-offline --no-audit --no-fund >/dev/null 2>&1 && npm run build >"$QUEUE/.integrate-web.log" 2>&1 ) \
     || { tail -40 "$QUEUE/.integrate-web.log"; die 5 "web build fails"; }
   say "web builds"
+  # The web self-tests: web/src/lib/*.selftest.ts, run under node the way web/README.md documents,
+  # no browser and no test framework. `npm run build` (stage 5, above) only proves the TypeScript
+  # compiles; it does not run these, which is how a scenario file gaining keys a self-test's
+  # expectation still named the old set slipped past the gate once already.
+  selftest_failed=""
+  for f in "$QUEUE"/web/src/lib/*.selftest.ts; do
+    ( cd "$QUEUE/web" && node --experimental-strip-types "${f#"$QUEUE"/web/}" ) >"$QUEUE/.integrate-web-selftest.log" 2>&1 \
+      || { tail -40 "$QUEUE/.integrate-web-selftest.log"; selftest_failed="${f##*/}"; break; }
+  done
+  [ -z "$selftest_failed" ] || die 9 "web self-test fails: $selftest_failed"
+  say "web self-tests pass"
 fi
 
 if [ "$dry" = 1 ]; then

@@ -58,10 +58,10 @@ function eq<T>(got: T, want: T, what: string): void {
 // ---------------------------------------------------------------------------
 
 check('the fields the engine measures are wired; the ones it does not are not', () => {
-  for (const f of ['offeredRps', 'completedRps', 'ttft', 'kvUtilization', 'gpuUtilization', 'replicas'] as const) {
+  for (const f of ['offeredRps', 'completedRps', 'ttft', 'kvUtilization', 'gpuUtilization', 'replicas', 'preemptionsPerS'] as const) {
     eq(wired.WIRED_FRAME_FIELDS.has(f), true, `frame ${f} wired`);
   }
-  for (const f of ['wastedGpuFraction', 'preemptionsPerS', 'prefixHitRate', 'tierUtilization', 'tierBandwidth', 'events', 'warmingReplicas'] as const) {
+  for (const f of ['wastedGpuFraction', 'prefixHitRate', 'tierUtilization', 'tierBandwidth', 'events', 'warmingReplicas'] as const) {
     eq(wired.WIRED_FRAME_FIELDS.has(f), false, `frame ${f} unwired`);
   }
   return `${wired.WIRED_FRAME_FIELDS.size} frame fields wired`;
