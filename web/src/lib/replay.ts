@@ -328,16 +328,12 @@ export function configFromScenarioText(text: string): { config: ScenarioConfig; 
   const unmapped: string[] = [];
   if (f.routing !== undefined) {
     used.add('routing');
-    // `ENGINE_TO_ROUTING` is built from api.ts's `ROUTING_TO_ENGINE`, which maps `prefix_affinity`
-    // to `null` because StartRun cannot send it yet; that null is an encode-side gap, not a reason
-    // to fail reading back a recorded run that used it, so it is named directly here instead.
-    if (f.routing === 'prefix_affinity') {
-      c.routing.kind = 'prefix_affinity';
-    } else {
-      const kind = ENGINE_TO_ROUTING[f.routing];
-      if (kind === undefined) unmapped.push(`routing = ${f.routing}`);
-      else c.routing.kind = kind;
-    }
+    // `ENGINE_TO_ROUTING` is built from api.ts's `ROUTING_TO_ENGINE` by inversion, which now maps
+    // `prefix_affinity` both ways (it has an engine implementation), so no local patch is needed
+    // here any more.
+    const kind = ENGINE_TO_ROUTING[f.routing];
+    if (kind === undefined) unmapped.push(`routing = ${f.routing}`);
+    else c.routing.kind = kind;
   }
   num('p2c_choices', (v) => { c.routing.choices = v; });
   if (f.probe_live !== undefined) {

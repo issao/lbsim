@@ -1414,11 +1414,20 @@ const PANEL_KEYS = [
  */
 export const EXTRA_KEYS = [
   'load_step_at_s', 'load_step_factor', 'load_step_until_s',
+  // U33 landed while this unit was in flight: `perturbation`/`perturb_amplitude`/
+  // `perturb_frequency_hz` are new engine keys, but config.ts's `workload.perturbation` fields
+  // still have no encoder wired to them (see `workloadToWire`'s `dropped`), so these three are
+  // accepted, verbatim `extra` keys only, same as any engine key with no panel binding yet.
+  'perturbation', 'perturb_amplitude', 'perturb_frequency_hz',
   'retry_budget_fraction', 'retry_backoff_s',
   'disable_decode', 'spec_draft_tokens', 'spec_accept_rate',
   'preemption', 'preemption_victim', 'scheduling', 'dram_capacity_tokens', 'swap_gbps',
+  'arrival_rps_per_replica',
   'session_turns_mean', 'session_think_s',
+  'prefix_roots', 'prefix_root_tokens', 'prefix_zipf_s', 'session_fork_rate', 'prefix_cache_tokens',
+  'affinity_max_load_ratio', 'affinity_fallback_choices',
   'admission', 'admission_headroom', 'fair_share_burst',
+  'ejection', 'ejection_ratio', 'ejection_views', 'ejection_cooldown_s',
   'tenants', 'tenant_weights', 'tenant_demand',
   'workload', 'trace_file', 'trace_sample_rate',
   'slo_classes', 'failures',
@@ -1444,8 +1453,8 @@ export const POLICY_KEYS: readonly ScenarioKey[] = ['routing', 'p2c_choices', 'p
  *
  * `least_kv_tokens` and `least_queue_tokens` are the same policy under two names, which is a
  * mismatch worth fixing in one of the two files rather than translating forever. `prefix_affinity`
- * has no engine implementation at all, so it is reported as dropped: sending it would make
- * `Scenario::parse` succeed and the engine silently fall back, which is the worst of both.
+ * now has an engine implementation (`crates/sim-policy/src/prefix_affinity.rs`, registered under
+ * that name), so it maps rather than dropping: see `policiesToWire` for its two knobs.
  */
 export const ROUTING_TO_ENGINE: Record<RoutingKind, string | null> = {
   round_robin: 'round_robin',
@@ -1454,7 +1463,7 @@ export const ROUTING_TO_ENGINE: Record<RoutingKind, string | null> = {
   least_kv_tokens: 'least_queue_tokens',
   least_kv_probe: 'least_kv_probe',
   power_of_two_choices: 'p2c',
-  prefix_affinity: null,
+  prefix_affinity: 'prefix_affinity',
 };
 
 export interface WireEncoding {
@@ -1473,8 +1482,9 @@ export interface WireEncoding {
  * Everything the engine has is mapped, including the SLO thresholds and the sample rate: the engine
  * does have `ttft_slo_ms`, `itl_slo_ms`, `e2e_slo_s` and `sample_interval_ms`, so dropping them
  * would report a control as dead that is not. What genuinely has no engine equivalent is the
- * accelerator label, the workload perturbation (the engine has a one-shot load step, not a
- * sinusoid, and config.ts carries no timing for a step), and the two prefix-affinity knobs.
+ * accelerator label and the workload perturbation (the engine has a one-shot load step, not a
+ * sinusoid, and config.ts carries no timing for a step). The two prefix-affinity knobs are sent,
+ * not dropped, when `routing.kind` is `prefix_affinity`: see `policiesToWire`.
  */
 export function scenarioConfigToWire(c: ScenarioConfig, overrides: Partial<Record<ScenarioKey, ScenarioValue>> = {}): WireEncoding {
   const fields: Record<string, ScenarioValue> = {
@@ -1552,10 +1562,19 @@ export function policiesToWire(c: ScenarioConfig): WireEncoding {
     p2c_choices: c.routing.choices,
     probe_live: c.routing.probeLive,
   };
-  const dropped = ['routing.maxLoadRatio', 'routing.fallbackChoices'];
+  const dropped: string[] = [];
   const engine = ROUTING_TO_ENGINE[c.routing.kind];
-  if (engine === null) dropped.unshift('routing.kind');
+  if (engine === null) dropped.push('routing.kind');
   else fields.routing = engine;
+  // The affinity ceiling and its fallback width are meaningless to any other policy, so they are
+  // sent only alongside `prefix_affinity`; otherwise they are reported dropped like any other
+  // control with nothing on the wire to receive it.
+  if (c.routing.kind === 'prefix_affinity') {
+    fields.affinity_max_load_ratio = c.routing.maxLoadRatio;
+    fields.affinity_fallback_choices = c.routing.fallbackChoices;
+  } else {
+    dropped.push('routing.maxLoadRatio', 'routing.fallbackChoices');
+  }
   return { fields, dropped };
 }
 
