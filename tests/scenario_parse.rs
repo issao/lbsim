@@ -10,7 +10,7 @@ use lbsim::scenario::Scenario;
 use lbsim::sim;
 
 /// Every key `parse` accepts, which is also every key `to_text` must emit.
-const KEYS: [&str; 65] = [
+const KEYS: [&str; 69] = [
     "name", "seed", "duration_s", "warmup_s", "replicas", "max_batch", "step_base_ms",
     "step_per_seq_ms", "step_per_kv_ktoken_ms", "kv_capacity_tokens", "prefill_tokens_per_s",
     "step_token_budget", "max_queue", "disable_decode", "preemption", "preemption_victim",
@@ -19,7 +19,9 @@ const KEYS: [&str; 65] = [
     "session_think_s", "prefix_roots", "prefix_root_tokens", "prefix_zipf_s", "session_fork_rate",
     "prefix_cache_tokens", "affinity_max_load_ratio", "affinity_fallback_choices", "load_step_at_s",
     "load_step_factor", "load_step_until_s", "routing", "p2c_choices", "probe_live",
-    "admission", "admission_headroom", "fair_share_burst", "tenants", "tenant_weights", "tenant_demand",
+    "admission", "admission_headroom", "fair_share_burst",
+    "ejection", "ejection_ratio", "ejection_views", "ejection_cooldown_s",
+    "tenants", "tenant_weights", "tenant_demand",
     "telemetry_interval_ms", "telemetry_delay_ms", "client_timeout_s", "max_attempts",
     "retry_budget_fraction", "retry_backoff_s", "ttft_slo_ms", "itl_slo_ms", "e2e_slo_s",
     "sample_interval_ms", "trace_sample_rate", "workload", "trace_file", "spec_draft_tokens",
@@ -77,6 +79,10 @@ fn all_fields_distinct() -> Scenario {
         admission: "accept_all".into(),
         admission_headroom: 0.35,
         fair_share_burst: 3.5,
+        ejection: "outlier".into(),
+        ejection_ratio: 2.75,
+        ejection_views: 4,
+        ejection_cooldown_s: 12.5,
         tenants: 3,
         tenant_weights: vec![1.0, 2.5, 4.0],
         tenant_demand: vec![4.0, 1.0, 1.0],
@@ -146,6 +152,10 @@ fn to_text_then_parse_preserves_every_field() {
     assert_eq!(got.routing, want.routing);
     assert_eq!(got.p2c_choices, want.p2c_choices);
     assert_eq!(got.probe_live, want.probe_live);
+    assert_eq!(got.ejection, want.ejection);
+    assert_eq!(got.ejection_ratio, want.ejection_ratio);
+    assert_eq!(got.ejection_views, want.ejection_views);
+    assert_eq!(got.ejection_cooldown_s, want.ejection_cooldown_s);
     assert_eq!(got.telemetry_interval_ms, want.telemetry_interval_ms);
     assert_eq!(got.telemetry_delay_ms, want.telemetry_delay_ms);
     assert_eq!(got.client_timeout_s, want.client_timeout_s);

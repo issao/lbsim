@@ -4,14 +4,15 @@
 //! slowly. The failure schedule is the one input that makes a replica misbehave, so these tests pin
 //! three things: that an empty schedule changes nothing at all, that a gray failure is invisible to a
 //! load-based router and still drags the tail, and that an announced crash reaches the router only
-//! after the telemetry delay.
+//! after the telemetry delay. U31b adds the ejection half: a health policy that reads the one tell
+//! in the delayed view takes the gray replica out, and how late it does so is the number.
 
 mod common;
 
 use common::*;
 use lbsim::metrics::{Outcome, RequestRecord};
 use lbsim::scenario::Scenario;
-use lbsim::sim::{self, RunResult, NO_REPLICA};
+use lbsim::sim::{self, RunResult, Sim, NO_REPLICA};
 use lbsim::{Nanos, EPOCH_BASE};
 
 /// Four replicas at 30% of rated load, long enough for a failure at t=60 s to have a before and an
@@ -152,3 +153,96 @@ fn a_hang_times_out_its_requests() {
     }
     eprintln!("hang: {} requests timed out on the hung replica, {} retries in the run", on_hung.len(), r.retries);
 }
+
+/// Step a run from `from` to its end and return every instant the policy's view of `replica` flipped
+/// between admitted and ejected, with the finished run.
+fn ejection_timeline(sc: &Scenario, from: Nanos, replica: usize) -> (Vec<(Nanos, bool)>, RunResult) {
+    let mut sim = Sim::new(sc).unwrap();
+    let end = at(sc.duration_s);
+    let step = 100_000_000; // 0.1 s: finer than the telemetry interval, coarser than a step
+    let mut flips = Vec::new();
+    let mut was = false;
+    let mut t = from;
+    while t < end {
+        sim.advance_to(t).unwrap();
+        let is = sim.policy_views()[replica].ejected;
+        if is != was {
+            flips.push((t, is));
+            was = is;
+        }
+        t += step;
+    }
+    sim.advance_to(end).unwrap();
+    (flips, sim.into_result().unwrap())
+}
+
+/// With outlier ejection on, the gray replica leaves the rotation within `ejection_views` telemetry
+/// intervals plus the delay of its onset, stays out for the cooldown, and takes no new traffic while
+/// out. The demo scenario is used as is, so the detection latency printed here is the one the
+/// walkthrough quotes.
+#[test]
+fn outlier_ejection_takes_the_gray_replica_out_within_the_view_count() {
+    let text = std::fs::read_to_string("scenarios/gray_failure_eject.txt").unwrap();
+    let sc = Scenario::parse(&text).unwrap();
+    assert_eq!(sc.ejection, "outlier");
+    assert_eq!(sc.failures, "t=60,replica=5,kind=slow=0.3");
+    let onset = at(60.0);
+    let interval = (sc.telemetry_interval_ms * 1e6) as Nanos;
+    let delay = (sc.telemetry_delay_ms * 1e6) as Nanos;
+    let cooldown = (sc.ejection_cooldown_s * 1e9) as Nanos;
+
+    let (flips, r) = ejection_timeline(&sc, onset - 1_000_000_000, 5);
+    let secs = |t: Nanos| (t as f64 - EPOCH_BASE as f64) / 1e9;
+    eprintln!(
+        "ejection timeline for replica 5: {:?}",
+        flips.iter().map(|(t, e)| format!("{:.1}s {}", secs(*t), if *e { "out" } else { "in" })).collect::<Vec<_>>()
+    );
+    let &(ejected_at, true) = flips.first().expect("the gray replica was never ejected") else {
+        panic!("the first flip must be an ejection: {flips:?}");
+    };
+    // Three consecutive one-second views, each delivered 200 ms late, starting from the first
+    // publish after the first slow step completes: never before two intervals past the onset. The
+    // upper bound is loose on purpose: at 0.3x the replica's decode-only step is 34 ms, about three
+    // times the fleet median and under the ratio of eight, so a strike needs a view that catches it
+    // carrying a prefill chunk, and three such views in a row take a few seconds to line up.
+    assert!(ejected_at >= onset + 2 * interval, "ejected at {:.1}s, before three views could exist", secs(ejected_at));
+    assert!(
+        ejected_at <= onset + 10 * interval + delay,
+        "ejected at {:.1}s, more than ten views after the onset",
+        secs(ejected_at),
+    );
+    // Back in the rotation when the cooldown ends, and not before.
+    if let Some(&(readmitted_at, false)) = flips.get(1) {
+        let slack = 100_000_000;
+        assert!(
+            readmitted_at >= ejected_at + cooldown && readmitted_at <= ejected_at + cooldown + interval + delay + slack,
+            "re-admitted at {:.1}s after an ejection at {:.1}s with a {}s cooldown",
+            secs(readmitted_at), secs(ejected_at), sc.ejection_cooldown_s
+        );
+    }
+    // While out, nothing new lands on it. `max_attempts = 1`, so every record is a first attempt.
+    // `ejected_at` is the first probe past the true instant, so the cooldown ends up to one probe
+    // step before `ejected_at + cooldown`; the window stops a step short for that reason.
+    let step = 100_000_000;
+    let leaked = r
+        .records
+        .iter()
+        .filter(|x| x.replica == 5 && x.arrived_at > ejected_at && x.arrived_at < ejected_at + cooldown - step)
+        .count();
+    assert_eq!(leaked, 0, "{leaked} requests reached the ejected replica during its cooldown");
+    eprintln!("detection latency: {:.1} s from onset to ejection", secs(ejected_at) - 60.0);
+}
+
+/// With `ejection = none` the same slow replica is never ejected: only a crash leaves the rotation,
+/// which is exactly what every run did before a health policy existed.
+#[test]
+fn no_ejection_never_ejects_a_slow_replica() {
+    let mut s = four("least_requests");
+    s.failures = "t=60,replica=3,kind=slow=0.3".into();
+    assert_eq!(s.ejection, "none");
+    let (flips, r) = ejection_timeline(&s, at(50.0), 3);
+    assert!(flips.is_empty(), "ejection = none ejected replica 3: {flips:?}");
+    let after = r.records.iter().filter(|x| x.arrived_at >= at(70.0) && x.replica == 3).count();
+    assert!(after > 0, "the slow replica received nothing after the onset; it was taken out of rotation");
+}
+

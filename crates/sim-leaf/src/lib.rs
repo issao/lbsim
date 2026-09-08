@@ -10,8 +10,8 @@ use sim_leaf_api::{AdvanceRequest, AdvanceResponse, ConfigureShardResponse, Leaf
 use sim_metrics::trace::{BandwidthOrCompute, MemoryTier, RequestTrace, ResourceState, SpanKind, TraceSampler, TraceSpan};
 use sim_metrics::{Frame, Histogram, Outcome, ReplicaSample, RequestRecord, Series};
 use sim_policy::{
-    Admission, AdmissionContext, AdmissionPolicy, PrefixIndex, ReplicaView, RequestView, RouteContext,
-    RoutingPolicy,
+    Admission, AdmissionContext, AdmissionPolicy, HealthPolicy, PrefixIndex, ReplicaView, RequestView,
+    RouteContext, RoutingPolicy,
 };
 use sim_core::queue::{EventQueue, PRIO_OBSERVE};
 use sim_core::rng::{Rng, Streams};
@@ -543,6 +543,9 @@ pub struct Sim {
     sc: Scenario,
     router: Box<dyn RoutingPolicy>,
     admission: Box<dyn AdmissionPolicy>,
+    /// Decides ejection from the delayed views, and writes its verdict back into them, so routing and
+    /// admission see a gray replica leave the rotation through the seam they already read.
+    health: Box<dyn HealthPolicy>,
     tenant_shares: Vec<f64>,
     route_rng: Rng,
     /// Its own stream, so turning sessions on cannot perturb arrivals, shapes or routing.
@@ -744,6 +747,7 @@ impl Sim {
         validate(sc)?;
         let router = sim_policy::make_routing(sc)?;
         let admission = sim_policy::make_admission(sc)?;
+        let health = sim_policy::make_health(sc)?;
         let tenant_shares = sc.tenant_shares();
         let streams = Streams::new(sc.seed);
         let route_rng: Rng = streams.stream("route");
@@ -789,6 +793,7 @@ impl Sim {
             sc: sc.clone(),
             router,
             admission,
+            health,
             tenant_shares,
             route_rng,
             session_rng,
@@ -939,6 +944,12 @@ impl Sim {
     pub fn latest_views(&self) -> Vec<ReplicaView> {
         self.replicas.iter().map(|r| view_of(r, self.now)).collect()
     }
+    /// The fleet as the policies see it: the delayed telemetry, with the health policy's ejections
+    /// written in. This is the view a test of detection latency has to read, because a policy's
+    /// ejection is nowhere else.
+    pub fn policy_views(&self) -> &[ReplicaView] {
+        &self.views
+    }
 
     /// Change workload or policy settings in a run that is under way, forward only.
     ///
@@ -974,8 +985,10 @@ impl Sim {
         if rebuild_policies {
             let router = sim_policy::make_routing(&sc)?;
             let admission = sim_policy::make_admission(&sc)?;
+            let health = sim_policy::make_health(&sc)?;
             self.router = router;
             self.admission = admission;
+            self.health = health;
         }
         self.sc = sc;
         Ok(Applied { changed, at: self.now })
@@ -1176,6 +1189,13 @@ impl Sim {
 
                 Ev::TelemetryDeliver(i, view) => {
                     self.views[i] = view;
+                    // Assessed on every delivery, over the delayed views, and written back into them:
+                    // an ejection reaches the router by the same stale path a crash does. With
+                    // `ejection = none` this returns the flags already there, byte for byte.
+                    let verdict = self.health.assess(now, &self.views);
+                    for (v, ejected) in self.views.iter_mut().zip(verdict) {
+                        v.ejected = ejected;
+                    }
                 }
 
                 Ev::Timeout(id) => {
