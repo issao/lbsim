@@ -18,6 +18,7 @@ import type { ScenarioConfig } from './config';
 import { cloneConfig, diffConfig, FIELD_LABEL } from './config';
 import { clamp, coeffOfVariation, drift, lognormalQuantile, normal, uniform } from './rng';
 import { type Histogram, merge, newHistogram, record } from './hist';
+import { percentilesOver } from './derive';
 
 export const SNAPSHOT_S = 10;
 /**
@@ -30,6 +31,22 @@ const PARK_S = 12;
 const SPARE_SLOTS = 2;
 /** Deterministic quantile probes per replica when building a fleet histogram. */
 const PROBES = 12;
+/** The percentiles the wire reports for utilization across replicas (subscription.proto, metric 67). */
+const UTIL_PCTS = [50, 90, 99];
+
+/**
+ * Percentiles of one fraction-valued metric across the replicas present at an instant. The wire's
+ * `Distribution` in the metric's own unit (0..1), never milliseconds; the mock computes the same
+ * shape by sorting. `value[i]` is the `percentile[i]`-th percentile.
+ */
+export interface FractionPercentiles {
+  count: number;
+  mean: number;
+  min: number;
+  max: number;
+  percentile: number[];
+  value: number[];
+}
 
 export interface ReplicaSample {
   id: number;
@@ -41,6 +58,10 @@ export interface ReplicaSample {
   batchSize: number;
   kvTokensResident: number;
   kvUtilization: number;
+  /** Busy share of the sample window (in a step, as opposed to idle with an empty batch). */
+  gpuUtilization: number;
+  /** Share of busy time under the compute roofline; the complement of the wasted fraction. */
+  gpuComputeBoundFraction: number;
   stepTimeMs: number;
   queueWaitMs: number;
   ttftMeanMs: number;
@@ -79,6 +100,11 @@ export interface Frame {
   drainingReplicas: number;
   ejectedReplicas: number;
   kvUtilization: number;
+  /** Fleet mean of the replicas' `gpuUtilization`, and its spread across them; null when unknown. */
+  gpuUtilization: number;
+  gpuComputeBoundFraction: number;
+  gpuUtilizationP: FractionPercentiles | null;
+  kvUtilizationP: FractionPercentiles | null;
   prefixHitRate: number;
   tierUtilization: { hbm: number; dram: number; ssd: number };
   tierBandwidth: { dram: number; ssd: number };
@@ -470,6 +496,9 @@ export class MockEngine {
     let ssdTokens = 0;
     let stepGpuS = 0;
     let stepWastedS = 0;
+    const gpuVals: number[] = [];
+    const kvVals: number[] = [];
+    let computeBoundBusyS = 0;
 
     for (let i = 0; i < R; i++) {
       const present = st.present[i];
@@ -551,9 +580,16 @@ export class MockEngine {
         }
       }
 
-      if (present && state !== 'EJECTED') {
-        const busy = clamp((batch / c.fleet.maxBatch) * 0.85 + (q > 0 ? 0.15 : 0), 0, 1);
+      const busy = clamp((batch / c.fleet.maxBatch) * 0.85 + (q > 0 ? 0.15 : 0), 0, 1);
+      // Invented like everything else here: a fuller batch amortizes the weight reads, so it sits
+      // closer to the compute roofline; the real engine measures this per step.
+      const computeBound = clamp((batch / c.fleet.maxBatch) * 1.5, 0, 1);
+      const serving = present && state !== 'EJECTED';
+      if (serving) {
         stepGpuS += busy * dt;
+        gpuVals.push(busy);
+        kvVals.push(kvUtil);
+        computeBoundBusyS += busy * computeBound;
         stepWastedS += busy * dt * clamp(excess * 1.2, 0, 0.5) + (overflow > 0 ? busy * dt * 0.1 : 0);
         kvSum += kvUtil;
         kvN++;
@@ -579,6 +615,8 @@ export class MockEngine {
         batchSize: batch,
         kvTokensResident: kvTokens,
         kvUtilization: kvUtil,
+        gpuUtilization: serving ? busy : 0,
+        gpuComputeBoundFraction: serving ? computeBound : 0,
         stepTimeMs: stepMs,
         queueWaitMs,
         ttftMeanMs: ttftMs,
@@ -605,6 +643,8 @@ export class MockEngine {
     }
 
     const kvUtilFleet = kvN > 0 ? kvSum / kvN : 0;
+    const gpuP = percentilesOver(gpuVals, UTIL_PCTS);
+    const busySum = gpuVals.reduce((a, b) => a + b, 0);
     const frame: Frame = {
       tick,
       simS: t,
@@ -621,6 +661,10 @@ export class MockEngine {
       drainingReplicas: draining,
       ejectedReplicas: ejected,
       kvUtilization: kvUtilFleet,
+      gpuUtilization: gpuP ? gpuP.mean : 0,
+      gpuComputeBoundFraction: busySum > 0 ? computeBoundBusyS / busySum : 0,
+      gpuUtilizationP: gpuP,
+      kvUtilizationP: percentilesOver(kvVals, UTIL_PCTS),
       prefixHitRate: kvN > 0 ? hitSum / kvN : 0,
       tierUtilization: {
         hbm: kvUtilFleet,

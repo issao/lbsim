@@ -354,6 +354,8 @@ function pendingRow(id: number): ReplicaSample {
     batchSize: NaN,
     kvTokensResident: NaN,
     kvUtilization: NaN,
+    gpuUtilization: NaN,
+    gpuComputeBoundFraction: NaN,
     stepTimeMs: NaN,
     queueWaitMs: NaN,
     ttftMeanMs: NaN,

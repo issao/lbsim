@@ -4,7 +4,7 @@
 // moving an SLO threshold changes the charts without touching the engine, and the UI can say
 // truthfully that no re-simulation happened.
 
-import type { Frame } from './engine';
+import type { FractionPercentiles, Frame } from './engine';
 import type { ScenarioConfig, Slo } from './config';
 import { fractionBelow, type Histogram, quantile } from './hist';
 
@@ -34,6 +34,36 @@ export function series(frames: Frame[], pick: (f: Frame) => number): number[] {
 
 export function percentileSeries(frames: Frame[], pick: (f: Frame) => Histogram, p: number): number[] {
   return frames.map((f) => quantile(pick(f), p));
+}
+
+/**
+ * Percentiles of a fraction across replicas by sorting, nearest rank. This is the wire's
+ * `distributions["67"]` recomputed client-side, for the mock and for a replay frame that carries
+ * per-replica rows but predates the fleet distribution. Non-finite entries are absent replicas
+ * and are dropped; null when nothing is left, so the chart draws a gap rather than a zero.
+ */
+export function percentilesOver(values: number[], ps: number[]): FractionPercentiles | null {
+  const xs = values.filter(Number.isFinite).sort((a, b) => a - b);
+  if (xs.length === 0) return null;
+  const at = (p: number): number => xs[Math.min(xs.length - 1, Math.max(0, Math.ceil((p / 100) * xs.length) - 1))];
+  return {
+    count: xs.length,
+    mean: xs.reduce((a, b) => a + b, 0) / xs.length,
+    min: xs[0],
+    max: xs[xs.length - 1],
+    percentile: ps.slice(),
+    value: ps.map(at),
+  };
+}
+
+/** The `p`-th percentile per frame from a `FractionPercentiles`, NaN (a gap) where the frame has none or lacks `p`. */
+export function fractionPercentileSeries(frames: Frame[], pick: (f: Frame) => FractionPercentiles | null, p: number): number[] {
+  return frames.map((f) => {
+    const fp = pick(f);
+    if (!fp) return NaN;
+    const i = fp.percentile.indexOf(p);
+    return i === -1 ? NaN : fp.value[i];
+  });
 }
 
 export function xs(frames: Frame[]): number[] {

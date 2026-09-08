@@ -41,6 +41,7 @@ const replay = await load<typeof import('./replay')>('replay');
 const hist = await load<typeof import('./hist')>('hist');
 const engine = await load<typeof import('./engine')>('engine');
 const mode = await load<typeof import('./mode')>('mode');
+const fixtures = await load<typeof import('./apiFixtures')>('apiFixtures');
 
 // ---------------------------------------------------------------------------
 // harness
@@ -227,6 +228,24 @@ check('a fleet row 25 s in becomes a Frame with the engine numbers', () => {
   eq(f.queuedSeqs, 1, 'queued');
   eq(f.runningSeqs, 315, 'running');
   return 'offered 70, completed 64, kv 4.45 %, cv 0.293, 32 ready, 12 940 tok/s';
+});
+
+check('gpu utilization arrives as a fleet mean plus percentiles across replicas, unscaled (U94)', () => {
+  const f = adapter.frameFromUpdate(update(fixtures.GPU_FLEET_ROW), origin, 0);
+  eq(f.gpuUtilization, 0.62, 'fleet mean is the wire fraction, untouched');
+  eq(f.gpuComputeBoundFraction, 0.35, 'compute-bound share');
+  ok(f.gpuUtilizationP !== null, 'gpu distribution present');
+  eq(f.gpuUtilizationP!.count, 32, 'one sample per replica');
+  eq(f.gpuUtilizationP!.percentile, [50, 90, 99], 'percentiles as requested');
+  eq(f.gpuUtilizationP!.value[1], 0.9, 'p90 is a fraction, not divided by NS_PER_MS');
+  eq(f.gpuUtilizationP!.max, 0.99, 'max unscaled');
+  ok(f.kvUtilizationP !== null, 'kv distribution present');
+  eq(f.kvUtilizationP!.value[2], 0.95, 'kv p99');
+  const old = adapter.frameFromUpdate(update(ROW_25S), origin, 0);
+  eq(old.gpuUtilization, NaN, 'a row from before the metric reads as a gap');
+  eq(old.gpuUtilizationP, null, 'no gpu distribution on an older row');
+  eq(old.kvUtilizationP, null, 'no kv distribution on an older row');
+  return 'mean 0.62, p50/p90/p99 0.6/0.9/0.98 over 32 replicas; older rows NaN and null';
 });
 
 check('fields the engine does not simulate are NaN or empty, never a number that looks measured', () => {
