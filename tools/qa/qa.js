@@ -253,7 +253,8 @@ const finalLine = extraFail => {
     const runPair = async () => { const m = (await body()).match(/run ([A-Za-z0-9_-]+) vs ([A-Za-z0-9_-]+)/); return m ? [m[1], m[2]] : null; };
     const ids = await until(runPair, 20000);
     const t = await body();
-    const seedShown = (t.match(/same seed (\d+)/) || [])[1];
+    // Case-insensitive: the tagline is upper-cased by CSS, and innerText reports the rendered case.
+    const seedShown = (t.match(/same seed (\d+)/i) || [])[1];
     const sent = log.startRuns.map(b => (b.match(/seed\s*=\s*(\d+)/) || [])[1]);
     const routings = log.startRuns.map(b => (b.match(/routing\s*=\s*([a-z_0-9]+)/) || [])[1]);
     check('A/B live: two runs streaming with equal seeds',
