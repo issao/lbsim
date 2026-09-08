@@ -1,0 +1,81 @@
+{
+  "id": "affinity-cascade",
+  "dynamic": 9,
+  "title": "Affinity hotspot failover cascade",
+  "summary": "Affinity turns one replica into the holder of a root's traffic. When it dies, three times the in-flight work dies with it, its roots land on replicas with no cached prefix, and when it returns the router sends the traffic straight back to a cold cache.",
+  "scenario": {
+    "name": "showcase: affinity cascade",
+    "seed": 20260906,
+    "durationS": 120,
+    "routing.kind": "prefix_affinity",
+    "routing.maxLoadRatio": 2.2,
+    "routing.fallbackChoices": 2,
+    "workload.arrivalRps": 560,
+    "workload.promptMean": 1200
+  },
+  "run": "17-cascade/cascade-affinity",
+  "compare": "17-cascade/cascade-p2c",
+  "steps": [
+    {
+      "at_sim_s": 40,
+      "speed": 2,
+      "control_tab": "policies",
+      "observe_tab": "machine",
+      "highlight": "heatmap",
+      "title": "A steady hotspot, and the replica that is about to die",
+      "body": [
+        "This is demo 14's sticky run again: prefix affinity at max load ratio 2.2, 100 roots under a Zipf s = 1.0 law, the same seed as the p2c comparison run. The holders of the popular roots are the persistent dark rows. Replica 0 is the hottest of them: over 30 to 60 s it carries 29.6 running sequences against a fleet mean of 10.5, and replicas 0 to 5 form a band at 25 to 30. Under p2c the same replica 0 carries 10.5, one two-hundred-and-fifty-sixth of the fleet.",
+        "That is why the failure injected here is replica 0's. A crash of a random replica costs the fleet 0.4 % of its capacity; a crash of the hottest holder costs it the concentrated share affinity built, and the point of this walkthrough is to see where that share goes."
+      ],
+      "look_for": "Replica 0's row dark and steady in the heatmap, with the load CV at 0.75 against p2c's 0.32."
+    },
+    {
+      "at_sim_s": 61,
+      "speed": 1,
+      "observe_tab": "machine",
+      "highlight": "heatmap",
+      "title": "The crash at 60 s: three and a half times the in-flight work is lost",
+      "body": [
+        "At t = 60 s replica 0 crashes and stays down until 90 s. Its row empties: the replica state on the wire flips to crashed and its running count goes to zero. The fleet ready count in the exported telemetry does not move, in either run, so the crash is visible per replica, not in the fleet aggregate.",
+        "What the crash destroys is the difference between the two runs. At the last sample before it died the affinity holder was running 36 sequences with 144,551 KV tokens resident; p2c's replica 0 was running 8 with 39,452. Every one of those requests is lost, and with max_attempts = 1 nobody retries them. Over the whole run 73 requests time out after consuming GPU time under affinity against 33 under p2c, the most expensive failure the scorecard counts."
+      ],
+      "look_for": "Replica 0's row going blank at 60 s, and the ready count in the cluster tab staying at 256."
+    },
+    {
+      "at_sim_s": 68,
+      "speed": 1,
+      "observe_tab": "machine",
+      "highlight": "heatmap",
+      "title": "The cascade: the roots land on replicas that have never seen them",
+      "body": [
+        "The router still has replica 0's roots to place, and it places them on the fallback choices, none of which hold the prefix. Every one of those requests pays the full 800-token prefill instead of a hit. In the ten seconds after the crash replica 35's running count goes from 4.3 to 14.4, fellow holder replica 6 from 20.3 to 26.4, replica 225 from 10.6 to 16.6. By queue depth the inheriting rows are replicas 2, 156 and 46: replica 156's running count climbs from 14.6 to 20.5 across the outage with its step time going from 15.7 to 28.7 ms, and replica 2's step time from 26.0 to 35.4 ms. Their queues peak at 9 and 5, against a peak of 1 for the same replicas under p2c.",
+        "Now the quality tab, and the honest part. The fleet aggregate barely moves: the mean of the 250 ms TTFT p99 samples is 4,403 ms before the crash, 4,190 ms during it and 4,276 ms after, against p2c's 2,321, 2,439 and 2,308 ms. The worst single sample is 12,616 ms at 73 s, against 8,973 ms under p2c. Over the whole run affinity attains 96.2 % SLO with the crash and 96.4 % without; p2c is at 98.7 % either way. At 560 rps against a rated 1,878 the fleet has the headroom to absorb one holder, so the cascade is a per-replica event here. The chart that shows it is the heatmap, not the fleet percentile."
+      ],
+      "look_for": "New dark rows appearing near the top of the heatmap while the fleet TTFT p99 in the quality tab stays inside its pre-crash noise."
+    },
+    {
+      "at_sim_s": 91,
+      "speed": 1,
+      "observe_tab": "machine",
+      "highlight": "heatmap",
+      "title": "The return at 90 s: the router remembers the holder, the holder remembers nothing",
+      "body": [
+        "Replica 0 comes back empty: a crash clears its prefix cache. The router's affinity map outlived it, so the traffic for its roots comes straight back. Within the first five seconds replica 0 is running 27.2 sequences again, at 90 % of its pre-crash load by 90.5 s, but with 55,809 KV tokens resident against 144,551 before the crash, and every request in that stream pays the prefill a hit used to skip: its mean step time is 42.8 ms over 95 to 100 s and 42.0 ms over 100 to 105 s, against 33.8 ms before the crash, 27 % slower for the same load.",
+        "Under p2c the same replica returns as an ordinary member. It refills at 6.2, 9.2 and 11.5 running sequences over the same three bins and reaches 90 % of its pre-crash load at 93.2 s, with nothing cold to pay for because it never held anything."
+      ],
+      "look_for": "Replica 0's row turning dark again immediately in the affinity run, and only gradually in the p2c comparison."
+    },
+    {
+      "at_sim_s": 106,
+      "speed": 2,
+      "observe_tab": "utilization",
+      "highlight": "capacity",
+      "title": "Recovery: about fifteen seconds to re-earn the cache",
+      "body": [
+        "Replica 0's step time is back at 33.1 ms over 105 to 110 s and 26.7 ms over 110 to 115 s, at or below its pre-crash mean, with its resident KV back at 121,000 to 165,000 tokens: the roots have been re-prefilled once each and are hits again. Call it fifteen seconds from return to warm, for a cache of 400,000 tokens under a Zipf law that sends a fifth of all traffic to one root.",
+        "Two caveats travel with every number here. The prefix topology is a guess, per docs/calibration.md section 9.1, and the per-replica hit rate is not on the wire yet, so warmth is inferred from step time and resident KV rather than read directly. What the walkthrough does establish is the shape: the cost of losing a holder is paid three times, in the in-flight work destroyed, in the cold prefill on the replicas that inherit the roots, and again on the holder when it returns cold to a router that still prefers it."
+      ],
+      "look_for": "Replica 0's step time and KV residency converging on their pre-crash levels in the utilization tab."
+    }
+  ]
+}

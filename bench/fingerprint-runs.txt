@@ -22,3 +22,4 @@
 13-herd-fleet sweep scenarios/herd_fleet.txt --over replicas=32,64,128,256,512
 14-affinity compare scenarios/affinity_off.txt scenarios/affinity_spread.txt scenarios/affinity_sticky.txt
 15-gray-failure compare scenarios/gray_failure_none.txt scenarios/gray_failure_eject.txt
+17-cascade compare scenarios/cascade_p2c.txt scenarios/cascade_affinity.txt
