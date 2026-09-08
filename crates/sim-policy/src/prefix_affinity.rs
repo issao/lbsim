@@ -35,7 +35,7 @@ pub struct PrefixAffinity {
 pub fn make(sc: &Scenario) -> Box<dyn RoutingPolicy> {
     Box::new(PrefixAffinity {
         max_load_ratio: sc.affinity_max_load_ratio,
-        choices: sc.affinity_fallback_choices,
+        choices: sc.affinity_fallback_choices as usize,
         mean_load: None,
     })
 }

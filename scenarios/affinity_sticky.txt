@@ -52,8 +52,13 @@ prefix_cache_tokens = 400000
 
 routing = prefix_affinity
 affinity_max_load_ratio = 2.2
-telemetry_interval_ms = 1000
-telemetry_delay_ms = 200
+# Fresh telemetry, unlike route_p2c.txt's 1000 / 200 ms, and shared by all three. Measured at the
+# baseline's staleness: every ratio from 0.5 to 2.2 herds to a load CV of about 1.2 and loses to
+# p2c on every metric, because a holder receives a second of a root's traffic before the view
+# that would refuse it arrives. The ceiling can only act on a view fresh enough to see the load it
+# is capping, so the staleness interaction is a finding of its own (dynamic 2), not of this knob.
+telemetry_interval_ms = 100
+telemetry_delay_ms = 10
 
 client_timeout_s = 60
 max_attempts = 1

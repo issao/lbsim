@@ -2,7 +2,7 @@
   "id": "affinity-vs-spread",
   "dynamic": 8,
   "title": "Prefix affinity against load spreading",
-  "summary": "Cache hits and balance pull in opposite directions, and one parameter decides where you sit between them.",
+  "summary": "Cache hits and balance pull in opposite directions; one parameter sets where you sit, and at this workload every step toward the cache costs more than it earns.",
   "scenario": {
     "name": "showcase: affinity",
     "seed": 20260906,
@@ -24,10 +24,10 @@
       "highlight": "capacity",
       "title": "Affinity that yields to load almost immediately",
       "body": [
-        "Max load ratio is 1.05: the router prefers the replica already holding a request's prefix, but abandons that preference as soon as the candidate is five per cent above the fleet mean.",
-        "So the fleet is balanced, and the prefix hit rate is modest. Prefill work that could have been skipped is being done."
+        "Max load ratio is 1.05: the router prefers a replica already holding the request's prefix, and abandons it as soon as that replica is five per cent above its estimate of the fleet mean.",
+        "Demo 14 measures this run against plain p2c on the same seed and the same prefix topology. p2c: goodput 147,043 tok/s, 98.7 % within SLO, load CV 0.32, TTFT p50 40 ms and p99 2,282 ms. At 1.05: 145,303 tok/s, 97.8 %, CV 0.37, p50 39 ms and p99 3,221 ms. The balance is kept and the tail already moves, because a holder is a hot spot for the second before its load shows."
       ],
-      "look_for": "The prefix hit rate tile, and a low imbalance coefficient of variation in the Machine level tab."
+      "look_for": "A low imbalance coefficient of variation in the Machine level tab, and p99 TTFT a little above the p2c comparison run."
     },
     {
       "at_sim_s": 40,
@@ -40,10 +40,10 @@
       "highlight": "capacity",
       "title": "Now let affinity win",
       "body": [
-        "At 2.2 the router will tolerate a candidate more than twice as loaded as the fleet mean before it gives up on the cache. The hit rate goes up and so does the imbalance.",
-        "Higher hit rate means less prefill per request, which is real capacity. Whether it is worth the imbalance is the question this panel exists to answer, and the answer depends on the workload rather than on the policy."
+        "At 2.2 the router tolerates a candidate more than twice as loaded as the fleet mean before it gives up on the cache. Measured: goodput 141,314 tok/s, 96.4 % within SLO, load CV 0.75, TTFT p50 40 ms, p90 789 ms, p99 3,959 ms.",
+        "The knob is monotone: sweeping the ratio through 1.05, 1.5, 2.2 and 4.0 gives a CV of 0.37, 0.48, 0.75 and 1.36. What it does not do here is pay. A hit skips an 800-token prefill, about 28 ms at this prefill rate, and the runs are decode-bound, so the capacity a hit returns is smaller than the queueing the concentration costs."
       ],
-      "look_for": "The prefix hit rate rising and the heatmap in the Machine level tab developing persistent hot rows."
+      "look_for": "The heatmap in the Machine level tab developing persistent hot rows as the ratio rises."
     },
     {
       "at_sim_s": 66,
@@ -52,7 +52,7 @@
       "highlight": "heatmap",
       "title": "Affinity hotspots are static, not rolling",
       "body": [
-        "Compare this with the round-robin walkthrough. There the hot band moved, because the router dealt long requests around the ring. Here the hot rows stay hot, because a prefix lives on a replica and the traffic for it keeps arriving.",
+        "Compare this with the round-robin walkthrough. There the hot band moved, because the router dealt long requests around the ring. Here the hot rows stay hot, because a prefix lives on a replica and the traffic for its root keeps arriving: 100 roots under a Zipf s = 1.0 law send about a fifth of all requests to the holders of one root.",
         "Two different shapes on the same panel, from two different causes. That is the argument for a per-replica-over-time view rather than a fleet aggregate."
       ],
       "look_for": "Vertical persistence in the heatmap: the same rows dark for the whole window."
@@ -64,8 +64,8 @@
       "highlight": "table",
       "title": "Which one is better depends on what you are measuring",
       "body": [
-        "The tail is worse with affinity turned up, because the hot replicas queue. The median may be better, because a cache hit removes most of the prefill from most requests.",
-        "There is no single right answer, which is why max load ratio is a parameter rather than a constant. What the dashboard owes you is both numbers at once, not a verdict."
+        "The medians do not move: TTFT p50 is 40, 39 and 40 ms for p2c, 1.05 and 2.2, and end-to-end p50 is 2,315 ms for the first two. The tail is where the ratio is paid for: TTFT p99 2,282, 3,221 and 3,959 ms, and p99.9 6,510, 8,053 and 8,724 ms.",
+        "There is no single right answer, which is why max load ratio is a parameter rather than a constant. What the dashboard owes you is both numbers at once, not a verdict. And one caveat travels with every number here: the prefix topology is a guess, and these runs use 100 ms telemetry. At the baseline's 1 s telemetry every ratio herds to a CV of about 1.2, because the ceiling can only refuse a load it can see."
       ],
       "look_for": "p50 against p99.9 in the percentile table, at each end of the max-load-ratio range."
     }
