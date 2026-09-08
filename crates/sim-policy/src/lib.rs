@@ -11,17 +11,23 @@
 //! head of its queue, never the fleet, and decides batch admission order, the prefill chunk budget
 //! and its order, and the preemption victim. See `scheduling.rs` for why it never sees the whole queue.
 //!
+//! The fifth seam is the fleet's size, [`AutoscalingPolicy`]: it sees the delayed views and the
+//! lifecycle counts and returns a number; the engine owns the cold start and the drain. See
+//! `autoscaling.rs` for why the policy never touches a replica.
+//!
 //! **Adding a policy is one file.** Write `src/<name>.rs` implementing [`RoutingPolicy`],
-//! [`AdmissionPolicy`], [`HealthPolicy`] or [`SchedulingPolicy`], with a first line declaring it:
+//! [`AdmissionPolicy`], [`HealthPolicy`], [`SchedulingPolicy`] or [`AutoscalingPolicy`], with a first
+//! line declaring it:
 //!
 //! ```text
 //! //! lbsim-policy: routing names=<canonical>,<alias>...
 //! ```
 //!
 //! `build.rs` reads that header from every file in `src/` and generates the `mod` lines and the
-//! [`ROUTING`], [`ADMISSION`], [`HEALTH`] and [`SCHEDULING`] tables, sorted by file name. Nothing in the
-//! engine changes; the engine resolves the scenario's `routing`, `admission`, `ejection` and `scheduling`
-//! names through [`make_routing`], [`make_admission`], [`make_health`] and [`make_scheduling`].
+//! [`ROUTING`], [`ADMISSION`], [`HEALTH`], [`SCHEDULING`] and [`AUTOSCALING`] tables, sorted by file
+//! name. Nothing in the engine changes; the engine resolves the scenario's `routing`, `admission`,
+//! `ejection`, `scheduling` and `autoscaling` names through [`make_routing`], [`make_admission`],
+//! [`make_health`], [`make_scheduling`] and [`make_autoscaling`].
 //! The registry used to be a hand-written table here, and three policy branches
 //! written in parallel conflicted on it in one afternoon; a generated table cannot conflict. This is
 //! also how the arena's generated policies work: a generated policy is a file with that header like any
@@ -34,11 +40,13 @@
 
 
 pub mod admission;
+pub mod autoscaling;
 pub mod health;
 pub mod routing;
 pub mod scheduling;
 
 pub use admission::{Admission, AdmissionContext, AdmissionPolicy};
+pub use autoscaling::{AutoscalingPolicy, FleetView};
 pub use health::HealthPolicy;
 pub use routing::{NoPrefixIndex, PrefixIndex, ReplicaView, RequestView, RouteContext, RoutingPolicy};
 pub use scheduling::{SchedulingPolicy, SeqView, StepView};
@@ -96,6 +104,14 @@ pub fn make_scheduling(sc: &Scenario) -> Result<Box<dyn SchedulingPolicy>, Strin
     }
 }
 
+/// Resolve the scenario's `autoscaling` name.
+pub fn make_autoscaling(sc: &Scenario) -> Result<Box<dyn AutoscalingPolicy>, String> {
+    match lookup(AUTOSCALING, sc.autoscaling.as_str()) {
+        Some(e) => Ok((e.make)(sc)),
+        None => Err(format!("unknown autoscaling policy {:?}", sc.autoscaling)),
+    }
+}
+
 /// Canonical names of every routing policy, for the arena and the CLI.
 pub fn routing_names() -> Vec<&'static str> {
     ROUTING.iter().map(|e| e.names[0]).collect()
@@ -141,6 +157,14 @@ mod tests {
             }
         }
         assert!(seen.contains("fifo_chunked"), "the engine's default scheduler must be registered");
+        let mut seen = std::collections::BTreeSet::new();
+        for e in AUTOSCALING {
+            assert!(dir.join(e.file).is_file(), "{} is registered but missing", e.file);
+            for n in e.names {
+                assert!(seen.insert(*n), "autoscaling name {n} registered twice");
+            }
+        }
+        assert!(seen.contains("none"), "the engine's default autoscaling must be registered");
     }
 
     #[test]
@@ -160,5 +184,9 @@ mod tests {
         sc.scheduling = "shortest_job_first".into();
         let err = make_scheduling(&sc).err().expect("unknown scheduling name must be an error");
         assert!(err.contains("shortest_job_first"), "{err}");
+        sc.scheduling = "fifo_chunked".into();
+        sc.autoscaling = "predictive".into();
+        let err = make_autoscaling(&sc).err().expect("unknown autoscaling name must be an error");
+        assert!(err.contains("predictive"), "{err}");
     }
 }

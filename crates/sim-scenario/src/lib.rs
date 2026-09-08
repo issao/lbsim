@@ -153,6 +153,26 @@ pub struct Scenario {
     pub ejection_ratio: f64,
     pub ejection_views: u32,
     pub ejection_cooldown_s: f64,
+    /// Which autoscaling policy sizes the fleet from the delayed view: `none` keeps exactly
+    /// `replicas` up for the whole run and schedules nothing; `target_utilization` holds the mean
+    /// running-per-ready-replica at `autoscale_target` of `max_batch`, deciding every
+    /// `autoscale_interval_s`, at most `autoscale_step` replicas per decision, and never scaling down
+    /// within `autoscale_cooldown_s` of a scale-up.
+    pub autoscaling: String,
+    pub autoscale_target: f64,
+    pub autoscale_interval_s: f64,
+    pub autoscale_step: usize,
+    pub autoscale_cooldown_s: f64,
+    /// The fleet's bounds. Zero means "the same as `replicas`", which is what every scenario written
+    /// before autoscaling existed says, so `max_replicas` is the slot count and `replicas` how many of
+    /// them start ready. See `fleet_min` and `fleet_max`.
+    pub min_replicas: usize,
+    pub max_replicas: usize,
+    /// The cold start: a replica turned up serves nothing for this long. And the drain: a replica
+    /// turned down takes no new work and finishes what it has, but not past this, after which what
+    /// remains is lost as if it had crashed.
+    pub warmup_delay_s: f64,
+    pub drain_timeout_s: f64,
 
     // -- tenants ---------------------------------------------------------------
     /// How many tenants share the fleet. One means no tenancy at all.
@@ -397,6 +417,15 @@ impl Default for Scenario {
             ejection_ratio: 3.0,
             ejection_views: 3,
             ejection_cooldown_s: 30.0,
+            autoscaling: "none".into(),
+            autoscale_target: 0.7,
+            autoscale_interval_s: 10.0,
+            autoscale_step: 8,
+            autoscale_cooldown_s: 30.0,
+            min_replicas: 0,
+            max_replicas: 0,
+            warmup_delay_s: 30.0,
+            drain_timeout_s: 60.0,
             tenants: 1,
             tenant_weights: Vec::new(),
             tenant_demand: Vec::new(),
@@ -520,6 +549,15 @@ impl Scenario {
                 "ejection_ratio" => s.ejection_ratio = f("ejection_ratio"),
                 "ejection_views" => s.ejection_views = f("ejection_views") as u32,
                 "ejection_cooldown_s" => s.ejection_cooldown_s = f("ejection_cooldown_s"),
+                "autoscaling" => s.autoscaling = v.clone(),
+                "autoscale_target" => s.autoscale_target = f("autoscale_target"),
+                "autoscale_interval_s" => s.autoscale_interval_s = f("autoscale_interval_s"),
+                "autoscale_step" => s.autoscale_step = f("autoscale_step") as usize,
+                "autoscale_cooldown_s" => s.autoscale_cooldown_s = f("autoscale_cooldown_s"),
+                "min_replicas" => s.min_replicas = f("min_replicas") as usize,
+                "max_replicas" => s.max_replicas = f("max_replicas") as usize,
+                "warmup_delay_s" => s.warmup_delay_s = f("warmup_delay_s"),
+                "drain_timeout_s" => s.drain_timeout_s = f("drain_timeout_s"),
                 "tenants" => s.tenants = f("tenants") as usize,
                 "tenant_weights" | "tenant_demand" => {
                     let mut ws = Vec::new();
@@ -686,6 +724,16 @@ impl Scenario {
         Scenario::parse(&text.join("\n"))
     }
 
+    /// The fewest replicas the autoscaler may keep ready, and the most it may turn up: the slot
+    /// count the engine builds. Zero in the file means `replicas`, so a scenario that never mentions
+    /// either has a fleet of exactly `replicas` and no room to move.
+    pub fn fleet_min(&self) -> usize {
+        if self.min_replicas == 0 { self.replicas } else { self.min_replicas }
+    }
+    pub fn fleet_max(&self) -> usize {
+        if self.max_replicas == 0 { self.replicas } else { self.max_replicas }
+    }
+
     /// Whether a running engine can take a change to `key` without a restart. Unknown keys are
     /// structural: the safe answer for a name nothing recognises.
     pub fn override_kind(key: &str) -> OverrideKind {
@@ -701,6 +749,8 @@ impl Scenario {
             "routing" | "p2c_choices" | "probe_live" | "admission" | "admission_headroom"
             | "fair_share_burst" | "preemption" | "preemption_victim" | "scheduling"
             | "ejection" | "ejection_ratio" | "ejection_views" | "ejection_cooldown_s"
+            | "autoscaling" | "autoscale_target" | "autoscale_interval_s" | "autoscale_step"
+            | "autoscale_cooldown_s" | "min_replicas" | "warmup_delay_s" | "drain_timeout_s"
             | "affinity_max_load_ratio" | "affinity_fallback_choices" => OverrideKind::Policy,
             _ => OverrideKind::Structural,
         }
@@ -746,6 +796,9 @@ impl Scenario {
              perturb_amplitude = {}\nperturb_frequency_hz = {}\nrouting = {}\np2c_choices = {}\n\
              probe_live = {}\nadmission = {}\nadmission_headroom = {}\nfair_share_burst = {}\n\
              ejection = {}\nejection_ratio = {}\nejection_views = {}\nejection_cooldown_s = {}\n\
+             autoscaling = {}\nautoscale_target = {}\nautoscale_interval_s = {}\nautoscale_step = {}\n\
+             autoscale_cooldown_s = {}\nmin_replicas = {}\nmax_replicas = {}\nwarmup_delay_s = {}\n\
+             drain_timeout_s = {}\n\
              tenants = {}\ntenant_weights = {}\ntenant_demand = {}\n\
              telemetry_interval_ms = {}\ntelemetry_delay_ms = {}\n\
              client_timeout_s = {}\nmax_attempts = {}\nretry_budget_fraction = {}\n\
@@ -770,6 +823,9 @@ impl Scenario {
             self.perturb_amplitude, self.perturb_frequency_hz, self.routing, self.p2c_choices,
             self.probe_live, self.admission, self.admission_headroom, self.fair_share_burst,
             self.ejection, self.ejection_ratio, self.ejection_views, self.ejection_cooldown_s,
+            self.autoscaling, self.autoscale_target, self.autoscale_interval_s, self.autoscale_step,
+            self.autoscale_cooldown_s, self.min_replicas, self.max_replicas, self.warmup_delay_s,
+            self.drain_timeout_s,
             self.tenants,
             self.tenant_weights.iter().map(|w| w.to_string()).collect::<Vec<_>>().join(","),
             self.tenant_demand.iter().map(|w| w.to_string()).collect::<Vec<_>>().join(","),

@@ -8,6 +8,7 @@
 //!     //! lbsim-policy: admission names=accept_all
 //!     //! lbsim-policy: health names=none
 //!     //! lbsim-policy: scheduling names=fifo_chunked,fcfs
+//!     //! lbsim-policy: autoscaling names=target_utilization,target
 //!
 //! and this script writes `$OUT_DIR/registry.rs` with the `mod` lines and both tables, sorted by file
 //! name so the output is deterministic whatever order the directory listing comes back in. A branch that
@@ -38,8 +39,8 @@ fn parse_header(file: &str, first_line: &str) -> Option<Entry> {
         }
     }
     let kind = kind?;
-    if kind != "routing" && kind != "admission" && kind != "health" && kind != "scheduling" {
-        panic!("{file}: lbsim-policy kind must be routing, admission, health or scheduling, got {kind:?}");
+    if !["routing", "admission", "health", "scheduling", "autoscaling"].contains(&kind.as_str()) {
+        panic!("{file}: lbsim-policy kind must be routing, admission, health, scheduling or autoscaling, got {kind:?}");
     }
     if names.is_empty() {
         panic!("{file}: lbsim-policy header needs names=<a,b,...>");
@@ -82,6 +83,7 @@ fn main() {
         ("admission", "AdmissionPolicy", "The admission registry, sorted by file name."),
         ("health", "HealthPolicy", "The health (ejection) registry, sorted by file name."),
         ("scheduling", "SchedulingPolicy", "The scheduling registry, sorted by file name."),
+        ("autoscaling", "AutoscalingPolicy", "The autoscaling registry, sorted by file name."),
     ] {
         writeln!(out, "/// {doc}").unwrap();
         writeln!(out, "pub const {}: &[PolicyEntry<dyn {ty}>] = &[", kind.to_uppercase()).unwrap();

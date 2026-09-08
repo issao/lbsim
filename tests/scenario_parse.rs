@@ -10,7 +10,7 @@ use lbsim::scenario::Scenario;
 use lbsim::sim;
 
 /// Every key `parse` accepts, which is also every key `to_text` must emit.
-const KEYS: [&str; 77] = [
+const KEYS: [&str; 86] = [
     "name", "seed", "duration_s", "warmup_s", "replicas", "max_batch", "step_base_ms",
     "step_per_seq_ms", "step_per_kv_ktoken_ms", "kv_capacity_tokens", "prefill_tokens_per_s",
     "step_token_budget", "max_queue", "disable_decode", "preemption", "preemption_victim", "scheduling",
@@ -22,6 +22,8 @@ const KEYS: [&str; 77] = [
     "routing", "p2c_choices", "probe_live",
     "admission", "admission_headroom", "fair_share_burst",
     "ejection", "ejection_ratio", "ejection_views", "ejection_cooldown_s",
+    "autoscaling", "autoscale_target", "autoscale_interval_s", "autoscale_step", "autoscale_cooldown_s",
+    "min_replicas", "max_replicas", "warmup_delay_s", "drain_timeout_s",
     "tenants", "tenant_weights", "tenant_demand",
     "telemetry_interval_ms", "telemetry_delay_ms", "client_timeout_s", "max_attempts",
     "retry_budget_fraction", "retry_backoff_s", "ttft_slo_ms", "itl_slo_ms", "e2e_slo_s",
@@ -92,6 +94,15 @@ fn all_fields_distinct() -> Scenario {
         ejection_ratio: 2.75,
         ejection_views: 4,
         ejection_cooldown_s: 12.5,
+        autoscaling: "target_utilization".into(),
+        autoscale_target: 0.55,
+        autoscale_interval_s: 7.5,
+        autoscale_step: 3,
+        autoscale_cooldown_s: 17.5,
+        min_replicas: 2,
+        max_replicas: 11,
+        warmup_delay_s: 4.5,
+        drain_timeout_s: 21.5,
         tenants: 3,
         tenant_weights: vec![1.0, 2.5, 4.0],
         tenant_demand: vec![4.0, 1.0, 1.0],
@@ -173,6 +184,15 @@ fn to_text_then_parse_preserves_every_field() {
     assert_eq!(got.ejection_ratio, want.ejection_ratio);
     assert_eq!(got.ejection_views, want.ejection_views);
     assert_eq!(got.ejection_cooldown_s, want.ejection_cooldown_s);
+    assert_eq!(got.autoscaling, want.autoscaling);
+    assert_eq!(got.autoscale_target, want.autoscale_target);
+    assert_eq!(got.autoscale_interval_s, want.autoscale_interval_s);
+    assert_eq!(got.autoscale_step, want.autoscale_step);
+    assert_eq!(got.autoscale_cooldown_s, want.autoscale_cooldown_s);
+    assert_eq!(got.min_replicas, want.min_replicas);
+    assert_eq!(got.max_replicas, want.max_replicas);
+    assert_eq!(got.warmup_delay_s, want.warmup_delay_s);
+    assert_eq!(got.drain_timeout_s, want.drain_timeout_s);
     assert_eq!(got.telemetry_interval_ms, want.telemetry_interval_ms);
     assert_eq!(got.telemetry_delay_ms, want.telemetry_delay_ms);
     assert_eq!(got.client_timeout_s, want.client_timeout_s);

@@ -212,6 +212,20 @@ impl Policy {
     }
 }
 
+/// Where a replica's slot is in the fleet's lifecycle. `Active` is every replica of a fixed fleet,
+/// crashed or degraded included: those are health, not lifecycle. The other three exist only when an
+/// autoscaler moves the fleet, and none of them is routable.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Lifecycle {
+    Active,
+    /// Turned up and inside its cold start: holds nothing, serves nothing, announces nothing.
+    Warming,
+    /// Turned down: takes no new work, finishes what it holds.
+    Draining,
+    /// Not there. The slot is kept so replica ids are stable across the run.
+    Absent,
+}
+
 pub struct Replica {
     queue: VecDeque<Request>,
     running: Vec<Seq>,
@@ -256,6 +270,7 @@ pub struct Replica {
     speed: f64,
     /// Crashed: holds nothing, refuses everything, and telemetry says so after the delay.
     down: bool,
+    lifecycle: Lifecycle,
     /// Prefix cache, `docs/ARCHITECTURE.md` section 7.3: node to last use. Residency is prefix-closed,
     /// since a node is inserted with its ancestors, so the deepest resident node on a request's path
     /// is the whole hit. A `BTreeMap` rather than a hash map so eviction order is deterministic.
@@ -304,6 +319,7 @@ impl Default for Replica {
             tracer: Tracer::default(),
             speed: 1.0,
             down: false,
+            lifecycle: Lifecycle::Active,
             prefix_cache: BTreeMap::new(),
             prefix_used: 0,
             prefix_inserted: Vec::new(),
@@ -1098,16 +1114,36 @@ impl Replica {
     pub fn speed(&self) -> f64 {
         self.speed
     }
+    pub fn lifecycle(&self) -> Lifecycle {
+        self.lifecycle
+    }
+    /// The autoscaler's move. The engine owns the transitions and what they schedule; this only
+    /// records where the slot is.
+    pub fn set_lifecycle(&mut self, lifecycle: Lifecycle) {
+        self.lifecycle = lifecycle;
+    }
+    /// Whether the router may send new work here: up, and neither crashed nor leaving.
+    pub fn accepts(&self) -> bool {
+        !self.down && self.lifecycle == Lifecycle::Active
+    }
     /// The replica's state as the engine knows it, `METRIC_REPLICA_STATE`'s number: 1 READY, 2
-    /// DEGRADED (slow or hung: `speed < 1.0`), 3 EJECTED (`down`). Down wins over slow because
-    /// `crash` does not reset `speed`.
+    /// DEGRADED (slow or hung: `speed < 1.0`), 3 EJECTED (`down`), 4 WARMING, 5 DRAINING, 0 ABSENT.
+    /// Down wins over slow because `crash` does not reset `speed`; the lifecycle wins over both
+    /// because a slot that is not there has no health.
     pub fn state(&self) -> u8 {
-        if self.down {
-            3
-        } else if self.speed < 1.0 {
-            2
-        } else {
-            1
+        match self.lifecycle {
+            Lifecycle::Absent => 0,
+            Lifecycle::Warming => 4,
+            Lifecycle::Draining => 5,
+            Lifecycle::Active => {
+                if self.down {
+                    3
+                } else if self.speed < 1.0 {
+                    2
+                } else {
+                    1
+                }
+            }
         }
     }
     /// Cumulative nanoseconds to first token across every sequence that has emitted one, this

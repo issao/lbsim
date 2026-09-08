@@ -243,8 +243,10 @@ pub struct ReplicaSample {
     /// rate is the ratio, and it is what affinity routing is trying to raise.
     pub prompt_tokens: u64,
     pub prefix_hit_tokens: u64,
-    /// `METRIC_REPLICA_STATE`'s number: 1 READY, 2 DEGRADED, 3 EJECTED. `Default`'s 0 is not a real
-    /// state; a sample built by the engine always carries `Replica::state()`.
+    /// `METRIC_REPLICA_STATE`'s number: 1 READY, 2 DEGRADED, 3 EJECTED, 4 WARMING (turned up, inside
+    /// its cold start), 5 DRAINING (turned down, finishing what it holds), 0 ABSENT (a slot the
+    /// autoscaler has not filled; kept so replica ids are stable). A sample built by the engine
+    /// always carries `Replica::state()`; a fleet with no autoscaler never shows 4, 5 or 0.
     pub state: u8,
     /// The engine's modelled speed fraction, 1.0 healthy. `Default`'s 0.0 is not a real reading, for
     /// the same reason as `state`: a sample the engine produced always carries `Replica::speed()`.
