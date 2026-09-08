@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react';
+import { createContext, useCallback, useContext, useRef, useState } from 'react';
 import type { RunHandle } from '../lib/useRun';
 import { SPEEDS, STEP_S } from '../lib/useRun';
 import { fmtTime } from '../lib/format';
@@ -13,8 +13,27 @@ import { updateBannerText } from '../lib/updateBanner';
  * click rather than after. A slider that behaves differently in two halves without saying so is
  * worse than one that is honest about it.
  */
+/**
+ * U102: while a walkthrough is open, its runner owns play and pause, so the bar's button does
+ * exactly what the narration card's Play does (Issao: "Using the play button in the play bar
+ * should have the same effect"). A context rather than a prop, because the dashboard renders this
+ * bar and the walkthrough host renders the dashboard; absent a provider the bar drives the run
+ * directly as before.
+ */
+export interface PlaybackOverride {
+  onPlay: () => void;
+  onPause: () => void;
+}
+export const PlaybackOverrideContext = createContext<PlaybackOverride | null>(null);
+
 export function PlaybackBar({ run, dense = false }: { run: RunHandle; dense?: boolean }) {
   const trackRef = useRef<HTMLDivElement>(null);
+  const override = useContext(PlaybackOverrideContext);
+  const togglePlay = () => {
+    if (!override) run.setPaused(!run.paused);
+    else if (run.paused) override.onPlay();
+    else override.onPause();
+  };
   const [drag, setDrag] = useState<number | null>(null);
 
   const timeAt = useCallback(
@@ -74,7 +93,7 @@ export function PlaybackBar({ run, dense = false }: { run: RunHandle; dense?: bo
         ) : null}
         <button
           className="btn icon primary"
-          onClick={() => run.setPaused(!run.paused)}
+          onClick={togglePlay}
           title={run.paused ? 'play' : 'pause'}
           aria-label={run.paused ? 'play' : 'pause'}
         >

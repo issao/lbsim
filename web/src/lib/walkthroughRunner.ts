@@ -32,6 +32,8 @@ export interface StepState {
   reason?: string;
   /** Moving toward `step.at_sim_s`; `tick()` pauses the run when it gets there. */
   advancing: boolean;
+  /** The viewer paused the run short of `step.at_sim_s`; `resume()` plays on without re-applying `set`. */
+  paused: boolean;
   /** The last step has been reached and the run is paused there. */
   done: boolean;
 }
@@ -49,7 +51,7 @@ export class WalkthroughRunner {
   constructor(script: WalkthroughScript, handle: RunnerHandle) {
     this.script = script;
     this.handle = handle;
-    this.st = { index: -1, step: script.steps[0], advancing: false, done: false };
+    this.st = { index: -1, step: script.steps[0], advancing: false, paused: false, done: false };
   }
 
   /** The same object until something changes, so a host can compare by identity. */
@@ -66,9 +68,37 @@ export class WalkthroughRunner {
     if (index >= this.script.steps.length) return this.st;
     const step = this.script.steps[index];
     const reason = step.set ? await this.apply(step.set) : undefined;
-    this.st = { index, step, reason, advancing: true, done: false };
+    this.st = { index, step, reason, advancing: true, paused: false, done: false };
     this.advance(step);
     return this.st;
+  }
+
+  /**
+   * The one action behind every play button while a walkthrough is open (the card's and the
+   * playback bar's), so both do the same thing. A settled step moves on to the next; a run the
+   * viewer paused mid-segment plays again at that segment's speed, with nothing re-applied;
+   * anything else (already advancing, or done) is a no-op.
+   */
+  async resume(): Promise<StepState> {
+    if (!this.st.advancing) return this.st.done ? this.st : this.next();
+    if (!this.st.paused) return this.st;
+    this.st = { ...this.st, paused: false };
+    this.handle.setSpeed(this.speedOf(this.st.step));
+    this.handle.play();
+    return this.st;
+  }
+
+  /** The viewer's pause, from the playback bar: stop the run where it is and say so on the card. */
+  pauseHere(): StepState {
+    if (!this.st.advancing || this.st.paused) return this.st;
+    this.handle.pause();
+    this.st = { ...this.st, paused: true };
+    return this.st;
+  }
+
+  /** The speed a step advances at, for the card to show and for `resume()` to restore. */
+  speedOf(step: WalkthroughStep): number {
+    return step.speed ?? DEFAULT_SPEED[this.handle.mode];
   }
 
   /**
@@ -131,7 +161,7 @@ export class WalkthroughRunner {
       // (and handles the rare case where the seek itself overshoots).
       this.handle.scrubTo(step.at_sim_s);
     } else {
-      this.handle.setSpeed(step.speed ?? DEFAULT_SPEED[this.handle.mode]);
+      this.handle.setSpeed(this.speedOf(step));
       this.handle.play();
     }
     this.tick();
@@ -143,6 +173,7 @@ export class WalkthroughRunner {
       ...this.st,
       reason: reason ?? this.st.reason,
       advancing: false,
+      paused: false,
       done: this.st.index === this.script.steps.length - 1,
     };
   }

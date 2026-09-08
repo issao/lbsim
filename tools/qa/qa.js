@@ -262,6 +262,53 @@ const finalLine = extraFail => {
     await page.close();
   }
 
+  // U102 (Issao: "include a 'play' button there that resumes the scenario at the predetermined
+  // speed, the card should show 'advancing scenario' until the next stop point shows up. Using the
+  // play button in the play bar should have the same effect."). One settle, then one step from
+  // each button, each judged the same way: the body says advancing, then the next title appears.
+  const playFlow = async (page, until) => {
+    const id = new URLSearchParams(page.url().split('?')[1] || '').get('script');
+    const script = await page.evaluate(async i => (await fetch(`walkthroughs/${i}.json`)).json(), id).catch(() => null);
+    if (!script) { check('showcase: play advances the scenario (U102)', false, `no script json for ${id}`); return; }
+    const steps = script.steps;
+    const title = () => page.$eval('.walkthrough .wt-title', el => el.textContent.trim()).catch(() => '');
+    const bodyOf = () => page.$eval('.walkthrough', el => el.innerText.replace(/\s+/g, ' ')).catch(() => '');
+    const cursor = () => page.$eval('.playback [aria-valuenow]', el => Number(el.getAttribute('aria-valuenow'))).catch(() => 0);
+    const settled = i => until(async () => (await title()) === steps[i].title, (steps[i].at_sim_s / (steps[i].speed || 1)) * 1.5 * 1000 + 5000);
+    const notTried = why => { check('showcase: play advances the scenario (U102)', false, why); check('showcase: bar play is the same action (U102)', false, why); };
+    if (!(await settled(0))) return notTried(`first stop never settled: title "${await title()}"`);
+    // The runner pauses the run at the stop; the bar must agree (its label comes from the server's
+    // status) and the cursor must hold, or a "play" below is not what moves the run. With ~15
+    // subscriptions open over HTTP/1.1 the browser's six-per-host limit starves every other RPC,
+    // and a pause that never lands looks exactly like a walkthrough that plays itself.
+    const barLabel = () => page.$eval('.playback .btn.primary', el => el.getAttribute('aria-label')).catch(() => '');
+    const pausedOnBar = await until(async () => (await barLabel()) === 'play', 4000);
+    const c0 = await cursor(); await sleep(1500); const c1 = await cursor();
+    check('showcase: the run pauses at the stop point (U102)', Boolean(pausedOnBar) && c1 === c0,
+      `bar says "${await barLabel()}", cursor ${c0} -> ${c1} over 1.5 s`);
+    if (!pausedOnBar || c1 !== c0) return notTried('not tried: the run did not pause at the first stop (controls are not reaching the server)');
+    const stepFrom = async (i, click, label) => {
+      const from = await cursor();
+      const next = steps[i + 1];
+      await click();
+      const advancing = await until(async () => /advancing scenario/.test(await bodyOf()), 1000);
+      const arrived = await until(async () => (await title()) === next.title, ((next.at_sim_s - from) / (next.speed || 1)) * 1.5 * 1000 + 5000);
+      check(label, Boolean(advancing && arrived), [
+        advancing ? 'advancing shown' : `no "advancing scenario" within 1 s: "${(await bodyOf()).slice(0, 120)}"`,
+        arrived ? `arrived at "${next.title}"` : `title "${await title()}", wanted "${next.title}"`,
+      ].join(' · '));
+      return advancing && arrived;
+    };
+    const cardPlay = () => page.click('.walkthrough .wt-play');
+    const barPlay = () => page.click('.playback [aria-label="play"]');
+    if (await stepFrom(0, cardPlay, 'showcase: play advances the scenario (U102)')) {
+      if (await until(async () => (await barLabel()) === 'play', 4000)) await stepFrom(1, barPlay, 'showcase: bar play is the same action (U102)');
+      else check('showcase: bar play is the same action (U102)', false, `not tried: the bar never showed play after the second stop (label "${await barLabel()}")`);
+    } else {
+      check('showcase: bar play is the same action (U102)', false, 'not tried: the card play flow failed');
+    }
+  };
+
   // d. every scripted card drives a live run
   let open = null; // a page with a walkthrough open, for the navigation check
   for (const title of titles) {
@@ -290,7 +337,13 @@ const finalLine = extraFail => {
       ...log.errs.slice(0, 2), ...log.bad.slice(0, 2),
     ].filter(Boolean).join(' · '));
     // The first card only, to keep the run short: every card drives the same dashboard.
-    if (ok && title === titles[0]) await noInvented(page, 'showcase: no invented numbers on a live run (U95b)');
+    // U102 first: the card's Play resumes the run at the step's speed and the card reads
+    // "advancing scenario…" until the next stop; the playback bar's play is the same action. The
+    // tab walk comes after, because the Machine tab's replica subscriptions can fill the browser's
+    // per-host connection limit and a control issued behind them waits indefinitely.
+    const drove = ok && title === titles[0];
+    if (drove) await playFlow(page, until);
+    if (drove) await noInvented(page, 'showcase: no invented numbers on a live run (U95b)');
     if (REQUIRED_KEYS[title]) {
       const bodies = log.startRuns.map(b => { try { return JSON.parse(b)?.scenario?.text ?? b; } catch { return b; } });
       for (const re of REQUIRED_KEYS[title]) {
@@ -298,7 +351,9 @@ const finalLine = extraFail => {
           bodies.length ? bodies[bodies.length - 1].slice(0, 160) : 'no StartRun captured');
       }
     }
-    if (ok && !open) open = { page, log, until }; else await page.close();
+    // A driven page may still hold a control in flight when its run is stopped below; that lands
+    // as a 409 in a console the nav check reads, so the nav page is the next clean card.
+    if (ok && !open && !drove) open = { page, log, until }; else await page.close();
     await stopRuns();
   }
 
