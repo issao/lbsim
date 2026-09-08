@@ -21,8 +21,6 @@
 16-scheduling/00-sched_fifo.summary.csv                      fingerprint=16350867501900761315   events=1743798   summary_md5=1322b95d9f4f
 16-scheduling/01-sched_class.summary.csv                     fingerprint=7904673690058189821    events=1743750   summary_md5=f54609c82bcf
 16-scheduling/02-sched_deadline.summary.csv                  fingerprint=13598015093463588656   events=1743192   summary_md5=de0c7fd0af9c
-17-cascade/00-cascade_p2c.summary.csv                        fingerprint=4088763313276843324    events=3020772   summary_md5=b67bf2609844
-17-cascade/01-cascade_affinity.summary.csv                   fingerprint=16963330529021834689   events=3037320   summary_md5=9d89d9adc195
 17-cascade/00-cascade_p2c.summary.csv                        fingerprint=4088763313276843324    events=3020772   summary_md5=9ed29531bc32
 17-cascade/01-cascade_affinity.summary.csv                   fingerprint=16963330529021834689   events=3037320   summary_md5=d5fa2421cddb
 2-staleness/00-telemetry_interval_ms___100.summary.csv       fingerprint=16393865130379415143   events=352465    summary_md5=c09138c8d42c
@@ -76,7 +74,6 @@ h-h8-retry-storm/00-h8_retry_storm.summary.csv               fingerprint=4264169
 14-affinity.html                                             html_md5=f82024f046e9
 15-gray-failure.html                                         html_md5=11e6c6d7dfc3
 16-scheduling.html                                           html_md5=d73cc7f1669c
-17-cascade.html                                              html_md5=6e8cfe08ce83
 17-cascade.html                                              html_md5=e9e503a41201
 2-staleness.html                                             html_md5=270b4c12e04d
 3-chunking.html                                              html_md5=743b2ccf7fe8
