@@ -72,6 +72,10 @@ echo; echo "== 15. gray failure: a replica at 0.3x that announces healthy, with 
 $S compare scenarios/gray_failure_none.txt scenarios/gray_failure_eject.txt \
            --out out/15-gray-failure.html
 
+echo; echo "== 16. the replica's own scheduler: fifo_chunked, class_priority and deadline_first over three SLO classes at 2x load =="
+$S compare scenarios/sched_fifo.txt scenarios/sched_class.txt scenarios/sched_deadline.txt \
+           --out out/16-scheduling.html
+
 echo; echo "== 17. affinity hotspot failover cascade: the hottest holder crashes at 60 s and returns cold at 90 s, p2c against affinity =="
 $S compare scenarios/cascade_p2c.txt scenarios/cascade_affinity.txt \
            --out out/17-cascade.html

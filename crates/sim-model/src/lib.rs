@@ -30,6 +30,7 @@ pub use sim_workload::PrefixTree;
 const NO_TREE: PrefixTree = PrefixTree::empty();
 
 pub mod trace;
+use sim_core::scheduling::{FifoChunked, SchedulingPolicy, SeqView, StepView};
 use trace::{ResourceSnapshot, Tracer};
 
 struct Seq {
@@ -87,40 +88,6 @@ impl Policy {
     }
 }
 
-#[derive(Clone, Copy, PartialEq)]
-enum Victim {
-    Newest,
-    LargestKv,
-    LatestDeadline,
-}
-
-impl Victim {
-    fn parse(name: &str) -> Victim {
-        match name {
-            "largest_kv" => Victim::LargestKv,
-            "latest_deadline" => Victim::LatestDeadline,
-            _ => Victim::Newest,
-        }
-    }
-    /// The index whose (policy key, index) is largest, so ties resolve to the later entry and the
-    /// choice is a pure function of the state.
-    fn pick(self, keys: impl Iterator<Item = Option<(Nanos, u64, Nanos)>>) -> Option<usize> {
-        let mut best: Option<(u64, usize)> = None;
-        for (i, k) in keys.enumerate() {
-            let Some((at, tokens, deadline)) = k else { continue };
-            let key = match self {
-                Victim::Newest => at,
-                Victim::LargestKv => tokens,
-                Victim::LatestDeadline => deadline,
-            };
-            if best.map_or(true, |(b, _)| key >= b) {
-                best = Some((key, i));
-            }
-        }
-        best.map(|(_, i)| i)
-    }
-}
-
 pub struct Replica {
     queue: VecDeque<Request>,
     running: Vec<Seq>,
@@ -151,6 +118,8 @@ pub struct Replica {
     step_compute_ns: Nanos,
     completed: u64,
     preemptions: u64,
+    /// See `last_view_len`.
+    last_view_len: usize,
     /// Records what happens to the sequences the loop asked to trace; inert otherwise.
     tracer: Tracer,
     /// Fraction of modelled speed; 1 is healthy, 0.3 is a gray failure, 0 is a hang. Nothing but
@@ -199,6 +168,7 @@ impl Default for Replica {
             step_compute_ns: 0,
             completed: 0,
             preemptions: 0,
+            last_view_len: 0,
             tracer: Tracer::default(),
             speed: 1.0,
             down: false,
@@ -267,15 +237,69 @@ impl Replica {
         self.parked.push(Parked { id: next_id, tokens, deadline, parked_at: now, swapped: false });
     }
 
-    /// Evict one context under `policy`, choosing by `victim`. Parked context goes before a running
-    /// sequence, since dropping idle context stalls nobody, and the parked entry for `keep` is
-    /// exempt, because it is the one the request at the head of the queue is about to reuse. A
+    /// The head of the queue as the scheduler sees it: at most `max_batch` entries, never the whole
+    /// queue (see `sim_policy::scheduling`).
+    fn queued_view(&self, sc: &Scenario, out: &mut Vec<SeqView>) {
+        out.clear();
+        out.extend(self.queue.iter().take(sc.max_batch).map(|req| SeqView {
+            id: req.id,
+            class: req.class,
+            deadline: req.deadline,
+            arrived_at: req.arrived_at,
+            admitted_at: 0,
+            prompt_tokens: req.prompt,
+            prefill_left: req.prompt,
+            resident_tokens: 0,
+            queued: true,
+        }));
+    }
+
+    fn running_view(&self, out: &mut Vec<SeqView>) {
+        out.clear();
+        out.extend(self.running.iter().map(|s| SeqView {
+            id: s.req.id,
+            class: s.req.class,
+            deadline: s.req.deadline,
+            arrived_at: s.req.arrived_at,
+            admitted_at: s.admitted_at,
+            prompt_tokens: s.req.prompt,
+            prefill_left: s.prefill_left,
+            resident_tokens: s.resident(),
+            queued: false,
+        }));
+    }
+
+    fn view<'a>(
+        &self,
+        sc: &Scenario,
+        now: Nanos,
+        queued: &'a [SeqView],
+        running: &'a [SeqView],
+    ) -> StepView<'a> {
+        StepView {
+            now,
+            queued,
+            running,
+            kv_tokens: self.kv_tokens,
+            kv_capacity: sc.kv_capacity_tokens as u64,
+            max_batch: sc.max_batch,
+            step_token_budget: sc.step_token_budget,
+            prefill_tokens_per_s: sc.prefill_tokens_per_s,
+        }
+    }
+
+    /// Evict one context under `policy`, the victim chosen by `sched`. Parked context goes before a
+    /// running sequence, since dropping idle context stalls nobody, and the parked entry for `keep`
+    /// is exempt, because it is the one the request at the head of the queue is about to reuse. A
     /// recompute drops the context; a swap moves it to host memory and charges the copy to this
     /// step. False when there is nothing left to evict.
+    #[allow(clippy::too_many_arguments)]
     fn evict(
         &mut self,
+        sc: &Scenario,
+        now: Nanos,
+        sched: &mut dyn SchedulingPolicy,
         policy: Policy,
-        victim: Victim,
         keep: Option<u64>,
         cost: &CostModel,
         dram_cap: u64,
@@ -287,9 +311,37 @@ impl Replica {
             Policy::SwapElseRecompute => dram_tokens + tokens <= dram_cap,
             Policy::Recompute | Policy::Never => false,
         };
-        let parked = victim.pick(self.parked.iter().map(|p| {
-            (!p.swapped && Some(p.id) != keep).then_some((p.parked_at, p.tokens, p.deadline))
-        }));
+        // The views are built here rather than kept across the step because an eviction changes
+        // them, and evictions are rare: this costs O(batch + queue head) only under pressure.
+        let mut queued = Vec::new();
+        let mut running = Vec::new();
+        self.queued_view(sc, &mut queued);
+        self.running_view(&mut running);
+        let view = self.view(sc, now, &queued, &running);
+        // Eligible parked contexts and where each sits in `parked`.
+        let mut slots = Vec::new();
+        let mut candidates = Vec::new();
+        for (i, p) in self.parked.iter().enumerate() {
+            if !p.swapped && Some(p.id) != keep {
+                slots.push(i);
+                candidates.push(SeqView {
+                    id: p.id,
+                    class: 0,
+                    deadline: p.deadline,
+                    arrived_at: p.parked_at,
+                    admitted_at: p.parked_at,
+                    prompt_tokens: p.tokens.min(u32::MAX as u64) as u32,
+                    prefill_left: 0,
+                    resident_tokens: p.tokens,
+                    queued: false,
+                });
+            }
+        }
+        let parked = if candidates.is_empty() {
+            None
+        } else {
+            sched.victim(&view, &candidates).filter(|&i| i < slots.len()).map(|i| slots[i])
+        };
         if let Some(i) = parked {
             let tokens = self.parked[i].tokens;
             self.kv_tokens = self.kv_tokens.saturating_sub(tokens);
@@ -303,12 +355,10 @@ impl Replica {
             self.preemptions += 1;
             return true;
         }
-        if !running_too {
+        if !running_too || running.is_empty() {
             return false;
         }
-        let Some(i) = victim.pick(
-            self.running.iter().map(|s| Some((s.admitted_at, s.resident(), s.req.deadline))),
-        ) else {
+        let Some(i) = sched.victim(&view, &running).filter(|&i| i < running.len()) else {
             return false;
         };
         let mut s = self.running.swap_remove(i);
@@ -392,13 +442,35 @@ impl Replica {
         self.step_with_prefixes(sc, cost, now, &NO_TREE)
     }
 
-    /// `step`, with the tree the requests' `prefix_node`s index.
+    /// `step`, with the tree the requests' `prefix_node`s index, under the engine's own default
+    /// scheduler. Fine for a test driving one replica; the loop resolves the scenario's `scheduling`
+    /// name through the policy registry, holds one per replica and calls `step_scheduled` directly.
     pub fn step_with_prefixes(
         &mut self,
         sc: &Scenario,
         cost: &CostModel,
         now: Nanos,
         tree: &PrefixTree,
+    ) -> Option<StepOutcome> {
+        let mut sched = FifoChunked::new(&sc.preemption_victim);
+        self.step_scheduled(sc, cost, now, tree, &mut sched)
+    }
+
+    /// Entries of the queue the scheduler was shown at the last step: at most `max_batch`, whatever
+    /// the queue holds. Exposed so a test can prove a policy never receives the whole queue.
+    pub fn last_view_len(&self) -> usize {
+        self.last_view_len
+    }
+
+    /// `step_with_prefixes`, with the replica's scheduler. The policy is consulted at exactly four
+    /// points: the admission order, the prefill budget and its order, and each victim.
+    pub fn step_scheduled(
+        &mut self,
+        sc: &Scenario,
+        cost: &CostModel,
+        now: Nanos,
+        tree: &PrefixTree,
+        sched: &mut dyn SchedulingPolicy,
     ) -> Option<StepOutcome> {
         let r = self;
         let prefix_cap = sc.prefix_cache_tokens as u64;
@@ -409,7 +481,6 @@ impl Replica {
             return None;
         }
         let policy = Policy::parse(&sc.preemption);
-        let victim = Victim::parse(&sc.preemption_victim);
         let dram_cap = sc.dram_capacity_tokens() as u64;
         // Transfers charged to this step: the device is busy copying context for as long as they take.
         let mut extra_ns: Nanos = 0;
@@ -424,12 +495,32 @@ impl Replica {
         // scenario is about; a preemption policy only makes room by evicting idle context here,
         // never a running sequence, which would trade one victim for another every step.
         let kv_cap = sc.kv_capacity_tokens as u64;
+        // The scheduler orders the head of the queue, at most `max_batch` entries, once per step.
+        // `order` holds queue positions still to try, head first; taking one shifts the positions
+        // behind it down by one. FIFO returns the identity, and then this loop is exactly the
+        // pop-front loop it replaced.
+        let mut queued = Vec::new();
+        let mut running = Vec::new();
+        r.queued_view(sc, &mut queued);
+        r.running_view(&mut running);
+        r.last_view_len = queued.len();
+        let mut order: VecDeque<usize> = VecDeque::new();
+        {
+            let mut seen = vec![false; queued.len()];
+            for i in sched.admit_order(&r.view(sc, now, &queued, &running)) {
+                if i < seen.len() && !seen[i] {
+                    seen[i] = true;
+                    order.push_back(i);
+                }
+            }
+        }
         while r.running.len() < sc.max_batch {
-            // Evicted sequences first, then the queue. A queued session turn whose context is still
-            // resident costs only its new tokens.
+            // Evicted sequences first, then the queue in the scheduler's order. A queued session
+            // turn whose context is still resident costs only its new tokens.
+            let next_pos = order.front().copied();
             let next_cost = if let Some(s) = r.preempted.front() {
                 s.resident()
-            } else if let Some(req) = r.queue.front() {
+            } else if let Some(req) = next_pos.map(|i| &r.queue[i]) {
                 match r.parked.iter().find(|p| p.id == req.id) {
                     Some(p) if !p.swapped => (req.prompt as u64).saturating_sub(p.tokens),
                     _ => req.prompt as u64,
@@ -438,9 +529,9 @@ impl Replica {
                 break;
             };
             if r.kv_tokens + next_cost > kv_cap {
-                let keep = r.queue.front().map(|q| q.id);
+                let keep = next_pos.map(|i| r.queue[i].id).or_else(|| r.queue.front().map(|q| q.id));
                 if policy != Policy::Never
-                    && r.evict(policy, victim, keep, cost, dram_cap, &mut extra_ns, false)
+                    && r.evict(sc, now, sched, policy, keep, cost, dram_cap, &mut extra_ns, false)
                 {
                     preempted += 1;
                     continue;
@@ -460,7 +551,13 @@ impl Replica {
                 r.running.push(s);
                 continue;
             }
-            match r.queue.pop_front() {
+            let Some(pos) = order.pop_front() else { break };
+            for o in order.iter_mut() {
+                if *o > pos {
+                    *o -= 1;
+                }
+            }
+            match r.queue.remove(pos) {
                 Some(req) => {
                     r.queued_tokens = r.queued_tokens.saturating_sub(req.prompt as u64);
                     // Parked context and a prefix hit both spare prefill over the same leading
@@ -518,19 +615,42 @@ impl Replica {
 
         // Chunked prefill: a bounded token budget per step, taken in admission order. This
         // is what stops one long prompt from inserting a multi-second stall into everyone
-        // else's token stream.
-        let mut budget = sc.step_token_budget;
+        // else's token stream. The scheduler sets the budget from the batch it just built.
+        r.queued_view(sc, &mut queued);
+        r.running_view(&mut running);
+        let view = r.view(sc, now, &queued, &running);
+        let mut budget = sched.prefill_budget(&view);
+        let order = sched.prefill_order(&view);
         let mut prefill_tokens = 0u32;
-        for s in r.running.iter_mut() {
-            if budget == 0 {
-                break;
-            }
+        let chunk = |s: &mut Seq, tracer: &mut Tracer, budget: &mut u32, prefill_tokens: &mut u32| {
             if s.prefill_left > 0 {
-                let take = s.prefill_left.min(budget);
+                let take = s.prefill_left.min(*budget);
                 s.prefill_left -= take;
-                budget -= take;
-                prefill_tokens += take;
-                r.tracer.prefill_chunk(s.req.id, take);
+                *budget -= take;
+                *prefill_tokens += take;
+                tracer.prefill_chunk(s.req.id, take);
+            }
+        };
+        match order {
+            None => {
+                for s in r.running.iter_mut() {
+                    if budget == 0 {
+                        break;
+                    }
+                    chunk(s, &mut r.tracer, &mut budget, &mut prefill_tokens);
+                }
+            }
+            Some(order) => {
+                let mut seen = vec![false; r.running.len()];
+                for i in order {
+                    if budget == 0 {
+                        break;
+                    }
+                    if i < seen.len() && !seen[i] {
+                        seen[i] = true;
+                        chunk(&mut r.running[i], &mut r.tracer, &mut budget, &mut prefill_tokens);
+                    }
+                }
             }
         }
         let mut decoding = r.running.iter().filter(|s| s.prefill_left == 0).count();
@@ -545,7 +665,17 @@ impl Replica {
         if policy != Policy::Never {
             let keep = r.queue.front().map(|q| q.id);
             while r.kv_tokens + decoding as u64 > kv_cap
-                && r.evict(policy, victim, keep, cost, dram_cap, &mut extra_ns, r.running.len() > 1)
+                && r.evict(
+                    sc,
+                    now,
+                    sched,
+                    policy,
+                    keep,
+                    cost,
+                    dram_cap,
+                    &mut extra_ns,
+                    r.running.len() > 1,
+                )
             {
                 preempted += 1;
                 decoding = r.running.iter().filter(|s| s.prefill_left == 0).count();

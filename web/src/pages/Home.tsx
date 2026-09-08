@@ -103,6 +103,10 @@ export function Home() {
           <p>No detection against outlier ejection on the delayed view's step time.</p>
         </li>
         <li>
+          <a href="reports/16-scheduling.html">16. The replica's own scheduler orders work, it does not create capacity</a>
+          <p>fifo_chunked, class_priority and deadline_first over three SLO classes at 2x load: interactive attainment 0.926 to 0.943 and agent pays; deadline-first over chunked prefill is longest-job-first in disguise</p>
+        </li>
+        <li>
           <a href="reports/17-cascade.html">17. Affinity hotspot failover cascade: a crashed holder's prefixes land cold</a>
           <p>The hottest holder crashes at 60 s and returns cold at 90 s; p2c against affinity at max load ratio 2.2.</p>
         </li>

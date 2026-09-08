@@ -700,6 +700,11 @@ pub const DEMOS: &[Demo] = &[
         sweep: None,
     },
     Demo {
+        group: "16-scheduling",
+        files: &["sched_fifo.txt", "sched_class.txt", "sched_deadline.txt"],
+        sweep: None,
+    },
+    Demo {
         group: "17-cascade",
         files: &["cascade_p2c.txt", "cascade_affinity.txt"],
         sweep: None,

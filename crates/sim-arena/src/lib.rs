@@ -406,7 +406,7 @@ pub fn measure_honest_capacity(
     sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
     for rate in &sorted {
         let mut sc = base.clone();
-        sc.routing = policy.to_string();
+        apply_policy(&mut sc, policy);
         sc.arrival_rps = *rate;
         sc.name = format!("{} @ {:.0} rps", base.name, rate);
         let run = sim::run(&sc)?;
@@ -810,6 +810,22 @@ fn load_scenario(path: &str) -> Result<Scenario, String> {
 pub const POLICIES: &[&str] =
     &["round_robin", "random", "least_requests", "least_queue_tokens", "p2c"];
 
+/// The replica-scheduling policies, scored exactly like routing ones: a round that names one of these
+/// sets the scenario's `scheduling` key and leaves its `routing` alone. The registry in `sim-policy`
+/// is the authority; this crate cannot reach it (layering), so the list is repeated here and the
+/// engine rejects a name that has drifted.
+pub const SCHEDULING_POLICIES: &[&str] = &["fifo_chunked", "class_priority", "deadline_first"];
+
+/// Point `sc` at `policy`, whichever kind it is. A name in neither list is handed to `routing`, where
+/// the engine reports it as unknown.
+fn apply_policy(sc: &mut Scenario, policy: &str) {
+    if SCHEDULING_POLICIES.contains(&policy) {
+        sc.scheduling = policy.to_string();
+    } else {
+        sc.routing = policy.to_string();
+    }
+}
+
 /// [`POLICIES`] in the owned form [`run_round`] takes.
 fn policy_names() -> Vec<String> {
     POLICIES.iter().map(|s| s.to_string()).collect()
@@ -884,7 +900,8 @@ impl RoundResult {
 ///
 /// Single-threaded, in a fixed order, with the seed taken from each scenario file and never varied by
 /// policy — section 4 step 2, and the reason a difference in score is a difference in policy. The
-/// scenario's own `routing` key is overridden, so the same file serves every policy.
+/// scenario's own `routing` key (or `scheduling`, for a name in [`SCHEDULING_POLICIES`]) is overridden, so the
+/// same file serves every policy.
 pub fn run_round(
     policies: &[String],
     scenario_paths: &[String],
@@ -949,7 +966,7 @@ pub fn run_round_on(
         let mut scored: Vec<RunScore> = Vec::new();
         for base in &loads {
             let mut sc = base.clone();
-            sc.routing = policy.clone();
+            apply_policy(&mut sc, policy);
             let result = sim::run(&sc)?;
             runs += 1;
             if cfg.replay_check && determinism_checked.is_none() {

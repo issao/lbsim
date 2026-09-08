@@ -1376,7 +1376,7 @@ export const EXTRA_KEYS = [
   'load_step_at_s', 'load_step_factor', 'load_step_until_s',
   'retry_budget_fraction', 'retry_backoff_s',
   'disable_decode', 'spec_draft_tokens', 'spec_accept_rate',
-  'preemption', 'preemption_victim', 'dram_capacity_tokens', 'swap_gbps',
+  'preemption', 'preemption_victim', 'scheduling', 'dram_capacity_tokens', 'swap_gbps',
   'session_turns_mean', 'session_think_s',
   'admission', 'admission_headroom', 'fair_share_burst',
   'tenants', 'tenant_weights', 'tenant_demand',

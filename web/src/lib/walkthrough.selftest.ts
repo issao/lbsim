@@ -139,13 +139,16 @@ const EXPORTED_RUN_IDS = new Set([
   '14-affinity/affinity-sticky',
   '15-gray-failure/gray-failure-none',
   '15-gray-failure/gray-failure-eject',
+  '16-scheduling/sched-fifo',
+  '16-scheduling/sched-class',
+  '16-scheduling/sched-deadline',
   '17-cascade/cascade-p2c',
   '17-cascade/cascade-affinity',
 ]);
 
 /** U48's ten selected dynamics, plus spec-decode (U26b), prefix affinity (U27b), gray failure
- * (U31b) and the affinity failover cascade (U27d): every one of these must have a script with a
- * `run` field. */
+ * (U31b), the affinity failover cascade (U27d) and the scheduling seam's slo-classes (U108): every
+ * one of these must have a script with a `run` field. */
 const SELECTED_IDS = [
   'rolling-hotspot',
   'stale-telemetry',
@@ -162,6 +165,7 @@ const SELECTED_IDS = [
   'affinity-vs-spread',
   'gray-failure',
   'affinity-cascade',
+  'slo-classes',
 ];
 
 // ---------------------------------------------------------------------------

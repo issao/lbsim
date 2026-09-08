@@ -3,6 +3,7 @@
 
 pub mod queue;
 pub mod rng;
+pub mod scheduling;
 
 /// Simulated time, absolute Unix epoch nanoseconds, per `proto/lbsim/v1/common.proto`.
 ///

@@ -23,3 +23,4 @@
 14-affinity compare scenarios/affinity_off.txt scenarios/affinity_spread.txt scenarios/affinity_sticky.txt
 15-gray-failure compare scenarios/gray_failure_none.txt scenarios/gray_failure_eject.txt
 17-cascade compare scenarios/cascade_p2c.txt scenarios/cascade_affinity.txt
+16-scheduling compare scenarios/sched_fifo.txt scenarios/sched_class.txt scenarios/sched_deadline.txt
