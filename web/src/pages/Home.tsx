@@ -22,6 +22,10 @@ export function Home() {
           <a href="#/showcase">Showcase</a>
           <p>one walkthrough per dynamic; each drives a live run and pauses where it matters</p>
         </li>
+        <li>
+          <a href="#/ab">A/B view</a>
+          <p>two live runs, same seed, different policy; a recorded pair when there is no server</p>
+        </li>
       </ul>
 
       <h2 className="section-label" style={{ fontSize: 13, fontWeight: 600, margin: '26px 0 6px' }}>
@@ -96,8 +100,8 @@ export function Home() {
       <p className="lede">{DATA_SOURCE_GLOSS.mock}.</p>
       <ul className="surfaces">
         <li>
-          <a href="#/ab">A/B view</a>
-          <p>two runs of the browser's mock engine side by side, same seed, only the policy differs</p>
+          <a href="?server=off&replay=off#/ab">A/B view, mock</a>
+          <p>the same two-run view over the browser's mock engine, for a build with no server and no recordings</p>
         </li>
       </ul>
       <p>
