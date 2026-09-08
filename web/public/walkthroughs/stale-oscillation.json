@@ -1,0 +1,70 @@
+{
+  "id": "stale-oscillation",
+  "dynamic": 2,
+  "title": "The staleness loop has a resonance",
+  "summary": "A 30% sine on offered load, swept from 0.01 to 1 Hz through least_requests on a 1 s / 200 ms delayed snapshot. The fleet follows slow inputs with gain 1.6 at 0.01 Hz, rolls off to -37 dB at 1 Hz, and above 0.1 Hz swings at its own 0.02 Hz whatever the input does.",
+  "scenario": {
+    "name": "showcase: staleness loop Bode plot",
+    "seed": 20260906,
+    "durationS": 240,
+    "routing.kind": "least_requests",
+    "workload.arrivalRps": 70,
+    "telemetryIntervalMs": 1000
+  },
+  "run": "18-bode/perturb_frequency_hz=0.01",
+  "compare": "18-bode/perturb_frequency_hz=1.0",
+  "steps": [
+    {
+      "at_sim_s": 55,
+      "speed": 4,
+      "control_tab": "load",
+      "observe_tab": "cluster",
+      "highlight": "arrivals",
+      "title": "The input: offered load is a sine",
+      "body": [
+        "Offered load is 70 rps times 1 + 0.3 sin(2 pi f t): a 30% swing between 49 and 91 rps, here at f = 0.01 Hz, a 100 s period. The fleet is 32 replicas under least_requests reading a snapshot D = 200 ms old, refreshed every I = 1 s, the same loop as the staleness walkthrough at its 1 s point.",
+        "A delayed feedback loop has a frequency response: drive it with a known sine and its output at that frequency has a gain and a phase lag relative to the input. Sweeping the frequency draws the loop's Bode plot, and the frequency where the lag reaches 180 degrees at unity gain is where it oscillates on its own. Demo 18 sweeps seven frequencies; bench/bode.py fits the response."
+      ],
+      "look_for": "The offered-load curve as a clean sine, peaking near 25 s, 125 s and 225 s."
+    },
+    {
+      "at_sim_s": 105,
+      "speed": 4,
+      "control_tab": "load",
+      "observe_tab": "cluster",
+      "highlight": "fleet-state",
+      "title": "Low frequency: the fleet follows, with a lag",
+      "body": [
+        "The output is requests in flight across the fleet, mean 736 here, because an arrival is admitted straight into a batch and the backlog the herd builds lives in the running count; the waiting queue averages 1.7 requests and only echoes arrivals. At 0.01 Hz the in-flight count swings 47.7% around its mean against the input's 30%: gain 1.59, +4.0 dB, phase -39 degrees. At 0.02 Hz gain 0.97 (-0.3 dB), phase -61 degrees.",
+        "The lag is not the 0.7 s snapshot age. A pure delay of D + I/2 = 0.7 s would lag only 2.5 degrees at 0.01 Hz; the 39 degrees measured come from the plant itself, an integrator with a time constant set by how long a request stays resident."
+      ],
+      "look_for": "The in-flight count cresting well after offered load does, and swinging wider than the input in relative terms."
+    },
+    {
+      "at_sim_s": 150,
+      "speed": 4,
+      "control_tab": "policies",
+      "observe_tab": "machine",
+      "highlight": "heatmap",
+      "title": "Past 0.1 Hz the loop stops listening and swings at its own frequency",
+      "body": [
+        "Gain falls like an integrator: 0.37 (-8.6 dB) at 0.05 Hz, 0.115 (-18.8 dB) at 0.1 Hz, 0.031 (-30 dB) at 0.5 Hz, 0.014 (-37 dB) at 1 Hz, with the phase settling at -90 to -104 degrees from 0.05 Hz up. Harmonic content, the output's motion at frequencies other than the input's over its motion at the input's, goes from 0.29 at 0.01 Hz to 3.5 at 0.1 Hz, 11.9 at 0.5 Hz and 34.6 at 1 Hz.",
+        "From 0.1 Hz up the fleet's dominant frequency is 0.020 to 0.025 Hz whatever the input is: a 40 to 50 s slosh. The spread of load across replicas, the herd itself, has the same dominant frequency and a harmonic content of 70.7 at the 1 Hz input. That is the loop oscillating on its own; the input has become a small ripple on top of it."
+      ],
+      "look_for": "The hot stripe on the heatmap walking the fleet on a 40 to 50 s cycle, not on the input's cycle."
+    },
+    {
+      "at_sim_s": 200,
+      "speed": 2,
+      "control_tab": "run",
+      "observe_tab": "quality",
+      "highlight": "headline",
+      "title": "The prediction against the measurement",
+      "body": [
+        "A pure delay of D + I/2 = 0.7 s lags 360 f 0.7 degrees, which reaches 180 at f = 1 / (2 (D + I/2)) = 0.71 Hz. The measured phase never gets there inside the sweep: it plateaus near -100 degrees, and the self-oscillation shows up at 0.02 to 0.025 Hz, thirty times lower than the delay-only prediction. The delay sets the lag of the snapshot; the residency of a request sets the lag of the plant, and at this fleet the second dominates.",
+        "Open the A/B view with A = 0.01 Hz and B = 1 Hz: the same seed, the same loop, only the input frequency differs. At 0.01 Hz attainment is 39.0%; at 1 Hz it is 42.0%. The perturbation barely moves the outcome in either direction, because the loop's own 40 to 50 s slosh, not the input, is what the fleet is doing."
+      ],
+      "look_for": "Attainment within three points across a hundredfold change in input frequency: the herd is driving, not the input."
+    }
+  ]
+}

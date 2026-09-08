@@ -729,6 +729,11 @@ pub const DEMOS: &[Demo] = &[
         files: &["cascade_p2c.txt", "cascade_affinity.txt"],
         sweep: None,
     },
+    Demo {
+        group: "18-bode",
+        files: &["bode.txt"],
+        sweep: Some(("perturb_frequency_hz", &["0.01", "0.02", "0.05", "0.1", "0.2", "0.5", "1.0"])),
+    },
 ];
 
 /// Set one key, through the text form so there is exactly one place that knows the key names. The

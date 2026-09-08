@@ -80,5 +80,10 @@ echo; echo "== 17. affinity hotspot failover cascade: the hottest holder crashes
 $S compare scenarios/cascade_p2c.txt scenarios/cascade_affinity.txt \
            --out out/17-cascade.html
 
+echo; echo "== 18. staleness loop Bode plot: a 30% sine on offered load swept from 0.01 to 1 Hz, least_requests on a 1 s / 200 ms delayed snapshot =="
+$S sweep scenarios/bode.txt --over perturb_frequency_hz=0.01,0.02,0.05,0.1,0.2,0.5,1.0 \
+           --out out/18-bode.html --telemetry out/18-bode --telemetry-budget-mb 64
+python3 bench/bode.py
+
 echo; echo "reports in out/"
 echo "for machine-readable telemetry, add: --telemetry out/NAME.tele [--telemetry-budget-mb N]"

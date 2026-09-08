@@ -23,6 +23,13 @@
 16-scheduling/02-sched_deadline.summary.csv                  fingerprint=13598015093463588656   events=1743192   summary_md5=de0c7fd0af9c
 17-cascade/00-cascade_p2c.summary.csv                        fingerprint=4088763313276843324    events=3020772   summary_md5=9ed29531bc32
 17-cascade/01-cascade_affinity.summary.csv                   fingerprint=16963330529021834689   events=3037320   summary_md5=d5fa2421cddb
+18-bode/00-perturb_frequency_hz___0_01.summary.csv           fingerprint=9368926892475283620    events=535445    summary_md5=1e0d2cbc80a2
+18-bode/01-perturb_frequency_hz___0_02.summary.csv           fingerprint=5189514267360948526    events=539131    summary_md5=827e9c2321c4
+18-bode/02-perturb_frequency_hz___0_05.summary.csv           fingerprint=605191779035581186     events=541928    summary_md5=d8a145629f2e
+18-bode/03-perturb_frequency_hz___0_1.summary.csv            fingerprint=5060617502882899949    events=541471    summary_md5=0ddc6ea592b0
+18-bode/04-perturb_frequency_hz___0_2.summary.csv            fingerprint=7024446377438780746    events=541795    summary_md5=0214d423809d
+18-bode/05-perturb_frequency_hz___0_5.summary.csv            fingerprint=17326921118432512415   events=541413    summary_md5=98027412f743
+18-bode/06-perturb_frequency_hz___1_0.summary.csv            fingerprint=17128901454353504163   events=542958    summary_md5=6b9e8944d6ea
 2-staleness/00-telemetry_interval_ms___100.summary.csv       fingerprint=16393865130379415143   events=352465    summary_md5=c09138c8d42c
 2-staleness/01-telemetry_interval_ms___250.summary.csv       fingerprint=16416231017560174181   events=307351    summary_md5=23480d60a3ee
 2-staleness/02-telemetry_interval_ms___500.summary.csv       fingerprint=11216039682751027244   events=279763    summary_md5=a21fee97deba
@@ -75,6 +82,7 @@ h-h8-retry-storm/00-h8_retry_storm.summary.csv               fingerprint=4264169
 15-gray-failure.html                                         html_md5=11e6c6d7dfc3
 16-scheduling.html                                           html_md5=d73cc7f1669c
 17-cascade.html                                              html_md5=e9e503a41201
+18-bode.html                                                 html_md5=4bd107b90b4f
 2-staleness.html                                             html_md5=270b4c12e04d
 3-chunking.html                                              html_md5=743b2ccf7fe8
 4-load-curve.html                                            html_md5=764d90715347

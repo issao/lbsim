@@ -1,0 +1,63 @@
+# M7 control analysis (U33): the staleness loop as a delayed feedback system. least_requests reads a
+# snapshot D = telemetry_delay_ms = 200 ms old, refreshed every I = telemetry_interval_ms = 1000 ms,
+# so the loop's effective delay is about D + I/2 = 0.7 s and a pure delay of that length reaches a
+# 180 degree phase lag at 1 / (2 * 0.7) = 0.71 Hz. Demo 18 sweeps perturb_frequency_hz and
+# bench/bode.py fits the fleet queue's gain and phase against offered load at each point.
+# 240 s with 30 s of warm-up gives two full cycles at the lowest frequency, 0.01 Hz.
+#
+# Demo 2's sweep base. Kept at 32 replicas: at 256 even 100 ms of telemetry staleness is past the
+# herding cliff (SLO 0.15 at 100 ms against 0.79 here), so the sweep no longer shows the curve that
+# is the finding. Demo 1's least_requests leg is route_least_requests.txt at the 256-replica default.
+# Issao, 2026-09-07; the cliff moving with fleet size is finding 10 (U98).
+
+# Shared baseline. Every comparison changes exactly one thing from this, and keeps the seed, so a
+# difference in outcome is a difference in policy rather than in luck.
+name = bode
+seed = 20260906
+duration_s = 240
+warmup_s = 30
+
+# Fleet. A 70B-class model on 8xH100 per replica; step_base_ms is calibrated in
+# bench/validate_epochs.py against a published batch-1 measurement.
+replicas = 32
+# Sequence cap and token budget both present, because which one binds is the point. At a ~3.2k mean
+# context the token budget allows about 420 sequences, so the count cap binds for ordinary traffic
+# and the token budget binds once long prompts arrive.
+max_batch = 256
+kv_capacity_tokens = 1370000
+# Weight read for a 70B model on 8xH100 at 70% bandwidth utilization, 7.46 ms, plus 2.75 ms of fixed
+# overhead. With the bandwidth term below this reproduces bench/validate_epochs.py to within 0.05 ms.
+step_base_ms = 10.2
+step_per_seq_ms = 0.0
+step_per_kv_ktoken_ms = 0.0175
+prefill_tokens_per_s = 28286
+step_token_budget = 1024
+max_queue = 400
+
+# Workload. A mixture, not a single distribution: interactive chat plus long-document work in the
+# same queue. The mixture is what creates head-of-line blocking, so a unimodal load would hide the
+# phenomenon being studied.
+arrival_rps = 70
+prompt_mean = 1200
+prompt_cv = 1.2
+output_mean = 300
+output_cv = 1.5
+long_probability = 0.08
+long_prompt_mean = 24000
+long_output_mean = 400
+
+routing = least_requests
+telemetry_interval_ms = 1000
+telemetry_delay_ms = 200
+
+# The perturbation input: a 30% sine on offered load, the frequency swept by demo 18.
+perturbation = sine
+perturb_amplitude = 0.3
+perturb_frequency_hz = 0.05
+
+client_timeout_s = 60
+max_attempts = 1
+ttft_slo_ms = 2000
+itl_slo_ms = 80
+e2e_slo_s = 60
+sample_interval_ms = 250
