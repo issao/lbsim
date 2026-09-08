@@ -396,6 +396,12 @@ table.data caption { caption-side: bottom; text-align: left; padding: 5px 6px; f
 .heat-legend .ramp { display: flex; }
 .heat-legend .ramp i { width: 12px; height: 8px; display: inline-block; }
 
+/* U99/U107: the sampled-request table on the Traces tab is a fixed number of rows tall (its exact
+ * height is set inline from the same row-height constant the component sorts and pages by), with
+ * its own scroll, so neither the table nor the panel around it changes height as new samples
+ * stream in or a filter narrows the set. */
+.trace-table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: var(--r); }
+
 /* ---------------------------------------------------------------- waterfall */
 
 .waterfall { width: 100%; }
