@@ -153,7 +153,14 @@ const finalLine = extraFail => {
     const card = await page.$(`button.card:has(.card-title:text-is("${title.replace(/"/g, '\\"')}"))`);
     if (!card) { check(`showcase "${title}"`, false, 'card not found'); await page.close(); continue; }
     await card.click();
-    await sleep(10000);
+    // A run id and a first sample, as soon as they show; a card is stuck only when 20 s pass
+    // without a sample, so a slow cold start on Cloud Run is not a failure and a fast one is not
+    // a 10 s wait.
+    await until(async () => {
+      const b = await body();
+      const m = /(\d+) samples/.exec(b);
+      return /run r-\d+/.test(b) && m !== null && Number(m[1]) > 0;
+    }, 20000);
     const t = await body();
     const mode = await page.$eval('.wt-mode', el => el.textContent.trim()).catch(() => '');
     const cardBadge = await badge(page);

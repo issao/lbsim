@@ -12,7 +12,7 @@
 // The resolve hook is replay.selftest.ts's: the modules under test import extensionless, which
 // Vite resolves and Node does not.
 
-import type { SseEvent } from './api';
+import type { FetchLike, SseEvent } from './api';
 import type { RunHandle } from './useRun';
 import type { ServerRunHandle } from './useServerRun';
 
@@ -106,19 +106,16 @@ const EXPECTED = replay.parseFleetJsonl(fx.FLEET_JSONL_EXCERPT, BigInt(fx.FLEET_
 /** No server is configured: the probe alone decides. */
 const UNCONFIGURED = mode.serverModeFrom(undefined, '', '', null);
 
-type Fetch = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
-const urlOf = (input: RequestInfo | URL): string => (input instanceof Request ? input.url : String(input));
-
 /**
  * Wraps the fake so that calls to `rpc` which are in flight at the same time reach it in reverse
  * order of issue. A server behind a load balancer may apply two requests in either order; the
  * client must not depend on the one it sent first landing first.
  */
-function reversing(fake: Fetch, rpc: string, settleMs = 5): Fetch {
+function reversing(fake: FetchLike, rpc: string, settleMs = 5): FetchLike {
   let pending: Array<() => Promise<void>> = [];
   let timer: ReturnType<typeof setTimeout> | null = null;
   return (input, init) => {
-    if (!urlOf(input).endsWith(`/${rpc}`)) return fake(input, init);
+    if (!input.endsWith(`/${rpc}`)) return fake(input, init);
     return new Promise<Response>((resolve, reject) => {
       pending.push(() => fake(input, init).then(resolve, reject));
       if (timer === null) {
@@ -134,11 +131,11 @@ function reversing(fake: Fetch, rpc: string, settleMs = 5): Fetch {
 }
 
 /** Holds calls to `rpc` while closed, so the test can act between a request leaving and answering. */
-function gate(fake: Fetch, rpc: string, open = false) {
+function gate(fake: FetchLike, rpc: string, open = false) {
   const held: Array<() => void> = [];
   const waiting: Array<() => void> = [];
-  const fetch: Fetch = (input, init) => {
-    if (open || !urlOf(input).endsWith(`/${rpc}`)) return fake(input, init);
+  const fetch: FetchLike = (input, init) => {
+    if (open || !input.endsWith(`/${rpc}`)) return fake(input, init);
     return new Promise<Response>((resolve, reject) => {
       held.push(() => void fake(input, init).then(resolve, reject));
       for (const w of waiting.splice(0)) w();
@@ -156,7 +153,7 @@ function gate(fake: Fetch, rpc: string, open = false) {
   };
 }
 
-type RigExtra = { fetch?: (fake: Fetch) => Fetch; statusPollMs?: number };
+type RigExtra = { fetch?: (fake: FetchLike) => FetchLike; statusPollMs?: number };
 
 function rig(opts: Parameters<typeof fakeIngress>[1] = {}, extra: RigExtra = {}) {
   const fake = fakeIngress(FIXTURE, opts);

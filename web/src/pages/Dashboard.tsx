@@ -286,11 +286,14 @@ function DashboardBody({
   const frame = frames[frames.length - 1] ?? run.engine.frames[0];
   if (!frame) {
     // No sample yet. The banner still renders, because a live run that was refused or a recording
-    // that failed to load says so there; hiding it left the page on this line forever.
+    // that failed to load says so there; hiding it left the page on this line forever. The overlay
+    // renders too: a walkthrough's header names what it is driving before any sample exists, and a
+    // card that never gets one is otherwise indistinguishable from one with no walkthrough at all.
     return (
       <div className="dash">
         {banner}
         <div className="page-pad">waiting for the first sample…</div>
+        {overlay}
       </div>
     );
   }
