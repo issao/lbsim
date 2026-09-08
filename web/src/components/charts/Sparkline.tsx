@@ -12,7 +12,9 @@ export function Sparkline({
   height?: number;
   max?: number;
 }) {
-  if (points.length < 2) return <svg width={width} height={height} />;
+  // Block in both branches: an inline svg sits on the text baseline and makes a table row a
+  // fraction of a pixel taller than the same row once its trend has drawn (U99).
+  if (points.length < 2) return <svg width={width} height={height} style={{ display: 'block' }} aria-hidden="true" />;
   const hi = max ?? Math.max(...points, 1e-9);
   const d = points
     .map((p, i) => {

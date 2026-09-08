@@ -1,7 +1,6 @@
 import { useCallback, useRef, useState } from 'react';
 import type { RunHandle } from '../lib/useRun';
 import { SPEEDS, STEP_S } from '../lib/useRun';
-import { SNAPSHOT_S } from '../lib/engine';
 import { fmtTime } from '../lib/format';
 import { updateBannerText } from '../lib/updateBanner';
 
@@ -51,8 +50,8 @@ export function PlaybackBar({ run, dense = false }: { run: RunHandle; dense?: bo
   const pct = (s: number) => `${(Math.min(s, run.durationS) / run.durationS) * 100}%`;
   const events = run.engine.eventsUpTo(run.recordedToS);
   const beyond = drag !== null && drag > run.recordedToS;
-  // Rewind-and-resimulate exists only on the mock; a live or replayed run refuses it, and a button
-  // that only ever says no is clutter rather than a control.
+  // Neither a live nor a replayed run accepts rewind-and-resimulate yet, and a button that only
+  // ever says no is clutter rather than a control; the buttons return with the server's Rewind.
   const canRewind = (run.source?.disabledReason ?? null) === null;
 
   return (
@@ -114,11 +113,6 @@ export function PlaybackBar({ run, dense = false }: { run: RunHandle; dense?: bo
         >
           <div className="scrub-recorded" style={{ width: pct(run.recordedToS) }} />
           <div className="scrub-beyond" style={{ left: pct(run.recordedToS), right: 0 }} />
-          {Array.from({ length: Math.floor(run.durationS / SNAPSHOT_S) }, (_, i) => (i + 1) * SNAPSHOT_S)
-            .filter((t) => t < run.recordedToS)
-            .map((t) => (
-              <div key={t} className="scrub-snap" style={{ left: pct(t) }} title={`snapshot at ${t} s`} />
-            ))}
           {events.map((e, i) => (
             <div
               key={i}
@@ -146,7 +140,6 @@ export function PlaybackBar({ run, dense = false }: { run: RunHandle; dense?: bo
                 {canRewind ? <> &mdash; dragging here re-simulates</> : null}
               </span>
             ) : null}
-            <span>| snapshot every {SNAPSHOT_S} s</span>
             {beyond ? <span style={{ color: 'var(--serious)' }}>release to re-simulate to {drag!.toFixed(1)} s</span> : null}
           </div>
         ) : null}

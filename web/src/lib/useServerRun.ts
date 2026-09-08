@@ -1,4 +1,4 @@
-// The run controller, backed by the Ingress server instead of the in-browser mock.
+// The run controller, backed by the Ingress server.
 //
 // `ServerRunEngine` is the whole controller with no React in it: it starts a run, subscribes to the
 // fleet stream, decodes each update into the same `ReplayFrame` replay decodes from `fleet.jsonl`
@@ -7,8 +7,8 @@
 // is a thin hook over it, shaped to `RunHandle` so wiring a panel is a swap of the hook rather than
 // a rewrite of the panel. The self-test drives the engine directly against a fake server.
 //
-// Two fields differ from the mock's, and pretending otherwise would be the dishonesty this whole
-// exercise is trying to avoid:
+// Two fields differ from the replay handle's, and pretending otherwise would be the dishonesty
+// this whole exercise is trying to avoid:
 //
 //   - `update` returns `null` rather than an `UpdateResponse`. A round trip decides the answer, so it
 //     arrives on `lastUpdate` later, exactly as `lastRewind` already does.
@@ -16,12 +16,12 @@
 //     inside what has already streamed, which is a local read and needs no server.
 //
 // Everything else -- cursor, playback, step, restart, the banners the UI is obliged to show -- is
-// the same shape and the same units (relative simulated seconds) as the mock's.
+// the same shape and the same units (relative simulated seconds) as the replay handle's.
 
 import { useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import type { FrameSource, RunHandle, RunSourceInfo } from './useRun';
 import { STEP_S } from './useRun';
-import type { FleetEvent, Frame, ReplicaSample } from './engine';
+import type { FleetEvent, Frame, ReplicaSample } from './frame';
 import type { ScenarioConfig } from './config';
 import { cloneConfig, diffConfig, FIELD_LABEL } from './config';
 import type { RewindResponse, Target as UiTarget, UpdateResponse } from './types';
@@ -46,7 +46,6 @@ import {
   uiTargetToWire,
 } from './api';
 import { modeBanner, serverMode } from './mode';
-import { LEASE_MS } from './subscriptions';
 
 /** How often the run's status is polled. The stream carries metrics; this carries state and speed. */
 export const STATUS_POLL_MS = 500;
@@ -58,7 +57,8 @@ export const PACE_WINDOW_MS = 2000;
 export const SERVER_DISABLED_REASON = 'the server does not support Rewind yet';
 /** What `lastUpdate` says when the server answers 501: the control is wired, the server is not. */
 export const SERVER_NOT_YET = 'the server does not support this yet';
-/** The lease asked for, from the stand-in registry's figure so the status bar's number stays true. */
+/** The lease asked for on every subscription; renewed at a third of it while the page is visible. */
+export const LEASE_MS = 30_000;
 export const LEASE_NS = BigInt(LEASE_MS) * 1_000_000n;
 
 /** The fleet metrics the dashboard's top-level panels read. One subscription, one entity. */
@@ -68,6 +68,7 @@ export const FLEET_METRICS: MetricName[] = [
   'METRIC_RETRIES_PER_S', 'METRIC_KV_UTILIZATION', 'METRIC_RUNNING_SEQS', 'METRIC_QUEUED_SEQS',
   'METRIC_LOAD_IMBALANCE_CV', 'METRIC_WASTED_GPU_FRACTION', 'METRIC_SLO_ATTAINMENT',
   'METRIC_READY_REPLICAS', 'METRIC_WARMING_REPLICAS', 'METRIC_DRAINING_REPLICAS',
+  'METRIC_GPU_UTILIZATION', 'METRIC_GPU_COMPUTE_BOUND_FRACTION',
   'METRIC_TTFT', 'METRIC_ITL', 'METRIC_E2E', 'METRIC_QUEUE_WAIT',
 ];
 
@@ -384,7 +385,7 @@ export class ServerRunEngine implements FrameSource {
         this.connection = p;
         if (p === 'failed' && detail) {
           // "METRIC_X is not served for this scope": the server is older or narrower than this
-          // client's wish list. Drop that metric and open again; the panel for it stays mock.
+          // client's wish list. Drop that metric and open again; the panel for it reads "—".
           // Without this the open answered 200 with a rejected_reason and the dashboard waited
           // forever for a first sample, which is how the showcase got stuck.
           const m = /^(METRIC_[A-Z0-9_]+) is not served/.exec(detail);
@@ -686,7 +687,7 @@ export function useServerRun(initial: ScenarioConfig, opts: ServerRunOptions = {
   const client = useMemo(() => opts.client ?? new IngressClient({ baseUrl: mode.baseUrl }), [opts.client, mode.baseUrl]);
   const [version, bump] = useReducer((n: number) => n + 1, 0);
 
-  // One engine per mount, seeded from the initial config, exactly as useRun builds one mock engine.
+  // One engine per mount, seeded from the initial config.
   const engineRef = useRef<ServerRunEngine | null>(null);
   if (engineRef.current === null) {
     engineRef.current = new ServerRunEngine(initial, { client, metrics: opts.metrics, recordTraces: opts.recordTraces, onChange: bump });
@@ -814,6 +815,11 @@ const REPLICA_ROW_METRICS: MetricName[] = [
   'METRIC_KV_UTILIZATION',
   'METRIC_KV_TOKENS_RESIDENT',
   'METRIC_STEP_TIME',
+  'METRIC_GPU_UTILIZATION',
+  'METRIC_GPU_COMPUTE_BOUND_FRACTION',
+  'METRIC_REPLICA_STATE',
+  'METRIC_TRUE_SPEED_MULTIPLIER',
+  'METRIC_TTFT',
 ];
 /** Enough history for a sparkline and a heatmap column per row without holding the run. */
 export const REPLICA_HISTORY = 240;

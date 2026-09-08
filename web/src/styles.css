@@ -40,10 +40,6 @@
   --seq-6: #184f95;
   --seq-7: #0d366b;
 
-  --mock: #8a6d1f;
-  --mock-bg: rgba(250, 178, 25, 0.16);
-  --mock-line: rgba(138, 109, 31, 0.35);
-
   --grid: rgba(20, 19, 15, 0.09);
   --shadow: 0 1px 2px rgba(20, 19, 15, 0.06), 0 4px 14px rgba(20, 19, 15, 0.05);
 
@@ -83,10 +79,6 @@
     --seq-5: #6da7ec;
     --seq-6: #9ec5f4;
     --seq-7: #cde2fb;
-
-    --mock: #e0b64f;
-    --mock-bg: rgba(250, 178, 25, 0.12);
-    --mock-line: rgba(224, 182, 79, 0.3);
 
     --grid: rgba(244, 243, 238, 0.08);
     --shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
@@ -146,14 +138,16 @@ html.shell .page > .page-pad { flex: 1 1 auto; min-height: 0; overflow: auto; }
 .navlinks a[aria-current="page"] { background: var(--accent-soft); color: var(--accent-ink); }
 .topbar-right { margin-left: auto; display: flex; align-items: center; gap: 10px; }
 
-.mock-global {
+/* The one word for what is on screen: live or replay. Empty until a page has resolved its source. */
+.mode-badge {
   display: inline-flex; align-items: center; gap: 6px;
   font-size: 10.5px; letter-spacing: 0.04em; text-transform: uppercase;
-  color: var(--mock); background: var(--mock-bg);
-  border: 1px solid var(--mock-line); border-radius: var(--r);
+  color: var(--accent); background: var(--accent-soft);
+  border: 1px solid var(--accent-line); border-radius: var(--r);
   padding: 2px 7px;
 }
-.mock-global::before {
+.mode-badge:empty { display: none; }
+.mode-badge::before {
   content: ""; width: 5px; height: 5px; border-radius: 50%;
   background: currentColor; flex: 0 0 auto;
 }
@@ -183,18 +177,6 @@ html.shell .page > .page-pad { flex: 1 1 auto; min-height: 0; overflow: auto; }
 .panel-body { padding: 8px; min-width: 0; overflow: hidden; }
 .panel-body.tight { padding: 0; }
 .panel-body.scroll { overflow: auto; }
-
-.mock-tag {
-  font-family: var(--mono); font-size: 9.5px; letter-spacing: 0.04em; text-transform: uppercase;
-  color: var(--mock); border: 1px solid var(--mock-line); background: var(--mock-bg);
-  border-radius: 2px; padding: 0 4px; white-space: nowrap;
-}
-
-/* U95: the inline explanation a partial panel shows in its body when it is otherwise wearing the
-   run's own word (live/replay) -- the same sentence that sits in the tag's title.
-   (U99 once reserved this line's height; U95b replaced the mechanism with per-cell `Unwired`
-   placeholders on this branch, which cost no line, so there was nothing left here to stabilize.) */
-.note.partial-note { color: var(--mock); margin: 0 0 6px; }
 
 .panel.highlight {
   outline: 2px solid var(--accent); outline-offset: 1px;
@@ -296,7 +278,7 @@ label.check input { accent-color: var(--accent); }
   border-bottom: 1px solid var(--line);
   background: var(--surface-2); color: var(--ink-2);
 }
-.banner.resim { background: var(--mock-bg); color: var(--mock); border-bottom-color: var(--mock-line); }
+.banner.resim { background: var(--accent-soft); color: var(--accent); border-bottom-color: var(--accent-line); }
 .banner.rejected { color: var(--serious); border-bottom-color: var(--serious); }
 .banner .tagline { font-family: var(--mono); font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; flex: 0 0 auto; }
 .banner .btn { margin-left: auto; }

@@ -1,39 +1,15 @@
 import { useEffect, useMemo, useState } from 'react';
-import type { Frame, ReplicaSample } from '../../lib/engine';
+import type { Frame, ReplicaSample } from '../../lib/frame';
 import type { ScenarioConfig } from '../../lib/config';
 import { REPLICA_COLUMNS, type ReplicaColumn } from '../../lib/derive';
 import { Panel, Unwired } from '../../components/ui';
 import { Heatmap } from '../../components/charts/Heatmap';
 import { Sparkline } from '../../components/charts/Sparkline';
 import { fmtMs, fmtNum, fmtPct, fmtTokens } from '../../lib/format';
-import { useRegistryStats, useSubscriptions } from '../../lib/useSubscriptions';
 import { useServerReplicas } from '../../lib/useServerRun';
-import { Metric, type Target } from '../../lib/types';
-import { isWireFrame, realness, WIRED_REPLICA_FIELDS } from '../../lib/wired';
+import { WIRED_REPLICA_FIELDS } from '../../lib/wired';
 
 const PAGE_SIZES = [10, 20, 50];
-
-// Fields this panel reads off Frame / ReplicaSample. Keep these lists honest: they drive the mock
-// tag on every Panel below. `weight` is read only via the sort-value switch below, reachable when a
-// viewer sorts by that column, but the tag is a static claim about the panel, not the current sort.
-// U95b: on a wire frame the unwired replica fields (state, prefix hit rate, TTFT mean, speed
-// multiplier, weight) render as `Unwired` rather than as the adapter's placeholders, and sorting
-// by one of them falls back to id, so a live page never ranks rows by an invented value.
-const FRAME_READS: (keyof Frame)[] = ['loadImbalanceCv', 'replicas'];
-const REPLICA_READS: (keyof ReplicaSample)[] = [
-  'id',
-  'present',
-  'state',
-  'queuedSeqs',
-  'batchSize',
-  'kvTokensResident',
-  'kvUtilization',
-  'stepTimeMs',
-  'prefixHitRate',
-  'ttftMeanMs',
-  'trueSpeedMultiplier',
-  'weight',
-];
 
 /**
  * The machine-level view, paginated client-side over subscriptions, per docs/ui-spec.md section 2.
@@ -44,6 +20,11 @@ const REPLICA_READS: (keyof ReplicaSample)[] = [
  *
  * The cost is stated rather than hidden: sorting by a live value only sorts what the client is
  * subscribed to, so the header says it is showing a page rather than a global ranking.
+ *
+ * U95b: a replica field the engine does not produce (prefix hit rate) renders as `Unwired`, and a
+ * value a row has not carried yet (a live row not yet streamed, an older recording without the
+ * state metrics) as "—"; sorting by an unwired column falls back to id, so the page never ranks
+ * rows by a value nobody measured.
  */
 export function MachineLevel({
   frames,
@@ -65,14 +46,11 @@ export function MachineLevel({
   const [pageSize, setPageSize] = useState(20);
   const [heatMetric, setHeatMetric] = useState<'queuedSeqs' | 'kvUtilization' | 'batchSize'>('queuedSeqs');
 
-  const data = realness(frame, FRAME_READS, REPLICA_READS);
-  const wire = isWireFrame(frame);
-
   // Live frames carry no replica rows: the fleet stream is one entity, and the protos have no "all
   // replicas" call. What the fleet row does say is how many replicas are ready, and the server
   // numbers them densely from 0, so that count is the list of ids; the rows themselves arrive one
   // subscription each, only for the page on screen. Replay frames carry their rows from
-  // replicas.jsonl and the mock invents them, so those two keep reading `frame.replicas`.
+  // replicas.jsonl, so replay keeps reading `frame.replicas`.
   const liveRunId = live?.runId ?? null;
   const [subIds, setSubIds] = useState<number[]>([]);
   const streamed = useServerReplicas(liveRunId, subIds, config.samplesPerSimSecond);
@@ -84,8 +62,8 @@ export function MachineLevel({
   const sorted = useMemo(() => {
     const rows = [...present];
     rows.sort((a, b) => {
-      const av = sortValue(a, sort, wire);
-      const bv = sortValue(b, sort, wire);
+      const av = sortValue(a, sort);
+      const bv = sortValue(b, sort);
       // A value the wire has not carried (a live row not yet streamed, a NaN column on replay)
       // sorts after every measured one in either direction, then by id, so the order is stable.
       const an = Number.isNaN(av);
@@ -94,7 +72,7 @@ export function MachineLevel({
       return dir === 'desc' ? bv - av : av - bv;
     });
     return rows;
-  }, [present, sort, dir, wire]);
+  }, [present, sort, dir]);
 
   const pages = Math.max(1, Math.ceil(sorted.length / pageSize));
   const p = Math.min(page, pages - 1);
@@ -106,23 +84,6 @@ export function MachineLevel({
   useEffect(() => {
     if (liveRunId !== null) setSubIds(JSON.parse(visibleKey) as number[]);
   }, [liveRunId, visibleKey]);
-
-  // One subscription per visible row. Changing page closes these and opens others.
-  const targets: Target[] = visible.map((r) => ({ scope: 'REPLICA', id: r.id }));
-  useSubscriptions(
-    'machine-level',
-    targets,
-    [
-      Metric.QUEUED_SEQS,
-      Metric.KV_TOKENS_RESIDENT,
-      Metric.BATCH_SIZE,
-      Metric.STEP_TIME,
-      Metric.PREFIX_HIT_RATE,
-      Metric.TTFT,
-    ],
-    config.samplesPerSimSecond
-  );
-  const stats = useRegistryStats();
 
   const spark = useMemo(() => {
     const m = new Map<number, number[]>();
@@ -167,7 +128,7 @@ export function MachineLevel({
         const r = f.replicas.find((x) => x.id === id);
         return r ? pick(r, heatMetric) : 0;
       }),
-      muted: (frame.replicas.find((x) => x.id === id)?.state ?? 'READY') !== 'READY',
+      muted: ['DEGRADED', 'EJECTED', 'DRAINING'].includes(frame.replicas.find((x) => x.id === id)?.state ?? 'UNKNOWN'),
     }));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [frames, heatMetric, present.length, liveRunId, streamed.history, heatCols, visibleKey]);
@@ -199,12 +160,6 @@ export function MachineLevel({
         bodyClass="tight"
         highlight={highlight === 'replicas'}
         id="replicas"
-        data={data}
-        right={
-          <span className="note">
-            <b className="num">{stats.byOwner['machine-level'] ?? 0}</b> open subscriptions
-          </span>
-        }
       >
         <table className="data">
           <thead>
@@ -215,17 +170,14 @@ export function MachineLevel({
           </thead>
           <tbody>
             {visible.map((r) => (
-              <tr key={r.id} className={!wire && r.state !== 'READY' ? 'sel' : ''}>
+              <tr key={r.id} className={r.state === 'DEGRADED' || r.state === 'EJECTED' ? 'sel' : ''}>
                 <td className="n">{r.id}</td>
                 <td style={{ textAlign: 'left' }}>
-                  {wire ? (
-                    <Unwired what="state" />
+                  {r.state === 'UNKNOWN' ? (
+                    '—'
                   ) : (
                     <>
-                      <i
-                        className={`dot ${r.state === 'READY' ? (r.trueSpeedMultiplier < 0.9 ? 'critical' : 'good') : r.state === 'EJECTED' ? 'warning' : 'info'}`}
-                        style={{ marginRight: 5 }}
-                      />
+                      <i className={`dot ${stateDot(r)}`} style={{ marginRight: 5 }} />
                       {r.state.toLowerCase()}
                       {r.trueSpeedMultiplier < 0.9 ? ` ${r.trueSpeedMultiplier.toFixed(2)}x` : ''}
                     </>
@@ -240,40 +192,53 @@ export function MachineLevel({
                 </td>
                 <td className="n">{fmt1(r.batchSize)}</td>
                 <td className="n">{fmtMs(r.stepTimeMs)}</td>
-                <td className="n">{wire ? <Unwired what="prefixHitRate" /> : fmtPct(r.prefixHitRate, 0)}</td>
-                <td className={`n${!wire && r.ttftMeanMs > config.slo.ttftMs ? ' bad' : ''}`}>
-                  {wire ? <Unwired what="ttftMeanMs" /> : fmtMs(r.ttftMeanMs)}
+                <td className="n">
+                  <Unwired what="prefixHitRate" />
+                </td>
+                <td className={`n${r.ttftMeanMs > config.slo.ttftMs ? ' bad' : ''}`}>
+                  {Number.isFinite(r.ttftMeanMs) ? fmtMs(r.ttftMeanMs) : '—'}
                 </td>
                 <td>
                   <Sparkline points={spark.get(r.id) ?? []} max={sparkMax} />
                 </td>
               </tr>
             ))}
+            {/* U99: the page is always `pageSize` rows tall. Rows the fleet has not named yet (before the
+                first sample) or that a short last page lacks are drawn empty, so the panel's box never
+                changes height as ids arrive. */}
+            {Array.from({ length: Math.max(0, pageSize - visible.length) }, (_, i) => (
+              <tr key={`filler-${i}`} aria-hidden="true" className="filler">
+                {REPLICA_COLUMNS.map((c) => (
+                  <td key={c.key} className="n">
+                    —
+                  </td>
+                ))}
+                <td>
+                  <Sparkline points={[]} />
+                </td>
+              </tr>
+            ))}
           </tbody>
         </table>
         <div className="pager">
-          {sorted.length > Math.min(...PAGE_SIZES) ? (
-            <>
-              <button className="btn" disabled={p === 0} onClick={() => setPage(p - 1)}>
-                prev
-              </button>
-              <button className="btn" disabled={p >= pages - 1} onClick={() => setPage(p + 1)}>
-                next
-              </button>
-            </>
-          ) : null}
-          {sorted.length > 0 ? (
-            <span>
-              rows{' '}
-              <span className="seg">
-                {PAGE_SIZES.map((n) => (
-                  <button key={n} aria-pressed={pageSize === n} onClick={() => { setPageSize(n); setPage(0); }}>
-                    {n}
-                  </button>
-                ))}
-              </span>
+          {/* U99: always present, disabled when there is nowhere to go, so the pager's height never
+              changes with the row count. */}
+          <button className="btn" disabled={p === 0} onClick={() => setPage(p - 1)}>
+            prev
+          </button>
+          <button className="btn" disabled={p >= pages - 1} onClick={() => setPage(p + 1)}>
+            next
+          </button>
+          <span>
+            rows{' '}
+            <span className="seg">
+              {PAGE_SIZES.map((n) => (
+                <button key={n} aria-pressed={pageSize === n} onClick={() => { setPageSize(n); setPage(0); }}>
+                  {n}
+                </button>
+              ))}
             </span>
-          ) : null}
+          </span>
           <span className="grow">
             {liveRunId !== null ? (
               <>
@@ -294,7 +259,6 @@ export function MachineLevel({
       <Panel
         title="Per-replica over time"
         sub={liveRunId !== null ? 'from the rows on this page, since they opened' : 'from the cluster summary, not from the row subscriptions'}
-        data={data}
         highlight={highlight === 'heatmap'}
         id="heatmap"
         right={
@@ -331,14 +295,14 @@ export function MachineLevel({
   );
 }
 
-/** `wire`: the row is from a live or replay frame, so a column the engine does not produce sorts by id instead. */
-function sortValue(r: ReplicaSample, key: ReplicaColumn, wire: boolean): number {
-  if (wire && !WIRED_REPLICA_FIELDS.has(key)) return r.id;
+/** A column the engine does not produce sorts by id instead, so the order is never an invented ranking. */
+function sortValue(r: ReplicaSample, key: ReplicaColumn): number {
+  if (!WIRED_REPLICA_FIELDS.has(key)) return r.id;
   switch (key) {
     case 'id':
       return r.id;
     case 'state':
-      return r.state === 'READY' ? 0 : r.state === 'DRAINING' ? 1 : r.state === 'WARMING' ? 2 : 3;
+      return r.state === 'READY' ? 0 : r.state === 'DEGRADED' ? 1 : r.state === 'EJECTED' ? 2 : r.state === 'UNKNOWN' ? NaN : 3;
     case 'queuedSeqs':
       return r.queuedSeqs;
     case 'kvTokensResident':
@@ -356,12 +320,20 @@ function sortValue(r: ReplicaSample, key: ReplicaColumn, wire: boolean): number 
   }
 }
 
+/** The dot beside a state: healthy is good, a degraded replica (true speed below 1) is the gray failure this view exists to show. */
+function stateDot(r: ReplicaSample): string {
+  if (r.state === 'READY') return r.trueSpeedMultiplier < 0.9 ? 'critical' : 'good';
+  if (r.state === 'DEGRADED') return 'critical';
+  if (r.state === 'EJECTED') return 'warning';
+  return 'info';
+}
+
 /** A replica the fleet row counts but whose own row has not streamed yet: every column reads as missing. */
 function pendingRow(id: number): ReplicaSample {
   return {
     id,
     present: true,
-    state: 'READY',
+    state: 'UNKNOWN',
     weight: 1,
     queuedSeqs: NaN,
     runningSeqs: NaN,

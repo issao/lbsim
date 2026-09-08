@@ -14,7 +14,7 @@ tools/build.sh test --workspace             # 73 tests, 3 ignored as known defec
 ./check-fingerprints.sh     # every report number byte-identical to bench/golden-fingerprints.txt
 ./check-sensitivity.sh      # the policy ordering must survive 30% cost-model error
 tools/build.sh test --release -p sim-arena -- --nocapture arena_round   # one arena round on the held-out suite
-cd web && npm install && npm run dev        # the stand-in dashboard, mock data, localhost:5173
+cd web && npm install && npm run dev        # the dashboard: live with a server, replay of exported runs otherwise, localhost:5173
 ```
 
 Every run is deterministic: same scenario and seed, byte-identical output. Scenarios are plain

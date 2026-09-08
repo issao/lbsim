@@ -7,7 +7,7 @@
 // them unchanged, so there is no second wire format here; what this file adds is the fetching, the
 // one document without a proto behind it (the index), the scenario text back into the control
 // panel's `ScenarioConfig`, and a `FrameSource` over the decoded frames so the panels can read a
-// replay exactly as they read the mock engine.
+// replay exactly as they read a live run.
 //
 // Everything below is React-free and network-injectable so the self-test can drive it under Node.
 // Time is handled as the transport handles it: absolute instants stay `bigint`, and the only float
@@ -34,7 +34,7 @@ import {
 } from './api';
 import { BASE, cloneConfig, type ScenarioConfig } from './config';
 import type { RoutingKind } from './types';
-import type { Frame, FleetEvent } from './engine';
+import type { Frame, FleetEvent } from './frame';
 import type { FrameSource } from './useRun';
 import { frameFromUpdate, type ReplayFrame } from './adapter';
 
@@ -148,8 +148,8 @@ export async function fetchRunIndex(f: FetchLike = defaultFetch(), base = runsBa
 
 /**
  * Is there anything to replay? `null` when the index is absent, unreachable or not an index, which
- * is the normal state of a dev server with nothing copied into `web/public/runs/`: mock mode, not
- * an error. A dev server answers a missing file with its HTML shell and HTTP 200, which is why a
+ * is the normal state of a dev server with nothing copied into `web/public/runs/`: nothing to
+ * replay, not an error. A dev server answers a missing file with its HTML shell and HTTP 200, which is why a
  * 200 alone is not enough and the body has to decode.
  */
 export async function probeRunIndex(f: FetchLike = defaultFetch(), base = runsBase()): Promise<RunIndexEntry[] | null> {
@@ -338,7 +338,7 @@ export function configFromScenarioText(text: string): { config: ScenarioConfig; 
 // ---------------------------------------------------------------------------
 
 /**
- * The panels' view of a recorded run: the same three reads the mock engine answers (`frameAt`,
+ * The panels' view of a recorded run: the same three reads the server engine answers (`frameAt`,
  * `window`, `eventsUpTo`), over frames that already exist. A whole run is recorded, so
  * `recordedToS` is the duration and nothing is ever simulated here.
  */
@@ -379,8 +379,8 @@ export class ReplayEngine implements FrameSource {
   }
 
   /**
-   * Frames with `simS` in [fromS, toS], decimated to the configured chart sample rate the way the
-   * mock decimates its ticks, and always ending on the last one so the cursor's own frame is drawn.
+   * Frames with `simS` in [fromS, toS], decimated to the configured chart sample rate, and always
+   * ending on the last one so the cursor's own frame is drawn.
    */
   window(fromS: number, toS: number): Frame[] {
     const stride = Math.max(1, Math.round(1 / (this.config.samplesPerSimSecond * this.dtS)));

@@ -77,8 +77,7 @@ export interface ScenarioConfig {
 /**
  * scenarios/base.txt, verbatim. Every engine key that file sets has a field here, so a run started
  * from this config is the same run `sim-run run scenarios/base.txt` performs; the transport
- * self-test reads the file and checks. The mock engine is tuned around these numbers too, so a
- * drift here would make the stand-in's dynamics and the server's disagree for no reason.
+ * self-test reads the file and checks.
  */
 export const BASE: ScenarioConfig = {
   name: 'base',
@@ -360,4 +359,26 @@ export function comparability(a: ScenarioConfig, b: ScenarioConfig): {
   const routingOnly = d.paths.filter((p) => !p.startsWith('routing.'));
   const blocking = routingOnly.filter((p) => p !== 'name' && p !== 'samplesPerSimSecond');
   return { ok: blocking.length === 0, blocking, differing: d.paths };
+}
+
+/** Mean prompt and output tokens across the mixture. */
+export function tokenMeans(c: ScenarioConfig): { prompt: number; output: number } {
+  const p = c.workload.longProbability;
+  return {
+    prompt: (1 - p) * c.workload.promptMean + p * c.workload.longPromptMean,
+    output: (1 - p) * c.workload.outputMean + p * c.workload.longOutputMean,
+  };
+}
+
+/**
+ * Nameplate: requests per second the fleet retires at its maximum batch, prefill and decode
+ * together, from the scenario's own physics parameters and nothing else. What the engine actually
+ * achieves is lower whenever key-value capacity caps the batch, and that is measured, not estimated.
+ */
+export function ratedFleetRps(c: ScenarioConfig): number {
+  const t = tokenMeans(c);
+  const b = Math.max(c.fleet.maxBatch, 1);
+  const decodeTokensPerS = (b * 1000) / (c.fleet.stepBaseMs + c.fleet.stepPerSeqMs * b);
+  const costS = t.prompt / c.fleet.prefillTokensPerS + t.output / decodeTokensPerS;
+  return (1 / costS) * c.fleet.replicas;
 }

@@ -4,7 +4,7 @@
 // moving an SLO threshold changes the charts without touching the engine, and the UI can say
 // truthfully that no re-simulation happened.
 
-import type { FractionPercentiles, Frame } from './engine';
+import type { FractionPercentiles, Frame } from './frame';
 import type { ScenarioConfig, Slo } from './config';
 import { fractionBelow, type Histogram, quantile } from './hist';
 
@@ -16,8 +16,8 @@ export function windowFrames(engine: { window: (a: number, b: number) => Frame[]
 
 /**
  * Joint attainment: within the TTFT target and within the inter-token target. Treated as
- * independent, which it is not; the real engine counts requests that met both. Marked as mock
- * everywhere it is shown, like everything else here.
+ * independent, which it is not; the engine's own `METRIC_SLO_ATTAINMENT` counts requests that met
+ * both, and the headline should move to it.
  */
 export function attainment(f: Frame, slo: Slo): number {
   return fractionBelow(f.ttft, slo.ttftMs) * fractionBelow(f.itl, slo.itlMs) * fractionBelow(f.e2e, slo.e2eS * 1000);
@@ -38,8 +38,8 @@ export function percentileSeries(frames: Frame[], pick: (f: Frame) => Histogram,
 
 /**
  * Percentiles of a fraction across replicas by sorting, nearest rank. This is the wire's
- * `distributions["67"]` recomputed client-side, for the mock and for a replay frame that carries
- * per-replica rows but predates the fleet distribution. Non-finite entries are absent replicas
+ * `distributions["67"]` recomputed client-side, for a replay frame that carries per-replica rows
+ * but predates the fleet distribution. Non-finite entries are absent replicas
  * and are dropped; null when nothing is left, so the chart draws a gap rather than a zero.
  */
 export function percentilesOver(values: number[], ps: number[]): FractionPercentiles | null {
@@ -79,8 +79,11 @@ export interface HealthCounts {
 }
 
 export function healthCounts(f: Frame): HealthCounts {
-  let gray = 0;
-  for (const r of f.replicas) if (r.present && r.state === 'READY' && r.trueSpeedMultiplier < 0.9) gray++;
+  // Gray failure is read off the per-replica rows; a frame without them (a live fleet frame, an
+  // older recording) has nothing to count, and NaN says so rather than a reassuring zero.
+  const rows = f.replicas.filter((r) => r.present && r.state !== 'UNKNOWN');
+  let gray = rows.length === 0 ? NaN : 0;
+  for (const r of rows) if (r.state === 'DEGRADED' || (r.state === 'READY' && r.trueSpeedMultiplier < 0.9)) gray++;
   return {
     ready: f.readyReplicas,
     warming: f.warmingReplicas,

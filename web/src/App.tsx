@@ -3,7 +3,6 @@ import { Home } from './pages/Home';
 import { LoadTest } from './pages/LoadTest';
 import { Compare } from './pages/Compare';
 import { Showcase } from './pages/Showcase';
-import { useLeaseLifecycle } from './lib/useSubscriptions';
 import { activeMode, badgeText, badgeTitle, setActiveMode, subscribeActiveMode } from './lib/mode';
 
 type Route = '/' | '/dashboard' | '/ab' | '/showcase';
@@ -24,14 +23,13 @@ function currentRoute(): Route {
 /** A hash router, hand-written. No router dependency for four routes. */
 export function App() {
   const [route, setRoute] = useState<Route>(currentRoute);
-  useLeaseLifecycle();
   // The dashboard resolves its source after a probe; the badge follows it, and says nothing until
   // then, so it never shows a claim left over from whatever page was on screen before this one.
   const mode = useSyncExternalStore(subscribeActiveMode, activeMode, activeMode);
 
   // A layout effect, not a passive one: on mount, passive effects fire child-before-parent, so a
-  // page's own mount effect (Compare's `setActiveMode('mock')`, say) would run before this one and
-  // then get clobbered back to 'none'. All layout effects finish before any passive effect runs,
+  // page's own mount effect (a dashboard's `setActiveMode('connecting')`, say) would run before
+  // this one and then get clobbered back to 'none'. All layout effects finish before any passive effect runs,
   // so this always lands first regardless of where in the tree the page's own effect sits.
   useLayoutEffect(() => {
     setActiveMode('none');
@@ -67,7 +65,7 @@ export function App() {
           ))}
         </nav>
         <div className="topbar-right">
-          <span className="mock-global" title={badgeTitle(mode)}>
+          <span className="mode-badge" title={badgeTitle(mode)}>
             {badgeText(mode)}
           </span>
         </div>

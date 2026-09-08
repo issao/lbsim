@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import type { ScenarioConfig } from '../lib/config';
-import { useDataSource, useReplayRun, useRun, type ReplayRunHandle, type RunHandle } from '../lib/useRun';
+import { useDataSource, useReplayRun, type ReplayRunHandle, type RunHandle } from '../lib/useRun';
 import { speedLabel, useServerRun, type ServerRunHandle } from '../lib/useServerRun';
 import { windowFrames } from '../lib/derive';
 import { dataSourceGloss, setActiveMode } from '../lib/mode';
@@ -26,11 +26,11 @@ interface DashboardProps {
   overlay?: ReactNode;
   /**
    * `auto` runs on the Ingress server when one answers, plays recorded runs when `runs/index.json`
-   * is served, and the mock otherwise; `mock` and `server` never probe. The showcase asks for one
-   * of those two when it has already decided where a walkthrough runs, so the decision is made
-   * once rather than twice.
+   * is served, and says so when neither is there; `server` never probes. The showcase asks for
+   * `server` when it has already decided where a walkthrough runs, so the decision is made once
+   * rather than twice.
    */
-  data?: 'auto' | 'mock' | 'server';
+  data?: 'auto' | 'server';
   /**
    * The recorded run to open when the replay branch is taken; `?run=` on the URL otherwise. A
    * caller that knows which recording it wants (the showcase) says so here rather than by
@@ -45,21 +45,22 @@ interface DashboardProps {
  * hand -- the walkthrough is content, not a second interface.
  *
  * The surface is one component, `DashboardBody`, over one `RunHandle`. What differs is only where
- * the handle comes from: the mock engine, a recorded run picked from the served index, or a run
- * started on the Ingress server.
+ * the handle comes from: a run started on the Ingress server, or a recorded run picked from the
+ * served index. With neither, the page says so and draws nothing.
  */
 export function Dashboard(props: DashboardProps) {
   const data = props.data ?? 'auto';
   const src = useDataSource(data === 'auto');
   const state = data === 'server' ? 'server' : src.state;
   useEffect(() => {
+    // `none` is set explicitly, or the badge would keep the probe's "connecting" after it ended in nothing.
     if (state === 'probing') setActiveMode('connecting');
-    if (state === 'mock') setActiveMode('mock');
+    else if (state === 'none') setActiveMode('none');
   }, [state]);
   if (state === 'probing') return <div className="page-pad">looking for a server or recorded runs…</div>;
   if (state === 'server') return <ServerDashboard {...props} />;
   if (src.state === 'replay') return <ReplayDashboard {...props} runs={src.runs} />;
-  return <MockDashboard {...props} />;
+  return <div className="page-pad">no server and no recordings served</div>;
 }
 
 // ---------------------------------------------------------------------------
@@ -119,11 +120,6 @@ function ServerBanner({ run }: { run: ServerRunHandle }) {
       ) : null}
     </>
   );
-}
-
-function MockDashboard({ initial, autoplay = true, run: _recording, ...rest }: DashboardProps) {
-  const run = useRun(initial, autoplay);
-  return <DashboardBody run={run} {...rest} />;
 }
 
 // ---------------------------------------------------------------------------

@@ -70,8 +70,11 @@ export const OUTCOMES: Outcome[] = [
 /** common.proto MemoryTier. */
 export type MemoryTier = 'HBM' | 'DRAM' | 'SSD' | 'NONE';
 
-/** common.proto Health.Announced, plus the lifecycle states cluster health draws. */
-export type ReplicaState = 'READY' | 'WARMING' | 'DRAINING' | 'EJECTED';
+/**
+ * subscription.proto `METRIC_REPLICA_STATE` (READY, DEGRADED, EJECTED) plus the lifecycle states
+ * cluster health draws, and `UNKNOWN` for a row that did not carry the metric.
+ */
+export type ReplicaState = 'READY' | 'DEGRADED' | 'WARMING' | 'DRAINING' | 'EJECTED' | 'UNKNOWN';
 
 /** scenario.proto RoutingPolicy.kind. */
 export type RoutingKind =

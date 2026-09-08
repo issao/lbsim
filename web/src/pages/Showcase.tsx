@@ -12,7 +12,6 @@ import { probeDataSource, type RunHandle } from '../lib/useRun';
 import type { ScenarioConfig } from '../lib/config';
 import { type RunnerHandle, type StepState, WalkthroughRunner } from '../lib/walkthroughRunner';
 import { Dashboard, type TabHint } from './Dashboard';
-import { MockTag } from '../components/ui';
 
 /**
  * The open walkthrough lives in the hash, `#/showcase?script=<card id>`, so the nav link, the back
@@ -64,14 +63,11 @@ export function Showcase() {
 
   return (
     <div className="page-pad">
-      <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, marginBottom: 4 }}>
-        <h1 style={{ fontSize: 15, margin: 0, fontWeight: 600 }}>Showcase</h1>
-        <MockTag what="mock, replay or live" />
-      </div>
+      <h1 style={{ fontSize: 15, margin: '0 0 4px', fontWeight: 600 }}>Showcase</h1>
       <p className="note" style={{ maxWidth: '80ch', marginTop: 0 }}>
         One card per dynamic, stack ranked. A card with a walkthrough steps through a run: it advances, pauses at the
         moments that matter, and says what to look at. With a server the walkthrough drives a live run; otherwise it
-        plays a recording, or the mock engine when none is served.
+        plays a recording, and says so when none is served.
       </p>
       {error ? <p style={{ color: 'var(--critical)' }}>{error}</p> : null}
       {!index ? (
@@ -118,22 +114,22 @@ export function Showcase() {
  * handed to the dashboard as props (`data`, `run`) so the two never disagree about what is open.
  */
 type Source =
-  | { kind: 'probing'; note?: undefined }
-  | { kind: 'mock'; note?: string }
-  | { kind: 'server'; note?: undefined }
-  | { kind: 'replay'; run: string; note?: undefined };
+  | { kind: 'probing' }
+  /** Nothing to drive: no server, and no recording of the run the script names. The page says which. */
+  | { kind: 'none'; note: string }
+  | { kind: 'server' }
+  | { kind: 'replay'; run: string };
 
 /**
  * The runner's view of whatever handle the dashboard hands back. Read lazily, because the handle's
  * identity changes on every render and the runner outlives all of them. A synchronous refusal
- * (the mock and the replay return an `UpdateResponse`) becomes a rejection here; the server's
- * `update` returns nothing and reports through `lastUpdate`, which the panel reads separately.
+ * (the replay returns an `UpdateResponse`) becomes a rejection here; the server's `update`
+ * returns nothing and reports through `lastUpdate`, which the panel reads separately.
  */
 function adapt(get: () => RunHandle): RunnerHandle {
   return {
     get mode() {
-      const r = get();
-      return r.source?.kind ?? ((r.engine as unknown) === null ? 'server' : 'mock');
+      return get().source?.kind ?? 'server';
     },
     cursorS: () => get().cursorS,
     scrubTo: (s) => get().scrubTo(s),
@@ -165,9 +161,9 @@ function Walkthrough({ script, onExit }: { script: WalkthroughScript; onExit: ()
       if (!alive) return;
       if (d.state === 'server') setSource({ kind: 'server' });
       else if (d.state === 'replay' && wanted && d.runs.some((r) => r.runId === wanted)) setSource({ kind: 'replay', run: wanted });
-      else if (d.state === 'replay' && wanted)
-        setSource({ kind: 'mock', note: `no recording of ${wanted} is served; showing the mock engine instead` });
-      else setSource({ kind: 'mock' });
+      else if (d.state === 'replay' && wanted) setSource({ kind: 'none', note: `no server, and no recording of ${wanted} is served` });
+      else if (d.state === 'replay') setSource({ kind: 'none', note: 'no server, and this walkthrough names no recording' });
+      else setSource({ kind: 'none', note: 'no server and no recordings served' });
     });
     return () => {
       alive = false;
@@ -175,6 +171,16 @@ function Walkthrough({ script, onExit }: { script: WalkthroughScript; onExit: ()
   }, [script.run]);
 
   if (source.kind === 'probing') return <div className="page-pad">looking for a server{script.run ? ` or ${script.run}` : ''}…</div>;
+  if (source.kind === 'none') {
+    return (
+      <div className="page-pad">
+        <p style={{ margin: '0 0 8px' }}>{source.note}</p>
+        <button className="btn" onClick={onExit}>
+          back to the cards
+        </button>
+      </div>
+    );
+  }
   return <WalkthroughOver key={source.kind} script={script} initial={initial} source={source} compare={script.compare} onExit={onExit} />;
 }
 
@@ -187,7 +193,7 @@ function WalkthroughOver({
 }: {
   script: WalkthroughScript;
   initial: ScenarioConfig;
-  source: Source;
+  source: Exclude<Source, { kind: 'probing' } | { kind: 'none' }>;
   compare?: string;
   onExit: () => void;
 }) {
@@ -227,24 +233,21 @@ function WalkthroughOver({
     [current.step, current.index]
   );
   const step = current.step;
-  const notes = [source.note, compare ? `compare ${compare}: this walkthrough shows one run; the comparison run is not opened` : null].filter(
-    (n): n is string => n !== null && n !== undefined
-  );
+  const notes = compare ? [`compare ${compare}: this walkthrough shows one run; the comparison run is not opened`] : [];
   const refusal = current.reason ?? lateReason;
   // U70: the word for what this walkthrough is driving, and, when a step's conditions could not be
-  // applied, which of the three explains why -- replay never accepts a `set`, live can refuse one.
-  const narration =
-    source.kind === 'server' ? 'driving a live run' : source.kind === 'replay' ? 'stepping through a replay' : 'stepping through the mock';
-  const refusalPrefix = source.kind === 'replay' ? 'not applied (replay):' : source.kind === 'server' ? 'not applied (live, refused):' : 'not applied (mock):';
+  // applied, which of the two explains why -- replay never accepts a `set`, live can refuse one.
+  const narration = source.kind === 'server' ? 'driving a live run' : 'stepping through a replay';
+  const refusalPrefix = source.kind === 'replay' ? 'not applied (replay):' : 'not applied (live, refused):';
 
   return (
     <Dashboard
       key={script.id}
       initial={initial}
-      // The decision was made above. `server` and `mock` skip the dashboard's own probe so it
-      // cannot decide differently; replay keeps `auto` because the replay branch takes its run
-      // list from that (cached) probe, and `run` names the recording to open from it.
-      data={source.kind === 'server' ? 'server' : source.kind === 'replay' ? 'auto' : 'mock'}
+      // The decision was made above. `server` skips the dashboard's own probe so it cannot decide
+      // differently; replay keeps `auto` because the replay branch takes its run list from that
+      // (cached) probe, and `run` names the recording to open from it.
+      data={source.kind === 'server' ? 'server' : 'auto'}
       run={source.kind === 'replay' ? source.run : undefined}
       autoplay={false}
       onRun={onRun}
