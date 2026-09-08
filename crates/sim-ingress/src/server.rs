@@ -62,7 +62,13 @@ pub struct Server {
     sse_write_timeout: Duration,
     /// Connections being handled right now, kept by the accept loop in `lib.rs`.
     pub(crate) connections: AtomicUsize,
+    /// The last `REQUEST_LOG_LINES` request lines, served at `GET /requests.log`. The deploy
+    /// identity cannot read Cloud Logging, so the process carries its own recent history.
+    log: Mutex<VecDeque<String>>,
 }
+
+/// Enough to cover a harness run and the minutes around a stall, small enough to page through.
+const REQUEST_LOG_LINES: usize = 512;
 
 /// How long one SSE write may block before the stream is abandoned. A reader that stops reading
 /// fills the socket buffers and then blocks the writer at the next send; without a bound that
@@ -95,7 +101,31 @@ impl Server {
             subs: Mutex::new(BTreeMap::new()),
             sse_write_timeout: SSE_WRITE_TIMEOUT,
             connections: AtomicUsize::new(0),
+            log: Mutex::new(VecDeque::with_capacity(REQUEST_LOG_LINES)),
         }
+    }
+
+    /// One line into the request log and onto stderr, where Cloud Run captures it with the
+    /// wall-clock second so a stall can be placed against the platform's own timeline.
+    pub(crate) fn log(&self, line: String) {
+        let ns = wall_now_ns();
+        eprintln!("{}.{:03} {line}", ns / 1_000_000_000, (ns / 1_000_000) % 1000);
+        let mut log = self.log.lock().unwrap_or_else(|e| e.into_inner());
+        if log.len() == REQUEST_LOG_LINES {
+            log.pop_front();
+        }
+        log.push_back(line);
+    }
+
+    /// The request log, oldest first, one line each.
+    pub fn request_log(&self) -> String {
+        let log = self.log.lock().unwrap_or_else(|e| e.into_inner());
+        let mut out = String::new();
+        for line in log.iter() {
+            out.push_str(line);
+            out.push('\n');
+        }
+        out
     }
 
     /// Connections being handled right now. What the wire cannot show and a test about a stalled or
@@ -115,6 +145,7 @@ impl Server {
         self
     }
 
+    // Lock order: leases → subs → run.state, each optional, never reversed.
     fn subs(&self) -> MutexGuard<'_, BTreeMap<u64, Sub>> {
         self.subs.lock().unwrap_or_else(|e| e.into_inner())
     }
@@ -125,10 +156,29 @@ impl Server {
         let rpc = req.path.strip_prefix(INGRESS_PREFIX).unwrap_or("");
         match (req.method.as_str(), rpc) {
             ("GET", "OpenSubscription") => self.open_subscription(&req, stream),
-            ("POST", _) => match self.unary(rpc, &req.body) {
-                Ok(body) => crate::respond(stream, 200, "application/json", body.as_bytes()),
-                Err(r) => error(stream, r.code, &r.message),
-            },
+            ("POST", _) => {
+                let started = Instant::now();
+                let result = self.unary(rpc, &req.body);
+                let status = match &result {
+                    Ok(_) => 200,
+                    Err(r) => r.code,
+                };
+                let body = std::str::from_utf8(&req.body).unwrap_or("");
+                // StartRun is the one RPC whose run id is in the answer rather than the question.
+                let run_id = json_field(body, "run_id").or_else(|| result.as_deref().ok().and_then(|b| json_field(b, "run_id")));
+                let mut line = format!("req POST {rpc} {status} {}ms", started.elapsed().as_millis());
+                if let Some(run_id) = run_id {
+                    line.push_str(&format!(" run={run_id}"));
+                }
+                if let Some(sub) = json_field(body, "subscription_id") {
+                    line.push_str(&format!(" sub={sub}"));
+                }
+                self.log(line);
+                match result {
+                    Ok(body) => crate::respond(stream, 200, "application/json", body.as_bytes()),
+                    Err(r) => error(stream, r.code, &r.message),
+                }
+            }
             (_, "OpenSubscription") => error(stream, 405, "OpenSubscription is a GET"),
             _ => error(stream, 405, "ingress RPCs are POST"),
         }
@@ -316,7 +366,7 @@ impl Server {
             };
             sse_head(&mut stream)?;
             sse_event(&mut stream, None, "open", &open_json(id, expires, ""))?;
-            return self.stream_updates(stream, run, id, generation, last);
+            return self.stream_logged(stream, run, run_id, id, generation, last);
         }
 
         // A fresh open: validate everything the proto says is a rejection, then lease and stream.
@@ -365,15 +415,37 @@ impl Server {
         run.resume_from_idle();
         sse_head(&mut stream)?;
         sse_event(&mut stream, None, "open", &open_json(id, lease.expires_at_wall_ns, ""))?;
-        self.stream_updates(stream, run, id, 1, 0)
+        self.stream_logged(stream, run, run_id, id, 1, 0)
+    }
+
+    /// `stream_updates` bracketed by its two log lines: the open, and the end with its reason,
+    /// which is the line that says whether a stream ended on its own or was cut off.
+    fn stream_logged(
+        &self,
+        stream: TcpStream,
+        run: Arc<Run>,
+        run_id: &str,
+        id: u64,
+        generation: u64,
+        last_sent: u64,
+    ) -> std::io::Result<()> {
+        self.log(format!("sse open sub=s-{id} run={run_id}"));
+        let started = Instant::now();
+        let result = self.stream_updates(stream, run, id, generation, last_sent);
+        let reason = match &result {
+            Ok(reason) => (*reason).to_string(),
+            Err(e) => format!("write error: {e}"),
+        };
+        self.log(format!("sse end sub=s-{id} reason={reason} {}ms", started.elapsed().as_millis()));
+        result.map(|_| ())
     }
 
     /// The update loop: one event per sample at the client's cadence, replayed from the ring when
     /// the ring has something newer than `last_sent`, generated from the run's frames otherwise.
     /// Ends when the lease expires, the subscription is closed or superseded, or the final update
-    /// has gone out. A write error (the peer vanished, or the write timeout: a peer that stopped
-    /// reading) ends it too, freeing the thread and the connection slot at once; the subscription
-    /// itself stays for a reconnect until its lease runs out, and `reap` takes it then.
+    /// has gone out, and says which. A write error (the peer vanished, or the write timeout: a peer
+    /// that stopped reading) ends it too, freeing the thread and the connection slot at once; the
+    /// subscription itself stays for a reconnect until its lease runs out, and `reap` takes it then.
     fn stream_updates(
         &self,
         mut stream: TcpStream,
@@ -381,7 +453,18 @@ impl Server {
         id: u64,
         generation: u64,
         mut last_sent: u64,
-    ) -> std::io::Result<()> {
+    ) -> std::io::Result<&'static str> {
+        // What one visit to the subscription decided, carried out of the `subs` block so that no
+        // arm relocks `subs` while holding it. A std Mutex relocked by its holder parks the thread
+        // forever, and a writer parked holding `subs` stalls every `reap` and every fresh open on
+        // the process; that is how the public instance went quiet (docs/wrap-up-2026-09-06.md 5b).
+        enum Step {
+            Send(u64, String, bool),
+            Finish(&'static str),
+            Wait,
+            End(&'static str),
+        }
+
         let mut last_write = Instant::now();
         loop {
             let now = wall_now_ns();
@@ -392,63 +475,71 @@ impl Server {
                     leases.expire(now);
                     drop(leases);
                     self.subs().remove(&id);
-                    return Ok(());
+                    return Ok("lease expired");
                 }
             }
 
-            let next: Option<(u64, String, bool)> = {
+            let step = {
                 let mut subs = self.subs();
-                let Some(sub) = subs.get_mut(&id) else { return Ok(()) };
-                if sub.generation != generation {
-                    return Ok(());
-                }
-                if let Some(e) = sub.ring.iter().find(|(s, _, _)| *s > last_sent) {
-                    Some(e.clone())
-                } else if sub.finished {
-                    return self.finish_subscription(id);
-                } else {
-                    let st = run.lock();
-                    let j = run::frame_index(sub.next_k, sub.samples_per_sim_second, st.sample_interval_ns());
-                    let n = st.frames.len();
-                    let ending = st.is_terminal() || st.stop_requested;
-                    if n == 0 && ending {
-                        drop(st);
-                        return self.finish_subscription(id);
-                    }
-                    pick(j, n, ending).and_then(|(idx, is_final)| {
-                        let frame = &st.frames[idx];
-                        let row = run::row(frame, &st.scenario, &sub.spec)?;
-                        let u = SubscriptionUpdate {
-                            subscription_id: format!("s-{id}"),
-                            sim_time_unix_ns: frame.t,
-                            realtime_factor: st.realtime_factor,
-                            row,
-                            is_final,
-                        };
-                        let seq = sub.next_seq;
-                        sub.next_seq += 1;
-                        sub.next_k += 1;
-                        sub.finished = is_final;
-                        let data = wire::subscription_update_json(&u);
-                        sub.ring.push_back((seq, data.clone(), is_final));
-                        while sub.ring.len() > RING {
-                            sub.ring.pop_front();
+                match subs.get_mut(&id) {
+                    None => Step::End("closed"),
+                    Some(sub) if sub.generation != generation => Step::End("superseded"),
+                    Some(sub) => {
+                        if let Some((seq, data, is_final)) = sub.ring.iter().find(|(s, _, _)| *s > last_sent) {
+                            Step::Send(*seq, data.clone(), *is_final)
+                        } else if sub.finished {
+                            Step::Finish("final")
+                        } else {
+                            let st = run.lock();
+                            let j = run::frame_index(sub.next_k, sub.samples_per_sim_second, st.sample_interval_ns());
+                            let n = st.frames.len();
+                            let ending = st.is_terminal() || st.stop_requested;
+                            if n == 0 && ending {
+                                Step::Finish("no frames")
+                            } else {
+                                let generated = pick(j, n, ending).and_then(|(idx, is_final)| {
+                                    let frame = &st.frames[idx];
+                                    let row = run::row(frame, &st.scenario, &sub.spec)?;
+                                    let u = SubscriptionUpdate {
+                                        subscription_id: format!("s-{id}"),
+                                        sim_time_unix_ns: frame.t,
+                                        realtime_factor: st.realtime_factor,
+                                        row,
+                                        is_final,
+                                    };
+                                    let seq = sub.next_seq;
+                                    sub.next_seq += 1;
+                                    sub.next_k += 1;
+                                    sub.finished = is_final;
+                                    let data = wire::subscription_update_json(&u);
+                                    sub.ring.push_back((seq, data.clone(), is_final));
+                                    while sub.ring.len() > RING {
+                                        sub.ring.pop_front();
+                                    }
+                                    Some((seq, data, is_final))
+                                });
+                                match generated {
+                                    Some((seq, data, is_final)) => Step::Send(seq, data, is_final),
+                                    None => Step::Wait,
+                                }
+                            }
                         }
-                        Some((seq, data, is_final))
-                    })
+                    }
                 }
             };
 
-            match next {
-                Some((seq, data, is_final)) => {
+            match step {
+                Step::Send(seq, data, is_final) => {
                     sse_event(&mut stream, Some(seq), "update", &data)?;
                     last_write = Instant::now();
                     last_sent = seq;
                     if is_final {
-                        return self.finish_subscription(id);
+                        return Ok(self.finish_subscription(id, "final"));
                     }
                 }
-                None => {
+                Step::Finish(reason) => return Ok(self.finish_subscription(id, reason)),
+                Step::End(reason) => return Ok(reason),
+                Step::Wait => {
                     if last_write.elapsed() >= KEEPALIVE {
                         stream.write_all(b": keepalive\n\n")?;
                         stream.flush()?;
@@ -462,11 +553,12 @@ impl Server {
     }
 
     /// After the final update nothing follows, so the lease is released rather than left to run
-    /// down: the idle guard should see a finished viewer as gone.
-    fn finish_subscription(&self, id: u64) -> std::io::Result<()> {
+    /// down: the idle guard should see a finished viewer as gone. Takes `leases` then `subs`, each
+    /// on its own, so the caller must hold neither.
+    fn finish_subscription(&self, id: u64, reason: &'static str) -> &'static str {
         self.runs.leases().close(&SubscriptionId(id));
         self.subs().remove(&id);
-        Ok(())
+        reason
     }
 }
 
@@ -530,6 +622,12 @@ fn subscription_spec(
         return Err(format!("percentile {p} is outside (0, 100]"));
     }
     Ok(RowSpec { target, metrics: wanted, percentiles })
+}
+
+/// A top-level string field of a JSON document, or nothing if the text is not one. For the log
+/// only: the RPC parses the body itself and answers its own errors.
+fn json_field(text: &str, key: &str) -> Option<String> {
+    parse_json(text).ok()?.str(key).map(str::to_string)
 }
 
 fn parse_subscription_id(s: &str) -> Option<u64> {
@@ -913,5 +1011,214 @@ mod tests {
     fn open_response_has_exactly_the_proto_fields() {
         assert_eq!(open_json(7, 5, ""), r#"{"subscription_id":"s-7","lease_expires_at_wall_ns":"5"}"#);
         assert_eq!(open_json(0, 0, "no"), r#"{"rejected_reason":"no"}"#);
+    }
+
+    // -----------------------------------------------------------------------
+    // The stream must end, never park. Two paths used to relock `subs` inside the block that
+    // holds it; on Linux a std Mutex relocked by its holder parks forever, and that one parked
+    // thread then blocks every later `reap` and every fresh `OpenSubscription` on the public
+    // instance (docs/wrap-up-2026-09-06.md section 5b).
+    // -----------------------------------------------------------------------
+
+    use std::io::{BufRead, BufReader, Read as _};
+    use std::net::{SocketAddr, TcpListener};
+    use std::sync::mpsc;
+
+    fn start_server(name: &str) -> (SocketAddr, Arc<Server>) {
+        let dir = std::env::temp_dir().join(format!("lbsim-server-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = Arc::new(Server::new(dir, 3600 * 1_000_000_000));
+        let handle = Arc::clone(&server);
+        std::thread::spawn(move || crate::serve_on(handle, listener));
+        (addr, server)
+    }
+
+    /// One unary RPC over the wire: status and body.
+    fn post(addr: SocketAddr, rpc: &str, body: &str) -> (u16, String) {
+        request(addr, "POST", &format!("/v1/ingress/{rpc}"), body)
+    }
+
+    fn get(addr: SocketAddr, path: &str) -> (u16, String) {
+        request(addr, "GET", path, "")
+    }
+
+    fn request(addr: SocketAddr, method: &str, path: &str, body: &str) -> (u16, String) {
+        let mut stream = TcpStream::connect(addr).unwrap();
+        stream.set_read_timeout(Some(Duration::from_secs(30))).unwrap();
+        write!(stream, "{method} {path} HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\n\r\n{body}", body.len())
+            .unwrap();
+        let mut reader = BufReader::new(stream);
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        let status: u16 = line.split_whitespace().nth(1).expect("status line").parse().unwrap();
+        let mut length = 0usize;
+        loop {
+            line.clear();
+            reader.read_line(&mut line).unwrap();
+            if line == "\r\n" || line.is_empty() {
+                break;
+            }
+            if let Some(v) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                length = v.trim().parse().unwrap();
+            }
+        }
+        let mut body = vec![0u8; length];
+        reader.read_exact(&mut body).unwrap();
+        (status, String::from_utf8(body).unwrap())
+    }
+
+    fn start_run_json(max_realtime_factor: f64) -> String {
+        let text = read("../../scenarios/route_p2c.txt");
+        let escaped = text.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n");
+        format!("{{\"scenario\":{{\"text\":\"{escaped}\"}},\"max_realtime_factor\":{max_realtime_factor}}}")
+    }
+
+    /// Read a socket to EOF on a helper thread; `Some(bytes)` if it ended within `within`.
+    fn read_to_eof_within(mut stream: TcpStream, within: Duration) -> Option<Vec<u8>> {
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let mut out = Vec::new();
+            let _ = stream.read_to_end(&mut out);
+            let _ = tx.send(out);
+        });
+        rx.recv_timeout(within).ok()
+    }
+
+    /// A run paced so slowly that the first 250 ms frame is 25 s of wall time away: a stop lands
+    /// with `frames` empty, the `n == 0 && ending` path.
+    fn start_slow_run(addr: SocketAddr) -> String {
+        let (status, body) = post(addr, "StartRun", &start_run_json(0.01));
+        assert_eq!(status, 200, "{body}");
+        parse_json(&body).unwrap().str("run_id").unwrap().to_string()
+    }
+
+    /// Open a fleet subscription and read through its `open` event, or fail after `within`: on a
+    /// server with a writer parked holding `subs`, the open never gets past the insert.
+    fn open_subscription_within(addr: SocketAddr, run_id: &str, within: Duration) -> TcpStream {
+        let mut stream = TcpStream::connect(addr).unwrap();
+        stream.set_read_timeout(Some(within)).unwrap();
+        write!(
+            stream,
+            "GET /v1/ingress/OpenSubscription?run_id={run_id}&scope=SCOPE_FLEET&samples_per_sim_second=4 HTTP/1.1\r\n\
+             Host: localhost\r\n\r\n"
+        )
+        .unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let mut line = String::new();
+        reader.read_line(&mut line).expect("no status line: the open is stuck behind a parked writer");
+        assert!(line.starts_with("HTTP/1.1 200"), "{line}");
+        // Up to and including the `open` event, which is the first blank-line-terminated event.
+        let mut seen_open = false;
+        while !seen_open {
+            line.clear();
+            assert!(reader.read_line(&mut line).unwrap() > 0, "stream ended before the open event");
+            seen_open = line.starts_with("event: open");
+        }
+        stream.set_read_timeout(Some(Duration::from_secs(30))).unwrap();
+        stream
+    }
+
+    #[test]
+    fn a_stop_before_the_first_frame_ends_the_stream_instead_of_parking_the_server() {
+        let (addr, server) = start_server("stop-before-frame");
+        let run_id = start_slow_run(addr);
+        let stream = open_subscription_within(addr, &run_id, Duration::from_secs(30));
+        assert_eq!(server.open_subscriptions(), 1);
+
+        let (status, body) = post(addr, "StopRun", &format!("{{\"run_id\":\"{run_id}\"}}"));
+        assert_eq!(status, 200, "{body}");
+        let rest = read_to_eof_within(stream, Duration::from_secs(5))
+            .expect("the stream did not end within 5 s of the stop: the writer is parked");
+        assert!(!String::from_utf8_lossy(&rest).contains("\"final\":true"), "nothing to send for a run with no frame");
+        assert_eq!(server.open_subscriptions(), 0, "the subscription was finished, not left behind");
+        // The proof that nothing is parked holding `subs`: a later request that has to sweep it answers.
+        let (status, _) = post(addr, "GetRun", &format!("{{\"run_id\":\"{run_id}\"}}"));
+        assert_eq!(status, 200);
+    }
+
+    #[test]
+    fn the_server_still_opens_subscriptions_after_a_stream_ended_on_a_stop() {
+        // The consequence on the public instance, not the cause: after one stream ended this way
+        // every later open on any run went unanswered, because each parked at `subs().insert`.
+        let (addr, server) = start_server("opens-after-stop");
+        let first = start_slow_run(addr);
+        let stream = open_subscription_within(addr, &first, Duration::from_secs(30));
+        let (status, body) = post(addr, "StopRun", &format!("{{\"run_id\":\"{first}\"}}"));
+        assert_eq!(status, 200, "{body}");
+        // Not waited for: the point is what happens to the next viewer while this one is ending.
+        drop(stream);
+
+        let second = start_slow_run(addr);
+        let stream = open_subscription_within(addr, &second, Duration::from_secs(5));
+        assert_eq!(server.open_subscriptions(), 1, "the stopped run's subscription was finished, the new one is open");
+        drop(stream);
+    }
+
+    #[test]
+    fn the_request_log_carries_every_rpc_and_each_stream_end() {
+        let (addr, server) = start_server("request-log");
+        let run_id = start_slow_run(addr);
+        let (status, _) = post(addr, "GetRun", &format!("{{\"run_id\":\"{run_id}\"}}"));
+        assert_eq!(status, 200);
+        let stream = open_subscription_within(addr, &run_id, Duration::from_secs(30));
+        let (status, _) = post(addr, "StopRun", &format!("{{\"run_id\":\"{run_id}\"}}"));
+        assert_eq!(status, 200);
+        read_to_eof_within(stream, Duration::from_secs(5)).expect("the stream did not end");
+
+        let (status, log) = get(addr, "/requests.log");
+        assert_eq!(status, 200);
+        let lines: Vec<&str> = log.lines().collect();
+        assert_eq!(lines.len(), server.request_log().lines().count());
+        let has = |prefix: &str| lines.iter().any(|l| l.starts_with(prefix));
+        assert!(has("req POST StartRun 200 "), "{log}");
+        assert!(lines.iter().any(|l| l.starts_with("req POST GetRun 200 ") && l.ends_with(&format!("run={run_id}"))), "{log}");
+        assert!(has("req POST StopRun 200 "), "{log}");
+        assert!(has("sse open sub=s-1 run="), "{log}");
+        assert!(lines.iter().any(|l| l.starts_with("sse end sub=s-1 reason=no frames ")), "{log}");
+        // The log itself and the health check are not requests worth a line.
+        assert!(!log.contains("requests.log") && !log.contains("health"), "{log}");
+    }
+
+    #[test]
+    fn a_reconnect_at_the_final_sequence_ends_instead_of_parking_the_server() {
+        // A subscription whose final update went out but whose sub survived (the write failed after
+        // `finished` was set, so a reconnect within the lease is allowed), resumed at the final id:
+        // the ring has nothing newer, `finished` is set, and the stream must end, not park.
+        let (_addr, server) = start_server("reconnect-at-final");
+        let sc = Scenario::parse(&read("../../scenarios/route_p2c.txt")).unwrap();
+        let run = Arc::new(Run {
+            state: Mutex::new(run::RunState::new("r-1".into(), sc, 1.0)),
+            changed: std::sync::Condvar::new(),
+        });
+        let lease = server.runs.leases().open("r-1", DEFAULT_LEASE_NS, wall_now_ns());
+        let id = lease.id.0;
+        server.subs().insert(
+            id,
+            Sub {
+                spec: RowSpec { target: Target::Fleet, metrics: Vec::new(), percentiles: Vec::new() },
+                samples_per_sim_second: 4.0,
+                next_seq: 4,
+                next_k: 4,
+                ring: VecDeque::from(vec![(3, "{}".to_string(), true)]),
+                generation: 1,
+                finished: true,
+            },
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (socket, _) = listener.accept().unwrap();
+        let (tx, rx) = mpsc::channel();
+        let writer = Arc::clone(&server);
+        std::thread::spawn(move || {
+            let _ = tx.send(writer.stream_updates(socket, run, id, 1, 3));
+        });
+        let out = rx.recv_timeout(Duration::from_secs(5)).expect("the writer did not return within 5 s: it is parked");
+        assert_eq!(out.unwrap(), "final");
+        assert_eq!(server.open_subscriptions(), 0);
+        assert!(server.runs.leases().get(&SubscriptionId(id)).is_none(), "the lease was closed with the stream");
+        drop(client);
     }
 }

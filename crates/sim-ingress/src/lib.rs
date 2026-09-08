@@ -46,9 +46,11 @@ pub fn serve(dir: &str, port: u16) -> Result<(), String> {
 pub fn serve_on(server: Arc<Server>, listener: TcpListener) -> Result<(), String> {
     for stream in listener.incoming() {
         let Ok(stream) = stream else { continue };
-        if server.connections.load(Ordering::Relaxed) >= MAX_CONNECTIONS {
+        let connections = server.connections.load(Ordering::Relaxed);
+        if connections >= MAX_CONNECTIONS {
             // Shed rather than queue. A refused connection is a clear signal; a growing thread count
             // is the failure that looks like a hang.
+            server.log(format!("busy 503 connections={connections}"));
             let _ = respond(stream, 503, "text/plain", b"busy");
             continue;
         }
@@ -130,6 +132,9 @@ fn handle(mut stream: TcpStream, server: &Server) -> std::io::Result<()> {
 
     if is_health_path(path_only) {
         return respond(stream, 200, "text/plain", b"ok");
+    }
+    if path_only == "/requests.log" {
+        return respond(stream, 200, "text/plain", server.request_log().as_bytes());
     }
 
     let Some(file) = resolve(&server.root, path_only) else {

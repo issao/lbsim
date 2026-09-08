@@ -190,6 +190,25 @@ the checkpoint exists so a paused run's state can be read, not so it can survive
 metric computed over the full scenario duration rather than the partial run elapsed so far — the same
 convention `sim-run export` uses for `result.json`. These are `lease.rs` and `idle.rs` in this crate.
 
+The server holds three locks around a subscription: the lease registry, the subscription map (each
+subscription's ring and cursor), and the run's state. They are taken in that order, **leases → subs →
+run.state**, each optional and never reversed: `reap` takes leases then subs, a stream's writer takes subs
+then run.state, and the run thread reads its leases before it takes its own state. One writer used to
+relock subs while holding it, which on a std mutex parks the thread forever; that one parked thread then
+stalled every `reap` and every fresh `OpenSubscription` on the process, which is how lbsim.ai stopped
+answering `StartRun` and `OpenSubscription` while `GetRun` still did. A stream now returns the reason it
+ended — `final`, `no frames` (stopped or failed before its first closed frame), `lease expired`,
+`superseded` (a reconnect took over), `closed` (`CloseSubscription`), or `write error: <cause>` — and the
+reason is logged; see the request log below.
+
+`GET /requests.log` answers `text/plain` with the last 512 request lines, oldest first, because the
+deploy identity cannot read Cloud Logging and a stall has to be diagnosable from the outside. One line
+per ingress request, `req <method> <rpc> <status> <ms>ms [run=<id>] [sub=s-<n>]`; for a subscription,
+`sse open sub=s-<n> run=<id>` once the head has gone out and `sse end sub=s-<n> reason=<reason> <ms>ms`
+when the stream returns; and `busy 503 connections=<n>` whenever the accept loop sheds a connection.
+Every line also goes to stderr with a wall-clock prefix, which Cloud Run captures. `/health` and the log
+itself are not logged, and `/health` never touches run state.
+
 ## What `sim-run export` writes, and the decisions it settled
 
 `sim-run export --demos --dir DIR` (and `export <scenario.txt ...>`) writes, under `DIR/runs/`:
