@@ -143,3 +143,86 @@ fn sparse_histogram_answers_like_the_dense_one() {
     assert_eq!(one_s.fraction_below(4_199), one.fraction_below(4_199));
     assert_eq!(one_s.fraction_below(4_200), one.fraction_below(4_200));
 }
+
+/// The step clock, at a load so light that most windows see no step at all. Busy time is zero
+/// wherever nothing ran, at most the window wherever something did, and the compute part never
+/// exceeds the busy part.
+#[test]
+fn busy_time_is_zero_when_idle_and_never_exceeds_the_window() {
+    let mut sc = fixture();
+    sc.arrival_rps = 0.01;
+    sc.duration_s = 20.0;
+    let r = sim::run(&sc).unwrap();
+    let window = (sc.sample_interval_ms * 1e6) as u64;
+    let mut busy_frames = 0;
+    for (i, f) in r.frames.iter().enumerate() {
+        for (k, x) in f.replicas.iter().enumerate() {
+            assert!(x.busy_ns <= window, "frame {i} replica {k}: busy {} > window {window}", x.busy_ns);
+            assert!(x.compute_ns <= x.busy_ns, "frame {i} replica {k}: compute {} > busy {}", x.compute_ns, x.busy_ns);
+            if x.busy_ns > 0 {
+                busy_frames += 1;
+            }
+        }
+    }
+    // A request is a prefill step and a few dozen decode steps of tens of milliseconds: it shows in a
+    // handful of frames and in none of the others.
+    let rows = r.frames.len() * sc.replicas;
+    assert!(busy_frames > 0, "no replica was ever busy; the assertions above are vacuous");
+    assert!(busy_frames * 4 < rows, "{busy_frames} of {rows} rows busy at 0.01 rps is not an idle fleet");
+    let total: u64 = r.frames.iter().flat_map(|f| f.replicas.iter()).map(|x| x.busy_ns).sum();
+    assert!(total > 0);
+}
+
+/// Saturated, every replica steps back to back, so each window is busy from edge to edge: the
+/// clip at the sample instant makes the sum exact rather than off by up to one step.
+#[test]
+fn saturated_replicas_are_busy_for_the_whole_window() {
+    let mut sc = fixture();
+    sc.arrival_rps = 3.0 * sc.rated_rps();
+    sc.max_queue = 100_000;
+    let r = sim::run(&sc).unwrap();
+    let window = (sc.sample_interval_ms * 1e6) as u64;
+    let first = r.frames[0].t;
+    let mut checked = 0;
+    for f in r.frames.iter().filter(|f| f.t >= first + 2 * lbsim::SECOND) {
+        for (k, x) in f.replicas.iter().enumerate() {
+            let low = window - window / 100;
+            assert!(
+                x.busy_ns >= low && x.busy_ns <= window,
+                "t={} replica {k}: busy {} is not within 1% of the window {window}",
+                f.t,
+                x.busy_ns
+            );
+            assert!(x.compute_ns <= x.busy_ns);
+            checked += 1;
+        }
+    }
+    assert!(checked > 8 * 20, "too few post-warmup rows checked: {checked}");
+}
+
+/// With the bandwidth term off and no speculation, compute is exactly the prefill-priced part of
+/// each step and decode is busy time with no compute in it: the fleet's compute share over the run
+/// is strictly between zero and one. The arithmetic of the split itself is pinned in sim-physics.
+#[test]
+fn compute_is_the_prefill_priced_part_of_busy() {
+    let mut sc = fixture();
+    sc.disable_decode = true;
+    sc.spec_draft_tokens = 0;
+    let r = sim::run(&sc).unwrap();
+    let cost = sc.cost_model();
+    let (mut busy, mut compute) = (0u64, 0u64);
+    for f in &r.frames {
+        for x in &f.replicas {
+            assert!(x.compute_ns <= x.busy_ns);
+            busy += x.busy_ns;
+            compute += x.compute_ns;
+        }
+    }
+    assert!(compute > 0 && compute < busy, "compute {compute} of busy {busy}");
+    // A pure decode step carries no compute, and a full prefill chunk carries exactly its
+    // token-rate price: the split the frames were built from.
+    assert_eq!(cost.step_split(16, 20_000, 0).0, 0);
+    let (c, total) = cost.step_split(0, 0, sc.step_token_budget);
+    assert_eq!(c, ((sc.step_token_budget as f64 / sc.prefill_tokens_per_s) * 1e9) as u64);
+    assert!(c < total);
+}

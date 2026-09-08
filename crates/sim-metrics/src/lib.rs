@@ -229,6 +229,15 @@ pub struct ReplicaSample {
     pub running: u32,
     pub kv_tokens: u64,
     pub last_step_ns: Nanos,
+    /// Nanoseconds of the window `(previous sample, t]` the replica spent inside a step, as opposed
+    /// to idle with nothing to run. A step that straddles a sample instant is split at it, so this is
+    /// never more than the window. The consumer divides by the window length for
+    /// `METRIC_GPU_UTILIZATION`; no ratio is stored because the window length is the scenario's.
+    pub busy_ns: Nanos,
+    /// Of `busy_ns`, the part the cost model priced at the compute roofline: prefill and speculative
+    /// verification. The rest was the weight read and key-value re-read, bandwidth-bound decode.
+    /// `METRIC_GPU_COMPUTE_BOUND_FRACTION` is this over `busy_ns`.
+    pub compute_ns: Nanos,
 }
 
 /// Everything observable about one sample interval, closed at `t`.

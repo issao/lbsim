@@ -132,6 +132,17 @@ pub struct Replica {
     next_step_at: Nanos,
     scheduled: bool,
     last_step_ns: Nanos,
+    /// The step clock: nanoseconds spent inside a step since the run began, and of those the part the
+    /// cost model priced as compute. Both are charged in full when a step starts, and `[step_start,
+    /// step_end)` remembers the step so a reader at an instant inside it can subtract what has not
+    /// happened yet. That is what lets a sample window cut a step exactly instead of rounding it to
+    /// one side, so utilization never exceeds one by construction.
+    busy_total_ns: Nanos,
+    compute_total_ns: Nanos,
+    step_start: Nanos,
+    step_end: Nanos,
+    /// Compute part of the step in flight, for the proportional clip.
+    step_compute_ns: Nanos,
     completed: u64,
     preemptions: u64,
     /// Records what happens to the sequences the loop asked to trace; inert otherwise.
@@ -156,6 +167,11 @@ impl Default for Replica {
             next_step_at: 0,
             scheduled: false,
             last_step_ns: 0,
+            busy_total_ns: 0,
+            compute_total_ns: 0,
+            step_start: 0,
+            step_end: 0,
+            step_compute_ns: 0,
             completed: 0,
             preemptions: 0,
             tracer: Tracer::default(),
@@ -421,12 +437,23 @@ impl Replica {
         // Step time comes from the cost model in sim-physics, the one place that formula
         // lives. Prefill and decode contend for one device, which is why a big prefill shows
         // up in everyone's inter-token latency.
-        let modelled = cost.step_ns(decoding, r.kv_tokens, prefill_tokens) + extra_ns;
+        let (compute, modelled) = cost.step_split(decoding, r.kv_tokens, prefill_tokens);
+        let modelled = modelled + extra_ns;
         // A slowed replica takes 1/speed of the modelled time. The healthy case skips the float trip
-        // so a run with no failures is byte-identical to one before failures existed.
-        let step_ns = if r.speed == 1.0 { modelled } else { (modelled as f64 / r.speed) as Nanos };
+        // so a run with no failures is byte-identical to one before failures existed. Swap transfers
+        // are busy time but not compute, the link is what they wait on.
+        let (step_ns, compute_ns) = if r.speed == 1.0 {
+            (modelled, compute)
+        } else {
+            ((modelled as f64 / r.speed) as Nanos, (compute as f64 / r.speed) as Nanos)
+        };
         let token_at = now + step_ns;
         r.last_step_ns = step_ns;
+        r.busy_total_ns += step_ns;
+        r.compute_total_ns += compute_ns;
+        r.step_start = now;
+        r.step_end = token_at;
+        r.step_compute_ns = compute_ns;
         r.tracer.snapshot(ResourceSnapshot { start: now, end: token_at, batch_size: r.running.len() as u32, running: r.running.len() as u32, queued: r.queue.len() as u32, kv_tokens: r.kv_tokens, decoding: decoding as u32, prefill_tokens, step_ns });
 
         // With speculation each sequence advances by the expected tokens per step, carried as a
@@ -563,6 +590,27 @@ impl Replica {
     }
     pub fn next_step_at(&self) -> Nanos {
         self.next_step_at
+    }
+    /// Nanoseconds this replica has spent inside a step up to and including `t`. A step in flight at
+    /// `t` counts only up to `t`, so the difference between two readings is exactly the busy time of
+    /// the window between them, and never more than the window. A crashed or hung replica starts no
+    /// step, so it accrues nothing new.
+    pub fn busy_ns_through(&self, t: Nanos) -> Nanos {
+        self.busy_total_ns - self.overhang(t)
+    }
+    /// The part of [`Replica::busy_ns_through`] the cost model priced as compute rather than
+    /// bandwidth, clipped in proportion within a step in flight.
+    pub fn compute_ns_through(&self, t: Nanos) -> Nanos {
+        let over = self.overhang(t);
+        if over == 0 {
+            return self.compute_total_ns;
+        }
+        let step = self.step_end - self.step_start;
+        self.compute_total_ns - (self.step_compute_ns as u128 * over as u128 / step as u128) as Nanos
+    }
+    /// How much of the step in flight lies past `t`.
+    fn overhang(&self, t: Nanos) -> Nanos {
+        self.step_end.saturating_sub(t.max(self.step_start))
     }
     pub fn completed(&self) -> u64 {
         self.completed

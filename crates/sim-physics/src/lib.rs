@@ -60,6 +60,24 @@ impl CostModel {
     /// current instant and spin.
     #[inline]
     pub fn step_ns(&self, decoding: usize, kv_tokens: u64, prefill_tokens: u32) -> Nanos {
+        self.step_split(decoding, kv_tokens, prefill_tokens).1
+    }
+
+    /// The step's duration split by roofline: `(compute_ns, total_ns)`, the second being exactly
+    /// [`CostModel::step_ns`], which is a thin wrapper so the two cannot drift.
+    ///
+    /// The compute-bound part is the work priced at `prefill_tokens_per_s`: the prefill chunk and
+    /// speculative verification. Everything else, the fixed weight read, the per-sequence cost and the
+    /// key-value re-read, is priced as bandwidth. At large batch the weight read is amortised and a
+    /// real decode step goes compute-bound, but this model prices decode by bandwidth regardless, and
+    /// the split reports what the model priced, not what a device would measure. That is exactly what
+    /// `METRIC_WASTED_GPU_FRACTION` means by "bandwidth-bound decode at small batch": busy time the
+    /// model charged to memory traffic rather than to the arithmetic units.
+    ///
+    /// The sum is computed term by term in the same order as before the split existed, so every
+    /// fingerprint of every run stays byte-identical.
+    #[inline]
+    pub fn step_split(&self, decoding: usize, kv_tokens: u64, prefill_tokens: u32) -> (Nanos, Nanos) {
         let bandwidth = if self.disable_decode {
             0
         } else {
@@ -68,12 +86,13 @@ impl CostModel {
         // Speculation verifies N drafts per decoding sequence in this step: compute work at the
         // prefill rate. The bandwidth term is untouched, the weights are read once a step either way.
         let verify = decoding as f64 * self.spec_draft_tokens as f64;
+        let compute_ns = ((prefill_tokens as f64 / self.prefill_tokens_per_s) * 1e9) as Nanos
+            + ((verify / self.prefill_tokens_per_s) * 1e9) as Nanos;
         let step_ns = (self.step_base_ms * 1e6) as Nanos
             + (self.step_per_seq_ms * 1e6) as Nanos * decoding as Nanos
             + bandwidth
-            + ((prefill_tokens as f64 / self.prefill_tokens_per_s) * 1e9) as Nanos
-            + ((verify / self.prefill_tokens_per_s) * 1e9) as Nanos;
-        step_ns.max(1)
+            + compute_ns;
+        (compute_ns, step_ns.max(1))
     }
 
     /// Expected tokens a decoding sequence advances per step: one, or with N drafts each accepted with
@@ -148,3 +167,43 @@ pub use epoch::{
 };
 pub use oracle::{run_epochs, run_stepwise, RunResult, Seq};
 pub use rational::Rational;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn model(disable_decode: bool, spec_draft_tokens: u32) -> CostModel {
+        CostModel {
+            step_base_ms: 24.0,
+            step_per_seq_ms: 0.07,
+            step_per_kv_ktoken_ms: 0.011,
+            prefill_tokens_per_s: 28_286.0,
+            disable_decode,
+            swap_gbps: 50.0,
+            spec_draft_tokens,
+            spec_accept_rate: 0.7,
+        }
+    }
+
+    /// The split's total is the step time, and its compute part is the prefill-priced work alone.
+    #[test]
+    fn step_split_total_is_step_ns_and_compute_is_the_prefill_priced_part() {
+        for m in [model(false, 0), model(true, 0), model(false, 4), model(true, 3)] {
+            for (decoding, kv, prefill) in [(0, 0, 0), (1, 900, 0), (16, 64_000, 512), (256, 1_024_000, 0), (7, 3_000, 28_286)] {
+                let (compute, total) = m.step_split(decoding, kv, prefill);
+                assert_eq!(total, m.step_ns(decoding, kv, prefill), "{decoding} {kv} {prefill}");
+                assert!(compute <= total);
+                let verify = decoding as f64 * m.spec_draft_tokens as f64;
+                let expected = ((prefill as f64 / m.prefill_tokens_per_s) * 1e9) as Nanos
+                    + ((verify / m.prefill_tokens_per_s) * 1e9) as Nanos;
+                assert_eq!(compute, expected);
+            }
+        }
+        // A whole second of prefill at the rated token rate, exactly, with decode priced at nothing
+        // beyond the fixed cost.
+        let m = model(true, 0);
+        assert_eq!(m.step_split(0, 0, 28_286).0, 1_000_000_000);
+        assert_eq!(m.step_split(0, 0, 28_286).1, 24_000_000 + 1_000_000_000);
+        assert_eq!(m.step_split(3, 5_000, 0).0, 0, "no prefill and no speculation is no compute");
+    }
+}
