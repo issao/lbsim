@@ -8,6 +8,11 @@
 11-preemption/01-kv_spiral_swap.summary.csv                  fingerprint=4949261867223813137    events=45412     summary_md5=534c2f419da1
 12-forecast-load/00-forecast_load.summary.csv                fingerprint=8602695638034475683    events=2343606   summary_md5=24102f82a9db
 13-forecast-latency/00-forecast_latency.summary.csv          fingerprint=10300221267187631961   events=1906324   summary_md5=641b52ae54c1
+13-herd-fleet/00-replicas___32.summary.csv                   fingerprint=16416231017560174181   events=307351    summary_md5=363a7453b524
+13-herd-fleet/01-replicas___64.summary.csv                   fingerprint=11331374507066784871   events=591887    summary_md5=e4b8ccc1853e
+13-herd-fleet/02-replicas___128.summary.csv                  fingerprint=5754949303558349045    events=1073633   summary_md5=d0a7b7c7b26a
+13-herd-fleet/03-replicas___256.summary.csv                  fingerprint=5360686017835867781    events=1444348   summary_md5=e1ddab339908
+13-herd-fleet/04-replicas___512.summary.csv                  fingerprint=12394225821938253623   events=1456724   summary_md5=b79985cee6cf
 2-staleness/00-telemetry_interval_ms___100.summary.csv       fingerprint=16393865130379415143   events=352465    summary_md5=c09138c8d42c
 2-staleness/01-telemetry_interval_ms___250.summary.csv       fingerprint=16416231017560174181   events=307351    summary_md5=23480d60a3ee
 2-staleness/02-telemetry_interval_ms___500.summary.csv       fingerprint=11216039682751027244   events=279763    summary_md5=a21fee97deba
@@ -55,6 +60,7 @@ h-h8-retry-storm/00-h8_retry_storm.summary.csv               fingerprint=4264169
 11-preemption.html                                           html_md5=f3a627100d48
 12-forecast-load.html                                        html_md5=86adc182f694
 13-forecast-latency.html                                     html_md5=399a015492ae
+13-herd-fleet.html                                           html_md5=f27aa3d107c4
 2-staleness.html                                             html_md5=270b4c12e04d
 3-chunking.html                                              html_md5=743b2ccf7fe8
 4-load-curve.html                                            html_md5=764d90715347

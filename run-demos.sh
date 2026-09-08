@@ -60,5 +60,9 @@ echo; echo "== 12. speculative decoding: a small-batch win at N=4 that shrinks a
 $S compare scenarios/spec_off.txt scenarios/spec_n4.txt \
            --out out/12-spec-decode.html
 
+echo; echo "== 13. herding gets worse as the fleet grows: least_requests over 32-512 replicas at one offered/capacity ratio =="
+$S sweep scenarios/herd_fleet.txt --over replicas=32,64,128,256,512 \
+           --out out/13-herd-fleet.html
+
 echo; echo "reports in out/"
 echo "for machine-readable telemetry, add: --telemetry out/NAME.tele [--telemetry-budget-mb N]"

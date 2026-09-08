@@ -92,6 +92,10 @@ export function Home() {
           <a href="reports/12-spec-decode.html">12. Speculative decoding pays at small batch and costs at large</a>
           <p>N=0 against N=4 drafts.</p>
         </li>
+        <li>
+          <a href="reports/13-herd-fleet.html">13. Herding gets worse as the fleet grows</a>
+          <p>least_requests over 32–512 replicas at the same offered/capacity ratio and 250 ms telemetry.</p>
+        </li>
       </ul>
 
       <h2 className="section-label" style={{ fontSize: 13, fontWeight: 600, margin: '26px 0 6px' }}>

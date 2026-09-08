@@ -19,3 +19,4 @@
 11-preemption compare scenarios/kv_spiral_never.txt scenarios/kv_spiral_swap.txt
 12-forecast-load run scenarios/route_forecast_load.txt
 13-forecast-latency run scenarios/route_forecast_latency.txt
+13-herd-fleet sweep scenarios/herd_fleet.txt --over replicas=32,64,128,256,512

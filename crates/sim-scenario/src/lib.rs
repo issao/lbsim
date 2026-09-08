@@ -64,6 +64,9 @@ pub struct Scenario {
 
     // -- workload ----------------------------------------------------------
     pub arrival_rps: f64,
+    /// Offered load per replica. When set, `arrival_rps` is derived from it on every parse, so
+    /// a sweep over `replicas` holds the offered/capacity ratio fixed. Zero means unused.
+    pub arrival_rps_per_replica: f64,
     pub prompt_mean: f64,
     pub prompt_cv: f64,
     pub output_mean: f64,
@@ -303,6 +306,7 @@ impl Default for Scenario {
             dram_capacity_tokens: 0.0,
             swap_gbps: 50.0,
             arrival_rps: 320.0,
+            arrival_rps_per_replica: 0.0,
             prompt_mean: 1200.0,
             prompt_cv: 1.2,
             output_mean: 300.0,
@@ -404,6 +408,7 @@ impl Scenario {
                 "swap_gbps" => s.swap_gbps = f("swap_gbps"),
                 "trace_sample_rate" => s.trace_sample_rate = f("trace_sample_rate"),
                 "arrival_rps" => s.arrival_rps = f("arrival_rps"),
+                "arrival_rps_per_replica" => s.arrival_rps_per_replica = f("arrival_rps_per_replica"),
                 "prompt_mean" => s.prompt_mean = f("prompt_mean"),
                 "prompt_cv" => s.prompt_cv = f("prompt_cv"),
                 "output_mean" => s.output_mean = f("output_mean"),
@@ -469,6 +474,11 @@ impl Scenario {
                 parts.push(format!("values that are not numbers: {}", malformed.join(", ")));
             }
             return Err(parts.join("; "));
+        }
+        // Derived after the loop so it holds whatever order the two keys came in, and so the text
+        // round trip a sweep goes through re-derives it for the new replica count.
+        if s.arrival_rps_per_replica > 0.0 {
+            s.arrival_rps = s.replicas as f64 * s.arrival_rps_per_replica;
         }
         Ok(s)
     }
@@ -585,7 +595,7 @@ impl Scenario {
     /// structural: the safe answer for a name nothing recognises.
     pub fn override_kind(key: &str) -> OverrideKind {
         match key {
-            "arrival_rps" | "load_step_at_s" | "load_step_factor" | "load_step_until_s"
+            "arrival_rps" | "arrival_rps_per_replica" | "load_step_at_s" | "load_step_factor" | "load_step_until_s"
             | "prompt_mean" | "prompt_cv" | "output_mean" | "output_cv"
             | "long_probability" | "long_prompt_mean" | "long_output_mean"
             | "session_turns_mean" | "session_think_s" | "tenant_demand"
@@ -625,7 +635,8 @@ impl Scenario {
              step_base_ms = {}\nstep_per_seq_ms = {}\nstep_per_kv_ktoken_ms = {}\n\
              kv_capacity_tokens = {}\nprefill_tokens_per_s = {}\n\
              step_token_budget = {}\nmax_queue = {}\ndisable_decode = {}\npreemption = {}\n\
-             preemption_victim = {}\ndram_capacity_tokens = {}\nswap_gbps = {}\narrival_rps = {}\nprompt_mean = {}\n\
+             preemption_victim = {}\ndram_capacity_tokens = {}\nswap_gbps = {}\narrival_rps = {}\n\
+             arrival_rps_per_replica = {}\nprompt_mean = {}\n\
              prompt_cv = {}\noutput_mean = {}\noutput_cv = {}\nlong_probability = {}\n\
              long_prompt_mean = {}\nlong_output_mean = {}\nsession_turns_mean = {}\n\
              session_think_s = {}\nload_step_at_s = {}\n\
@@ -642,7 +653,8 @@ impl Scenario {
             self.step_base_ms, self.step_per_seq_ms, self.step_per_kv_ktoken_ms,
             self.kv_capacity_tokens, self.prefill_tokens_per_s,
             self.step_token_budget, self.max_queue, self.disable_decode, self.preemption,
-            self.preemption_victim, self.dram_capacity_tokens, self.swap_gbps, self.arrival_rps, self.prompt_mean,
+            self.preemption_victim, self.dram_capacity_tokens, self.swap_gbps, self.arrival_rps,
+            self.arrival_rps_per_replica, self.prompt_mean,
             self.prompt_cv, self.output_mean, self.output_cv, self.long_probability,
             self.long_prompt_mean, self.long_output_mean, self.session_turns_mean,
             self.session_think_s, self.load_step_at_s,
@@ -658,5 +670,28 @@ impl Scenario {
             self.spec_draft_tokens, self.spec_accept_rate, self.slo_classes,
             self.failures
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Scenario;
+
+    // A sweep over `replicas` must keep the offered/capacity ratio fixed, so the per-replica key
+    // has to be re-derived on every parse, including the text round trip a sweep goes through.
+    #[test]
+    fn arrival_rps_per_replica_scales_with_the_fleet() {
+        let s = Scenario::parse("replicas = 64\narrival_rps_per_replica = 2.1875\n").unwrap();
+        assert_eq!(s.arrival_rps_per_replica, 2.1875);
+        assert_eq!(s.arrival_rps, 140.0);
+        let bigger = s.with_override("replicas", "128").unwrap();
+        assert_eq!(bigger.arrival_rps, 280.0);
+        assert!(s.to_text().contains("arrival_rps_per_replica = 2.1875\n"));
+    }
+
+    #[test]
+    fn arrival_rps_per_replica_unset_leaves_arrival_rps_alone() {
+        let s = Scenario::parse("replicas = 64\narrival_rps = 90\n").unwrap();
+        assert_eq!(s.arrival_rps, 90.0);
     }
 }
