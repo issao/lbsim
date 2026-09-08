@@ -8,12 +8,12 @@
 11-preemption/01-kv_spiral_swap.summary.csv                  fingerprint=4949261867223813137    events=45412     summary_md5=65eee64e2d45
 12-forecast-load/00-forecast_load.summary.csv                fingerprint=8602695638034475683    events=2343606   summary_md5=9a143eeabc67
 13-forecast-latency/00-forecast_latency.summary.csv          fingerprint=10300221267187631961   events=1906324   summary_md5=dfd7947bfe3d
-2-staleness/00-telemetry_interval_ms___100.summary.csv       fingerprint=6923207453105019517    events=1796199   summary_md5=0d98d60c0189
-2-staleness/01-telemetry_interval_ms___250.summary.csv       fingerprint=5360686017835867781    events=1444348   summary_md5=1d1a8116271e
-2-staleness/02-telemetry_interval_ms___500.summary.csv       fingerprint=1540805985921021485    events=607777    summary_md5=fb529eaf07f8
-2-staleness/03-telemetry_interval_ms___1000.summary.csv      fingerprint=13727942941202906607   events=339742    summary_md5=ff2a2fe85c56
-2-staleness/04-telemetry_interval_ms___2000.summary.csv      fingerprint=7723751260992005341    events=238676    summary_md5=7cfba3e34073
-2-staleness/05-telemetry_interval_ms___4000.summary.csv      fingerprint=6290064752738101821    events=197809    summary_md5=41a410044135
+2-staleness/00-telemetry_interval_ms___100.summary.csv       fingerprint=16393865130379415143   events=352465    summary_md5=da7851829984
+2-staleness/01-telemetry_interval_ms___250.summary.csv       fingerprint=16416231017560174181   events=307351    summary_md5=027912a13c69
+2-staleness/02-telemetry_interval_ms___500.summary.csv       fingerprint=11216039682751027244   events=279763    summary_md5=ad1f269d628d
+2-staleness/03-telemetry_interval_ms___1000.summary.csv      fingerprint=16448447818164244385   events=245191    summary_md5=18d7ff9501b7
+2-staleness/04-telemetry_interval_ms___2000.summary.csv      fingerprint=7251813521880172349    events=183639    summary_md5=d106e7a82a8c
+2-staleness/05-telemetry_interval_ms___4000.summary.csv      fingerprint=17180289366105092703   events=70869     summary_md5=6f97997a5169
 3-chunking/00-step_token_budget___512.summary.csv            fingerprint=10009565252466278158   events=2379996   summary_md5=416817dbfbf6
 3-chunking/01-step_token_budget___1024.summary.csv           fingerprint=15913688846466930736   events=2391338   summary_md5=411da1eb0fcb
 3-chunking/02-step_token_budget___2048.summary.csv           fingerprint=18263792306167486998   events=2397207   summary_md5=0bffa81c96e3
@@ -55,7 +55,7 @@ h-h8-retry-storm/00-h8_retry_storm.summary.csv               fingerprint=4264169
 11-preemption.html                                           html_md5=f3a627100d48
 12-forecast-load.html                                        html_md5=86adc182f694
 13-forecast-latency.html                                     html_md5=399a015492ae
-2-staleness.html                                             html_md5=9615b7ca7309
+2-staleness.html                                             html_md5=270b4c12e04d
 3-chunking.html                                              html_md5=743b2ccf7fe8
 4-load-curve.html                                            html_md5=764d90715347
 5-long-context.html                                          html_md5=14690f7574f4
