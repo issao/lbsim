@@ -527,6 +527,29 @@ const finalLine = extraFail => {
     await page.close();
   }
 
+  // h1. service quality: the badput chart. Issao, 2026-09-08: "for service quality, include a
+  // goodput graph that is a function of throughput, and use a log scale ... (i.e. show
+  // (1-goodput/throughput) i.e. badput percentage in log scale)". The panel is #badput; its
+  // readout is the tile data-tile="badput".
+  for (const [label, hash] of [['live', '#/dashboard'], ['replay', '?server=off#/dashboard']]) {
+    const { page, until } = await fresh(hash);
+    await until(() => page.$$eval('button', bs => bs.some(b => /^Service quality$/.test(b.textContent.trim()))), 12000);
+    await page.click('button[data-tab="observe:quality"]').catch(() => null);
+    const panel = await until(() => page.$('#badput'), 10000);
+    check(`service quality ${label}: badput panel exists`, Boolean(panel), panel ? '#badput' : 'no #badput');
+    const hasPoint = await until(
+      () => page.$eval('#badput svg path[d]', el => (el.getAttribute('d') || '').length > 5).catch(() => false),
+      15000
+    );
+    check(`service quality ${label}: badput chart has at least one point`, Boolean(hasPoint), String(hasPoint));
+    const readout = await until(
+      () => page.$eval('[data-tile="badput"]', el => el.innerText.replace(/\s+/g, ' ')).catch(() => ''),
+      8000
+    ) || '';
+    check(`service quality ${label}: badput readout ends in a percentage`, /\d+(\.\d+)?%/.test(readout), readout.slice(0, 120) || 'no [data-tile="badput"]');
+    await page.close();
+  }
+
   // h. layout stability (U99): a card's height must not change because text -- the wasted-GPU
   // note, a refusal, a connection phase, a sample count -- happened to show up or disappear this
   // frame. Boxes are measured three times, five seconds apart, and compared as-is.

@@ -1,7 +1,8 @@
 import { useMemo } from 'react';
 import type { Frame } from '../../lib/frame';
+import type { ReplayFrame } from '../../lib/adapter';
 import type { ScenarioConfig } from '../../lib/config';
-import { attainment, goodput, percentileSeries, series, xs } from '../../lib/derive';
+import { attainment, badput, goodput, percentileSeries, series, xs } from '../../lib/derive';
 import { mergeWindow } from '../../lib/frame';
 import { fractionBelow, quantile } from '../../lib/hist';
 import { Panel, Tile } from '../../components/ui';
@@ -10,6 +11,35 @@ import { HistogramChart } from '../../components/charts/Histogram';
 import { fmtMs, fmtNum, fmtPct } from '../../lib/format';
 
 const PCTS = [50, 90, 99, 99.9];
+
+// The floor of the badput log axis: 0.01%, below which a real reading is drawn dashed at the
+// floor rather than off the bottom of the chart. Kept beside the panel that uses it rather than
+// in LineChart, whose own default (also 1e-4) is a chart-drawing concern, not a badput one.
+const BADPUT_LOG_FLOOR = 1e-4;
+
+/** goodput and throughput are both frame-scoped `Frame`; only `ServiceQuality` casts to reach the
+ * wire's measured goodput, since the rest of the panel deliberately reads the client-derived one. */
+function frameBadput(f: Frame): number | null {
+  const rf = f as ReplayFrame;
+  return badput(rf.goodputTokensPerS, f.outputTokensPerS);
+}
+
+/** Y-axis / hover label for the badput chart's log ticks: 100, 10, 1, 0.1, 0.01, all with "%". */
+function fmtLogPct(v: number): string {
+  const pct = v * 100;
+  if (pct >= 1) return `${pct.toFixed(0)}%`;
+  if (pct >= 0.1) return `${pct.toFixed(1)}%`;
+  return `${pct.toFixed(2)}%`;
+}
+
+/** The readout: badput to two significant figures, "-" when the frame has no throughput to divide by. */
+function fmtSig2Pct(fraction: number | null): string {
+  if (fraction === null || !isFinite(fraction)) return '-';
+  const pct = Math.max(fraction, 0) * 100;
+  if (pct <= 0) return '0%';
+  const decimals = Math.max(0, 1 - Math.floor(Math.log10(pct)));
+  return `${pct.toFixed(decimals)}%`;
+}
 
 export function ServiceQuality({
   frames,
@@ -26,6 +56,9 @@ export function ServiceQuality({
   const att = attainment(frame, config.slo);
   const gp = goodput(frame, config.slo);
   const tp = frame.outputTokensPerS;
+  const curBadput = frameBadput(frame);
+
+  const badputPoints = useMemo(() => frames.map(frameBadput), [frames]);
 
   const merged = useMemo(
     () => ({
@@ -79,6 +112,36 @@ export function ServiceQuality({
           unit=" tok/s"
           height={116}
         />
+      </Panel>
+
+      <Panel
+        title="Badput"
+        sub="1 − goodput / throughput, log scale so the region near 100% goodput has resolution"
+        highlight={highlight === 'badput'}
+        id="badput"
+      >
+        <div className="grid" style={{ gridTemplateColumns: 'minmax(0, 1fr) 130px', gap: 10, alignItems: 'center' }}>
+          <LineChart
+            xs={x}
+            series={[{ key: 'bp', label: 'badput', color: 'var(--critical)', points: badputPoints }]}
+            format={fmtLogPct}
+            logY
+            logFloor={BADPUT_LOG_FLOOR}
+            yMax={1}
+            height={116}
+          />
+          <Tile
+            dataTile="badput"
+            label="badput"
+            value={fmtSig2Pct(curBadput)}
+            note="of tokens delivered, this share missed their SLO"
+          />
+        </div>
+        <p className="note" style={{ margin: '7px 0 0' }}>
+          A window with no throughput has no fraction to report and leaves a gap rather than a false
+          zero; a real reading below the {fmtLogPct(BADPUT_LOG_FLOOR)} floor draws dashed at it instead
+          of running off the bottom of the chart.
+        </p>
       </Panel>
 
       <Panel title="Time to first token" sub="percentiles, requested [50, 90, 99, 99.9]" highlight={highlight === 'ttft'} id="ttft">
