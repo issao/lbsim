@@ -57,3 +57,8 @@ client_secret*.json
 service-account*.json
 *-key.json
 gcloud/
+
+# The Claude Code transcript export and the zip sent to the recruiter sit beside the repo but
+# are not part of it: they carry redacted personal context, not project state.
+/claude-transcript/
+/lbsim-claude-transcript*.zip
