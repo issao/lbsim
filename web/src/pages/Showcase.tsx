@@ -12,6 +12,7 @@ import { probeDataSource, type RunHandle } from '../lib/useRun';
 import type { ScenarioConfig } from '../lib/config';
 import { type RunnerHandle, type StepState, WalkthroughRunner } from '../lib/walkthroughRunner';
 import { type PlaybackOverride, PlaybackOverrideContext } from '../components/PlaybackBar';
+import { useDraggable } from '../lib/useDraggable';
 import { Dashboard, type TabHint } from './Dashboard';
 
 /**
@@ -204,6 +205,12 @@ function WalkthroughOver({
   const [sourceLabel, setSourceLabel] = useState('');
   // A refusal the handle reports after the fact (the server's update is fire-and-forget).
   const [lateReason, setLateReason] = useState<string | null>(null);
+  // Issao: "can you make the showcase card draggable?" The card itself is not remounted between
+  // steps -- the runner swaps `current` and the JSX below re-renders in place -- so the offset
+  // lives on this one element across the whole walkthrough. One storage key for every script: the
+  // position is a browser habit ("I keep it over there"), not a per-walkthrough setting.
+  const cardRef = useRef<HTMLDivElement | null>(null);
+  const drag = useDraggable(cardRef, { storageKey: 'lbsim.showcase.wt-pos', handleSelector: '.wt-head' });
 
   // Called on every dashboard render, which is often enough to catch the moment a step is reached.
   const onRun = useCallback(
@@ -266,11 +273,11 @@ function WalkthroughOver({
       highlight={!current.advancing ? step.highlight ?? null : null}
       tabHint={hint}
       overlay={
-        <div className="walkthrough" role="dialog" aria-label="walkthrough step">
+        <div className="walkthrough" role="dialog" aria-label="walkthrough step" ref={cardRef}>
           <div className="wt-progress">
             <i style={{ width: `${((current.index + (current.advancing ? 0 : 1)) / script.steps.length) * 100}%` }} />
           </div>
-          <div className="wt-head">
+          <div className="wt-head wt-drag-handle">
             <span className="wt-step">
               {current.index + 1}/{script.steps.length} &middot; {step.at_sim_s}s
             </span>
@@ -284,6 +291,9 @@ function WalkthroughOver({
               onClick={playback.onPlay}
             >
               play
+            </button>
+            <button className="btn icon wt-reset" onClick={drag.reset} title="reset position" aria-label="reset position">
+              &#8962;
             </button>
           </div>
           {current.advancing ? (

@@ -314,6 +314,44 @@ const finalLine = extraFail => {
     }
   };
 
+  // U103 (Issao: "can you make the showcase card draggable?"). Dragged by the header (not a
+  // button in it), pointer events so touch works too; the offset must outlive the next step (the
+  // runner swaps the card's content, not the element) and reset must put it back exactly.
+  const dragFlow = async (page, until) => {
+    const box = () => page.$eval('.walkthrough', el => { const r = el.getBoundingClientRect(); return { x: r.x, y: r.y }; });
+    const titleText = () => page.$eval('.wt-title', el => el.textContent.trim()).catch(() => '');
+    const headPoint = () => page.$eval('.walkthrough .wt-title', el => {
+      const r = el.getBoundingClientRect();
+      return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+    });
+    const b0 = await box();
+    const p0 = await headPoint();
+    // The card sits flush against the bottom-right corner (`.walkthrough`'s natural position), so
+    // a drag has to head up-left, into the open viewport, or the clamp -- correctly -- eats most
+    // of it.
+    await page.mouse.move(p0.x, p0.y);
+    await page.mouse.down();
+    for (const [dx, dy] of [[-60, -35], [-130, -75], [-200, -120]]) await page.mouse.move(p0.x + dx, p0.y + dy, { steps: 5 });
+    await page.mouse.up();
+    const b1 = await box();
+    check('showcase: card drags by its header (U103)', Math.abs(b1.x - b0.x + 200) <= 2 && Math.abs(b1.y - b0.y + 120) <= 2,
+      `moved by (${(b1.x - b0.x).toFixed(1)}, ${(b1.y - b0.y).toFixed(1)}), wanted (-200, -120)`);
+    const beforeTitle = await titleText();
+    await page.click('.walkthrough .wt-play').catch(() => null);
+    await until(async () => (await titleText()) !== beforeTitle, 4000);
+    const b2 = await box();
+    check('showcase: card stays where dropped across steps (U103)', Math.abs(b2.x - b1.x) <= 1 && Math.abs(b2.y - b1.y) <= 1,
+      `(${b2.x.toFixed(1)}, ${b2.y.toFixed(1)}) vs dropped at (${b1.x.toFixed(1)}, ${b1.y.toFixed(1)})`);
+    await page.click('.walkthrough .wt-reset');
+    // Not a pixel match against b0: the card's own content (and so its bottom-anchored natural
+    // height) is longer now than at the first step, so the natural position has legitimately moved
+    // since b0 was taken. Reset's contract is "no more override", not "back to that old pixel" --
+    // checked directly as the absence of the inline left/top useDraggable pins with.
+    const pin = await page.$eval('.walkthrough', el => el.style.left || null);
+    check('showcase: reset returns the card to its natural position (U103)', pin === null,
+      pin === null ? 'no left/top override left behind' : `still pinned at left=${pin}`);
+  };
+
   // d. every scripted card drives a live run
   let open = null; // a page with a walkthrough open, for the navigation check
   for (const title of titles) {
@@ -348,6 +386,7 @@ const finalLine = extraFail => {
     // per-host connection limit and a control issued behind them waits indefinitely.
     const drove = ok && title === titles[0];
     if (drove) await playFlow(page, until);
+    if (drove) await dragFlow(page, until);
     if (drove) await noInvented(page, 'showcase: no invented numbers on a live run (U95b)');
     if (REQUIRED_KEYS[title]) {
       const bodies = log.startRuns.map(b => { try { return JSON.parse(b)?.scenario?.text ?? b; } catch { return b; } });
