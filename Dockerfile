@@ -17,6 +17,10 @@ RUN npm run build
 # --- 2. the simulator, and the reports it produces --------------------------
 FROM rust:1-slim-bookworm AS build
 WORKDIR /s
+# run-demos.sh's Bode demo (18) post-processes with python3 bench/bode.py; the slim image has no
+# python and .dockerignore keeps bench/ out except that one file. Exit 127 from the report step
+# was this, the second time a 127 here pointed at nothing in the error.
+RUN apt-get update && apt-get install -y --no-install-recommends python3 && rm -rf /var/lib/apt/lists/*
 # The whole context, rather than an enumerated list of source paths. The crate layout is not stable:
 # docs/ARCHITECTURE.md 10.8 splits the single crate into a workspace under crates/, and an enumerated
 # COPY breaks on the day that lands, with a Cargo manifest error that does not point at the Dockerfile.
