@@ -428,11 +428,11 @@ function ClusterTab({ c, set, dropped }: TabProps) {
         label="replicas per pool"
         value={c.fleet.replicas}
         min={4}
-        max={128}
+        max={10000}
         step={4}
         format={(v) => `${v}`}
         onChange={(v) => set((d) => { d.fleet.replicas = v; })}
-        note="changing fleet size restarts the run: a snapshot of a differently shaped fleet cannot be restored"
+        note="changing fleet size restarts the run: a snapshot of a differently shaped fleet cannot be restored; a fleet this large may run behind real time"
       />
       <Slider
         label="max batch"

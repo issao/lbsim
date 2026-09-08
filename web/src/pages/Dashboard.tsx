@@ -89,7 +89,7 @@ function ServerBanner({ run }: { run: ServerRunHandle }) {
         <span className="note">{dataSourceGloss('server')}</span>
         <span title={`stream ${run.connection}${run.subscriptionId ? ` (${run.subscriptionId})` : ''}`}>
           run <code>{run.runId ?? '…'}</code> &middot; {run.engine.frames.length} samples at {run.config.samplesPerSimSecond}
-          /sim s &middot; speed {speedLabel(run.status, run.paused)}
+          /sim s &middot; speed {speedLabel(run.status, run.paused, run.achievedFactor)}
         </span>
         <span style={{ marginLeft: 'auto', color: 'var(--ink-3)' }} title={run.disabledReason}>
           rewind is off on a live run

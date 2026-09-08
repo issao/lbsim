@@ -501,7 +501,7 @@ await checkAsync('(j) a_run_starts_paced_at_the_speed_controls_value', async () 
   const { fake, engine } = rig();
   // Before any status: the pressed speed button is the speed the run will start at, never 0.
   eq(engine.speed, 1, 'speed before any status arrives');
-  eq(speedLabel(engine.status, engine.paused), '…', 'label before any status');
+  eq(speedLabel(engine.status, engine.paused, NaN), '…', 'label before any status');
   await engine.start();
   const first = calls(fake, 'StartRun')[0].body;
   eq(first.max_realtime_factor, 1, 'the playing path starts paced at 1x');
@@ -521,14 +521,18 @@ await checkAsync('(j) a_run_starts_paced_at_the_speed_controls_value', async () 
   await pausedRig.engine.start(false);
   eq(calls(pausedRig.fake, 'StartRun')[0].body.max_realtime_factor, 1, 'the paused path starts paced at 1x too');
   await until(() => pausedRig.engine.paused, 'the pause');
-  eq(speedLabel(pausedRig.engine.status, pausedRig.engine.paused), 'paused', 'label while paused');
+  eq(speedLabel(pausedRig.engine.status, pausedRig.engine.paused, NaN), 'paused', 'label while paused');
   pausedRig.engine.dispose();
 
   const running = { state: 'STATE_RUNNING', realtimeFactor: 2 } as NonNullable<typeof engine.status>;
-  eq(speedLabel(running, false), '2×', 'label at a positive factor');
-  eq(speedLabel({ ...running, realtimeFactor: 0 }, false), 'unpaced', 'label for a run an older client started unpaced');
-  eq(speedLabel(null, false), '…', 'label with no status');
-  return 'StartRun max_realtime_factor 1 on both paths, 2 after setSpeed(2) + restart; speed 1 before status; four labels';
+  eq(speedLabel(running, false, NaN), '2×', 'label at a positive factor, achieved unknown');
+  eq(speedLabel({ ...running, realtimeFactor: 0 }, false, NaN), 'unpaced', 'label for a run an older client started unpaced');
+  eq(speedLabel(null, false, NaN), '…', 'label with no status');
+  // The banner's word for the pace actually achieved, not just the target asked for.
+  eq(speedLabel(running, false, 1.3), '2× (achieving 1.3×)', 'label when achieving well under the target');
+  eq(speedLabel(running, false, 1.95), '2×', 'label when achieving within 90% of the target');
+  eq(speedLabel({ ...running, realtimeFactor: 0 }, false, 1.3), 'unpaced (1.3×)', 'label for an unpaced run with a known achieved pace');
+  return 'StartRun max_realtime_factor 1 on both paths, 2 after setSpeed(2) + restart; speed 1 before status; eight labels';
 });
 
 // ---------------------------------------------------------------------------
