@@ -3,10 +3,10 @@
 Seven results from the simulator as it stands. Every number here is reproducible with
 `./run-demos.sh`, which writes a self-contained HTML report per experiment into `out/`.
 
-Reference fleet throughout: 32 replicas of a 70-billion-parameter model on 8x H100, cost model
+Reference fleet throughout: 256 replicas of a 70-billion-parameter model on 8x H100, cost model
 calibrated in `bench/validate_epochs.py` against a published batch-1 measurement and reproducing its
-step-time table to within 0.05 ms. Rated capacity 235 requests/s. Unless stated, offered load is
-**70 requests/s, which is 30% of capacity**: none of what follows is an overload artefact.
+step-time table to within 0.05 ms. Rated capacity 1,878 requests/s. Unless stated, offered load is
+**560 requests/s, which is 30% of capacity**: none of what follows is an overload artefact.
 
 What is *not* modelled yet, and therefore not claimed: preemption, prefix caching, memory tiering,
 autoscaling, and multi-cluster. `docs/scope-today.md` says why each was cut.
@@ -17,20 +17,26 @@ autoscaling, and multi-cluster. `docs/scope-today.md` says why each was cut.
 
 | Policy | Goodput tok/s | First-token p99 | Attainment | Load spread |
 |---|---|---|---|---|
-| power of two choices | **18,127** | 3,859 ms | 97.0% | 0.33 |
-| round robin | 17,361 | 8,321 ms | 93.1% | 0.43 |
-| random | 16,961 | 8,590 ms | 92.2% | 0.55 |
-| least requests | **6,943** | 20,133 ms | 39.4% | 1.27 |
+| power of two choices | **143,882** | 3,355 ms | 97.2% | 0.33 |
+| round robin | 138,849 | 6,711 ms | 94.5% | 0.45 |
+| random | 137,430 | 6,778 ms | 93.5% | 0.54 |
+| least requests | **2,800** | 54,224 ms | 4.5% | 2.78 |
 
-**Least-requests is 2.6x worse than sampling two replicas at random, and worse than round robin,
-which ignores load entirely.** It inspects all 32 replicas and picks the least loaded, which is the
+**Least-requests is 51x worse than sampling two replicas at random, and worse than round robin,
+which ignores load entirely.** It inspects all 256 replicas and picks the least loaded, which is the
 obvious thing to do and is the trap: its snapshot is up to 1.2 seconds old, so every routing decision
 in that window sees the same apparently-idle replica and sends to it. Sampling bounds the stampede by
-construction, because only a fraction of decisions consider any one replica at a time.
+construction, because only a fraction of decisions consider any one replica at a time. **At this fleet
+size the policy is not merely worse, it is catastrophic**: attainment falls from 39.4% (at 32
+replicas) to 4.5%, load spread reaches a CV of 2.78, first-token p99 reaches 54 seconds, and 13,817
+requests now time out mid-run — a bigger fleet gives the same stale snapshot more replicas to herd
+onto at once, so the shape of the failure is unchanged but its severity is not.
 
-**Throughput barely moves across all four**, 17,480 to 18,744. The work gets done either way; under
-the worse policy it arrives too late to count. That is why ranking policies on throughput selects the
-wrong one, and why goodput leads every table in this project.
+**Throughput among the other three barely moves**, 146,921 to 148,032. The work gets done either way;
+under the worse policy it arrives too late to count. Least-requests' own throughput now collapses too,
+to 29,005, because the requests that time out mid-run have already consumed device time without
+completing. That is why ranking policies on throughput selects the wrong one, and why goodput leads
+every table in this project.
 
 Second-order but worth noting: **round robin beats random.** Round robin is perfectly even in request
 *count*, which is not the right unit, but it is still less lumpy than independent random choice.
@@ -56,18 +62,30 @@ has a threshold rather than a gradient, and the threshold is set by how fast que
 the loop's own time constant. That is the control-theoretic reading, and it is why the report computes
 a dominant oscillation frequency rather than only an average.
 
+The table above is written against the 32-replica numbers, ahead of a queued follow-up that moves this
+scenario's default back to 32 replicas to match; until that lands, running `route_least_requests.txt`
+as it stands defaults to 256, and doing so shows why the follow-up matters: **at 256 replicas even
+100 ms of staleness is past the cliff.** The same sweep at 256 replicas collapses at every interval
+instead of only the slow ones — attainment falls from 0.79 to 0.15 at the 100 ms point alone, and from
+0.10 to 0.009 at the 4 s end of the sweep, load imbalance CV rises as high as 5.46, and by 2 s the
+queue cap starts rejecting requests outright, 42,000 of them by 4 s, where none were rejected before.
+A larger fleet at the same offered/capacity ratio drains and refills its queues faster, so the same
+loop time constant that put the cliff at 1 s here puts it inside the first bucket at 256 replicas: the
+cliff moves left as the fleet grows, which is the mechanism above, not a new one. A fleet-size sweep is
+queued as demo 13 (U98) to turn that relationship into a curve rather than two points.
+
 ## 3. Prefill and decode contend for one device, and no setting wins both
 
 Chunked prefill token budget swept, with power-of-two-choices routing.
 
 | Chunk budget | Worst gap between tokens p99 | First-token p99 | Goodput | Attainment |
 |---|---|---|---|---|
-| 512 | **33 ms** | 4,631 ms | 17,776 | 95.8% |
-| 1,024 | 50 ms | 3,859 ms | **18,127** | 97.0% |
-| 2,048 | 86 ms | 3,523 ms | 2,181 | 31.8% |
-| 4,096 | 157 ms | 3,355 ms | 2,205 | 32.2% |
-| 8,192 | 302 ms | 3,288 ms | 2,437 | 34.1% |
-| 16,384 | **587 ms** | **3,255 ms** | 2,354 | 33.4% |
+| 512 | **32 ms** | 3,993 ms | 142,202 | 96.4% |
+| 1,024 | 50 ms | 3,355 ms | **143,882** | 97.2% |
+| 2,048 | 86 ms | 3,020 ms | 18,497 | 32.9% |
+| 4,096 | 157 ms | 2,852 ms | 19,155 | 33.7% |
+| 8,192 | 302 ms | 2,919 ms | 19,252 | 33.8% |
+| 16,384 | **587 ms** | **2,852 ms** | 18,973 | 33.5% |
 
 The two latencies move in opposite directions, monotonically, across an eighteenfold range of worst
 gap. A bigger chunk gets the first token out sooner and inserts a longer stall into every stream
@@ -75,8 +93,8 @@ already decoding, because both compete for the same device in the same step.
 
 **The goodput cliff between 1,024 and 2,048 is not a modelling artefact, it is the SLO.** The
 inter-token target here is 80 ms; at a 2,048-token chunk the worst gap is 86 ms, so almost every
-request breaches and earns no goodput while still consuming capacity. Throughput is flat at about
-18,700 across the whole sweep. **The fleet does identical work and delivers a tenth of the value**,
+request breaches and earns no goodput while still consuming capacity. Throughput is flat, 147,941 to
+148,252, across the whole sweep. **The fleet does identical work and delivers a tenth of the value**,
 which is the sharpest illustration in this set of why the two measures must not be confused.
 
 ## 4. Past the knee, offering more load delivers less work
@@ -85,21 +103,21 @@ Offered rate swept with power-of-two-choices.
 
 | Offered | Goodput | Throughput | First-token p99 | Attainment |
 |---|---|---|---|---|
-| 30 rps | 7,919 | 8,106 | 2,819 ms | 98.1% |
-| 70 rps | 18,127 | 18,744 | 3,859 ms | 97.0% |
-| 110 rps | 26,457 | 27,863 | 4,496 ms | 95.4% |
-| 150 rps | **33,068** | 35,350 | 5,637 ms | 93.3% |
-| 190 rps | 31,761 | **37,976** | 8,590 ms | 83.3% |
-| 230 rps | 18,128 | 30,175 | 38,655 ms | 53.2% |
+| 240 rps | 63,967 | 65,407 | 2,819 ms | 98.2% |
+| 560 rps | 143,882 | 148,032 | 3,355 ms | 97.2% |
+| 880 rps | 212,782 | 221,681 | 3,792 ms | 96.1% |
+| 1,200 rps | **260,424** | 278,417 | 4,966 ms | 93.4% |
+| 1,520 rps | 253,970 | **294,403** | 7,852 ms | 85.0% |
+| 1,840 rps | 151,260 | 246,993 | 35,970 ms | 55.9% |
 
-Two knees, in different places, and that is the point. **Goodput peaks at 150 requests/s**, which is
-64% of the rated 235. **Throughput peaks later, at 190.** Between those two points the fleet is doing
-more work and delivering less value.
+Two knees, in different places, and that is the point. **Goodput peaks at 1,200 requests/s**, which is
+64% of the rated 1,878. **Throughput peaks later, at 1,520.** Between those two points the fleet is
+doing more work and delivering less value.
 
-Past 190 both collapse: at 230 requests/s throughput itself falls 20% below its peak while first-token
-latency goes to 38 seconds. Offering 53% more load than the goodput optimum yields **45% less
-goodput**. Admission control is not a refinement here, it is the difference between the peak and the
-right-hand column.
+Past 1,520 both collapse: at 1,840 requests/s throughput itself falls 16% below its peak while
+first-token latency goes to 36 seconds. Offering 53% more load than the goodput optimum yields **42%
+less goodput**. Admission control is not a refinement here, it is the difference between the peak and
+the right-hand column.
 
 ## 5. Capacity is a token budget, and a load-balancer metric can improve while service collapses
 
@@ -108,20 +126,20 @@ tokens against 1,200 for the short mode.
 
 | Long share | Goodput | First-token p99 | Attainment | Load spread |
 |---|---|---|---|---|
-| 0% | 19,037 | **407 ms** | 100.0% | 0.38 |
-| 4% | 18,750 | 2,215 ms | 98.7% | 0.35 |
-| 8% | 18,127 | 3,859 ms | 97.0% | 0.33 |
-| 16% | 16,748 | 5,033 ms | 93.6% | 0.28 |
-| 32% | **8,515** | **13,824 ms** | 64.9% | **0.24** |
+| 0% | 149,373 | **411 ms** | 100.0% | 0.39 |
+| 4% | 147,009 | 2,215 ms | 98.8% | 0.36 |
+| 8% | 143,882 | 3,355 ms | 97.2% | 0.33 |
+| 16% | 134,001 | 4,631 ms | 93.7% | 0.29 |
+| 32% | **72,865** | **12,616 ms** | 67.3% | **0.24** |
 
-**Load spread falls from 0.38 to 0.24 while goodput halves and tail latency gets 34 times worse.** The
+**Load spread falls from 0.39 to 0.24 while goodput halves and tail latency gets 31 times worse.** The
 balancer looks like it is doing a better job precisely as service falls apart, because a few enormous
 requests make every replica uniformly saturated. A dashboard watching imbalance would report
 improvement throughout.
 
 The mechanism is the token budget. One 24,000-token context consumes what eight chat turns consume, so
 raising the long share consumes admission capacity that a request count would have said was free. At
-32% long, first-token latency at the 99th percentile is 13.8 seconds even though the fleet is at 30%
+32% long, first-token latency at the 99th percentile is 12.6 seconds even though the fleet is at 30%
 of its rated request rate.
 
 This is the clearest argument in this set for the design decision that capacity, rate limits and
@@ -136,21 +154,21 @@ of the run, which is the only window that answers the question.
 
 | Retry policy | Retries | Goodput | Attainment | Queue before → after | Recovered |
 |---|---|---|---|---|---|
-| none | 0 | 20,161 | 84.5% | 2 → 2 | yes |
-| 3 attempts, 10% budget | 3,841 | 17,373 | 81.1% | 2 → 2 | yes |
-| 3 attempts, no budget | **35,806** | **7,344** | 46.3% | **2 → 6** | **no** |
+| none | 0 | 165,492 | 62.8% | 13 → 12 | yes |
+| 3 attempts, 10% budget | 30,734 | 145,271 | 53.1% | 15 → 16 | yes |
+| 3 attempts, no budget | **273,801** | **62,019** | 15.6% | **15 → 48** | **no** |
 
 **The unbudgeted run never comes back.** Offered load returned to normal after forty seconds and its
 queue is still three times pre-spike depth at the end of a four-minute run. That is a metastable
 collapse: the system is in a state it sustains on its own, and the original cause is gone.
 
-The mechanism is visible in the retry count. Unbudgeted retries reach 35,806 against 3,841 with a 10%
-cap, a ninefold difference, because each timeout adds load precisely when the fleet is least able to
-absorb it. Retries here are far more expensive than in a stateless service: a request that times out
-after twenty seconds has already consumed twenty seconds of device time producing tokens nobody will
-read.
+The mechanism is visible in the retry count. Unbudgeted retries reach 273,801 against 30,734 with a
+10% cap, a ninefold difference, because each timeout adds load precisely when the fleet is least able
+to absorb it. Retries here are far more expensive than in a stateless service: a request that times
+out after twenty seconds has already consumed twenty seconds of device time producing tokens nobody
+will read.
 
-**A 10% budget recovers 86% of the no-retry goodput and turns the collapse into a recovery.** That is
+**A 10% budget recovers 88% of the no-retry goodput and turns the collapse into a recovery.** That is
 the whole intervention. Not smarter routing, not more capacity, just a cap on how much of the offered
 load may be retries.
 
@@ -167,6 +185,11 @@ The same two policies as result 1, round robin and power of two choices, with th
 bandwidth term of the step cost is zero, so a decode step costs its fixed overhead and nothing per
 resident token. KV accounting is unchanged, so capacity still binds in tokens. Rated capacity rises
 from 235 to 269 requests/s; offered load stays 70. Demo 7, `out/7-no-decode.html`.
+
+Demo 1 is now the 256-replica default fleet; this pair is kept at its original 32 replicas, on
+purpose, because the comparison below is against demo 1's small-fleet numbers, not its current ones —
+otherwise switching off decode and scaling the fleet by 8x would be two changes at once instead of
+one.
 
 | Policy | Goodput tok/s | Throughput | First-token p99 | Inter-token p99 | Attainment | Load spread |
 |---|---|---|---|---|---|---|
@@ -269,7 +292,7 @@ quoted rather than re-run; demo 12's report is the table of record once `./run-d
 
 Every one is a case where **the obvious metric moves the wrong way, or not at all**:
 
-- Throughput is flat while goodput varies 8x, in results 1 and 3.
+- Throughput is flat while goodput varies 8x in result 3 and 51x in result 1.
 - Load imbalance improves while service collapses, in result 5, and is identical across a collapse in
   result 6.
 - More offered load produces less delivered work, in result 4.
@@ -304,16 +327,16 @@ conclusion changes.** The figures in the tables are the corrected ones.
    figures. Between and beyond them it is an interpolation of a roofline, not a measurement.
 2. **Absolute numbers should not be quoted; ratios should.** Now checked rather than asserted:
    `./check-sensitivity.sh` perturbs the bandwidth and prefill constants by ±30%, separately and
-   together, and the policy ranking is **identical in all seven cases**. Goodput moves by up to 30%,
+   together, and the policy ranking is **identical in all seven cases**. Goodput moves by up to 36%,
    as it should, while power-of-two-choices stays first and least-requests stays last throughout.
 
    | Perturbation | goodput, p2c | goodput, least_requests | ranking |
    |---|---|---|---|
-   | nominal | 18,127 | 6,943 | unchanged |
-   | bandwidth −30% | 17,029 | 6,236 | unchanged |
-   | bandwidth +30% | 19,212 | 7,600 | unchanged |
-   | prefill −30% | 17,165 | 4,844 | unchanged |
-   | prefill +30% | 18,695 | 8,515 | unchanged |
+   | nominal | 143,882 | 2,800 | unchanged |
+   | bandwidth −30% | 136,062 | 2,405 | unchanged |
+   | bandwidth +30% | 151,405 | 3,313 | unchanged |
+   | prefill −30% | 137,283 | 1,796 | unchanged |
+   | prefill +30% | 146,844 | 3,481 | unchanged |
 
    So the orderings are conclusions and the magnitudes are illustration. The script exits non-zero if
    any ordering ever flips, which makes this a regression test rather than a one-off observation.
