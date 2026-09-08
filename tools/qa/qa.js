@@ -145,6 +145,23 @@ const finalLine = extraFail => {
     const controlTag = await page.$eval('#control .mock-tag', el => el.textContent.trim()).catch(() => null);
     check('dashboard: control panel tagged live', controlTag === 'live', controlTag);
     await machines(page, until, 'dashboard');
+    // U95: a panel that still invents a few fields on a live run borrows the page's own word
+    // ("live") and names what it invents in the tag's title -- it must never fall back to the
+    // bare word "mock" while the run is live. Walk every observation tab, since the machine-level
+    // panel (the one Issao saw this on) only mounts once its tab is selected.
+    const obsTabs = await page.$$eval('button[data-tab^="observe:"]', els => els.map(e => e.getAttribute('data-tab')));
+    for (const tabId of obsTabs) {
+      await page.click(`button[data-tab="${tabId}"]`);
+      await sleep(500);
+      const tags = await page.$$eval('.panel .mock-tag', els => els.map(e => [e.textContent.trim(), e.title]));
+      // A panel with nothing wired at all (Traces: no Realness data prop) legitimately still says
+      // the bare word "mock" with the generic gloss title -- that is by design, not this unit's
+      // bug. The regression this guards is a *partial* panel (one with specific unwired fields to
+      // name) falling back to the bare word instead of the run's own word: that shows up as a
+      // "mock" tag whose title lists fields ("mock: ...") rather than the generic gloss.
+      const bad = tags.filter(([word, ttl]) => word === 'mock' && ttl.startsWith('mock: '));
+      check(`dashboard: no partial panel says mock while the page is live (U95, ${tabId})`, bad.length === 0, JSON.stringify(bad));
+    }
     await page.close();
   }
 

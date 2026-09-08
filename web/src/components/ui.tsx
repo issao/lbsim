@@ -1,6 +1,6 @@
 import { useSyncExternalStore, type ReactNode } from 'react';
 import { activeMode, DATA_SOURCE_GLOSS, subscribeActiveMode } from '../lib/mode';
-import { panelTagWord } from '../lib/wired';
+import { fieldLabel, panelTagWord, partialNote } from '../lib/wired';
 
 /**
  * Every panel carries this. Per docs/ui-spec.md section 5: a dashboard that looks real while
@@ -9,12 +9,18 @@ import { panelTagWord } from '../lib/wired';
  * U70: the same three words everywhere -- mock, replay, live -- each glossed in the tooltip on
  * whichever word this instance shows. `what` also takes free text (a caller's own longer label);
  * only the three canonical words carry a gloss, so free text keeps its old generic tooltip.
+ *
+ * U95: `note`, when given, replaces the title outright -- it is `Panel`'s own `partialNote()`
+ * sentence for a partial panel that is otherwise honestly wearing the run's word (live/replay).
+ * Without a note, a partial panel's `fields` still render as a "mock: ..." title (mock mode, or
+ * any other caller), now in human labels rather than raw identifiers.
  */
-export function MockTag({ what = 'mock', fields }: { what?: string; fields?: string[] }) {
+export function MockTag({ what = 'mock', fields, note }: { what?: string; fields?: string[]; note?: string }) {
   const gloss = (DATA_SOURCE_GLOSS as Record<string, string | undefined>)[what];
-  const title =
-    fields && fields.length > 0
-      ? `mock: ${fields.join(', ')}`
+  const title = note
+    ? note
+    : fields && fields.length > 0
+      ? `mock: ${fields.map(fieldLabel).join(', ')}`
       : gloss
         ? `${what} — ${gloss}`
         : 'Generated in the browser. Not connected to sim-ingress.';
@@ -52,12 +58,17 @@ export function Panel({
    *  which is treated as mock: no panel renders a number without one of the three words in its tag. */
   data?: PanelData;
 }) {
-  // U70: a panel that reads any unwired field -- or draws from a mock frame at all -- is tagged
-  // `mock`, full stop. Only a panel where every field it reads is wired earns the active source's
-  // own word (`replay` or `live`), because that is the only case where "real" and "mock" differ.
+  // U70/U95: a panel that draws from a genuinely mock frame is tagged `mock`, full stop. A panel
+  // that reads an unwired field on a live or replay run still borrows the run's own word -- it is
+  // not lying about the run, only about a few columns on it -- and says which columns in its tag's
+  // title and in a note in its body, rather than falling back to the bare word `mock`.
   const active = useSyncExternalStore(subscribeActiveMode, activeMode);
   // none/connecting/refused are badge states, not data sources: no engine numbers are on screen yet, so the tag word is mock.
   const tagWord = panelTagWord(data, active.mode === 'server' || active.mode === 'replay' ? active.mode : 'mock');
+  const note =
+    data?.kind === 'partial' && (tagWord === 'live' || tagWord === 'replay')
+      ? partialNote(tagWord, data.mockFields)
+      : undefined;
   return (
     <section className={`panel${highlight ? ' highlight' : ''}`} id={id} data-panel={id}>
       <header className="panel-head">
@@ -65,10 +76,13 @@ export function Panel({
         {sub ? <span className="panel-sub">{sub}</span> : null}
         <span className="panel-head-right">
           {right}
-          <MockTag what={tagWord} fields={data?.kind === 'partial' ? data.mockFields : undefined} />
+          <MockTag what={tagWord} fields={data?.kind === 'partial' ? data.mockFields : undefined} note={note} />
         </span>
       </header>
-      <div className={`panel-body ${bodyClass}`}>{children}</div>
+      <div className={`panel-body ${bodyClass}`}>
+        {note ? <p className="note partial-note">{note}</p> : null}
+        {children}
+      </div>
     </section>
   );
 }

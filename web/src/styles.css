@@ -179,6 +179,10 @@ a:hover { text-decoration: underline; }
   border-radius: 2px; padding: 0 4px; white-space: nowrap;
 }
 
+/* U95: the inline explanation a partial panel shows in its body when it is otherwise wearing the
+   run's own word (live/replay) -- the same sentence that sits in the tag's title. */
+.note.partial-note { color: var(--mock); margin: 0 0 6px; }
+
 .panel.highlight {
   outline: 2px solid var(--accent); outline-offset: 1px;
   box-shadow: 0 0 0 6px var(--accent-soft);
