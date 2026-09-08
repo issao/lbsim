@@ -1,6 +1,5 @@
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import type { RunHandle } from '../lib/useRun';
-import { SPEEDS, STEP_S } from '../lib/useRun';
 import type { RoutingConfig, ScenarioConfig } from '../lib/config';
 import { cloneConfig, PRESETS, ROUTING_LABEL, ROUTING_NOTE, VIEW_ONLY_EXPLANATION, diffConfig } from '../lib/config';
 import type { RoutingKind } from '../lib/types';
@@ -35,6 +34,9 @@ export function ControlPanel({
     mut(next);
     run.update(next);
   };
+  // Config paths a live server does not take. Naming them in a banner left the knobs looking
+  // live; they are disabled where they stand instead.
+  const dropped: string[] = 'dropped' in run ? (run as { dropped: string[] }).dropped : [];
 
   return (
     <Panel
@@ -47,9 +49,9 @@ export function ControlPanel({
       <Tabs tabs={TABS} value={tab} onChange={onTab} scope="control" />
       <div style={{ padding: 9, overflow: 'auto' }}>
         {tab === 'scenarios' ? <ScenariosTab run={run} /> : null}
-        {tab === 'load' ? <LoadTab c={c} set={set} /> : null}
-        {tab === 'policies' ? <PoliciesTab c={c} set={set} /> : null}
-        {tab === 'cluster' ? <ClusterTab c={c} set={set} /> : null}
+        {tab === 'load' ? <LoadTab c={c} set={set} dropped={dropped} /> : null}
+        {tab === 'policies' ? <PoliciesTab c={c} set={set} dropped={dropped} /> : null}
+        {tab === 'cluster' ? <ClusterTab c={c} set={set} dropped={dropped} /> : null}
         {tab === 'run' ? <RunTab run={run} set={set} /> : null}
       </div>
     </Panel>
@@ -91,7 +93,20 @@ function ScenariosTab({ run }: { run: RunHandle }) {
 
 // ---------------------------------------------------------------------------
 
-function LoadTab({ c, set }: { c: ScenarioConfig; set: (m: (d: ScenarioConfig) => void) => void }) {
+type TabProps = { c: ScenarioConfig; set: (m: (d: ScenarioConfig) => void) => void; dropped?: string[] };
+
+/** A field the current server does not take: greyed and inert, with the one word that says why. */
+function Dropped({ path, dropped, children }: { path: string; dropped?: string[]; children: ReactNode }) {
+  if (!dropped?.includes(path)) return <>{children}</>;
+  return (
+    <fieldset className="dropped" disabled title={`the server does not take ${path}`}>
+      {children}
+      <span className="dropped-why">server</span>
+    </fieldset>
+  );
+}
+
+function LoadTab({ c, set, dropped }: TabProps) {
   const rated = ratedFleetRps(c);
   const est = estimatedFleetRps(c);
   const rho = c.workload.arrivalRps / Math.max(est, 1e-9);
@@ -116,6 +131,7 @@ function LoadTab({ c, set }: { c: ScenarioConfig; set: (m: (d: ScenarioConfig) =
           </>
         }
       />
+      <Dropped path="workload.perturbation" dropped={dropped}>
       <Select
         label="perturbation"
         value={c.workload.perturbation}
@@ -151,6 +167,7 @@ function LoadTab({ c, set }: { c: ScenarioConfig; set: (m: (d: ScenarioConfig) =
           ) : null}
         </>
       ) : null}
+      </Dropped>
 
       <div className="sep" />
       <p className="section-label">Lengths</p>
@@ -236,7 +253,7 @@ function LoadTab({ c, set }: { c: ScenarioConfig; set: (m: (d: ScenarioConfig) =
  * Controls generated from the routing policy variant, the way the real panel is generated from
  * PolicySpec, so the panel cannot offer a parameter the engine would not accept.
  */
-function PoliciesTab({ c, set }: { c: ScenarioConfig; set: (m: (d: ScenarioConfig) => void) => void }) {
+function PoliciesTab({ c, set, dropped }: TabProps) {
   const kinds = Object.keys(ROUTING_LABEL) as RoutingKind[];
   return (
     <>
@@ -248,7 +265,7 @@ function PoliciesTab({ c, set }: { c: ScenarioConfig; set: (m: (d: ScenarioConfi
         onChange={(v) => set((d) => { d.routing.kind = v; })}
       />
       <p className="note inset" style={{ margin: '-4px 0 10px' }}>{ROUTING_NOTE[c.routing.kind]}</p>
-      <RoutingParams routing={c.routing} set={set} />
+      <RoutingParams routing={c.routing} set={set} dropped={dropped} />
 
       <div className="sep" />
       <p className="section-label">What the policy sees</p>
@@ -318,9 +335,11 @@ function PoliciesTab({ c, set }: { c: ScenarioConfig; set: (m: (d: ScenarioConfi
 function RoutingParams({
   routing,
   set,
+  dropped,
 }: {
   routing: RoutingConfig;
   set: (m: (d: ScenarioConfig) => void) => void;
+  dropped?: string[];
 }) {
   switch (routing.kind) {
     case 'power_of_two_choices':
@@ -347,25 +366,29 @@ function RoutingParams({
     case 'prefix_affinity':
       return (
         <>
-          <Slider
-            label="max load ratio"
-            value={routing.maxLoadRatio}
-            min={1}
-            max={3}
-            step={0.05}
-            format={(v) => v.toFixed(2)}
-            onChange={(v) => set((d) => { d.routing.maxLoadRatio = v; })}
-            note="1.00 disables affinity entirely; large values ignore load and produce hotspots"
-          />
-          <Slider
-            label="fallback choices"
-            value={routing.fallbackChoices}
-            min={1}
-            max={8}
-            step={1}
-            format={(v) => `${v}`}
-            onChange={(v) => set((d) => { d.routing.fallbackChoices = v; })}
-          />
+          <Dropped path="routing.maxLoadRatio" dropped={dropped}>
+            <Slider
+              label="max load ratio"
+              value={routing.maxLoadRatio}
+              min={1}
+              max={3}
+              step={0.05}
+              format={(v) => v.toFixed(2)}
+              onChange={(v) => set((d) => { d.routing.maxLoadRatio = v; })}
+              note="1.00 disables affinity entirely; large values ignore load and produce hotspots"
+            />
+          </Dropped>
+          <Dropped path="routing.fallbackChoices" dropped={dropped}>
+            <Slider
+              label="fallback choices"
+              value={routing.fallbackChoices}
+              min={1}
+              max={8}
+              step={1}
+              format={(v) => `${v}`}
+              onChange={(v) => set((d) => { d.routing.fallbackChoices = v; })}
+            />
+          </Dropped>
         </>
       );
     default:
@@ -375,7 +398,7 @@ function RoutingParams({
 
 // ---------------------------------------------------------------------------
 
-function ClusterTab({ c, set }: { c: ScenarioConfig; set: (m: (d: ScenarioConfig) => void) => void }) {
+function ClusterTab({ c, set, dropped }: TabProps) {
   return (
     <>
       <p className="section-label">Fleet shape</p>
@@ -391,7 +414,7 @@ function ClusterTab({ c, set }: { c: ScenarioConfig; set: (m: (d: ScenarioConfig
         step={4}
         format={(v) => `${v}`}
         onChange={(v) => set((d) => { d.fleet.replicas = v; })}
-        note="changing fleet size restarts the run in this stand-in: a snapshot of a differently shaped fleet cannot be restored"
+        note="changing fleet size restarts the run: a snapshot of a differently shaped fleet cannot be restored"
       />
       <Slider
         label="max batch"
@@ -425,6 +448,7 @@ function ClusterTab({ c, set }: { c: ScenarioConfig; set: (m: (d: ScenarioConfig
 
       <div className="sep" />
       <p className="section-label">Accelerator model</p>
+      <Dropped path="fleet.accelerator" dropped={dropped}>
       <Select
         label="accelerator"
         value={c.fleet.accelerator}
@@ -443,6 +467,7 @@ function ClusterTab({ c, set }: { c: ScenarioConfig; set: (m: (d: ScenarioConfig
           })
         }
       />
+      </Dropped>
       <Slider
         label="step base"
         value={c.fleet.stepBaseMs}
@@ -472,7 +497,7 @@ function ClusterTab({ c, set }: { c: ScenarioConfig; set: (m: (d: ScenarioConfig
       />
       <p className="note inset">
         <code>step_base_ms</code> is calibrated in <code>bench/validate_epochs.py</code> against a published batch-1
-        measurement. The numbers this stand-in draws from them are not.
+        measurement. The numbers drawn from them here are not.
       </p>
     </>
   );
@@ -488,7 +513,7 @@ function RunTab({ run, set }: { run: RunHandle; set: (m: (d: ScenarioConfig) => 
       <p className="section-label">Now</p>
       <dl className="kv">
         <dt>run id</dt>
-        <dd>mock-{c.name}-{c.seed}</dd>
+        <dd>{run.source?.runId ?? `mock-${c.name}-${c.seed}`}</dd>
         <dt>sim time</dt>
         <dd>{fmtTime(run.cursorS)}</dd>
         <dt>recorded to</dt>
@@ -499,31 +524,6 @@ function RunTab({ run, set }: { run: RunHandle; set: (m: (d: ScenarioConfig) => 
         <dd>{run.resimulating ? 'resimulating' : run.paused ? 'paused' : `running ${run.speed}x`}</dd>
       </dl>
 
-      <div className="sep" />
-      <p className="section-label">Playback</p>
-      <div className="btn-row" style={{ marginBottom: 8 }}>
-        <button className="btn" onClick={() => run.setPaused(!run.paused)}>
-          {run.paused ? 'play' : 'pause'}
-        </button>
-        <button className="btn" onClick={run.step}>
-          step {STEP_S} s
-        </button>
-        <button className="btn" onClick={() => run.rewindTo(0)}>
-          rewind to 0
-        </button>
-      </div>
-      <div className="field">
-        <span className="field-label">speed</span>
-        <span />
-        <div className="seg" style={{ gridColumn: '1 / -1' }}>
-          {SPEEDS.map((s) => (
-            <button key={s} aria-pressed={run.speed === s} onClick={() => run.setSpeed(s)}>
-              {s}&times;
-            </button>
-          ))}
-        </div>
-        <span className="field-note">simulated seconds per wall-clock second</span>
-      </div>
       <Slider
         label="sample rate"
         value={c.samplesPerSimSecond}
