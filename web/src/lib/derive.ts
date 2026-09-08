@@ -28,6 +28,20 @@ export function goodput(f: Frame, slo: Slo): number {
   return f.outputTokensPerS * attainment(f, slo);
 }
 
+/**
+ * The measured share of throughput that missed its SLO: `1 - measuredGoodput / throughput`, from
+ * the wire's own `METRIC_GOODPUT_TOKENS_PER_S` over `METRIC_OUTPUT_TOKENS_PER_S`, not the
+ * client-derived `goodput()` above — badput is meant to read as "what the fleet actually wasted",
+ * not to move when someone changes the SLO in the UI.
+ *
+ * Null, not zero, when throughput is zero: an idle window has no fraction to report, and a chart
+ * that plotted 0 there would look like a moment of perfect delivery rather than a gap.
+ */
+export function badput(goodputTokensPerS: number, outputTokensPerS: number): number | null {
+  if (!(outputTokensPerS > 0)) return null;
+  return 1 - goodputTokensPerS / outputTokensPerS;
+}
+
 export function series(frames: Frame[], pick: (f: Frame) => number): number[] {
   return frames.map(pick);
 }

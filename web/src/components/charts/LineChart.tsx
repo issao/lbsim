@@ -1,4 +1,5 @@
 import { useCallback, useMemo, useRef, useState } from 'react';
+import { clampToLogFloor, logTicks } from '../../lib/logAxis';
 
 export interface Series {
   key: string;
@@ -32,6 +33,8 @@ export function LineChart({
   thresholds = [],
   directLabels = true,
   unit,
+  logY = false,
+  logFloor = 1e-4,
 }: {
   xs: number[];
   series: Series[];
@@ -43,6 +46,14 @@ export function LineChart({
   thresholds?: Threshold[];
   directLabels?: boolean;
   unit?: string;
+  /**
+   * Logarithmic y-axis, for a ratio whose interesting range hugs one end (badput near 0, i.e.
+   * goodput near 100%, is exactly where linear scale has no resolution). The domain runs from
+   * `logFloor` to `yMax ?? 1`. A point at or below the floor clamps to it and draws dashed there,
+   * so "no real reading below the floor" stays visually distinct from an actual measurement.
+   */
+  logY?: boolean;
+  logFloor?: number;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const [hover, setHover] = useState<{ i: number; x: number } | null>(null);
@@ -50,6 +61,9 @@ export function LineChart({
   const H = height;
 
   const { x0, x1, y0, y1 } = useMemo(() => {
+    if (logY) {
+      return { x0: xs[0] ?? 0, x1: xs[xs.length - 1] ?? 1, y0: logFloor, y1: yMax ?? 1 };
+    }
     let hi = yMax ?? -Infinity;
     if (yMax === undefined) {
       for (const s of series) for (const p of s.points) if (p !== null && p > hi) hi = p;
@@ -58,18 +72,25 @@ export function LineChart({
       hi *= 1.12;
     }
     return { x0: xs[0] ?? 0, x1: xs[xs.length - 1] ?? 1, y0: yMin, y1: hi };
-  }, [xs, series, yMax, yMin, thresholds]);
+  }, [xs, series, yMax, yMin, thresholds, logY, logFloor]);
 
   const sx = useCallback(
     (v: number) => PAD.left + ((v - x0) / Math.max(x1 - x0, 1e-6)) * (W - PAD.left - PAD.right),
     [x0, x1]
   );
   const sy = useCallback(
-    (v: number) => H - PAD.bottom - ((v - y0) / Math.max(y1 - y0, 1e-9)) * (H - PAD.top - PAD.bottom),
-    [y0, y1, H]
+    (v: number) => {
+      if (logY) {
+        const cv = clampToLogFloor(v, y0);
+        const t = (Math.log10(cv) - Math.log10(y0)) / Math.max(Math.log10(y1) - Math.log10(y0), 1e-9);
+        return H - PAD.bottom - t * (H - PAD.top - PAD.bottom);
+      }
+      return H - PAD.bottom - ((v - y0) / Math.max(y1 - y0, 1e-9)) * (H - PAD.top - PAD.bottom);
+    },
+    [y0, y1, H, logY]
   );
 
-  const ticks = useMemo(() => niceTicks(y0, y1, 3), [y0, y1]);
+  const ticks = useMemo(() => (logY ? logTicks(y0, y1) : niceTicks(y0, y1, 3)), [y0, y1, logY]);
   const xticks = useMemo(() => niceTicks(x0, x1, 4), [x0, x1]);
   // Tick precision follows the span, so a four-second window does not print "1s 1s 2s 2s".
   const xfmt = useMemo(() => {
@@ -162,18 +183,33 @@ export function LineChart({
           </g>
         ))}
 
-        {series.map((s) => (
-          <path
-            key={s.key}
-            d={pathOf(xs, s.points, sx, sy)}
-            fill="none"
-            stroke={s.color}
-            strokeWidth={2}
-            strokeLinejoin="round"
-            strokeLinecap="round"
-            strokeDasharray={s.dashed ? '4 3' : undefined}
-          />
-        ))}
+        {series.flatMap((s) =>
+          logY
+            ? logPathRuns(xs, s.points, sx, sy, y0).map((run, ri) => (
+                <path
+                  key={`${s.key}-${ri}`}
+                  d={run.d}
+                  fill="none"
+                  stroke={s.color}
+                  strokeWidth={2}
+                  strokeLinejoin="round"
+                  strokeLinecap="round"
+                  strokeDasharray={run.dashed ? '4 3' : undefined}
+                />
+              ))
+            : [
+                <path
+                  key={s.key}
+                  d={pathOf(xs, s.points, sx, sy)}
+                  fill="none"
+                  stroke={s.color}
+                  strokeWidth={2}
+                  strokeLinejoin="round"
+                  strokeLinecap="round"
+                  strokeDasharray={s.dashed ? '4 3' : undefined}
+                />,
+              ]
+        )}
 
         {endLabels.map((l) => (
           <text
@@ -195,7 +231,7 @@ export function LineChart({
             <line className="zero-line" x1={sx(xs[hv])} x2={sx(xs[hv])} y1={PAD.top} y2={H - PAD.bottom} />
             {series.map((s) => {
               const v = s.points[hv];
-              return v === null || v === undefined ? null : (
+              return v === null || v === undefined || !isFinite(v) ? null : (
                 <circle
                   key={`h${s.key}`}
                   cx={sx(xs[hv])}
@@ -260,6 +296,51 @@ function lastDefined(ps: (number | null)[]): { v: number } | null {
     if (v !== null && v !== undefined && isFinite(v)) return { v };
   }
   return null;
+}
+
+/**
+ * Path segments for a log-scaled series, split wherever a point crosses the floor: a run of real
+ * (>= floor) values draws solid, a run of clamped (< floor, including <= 0) values draws dashed at
+ * the floor. The boundary point is duplicated into both runs so the line stays visually
+ * continuous across the style change.
+ */
+function logPathRuns(
+  xs: number[],
+  ps: (number | null)[],
+  sx: (v: number) => number,
+  sy: (v: number) => number,
+  floor: number
+): { d: string; dashed: boolean }[] {
+  const runs: { d: string; dashed: boolean }[] = [];
+  let d = '';
+  let dashed = false;
+  let started = false;
+  for (let i = 0; i < xs.length; i++) {
+    const v = ps[i];
+    if (v === null || v === undefined || !isFinite(v)) {
+      if (started) runs.push({ d: d.trim(), dashed });
+      d = '';
+      started = false;
+      continue;
+    }
+    const isClamped = v < floor;
+    const X = sx(xs[i]).toFixed(2);
+    const Y = sy(v).toFixed(2);
+    if (!started) {
+      d = `M${X} ${Y} `;
+      dashed = isClamped;
+      started = true;
+    } else if (isClamped !== dashed) {
+      d += `L${X} ${Y} `;
+      runs.push({ d: d.trim(), dashed });
+      d = `M${X} ${Y} `;
+      dashed = isClamped;
+    } else {
+      d += `L${X} ${Y} `;
+    }
+  }
+  if (started) runs.push({ d: d.trim(), dashed });
+  return runs;
 }
 
 export function niceTicks(lo: number, hi: number, n: number): number[] {
