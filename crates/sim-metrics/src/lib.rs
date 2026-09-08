@@ -238,6 +238,11 @@ pub struct ReplicaSample {
     /// verification. The rest was the weight read and key-value re-read, bandwidth-bound decode.
     /// `METRIC_GPU_COMPUTE_BOUND_FRACTION` is this over `busy_ns`.
     pub compute_ns: Nanos,
+    /// Prompt tokens admitted in the window, and of those the tokens found already resident, in a
+    /// prefix cache or as a session's parked context, so their prefill was skipped. The prefix hit
+    /// rate is the ratio, and it is what affinity routing is trying to raise.
+    pub prompt_tokens: u64,
+    pub prefix_hit_tokens: u64,
 }
 
 /// Everything observable about one sample interval, closed at `t`.

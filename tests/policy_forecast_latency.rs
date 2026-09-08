@@ -10,7 +10,7 @@
 mod common;
 
 use common::*;
-use lbsim::policy::{make_routing, ReplicaView, RequestView, RouteContext};
+use lbsim::policy::{make_routing, NoPrefixIndex, ReplicaView, RequestView, RouteContext};
 use lbsim::rng::Rng;
 use lbsim::scenario::Scenario;
 use lbsim::sim;
@@ -53,7 +53,16 @@ fn forecast_latency_draws_the_same_candidates_as_p2c() {
         })
         .collect();
     let request =
-        RequestView { id: 1, prompt_tokens: 20_000, arrived_at: 0, deadline: 60_000_000_000, tenant: 0, attempts: 1 };
+        RequestView {
+            id: 1,
+            prompt_tokens: 20_000,
+            arrived_at: 0,
+            deadline: 60_000_000_000,
+            tenant: 0,
+            attempts: 1,
+            prefix_node: 0,
+            prefix_tokens: 0,
+        };
 
     // Neither policy is documented to probe: their candidates come from the shared snapshot. A probe
     // here would itself be a divergence from p2c's draw pattern.
@@ -66,11 +75,11 @@ fn forecast_latency_draws_the_same_candidates_as_p2c() {
     let mut rng_forecast = rng_p2c.clone();
 
     {
-        let mut ctx = RouteContext::new(0, &views, &request, &mut rng_p2c, &no_probe);
+        let mut ctx = RouteContext::new(0, &views, &request, &mut rng_p2c, &no_probe, &NoPrefixIndex);
         p2c.choose(&mut ctx);
     }
     {
-        let mut ctx = RouteContext::new(0, &views, &request, &mut rng_forecast, &no_probe);
+        let mut ctx = RouteContext::new(0, &views, &request, &mut rng_forecast, &no_probe, &NoPrefixIndex);
         forecast.choose(&mut ctx);
     }
 
