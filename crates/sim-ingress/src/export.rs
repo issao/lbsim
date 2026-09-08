@@ -14,6 +14,9 @@
 //! runs/<run_id>/scenario.txt      the resolved scenario, as `sim-run run` reads it
 //! runs/<run_id>/result.json       RunResult: the scorecard
 //! runs/<run_id>/fleet.jsonl       SubscriptionUpdate per sample instant, SCOPE_FLEET
+//! runs/<run_id>/replicas.jsonl    SubscriptionUpdate per replica per sampled instant, SCOPE_REPLICA;
+//!                                 every `replica_sample_stride`-th fleet sample and the last, so the
+//!                                 file stays within REPLICA_ROWS_BUDGET_BYTES
 //! runs/<run_id>/traces.jsonl      RequestTrace per line, when the run recorded traces
 //! runs/<run_id>/manifest.json     how many traces were kept of how many, when traces.jsonl exists
 //! ```
@@ -401,6 +404,15 @@ pub fn export_run(result: &RunResult, run_id: &str, dir: &Path) -> Result<(), St
     export_run_from(result, run_id, None, dir).map(|_| ())
 }
 
+/// Bytes `replicas.jsonl` may take per run. At 256 replicas and 250 ms samples a two-minute demo's
+/// rows came to 40 MB, and the autoscaling demos' to 184 MB (measured 2026-09-08), which Cloud Run
+/// refused to serve at all: it caps a response with a `Content-Length` at 32 MiB. The server now
+/// chunks anything large (`CHUNKED_THRESHOLD_BYTES`), but a browser still downloads and parses this
+/// file on every dashboard load, and eight megabytes is about what `fleet.jsonl` and `traces.jsonl`
+/// together already cost. A run that fits keeps every sample; one that does not is thinned to a
+/// sample stride, recorded in `index.json` so the dashboard knows the cadence.
+pub const REPLICA_ROWS_BUDGET_BYTES: u64 = 8 * 1024 * 1024;
+
 /// `export_run`, also recording which scenario file the run came from, and returning the run's
 /// directory.
 pub fn export_run_from(
@@ -408,6 +420,53 @@ pub fn export_run_from(
     run_id: &str,
     scenario_file: Option<&str>,
     dir: &Path,
+) -> Result<PathBuf, String> {
+    export_run_bounded(r, run_id, scenario_file, dir, REPLICA_ROWS_BUDGET_BYTES)
+}
+
+/// Whether fleet sample `s` of `n` carries per-replica rows at `stride`: every `stride`-th sample
+/// from the first, and always the last, so the run's end is exact and the final row is the run's
+/// final instant. The one place this rule lives; the dashboard's replay adapter assumes it.
+pub fn is_replica_sample(s: usize, n: usize, stride: usize) -> bool {
+    s % stride == 0 || s + 1 == n
+}
+
+/// The smallest stride at which the samples `is_replica_sample` keeps fit `budget_bytes`, given each
+/// sample's rows in bytes. Starts from the stride the total implies and widens until the chosen
+/// samples actually fit, as `stratify_traces` does, because rows are not all the same size: a busy
+/// sample carries TTFT distributions an idle one omits. Never wider than the run, which keeps the
+/// first and last samples whatever the budget.
+pub fn replica_sample_stride(sample_bytes: &[u64], budget_bytes: u64) -> usize {
+    let n = sample_bytes.len();
+    let total: u64 = sample_bytes.iter().sum();
+    let bytes_at = |stride: usize| -> u64 {
+        (0..n).filter(|&s| is_replica_sample(s, n, stride)).map(|s| sample_bytes[s]).sum()
+    };
+    let mut stride = (total.div_ceil(budget_bytes.max(1)) as usize).clamp(1, n.max(1));
+    while stride < n && bytes_at(stride) > budget_bytes {
+        stride += 1;
+    }
+    stride
+}
+
+/// The per-replica rows of sample `s` as `replicas.jsonl` lines.
+fn replica_sample_text(r: &RunResult, s: usize) -> String {
+    let mut lines = String::new();
+    for u in replica_rows(r, s) {
+        lines.push_str(&wire::subscription_update_json(&u));
+        lines.push('\n');
+    }
+    lines
+}
+
+/// `export_run_from` with the `replicas.jsonl` budget chosen by the caller; tests use a small one to
+/// see a stride on a small run.
+pub fn export_run_bounded(
+    r: &RunResult,
+    run_id: &str,
+    scenario_file: Option<&str>,
+    dir: &Path,
+    replica_rows_budget_bytes: u64,
 ) -> Result<PathBuf, String> {
     check_run_id(run_id)?;
     let run_dir = dir.join("runs").join(run_id);
@@ -430,17 +489,18 @@ pub fn export_run_from(
 
     // A separate file rather than interleaved rows: the dashboard reads the fleet stream for every
     // chart and the replica stream only for the heatmap, and an older export without this file is
-    // still a complete run.
+    // still a complete run. Two passes, measure then write, so the exporter holds at most the
+    // budget's worth of rows rather than the 184 MB the largest demo renders in full.
+    let n = r.frames.len();
+    let sample_bytes: Vec<u64> = (0..n).map(|s| replica_sample_text(r, s).len() as u64).collect();
+    let stride = replica_sample_stride(&sample_bytes, replica_rows_budget_bytes);
     let mut lines = String::new();
-    for s in 0..r.frames.len() {
-        for u in replica_rows(r, s) {
-            lines.push_str(&wire::subscription_update_json(&u));
-            lines.push('\n');
-        }
+    for s in (0..n).filter(|&s| is_replica_sample(s, n, stride)) {
+        lines.push_str(&replica_sample_text(r, s));
     }
     write("replicas.jsonl", &lines)?;
 
-    merge_index(&dir.join("runs").join("index.json"), &index_entry(r, run_id, scenario_file))?;
+    merge_index(&dir.join("runs").join("index.json"), &index_entry(r, run_id, scenario_file, stride))?;
     Ok(run_dir)
 }
 
@@ -572,7 +632,7 @@ fn stratify_traces(traces: &[RequestTrace], budget_bytes: u64) -> (String, Trace
 
 /// One line of `index.json`. The file is an array written one entry per line, which is what lets
 /// several invocations merge without a JSON parser: each line is one run, found by its `run_id`.
-fn index_entry(r: &RunResult, run_id: &str, scenario_file: Option<&str>) -> String {
+fn index_entry(r: &RunResult, run_id: &str, scenario_file: Option<&str>, replica_sample_stride: usize) -> String {
     let mut j = wire::Json::new();
     j.begin_object()
         .field_str("run_id", run_id)
@@ -585,6 +645,9 @@ fn index_entry(r: &RunResult, run_id: &str, scenario_file: Option<&str>) -> Stri
         .field_u64("sim_end_unix_ns", r.measured_to)
         .field_f64("sample_interval_ms", r.scenario.sample_interval_ms)
         .field_int("replicas", r.scenario.replicas as i64)
+        // Always written, 1 included, so a reader has one rule and the index one shape; an index
+        // older than this field is read as stride 1, which is what those exports were.
+        .field_int("replica_sample_stride", replica_sample_stride as i64)
         .end_object();
     j.finish()
 }
@@ -863,6 +926,22 @@ mod tests {
         assert!(check_run_id("/abs").is_err());
         assert!(check_run_id("a//b").is_err());
         assert!(check_run_id("").is_err());
+    }
+
+    #[test]
+    fn stride_is_one_within_budget_and_widens_until_the_chosen_samples_fit() {
+        assert_eq!(replica_sample_stride(&[100; 10], 1000), 1);
+        assert_eq!(replica_sample_stride(&[], 1000), 1);
+        // 1000 bytes over a 300 budget implies 4; samples 0, 4, 8 and the last (9) are 400, so 5
+        // (0, 5, 9: 300) is the first that fits.
+        assert_eq!(replica_sample_stride(&[100; 10], 300), 5);
+        // Uneven samples: the total implies 2, but the even samples are the heavy ones.
+        assert_eq!(replica_sample_stride(&[300, 10, 300, 10, 300, 10], 500), 3);
+        // Never wider than the run: the first and last samples are kept whatever the budget.
+        assert_eq!(replica_sample_stride(&[100; 10], 1), 10);
+        let n = 10;
+        let kept: Vec<usize> = (0..n).filter(|&s| is_replica_sample(s, n, 4)).collect();
+        assert_eq!(kept, vec![0, 4, 8, 9]);
     }
 
     #[test]

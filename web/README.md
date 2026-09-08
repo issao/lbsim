@@ -79,7 +79,9 @@ What you get, per `docs/dashboard-plan.md` section 3:
 - Quantities the engine does not simulate yet (preemptions, wasted GPU, prefix hits, memory tiers,
   the warming/draining/ejected counts, request traces) render as a dash that says `not simulated
   yet` on hover; there is no chart for them. The per-replica table and heatmap read
-  `replicas.jsonl`, including the state, true speed and TTFT mean per replica (U101).
+  `replicas.jsonl`, including the state, true speed and TTFT mean per replica (U101). A large run's
+  rows are sampled at the stride the index declares (`replica_sample_stride`, so the file stays
+  under 8 MiB); frames between samples show the last sampled rows.
 - Play, pause, speed, step and scrub work locally over the loaded frames, so every scrub is a log
   read. Rewind-and-resimulate, workload and policy changes and restart are refused with the reason
   `replay of a recorded run; changing load or policy needs a live engine`, and the banner names the
