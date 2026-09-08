@@ -55,6 +55,14 @@ pub struct RunState {
     pub paused: bool,
     /// Stopped by the idle guard; `GetRun` shows `STATE_PAUSED` with `error` empty per WIRE.md.
     pub idle_stopped: bool,
+    /// When the idle guard stopped it, so the run thread can reap a run nobody came back for.
+    /// Cleared with `idle_stopped`.
+    pub idle_stopped_at_wall_ns: Option<u64>,
+    /// Unregistered, by `StartRun` at the cap or by the reap: the run thread exits on sight and
+    /// nothing more is written. Whoever still holds the `Arc<Run>` reads why in `note`.
+    pub evicted: bool,
+    /// Registration order for the eviction: `r-10` sorts before `r-2`, so the map's order is no use.
+    pub started_at_wall_ns: u64,
     /// Simulated seconds per wall second. Zero is as fast as possible.
     pub realtime_factor: f64,
     pub sim_time: Nanos,
@@ -96,6 +104,9 @@ impl RunState {
             state: State::Queued,
             paused: false,
             idle_stopped: false,
+            idle_stopped_at_wall_ns: None,
+            evicted: false,
+            started_at_wall_ns: wall_now_ns(),
             realtime_factor: max_realtime_factor,
             sim_time: EPOCH_BASE,
             sim_end,
@@ -174,6 +185,7 @@ impl Run {
         if !paused {
             // A speed change is a viewer's request; it also lifts an idle stop.
             st.idle_stopped = false;
+            st.idle_stopped_at_wall_ns = None;
             st.state = State::Running;
         } else {
             st.state = State::Paused;
@@ -195,6 +207,7 @@ impl Run {
         let target = st.sim_time.saturating_add(sim_duration_ns.min(STEP_CAP_NS)).min(st.sim_end);
         st.step_target = Some(target);
         st.idle_stopped = false;
+        st.idle_stopped_at_wall_ns = None;
         st.state = State::Running;
         self.changed.notify_all();
         while st.step_target.is_some() && !st.is_terminal() {
@@ -262,6 +275,7 @@ impl Run {
         let mut st = self.lock();
         if st.idle_stopped && !st.paused && !st.is_terminal() {
             st.idle_stopped = false;
+            st.idle_stopped_at_wall_ns = None;
             st.state = State::Running;
             self.changed.notify_all();
         }
@@ -304,6 +318,12 @@ impl Registry {
         runs.values().map(|r| r.status()).collect()
     }
 
+    /// The reap's half of an eviction: takes `runs` alone, so the run thread calls it after it
+    /// has let go of its own state.
+    fn remove(&self, run_id: &str) {
+        self.runs.lock().unwrap_or_else(|e| e.into_inner()).remove(run_id);
+    }
+
     /// `StartRun`. Builds the engine on the run thread and waits for its verdict, so an invalid
     /// scenario is a 400 here rather than a run that is born failed.
     pub fn start(self: &Arc<Self>, scenario: Scenario, max_realtime_factor: f64) -> Result<String, Refused> {
@@ -312,9 +332,31 @@ impl Registry {
         }
         // Held until the run is registered, so the cap is exact under concurrent starts.
         let mut runs = self.runs.lock().unwrap_or_else(|e| e.into_inner());
-        let live = runs.values().filter(|r| !r.lock().is_terminal()).count();
-        if live >= MAX_LIVE_RUNS {
-            return Err(refused(503, format!("{live} runs are live, the most this server holds; stop one first")));
+        // The cap bounds CPU and memory for live work. A parked checkpoint is neither, so an
+        // idle-stopped run gives up its slot, oldest first, and the 503 is for a box whose eight
+        // are all busy or watched; a crashed tab must never be able to lock the public site.
+        loop {
+            let held = runs.values().filter(|r| !r.lock().is_terminal()).count();
+            if held < MAX_LIVE_RUNS {
+                break;
+            }
+            let oldest_idle = runs
+                .iter()
+                .filter_map(|(id, r)| {
+                    let st = r.lock();
+                    (st.idle_stopped && !st.is_terminal()).then(|| (st.started_at_wall_ns, id.clone()))
+                })
+                .min();
+            let Some((_, id)) = oldest_idle else {
+                return Err(refused(503, format!("{held} runs are live, the most this server holds; stop one first")));
+            };
+            let run = runs.remove(&id).expect("the id came from this map");
+            let mut st = run.lock();
+            st.evicted = true;
+            st.note = format!(
+                "evicted: {MAX_LIVE_RUNS} runs held and a StartRun arrived; the checkpoint under runs/{id}/ stays"
+            );
+            run.changed.notify_all();
         }
         let run_id = {
             let mut n = self.next_id.lock().unwrap_or_else(|e| e.into_inner());
@@ -356,8 +398,10 @@ enum Next {
     Wait,
     /// Aggregate and mark complete.
     Finish,
-    /// Terminal and checkpointed, or the state is gone: leave.
+    /// Terminal and checkpointed, or evicted: leave.
     Exit,
+    /// Idle-stopped for twice the threshold and nobody came back: unregister, then leave.
+    Reap,
 }
 
 /// The run thread. `ready` carries `Sim::new`'s verdict back to `StartRun`.
@@ -413,6 +457,7 @@ fn drive(run: Arc<Run>, reg: Arc<Registry>, sc: Scenario, ready: mpsc::SyncSende
                 checkpointed_now = true;
                 if !st.is_terminal() {
                     st.idle_stopped = true;
+                    st.idle_stopped_at_wall_ns = Some(now_wall);
                     st.state = State::Paused;
                     st.note = format!(
                         "idle for {} s with no live lease and no queued work: checkpointed and stopped advancing",
@@ -422,7 +467,23 @@ fn drive(run: Arc<Run>, reg: Arc<Registry>, sc: Scenario, ready: mpsc::SyncSende
                 run.changed.notify_all();
             }
 
-            if st.is_terminal() {
+            let reap_due = st
+                .idle_stopped_at_wall_ns
+                .is_some_and(|at| now_wall.saturating_sub(at) >= 2 * reg.idle_threshold_ns);
+            if st.evicted {
+                Next::Exit
+            } else if reap_due && !st.is_terminal() {
+                // Bounds memory with no new arrivals to evict it: the checkpoint from the idle
+                // stop is already on disk, so nothing is lost but the in-memory engine.
+                st.evicted = true;
+                st.note = format!(
+                    "reaped: idle-stopped for {} s, twice the idle threshold; the checkpoint under runs/{}/ stays",
+                    2 * reg.idle_threshold_ns / 1_000_000_000,
+                    st.run_id
+                );
+                run.changed.notify_all();
+                Next::Reap
+            } else if st.is_terminal() {
                 // The checkpoint is the last thing a finished run's thread does.
                 if checkpointed_now { Next::Exit } else { Next::Wait }
             } else if st.stop_requested {
@@ -463,6 +524,10 @@ fn drive(run: Arc<Run>, reg: Arc<Registry>, sc: Scenario, ready: mpsc::SyncSende
 
         match next {
             Next::Exit => return,
+            Next::Reap => {
+                reg.remove(&run_id);
+                return;
+            }
             Next::Wait => {
                 let st = run.lock();
                 let _ = run.changed.wait_timeout(st, POLL);
@@ -910,5 +975,68 @@ mod tests {
         for id in ids.iter().skip(1).chain([&ninth]) {
             reg.get(id).unwrap().stop();
         }
+    }
+
+    /// Polls every few milliseconds, for up to `secs`; the run thread's own cadence is `POLL`.
+    fn wait_for(what: &str, secs: u64, mut done: impl FnMut() -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(secs);
+        while !done() {
+            assert!(Instant::now() < deadline, "{what} did not happen within {secs} s");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn an_idle_stopped_run_does_not_count_and_is_evicted_at_the_cap() {
+        let reg = Arc::new(Registry::new(temp_dir("cap-idle"), 50_000_000));
+        // Paced with no lease: idle from birth, stopped by the guard within a few polls.
+        let first_id = reg.start(scenario("100"), 1.0).unwrap();
+        let first = reg.get(&first_id).unwrap();
+        // The seven that must stay live are leased before they start: a 50 ms threshold leaves
+        // no honest window to lease them afterwards, and ids are handed out in order.
+        let mut live = Vec::new();
+        for n in 0..MAX_LIVE_RUNS - 1 {
+            let expected = format!("r-{}", n + 2);
+            reg.leases().open(&expected, 60_000_000_000, wall_now_ns());
+            let id = reg.start(scenario("100"), 1.0).unwrap();
+            assert_eq!(id, expected);
+            live.push(id);
+        }
+        wait_for("the idle stop", 2, || first.lock().idle_stopped);
+        assert!(reg.get(&first_id).is_some(), "an idle-stopped run stays registered until the cap needs its slot");
+
+        // Eight held, one of them parked: the parked one gives up its slot.
+        let expected = format!("r-{}", MAX_LIVE_RUNS + 1);
+        reg.leases().open(&expected, 60_000_000_000, wall_now_ns());
+        let last = reg.start(scenario("100"), 1.0).expect("the idle-stopped run did not count");
+        assert_eq!(last, expected);
+        live.push(last);
+        assert!(reg.get(&first_id).is_none(), "evicted at the cap");
+        assert_eq!(reg.list().len(), MAX_LIVE_RUNS);
+        assert!(first.lock().evicted);
+        assert!(first.lock().note.starts_with("evicted:"), "{}", first.lock().note);
+        let status = reg.root.join("runs").join(&first_id).join("status.json");
+        wait_for("the checkpoint", 2, || status.exists());
+
+        // Every slot busy or watched: nothing to evict, so the cap answers.
+        let refused = reg.start(scenario("100"), 1.0).unwrap_err();
+        assert_eq!(refused.code, 503, "{}", refused.message);
+        assert_eq!(reg.list().len(), MAX_LIVE_RUNS);
+        for id in &live {
+            reg.get(id).unwrap().stop();
+        }
+    }
+
+    #[test]
+    fn an_idle_stopped_run_is_reaped_after_twice_the_threshold() {
+        let reg = Arc::new(Registry::new(temp_dir("reap-idle"), 50_000_000));
+        let id = reg.start(scenario("100"), 1.0).unwrap();
+        let run = reg.get(&id).unwrap();
+        wait_for("the reap", 2, || reg.get(&id).is_none());
+        assert!(reg.list().is_empty());
+        let st = run.lock();
+        assert!(st.evicted && st.idle_stopped);
+        assert!(st.note.starts_with("reaped:"), "{}", st.note);
+        assert!(reg.root.join("runs").join(&id).join("status.json").exists(), "the checkpoint outlives the run");
     }
 }
