@@ -124,6 +124,8 @@ const finalLine = extraFail => {
       s1 && s2 ? `${s1.now} -> ${s2.now} over 4 s (max ${s2.max})` : 'no [role=slider]');
     check('dashboard: no js errors', log.errs.length === 0, log.errs.slice(0, 3).join(' | '));
     check('dashboard: no 4xx/5xx', log.bad.length === 0, log.bad.slice(0, 3).join(' | '));
+    const controlTag = await page.$eval('#control .mock-tag', el => el.textContent.trim()).catch(() => null);
+    check('dashboard: control panel tagged live', controlTag === 'live', controlTag);
     await page.close();
   }
 
@@ -223,6 +225,14 @@ const finalLine = extraFail => {
     check('replay dashboard (server=off)', /replay/i.test(t) && !/waiting for the first sample/i.test(t), t.slice(0, 140));
     const replayBadge = await badge(page);
     check('replay: badge replay', /^replay — /.test(replayBadge || ''), replayBadge);
+    const replayControlTag = await page.$eval('#control .mock-tag', el => el.textContent.trim()).catch(() => null);
+    check('replay: control panel tagged replay', replayControlTag === 'replay', replayControlTag);
+    const loadTabBtn = await page.$('#control button:has-text("Load")');
+    if (loadTabBtn) await loadTabBtn.click();
+    await sleep(300);
+    const loadDisabled = await page.$eval('#control fieldset[disabled]', el => el.textContent).catch(() => null);
+    check('replay: load tab disabled as recording', Boolean(loadDisabled && /recording/i.test(loadDisabled)),
+      loadDisabled ? loadDisabled.slice(0, 120) : 'no fieldset[disabled] in #control');
     check('replay: no js errors', log.errs.length === 0, log.errs.slice(0, 3).join(' | '));
     await page.close();
   }
