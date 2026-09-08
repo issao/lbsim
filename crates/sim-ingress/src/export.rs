@@ -699,6 +699,11 @@ pub const DEMOS: &[Demo] = &[
         files: &["gray_failure_none.txt", "gray_failure_eject.txt"],
         sweep: None,
     },
+    Demo {
+        group: "17-cascade",
+        files: &["cascade_p2c.txt", "cascade_affinity.txt"],
+        sweep: None,
+    },
 ];
 
 /// Set one key, through the text form so there is exactly one place that knows the key names. The

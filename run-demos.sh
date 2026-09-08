@@ -72,5 +72,9 @@ echo; echo "== 15. gray failure: a replica at 0.3x that announces healthy, with 
 $S compare scenarios/gray_failure_none.txt scenarios/gray_failure_eject.txt \
            --out out/15-gray-failure.html
 
+echo; echo "== 17. affinity hotspot failover cascade: the hottest holder crashes at 60 s and returns cold at 90 s, p2c against affinity =="
+$S compare scenarios/cascade_p2c.txt scenarios/cascade_affinity.txt \
+           --out out/17-cascade.html
+
 echo; echo "reports in out/"
 echo "for machine-readable telemetry, add: --telemetry out/NAME.tele [--telemetry-budget-mb N]"
