@@ -891,58 +891,118 @@ pub fn distribution_over_replicas(values: &[f64], percentiles: &[f64]) -> Option
     })
 }
 
-/// One `MetricRow` for one frame. `None` when the target names a replica the scenario has not got.
+/// One `MetricRow` for one frame: the raw sample cadence, `row_over` on a window of one.
 pub fn row(f: &Frame, sc: &Scenario, spec: &RowSpec) -> Option<MetricRow> {
+    row_over(std::slice::from_ref(f), sc, spec)
+}
+
+/// How many recorded frames a smoothing window covers: the frames whose instant lies in
+/// `(t - window, t]` at the engine's cadence, which is `ceil(window / interval)`, never fewer than
+/// one. Zero is the raw cadence, and so is any window shorter than one sample.
+pub fn frames_in_window(smoothing_window_ns: u64, sample_interval_ns: Nanos) -> usize {
+    let iv = sample_interval_ns.max(1);
+    (smoothing_window_ns.div_ceil(iv)).max(1) as usize
+}
+
+/// The mean of the finite values in `it`, NaN when there are none. `MetricRow::value` drops NaN,
+/// so a gauge undefined in every frame of the window stays absent, as it is in a raw row.
+fn mean_finite(it: impl Iterator<Item = f64>) -> f64 {
+    let (mut sum, mut n) = (0.0, 0usize);
+    for v in it.filter(|v| v.is_finite()) {
+        sum += v;
+        n += 1;
+    }
+    if n == 0 { f64::NAN } else { sum / n as f64 }
+}
+
+/// One `MetricRow` over a trailing window of frames, the last of which is the sample's own:
+/// `OpenSubscriptionRequest.smoothing_window_ns` as WIRE.md defines it. `None` when the target
+/// names a replica the scenario has not got.
+///
+/// The rules, chosen so that a window of one frame is bit-for-bit the raw row:
+///
+/// - a gauge or a rate is the mean of its per-frame values, each computed exactly as the raw row
+///   computes it (every frame covers one sample interval, so the mean of per-frame rates is the
+///   rate over the window);
+/// - a fraction of requests (SLO attainment) or of time (compute-bound share, prefix hit rate) is
+///   the ratio of the window's sums, so a frame that ended two requests does not weigh as much as
+///   one that ended two hundred;
+/// - a latency distribution is the merge of the frames' histograms, so its p99 is the p99 of every
+///   request that finished in the window;
+/// - a distribution over replicas (GPU, KV) is taken over each replica's mean across the window,
+///   the question being how many replicas sat idle over the window while others saturated;
+/// - a count of replicas by state, and a replica's own state, are read at the sample: a fraction
+///   of a replica is not a count, and the Machines page enumerates ids from the ready count.
+pub fn row_over(window: &[Frame], sc: &Scenario, spec: &RowSpec) -> Option<MetricRow> {
+    let last = window.last()?;
     let mut row = MetricRow::new(spec.target);
     let cap = sc.kv_capacity_tokens.max(1.0);
+    let iv_s = (sc.sample_interval_ms / 1000.0).max(1e-9);
+    let window_ns = (sc.sample_interval_ms * 1e6).max(1e-9);
+    let avg = |per_frame: &dyn Fn(&Frame) -> f64| mean_finite(window.iter().map(per_frame));
+    let sum = |per_frame: &dyn Fn(&Frame) -> u64| window.iter().map(per_frame).sum::<u64>();
     match spec.target {
         Target::Replica(id) => {
-            let r = f.replicas.get(usize::try_from(id).ok()?)?;
+            let idx = usize::try_from(id).ok()?;
+            let r = last.replicas.get(idx)?;
+            // The replica's sample in every frame of the window that has one.
+            let samples: Vec<&sim_metrics::ReplicaSample> = window.iter().filter_map(|f| f.replicas.get(idx)).collect();
+            let avg_r = |g: &dyn Fn(&sim_metrics::ReplicaSample) -> f64| mean_finite(samples.iter().map(|s| g(s)));
+            let sum_r = |g: &dyn Fn(&sim_metrics::ReplicaSample) -> u64| samples.iter().map(|s| g(s)).sum::<u64>();
             let mut value = |m: i32, v: f64| {
                 if spec.wants(m) {
                     row.value(m, v);
                 }
             };
-            value(wire::METRIC_QUEUED_SEQS, r.queued as f64);
-            value(wire::METRIC_RUNNING_SEQS, r.running as f64);
-            value(wire::METRIC_KV_UTILIZATION, r.kv_tokens as f64 / cap);
-            value(METRIC_KV_TOKENS_RESIDENT, r.kv_tokens as f64);
+            value(wire::METRIC_QUEUED_SEQS, avg_r(&|r| r.queued as f64));
+            value(wire::METRIC_RUNNING_SEQS, avg_r(&|r| r.running as f64));
+            value(wire::METRIC_KV_UTILIZATION, avg_r(&|r| r.kv_tokens as f64 / cap));
+            value(METRIC_KV_TOKENS_RESIDENT, avg_r(&|r| r.kv_tokens as f64));
             // Busy is not useful work: compute-bound is busy's complement of `WASTED_GPU_FRACTION`.
             // `busy_ns` never exceeds the window by construction, but the ratio is clamped anyway
             // rather than trust an upstream invariant. 0/0 (never stepped) is NaN, which `value`
             // drops.
-            let window_ns = (sc.sample_interval_ms * 1e6).max(1e-9);
-            value(wire::METRIC_GPU_UTILIZATION, (r.busy_ns as f64 / window_ns).min(1.0));
-            value(wire::METRIC_GPU_COMPUTE_BOUND_FRACTION, r.compute_ns as f64 / r.busy_ns as f64);
+            value(wire::METRIC_GPU_UTILIZATION, avg_r(&|r| (r.busy_ns as f64 / window_ns).min(1.0)));
+            value(
+                wire::METRIC_GPU_COMPUTE_BOUND_FRACTION,
+                sum_r(&|r| r.compute_ns) as f64 / sum_r(&|r| r.busy_ns) as f64,
+            );
             value(wire::METRIC_REPLICA_STATE, r.state as f64);
-            value(wire::METRIC_TRUE_SPEED_MULTIPLIER, r.speed);
-            value(wire::METRIC_PREEMPTIONS_PER_S, r.preemptions as f64 / (window_ns / 1e9));
+            value(wire::METRIC_TRUE_SPEED_MULTIPLIER, avg_r(&|r| r.speed));
+            value(wire::METRIC_PREEMPTIONS_PER_S, avg_r(&|r| r.preemptions as f64 / (window_ns / 1e9)));
             // `prompt_tokens` accumulates on every admission regardless of a prefix model, so gating
             // on it alone would put a permanent, meaningless 0% reading on every scenario that never
             // asked for prefix caching. NaN when there is no prefix model, which `value` drops; a
             // real cache with nothing admitted this window is also NaN (0/0) for the same reason.
             value(
                 wire::METRIC_PREFIX_HIT_RATE,
-                if sc.prefix_roots > 0 { r.prefix_hit_tokens as f64 / r.prompt_tokens as f64 } else { f64::NAN },
+                if sc.prefix_roots > 0 {
+                    sum_r(&|r| r.prefix_hit_tokens) as f64 / sum_r(&|r| r.prompt_tokens) as f64
+                } else {
+                    f64::NAN
+                },
             );
             // Seconds as a double, like every other duration gauge and like export.rs's replica
             // row — not a distribution. Zero means the replica has not stepped yet, and a
-            // duration of nothing is a gap. Raw `row.value` rather than the closure: this is the
-            // closure's last use above, and a borrow of `row` through it must not still be live
-            // when the direct calls below borrow `row` again.
-            if spec.wants(METRIC_STEP_TIME) && r.last_step_ns > 0 {
-                row.value(METRIC_STEP_TIME, r.last_step_ns as f64 / 1e9);
+            // duration of nothing is a gap, so only the frames in which it stepped count. Raw
+            // `row.value` rather than the closure: this is the closure's last use above, and a
+            // borrow of `row` through it must not still be live when the direct calls below
+            // borrow `row` again.
+            let stepped: Vec<f64> = samples.iter().filter(|s| s.last_step_ns > 0).map(|s| s.last_step_ns as f64).collect();
+            if spec.wants(METRIC_STEP_TIME) && !stepped.is_empty() {
+                row.value(METRIC_STEP_TIME, mean_finite(stepped.into_iter()) / 1e9);
             }
             // A distribution rather than a value so the client's histogram code path serves both;
             // a mean of one bucket, no percentiles, `from_merged_histogram: false` because it was
             // never a histogram. Omitted, not zero, when nothing in the replica got a first token
-            // this window: a mean of nothing is a gap, not 0 ns.
-            if spec.wants(wire::METRIC_TTFT) && r.ttft_count > 0 {
+            // in the window: a mean of nothing is a gap, not 0 ns.
+            let ttft_count = sum_r(&|r| r.ttft_count);
+            if spec.wants(wire::METRIC_TTFT) && ttft_count > 0 {
                 row.distribution(
                     wire::METRIC_TTFT,
                     Distribution {
-                        count: r.ttft_count,
-                        mean: r.ttft_sum_ns as f64 / r.ttft_count as f64,
+                        count: ttft_count,
+                        mean: sum_r(&|r| r.ttft_sum_ns) as f64 / ttft_count as f64,
                         min: 0.0,
                         max: 0.0,
                         percentile: Vec::new(),
@@ -953,70 +1013,67 @@ pub fn row(f: &Frame, sc: &Scenario, spec: &RowSpec) -> Option<MetricRow> {
             }
         }
         Target::Fleet => {
-            let iv_s = (sc.sample_interval_ms / 1000.0).max(1e-9);
             // The fleet's means are over the replicas that are there to serve: an absent slot (0) or
             // one inside its cold start (4) has no device behind it yet. Every slot in a fixed fleet.
-            let serving: Vec<&sim_metrics::ReplicaSample> =
-                f.replicas.iter().filter(|r| !matches!(r.state, 0 | 4)).collect();
+            // Membership is read at the sample, like the state counts below.
+            let is_serving = |r: &sim_metrics::ReplicaSample| !matches!(r.state, 0 | 4);
+            let serving: Vec<usize> = (0..last.replicas.len()).filter(|&i| is_serving(&last.replicas[i])).collect();
             let n = serving.len().max(1) as f64;
-            let queued: u64 = f.replicas.iter().map(|r| u64::from(r.queued)).sum();
-            let running: u64 = f.replicas.iter().map(|r| u64::from(r.running)).sum();
-            let kv: u64 = f.replicas.iter().map(|r| r.kv_tokens).sum();
-            let ended = f.completed + f.rejected + f.timed_out;
+            let ended = sum(&|f| f.completed + f.rejected + f.timed_out);
             let mut value = |m: i32, v: f64| {
                 if spec.wants(m) {
                     row.value(m, v);
                 }
             };
-            value(wire::METRIC_OFFERED_RPS, f.offered_rps);
-            value(wire::METRIC_ADMITTED_RPS, f.admitted as f64 / iv_s);
-            value(wire::METRIC_COMPLETED_RPS, f.completed as f64 / iv_s);
-            value(wire::METRIC_REJECTED_RPS, f.rejected as f64 / iv_s);
-            value(wire::METRIC_OUTPUT_TOKENS_PER_S, f.output_tokens as f64 / iv_s);
-            value(wire::METRIC_GOODPUT_TOKENS_PER_S, f.goodput_tokens as f64 / iv_s);
+            value(wire::METRIC_OFFERED_RPS, avg(&|f| f.offered_rps));
+            value(wire::METRIC_ADMITTED_RPS, avg(&|f| f.admitted as f64 / iv_s));
+            value(wire::METRIC_COMPLETED_RPS, avg(&|f| f.completed as f64 / iv_s));
+            value(wire::METRIC_REJECTED_RPS, avg(&|f| f.rejected as f64 / iv_s));
+            value(wire::METRIC_OUTPUT_TOKENS_PER_S, avg(&|f| f.output_tokens as f64 / iv_s));
+            value(wire::METRIC_GOODPUT_TOKENS_PER_S, avg(&|f| f.goodput_tokens as f64 / iv_s));
             // Rates, and explicit zeros: a fleet with headroom preempts nothing, and the panel must
             // read that as 0/s rather than as a metric nobody serves (U115).
-            value(wire::METRIC_PREEMPTIONS_PER_S, f.preemptions as f64 / iv_s);
-            value(wire::METRIC_RETRIES_PER_S, f.retries as f64 / iv_s);
-            value(wire::METRIC_QUEUED_SEQS, queued as f64);
-            value(wire::METRIC_RUNNING_SEQS, running as f64);
-            value(wire::METRIC_KV_UTILIZATION, kv as f64 / cap / n);
-            value(METRIC_KV_TOKENS_RESIDENT, kv as f64);
-            value(wire::METRIC_LOAD_IMBALANCE_CV, imbalance(f));
+            value(wire::METRIC_PREEMPTIONS_PER_S, avg(&|f| f.preemptions as f64 / iv_s));
+            value(wire::METRIC_RETRIES_PER_S, avg(&|f| f.retries as f64 / iv_s));
+            value(wire::METRIC_QUEUED_SEQS, avg(&|f| f.replicas.iter().map(|r| u64::from(r.queued)).sum::<u64>() as f64));
+            value(wire::METRIC_RUNNING_SEQS, avg(&|f| f.replicas.iter().map(|r| u64::from(r.running)).sum::<u64>() as f64));
+            value(wire::METRIC_KV_UTILIZATION, avg(&|f| f.replicas.iter().map(|r| r.kv_tokens).sum::<u64>() as f64 / cap / n));
+            value(METRIC_KV_TOKENS_RESIDENT, avg(&|f| f.replicas.iter().map(|r| r.kv_tokens).sum::<u64>() as f64));
+            value(wire::METRIC_LOAD_IMBALANCE_CV, avg(&imbalance));
             // Same denominator as the scorecard: everything that ended in the window, shed
             // included, so a policy cannot look good by shedding.
             value(
                 wire::METRIC_SLO_ATTAINMENT,
-                if ended == 0 { f64::NAN } else { f.within_slo as f64 / ended as f64 },
+                if ended == 0 { f64::NAN } else { sum(&|f| f.within_slo) as f64 / ended as f64 },
             );
             // `ReplicaSample::state`'s doc comment: READY is 1 or 2, a crashed replica (3) is still
             // in `f.replicas` so the frame keeps a slot per replica id but it is not ready, and a
             // client deriving "how many are down" as fleet size minus this must see it drop. 4 and 5
             // are the autoscaler's in-between states, 0 a slot it has not filled.
             let live: Vec<&sim_metrics::ReplicaSample> =
-                f.replicas.iter().filter(|r| matches!(r.state, 1 | 2)).collect();
+                last.replicas.iter().filter(|r| matches!(r.state, 1 | 2)).collect();
             value(wire::METRIC_READY_REPLICAS, live.len() as f64);
-            value(wire::METRIC_WARMING_REPLICAS, f.replicas.iter().filter(|r| r.state == 4).count() as f64);
-            value(wire::METRIC_DRAINING_REPLICAS, f.replicas.iter().filter(|r| r.state == 5).count() as f64);
+            value(wire::METRIC_WARMING_REPLICAS, last.replicas.iter().filter(|r| r.state == 4).count() as f64);
+            value(wire::METRIC_DRAINING_REPLICAS, last.replicas.iter().filter(|r| r.state == 5).count() as f64);
             value(
                 wire::METRIC_TRUE_SPEED_MULTIPLIER,
-                if live.is_empty() {
-                    0.0
-                } else {
-                    live.iter().map(|r| r.speed).sum::<f64>() / live.len() as f64
-                },
+                avg(&|f| {
+                    let live: Vec<&sim_metrics::ReplicaSample> = f.replicas.iter().filter(|r| matches!(r.state, 1 | 2)).collect();
+                    if live.is_empty() { 0.0 } else { live.iter().map(|r| r.speed).sum::<f64>() / live.len() as f64 }
+                }),
             );
             // GPU utilization and the KV-utilization band: the mean is never the interesting
             // number, it is how many replicas sit idle while others saturate. Same percentiles as
             // the latency distributions below, falling back to 50/90/99 when the spec asked for
             // none, because "no percentiles requested" means "give me the defaults", not "give me
-            // none".
-            let window_ns = (sc.sample_interval_ms * 1e6).max(1e-9);
-            let gpu: Vec<f64> =
-                serving.iter().map(|r| (r.busy_ns as f64 / window_ns).min(1.0)).collect();
-            let kv_ratios: Vec<f64> = serving.iter().map(|r| r.kv_tokens as f64 / cap).collect();
-            let busy_sum: u64 = f.replicas.iter().map(|r| r.busy_ns).sum();
-            let compute_sum: u64 = f.replicas.iter().map(|r| r.compute_ns).sum();
+            // none". Each replica's reading is its mean over the window.
+            let per_replica = |i: usize, g: &dyn Fn(&sim_metrics::ReplicaSample) -> f64| {
+                mean_finite(window.iter().filter_map(|f| f.replicas.get(i)).map(g))
+            };
+            let gpu: Vec<f64> = serving.iter().map(|&i| per_replica(i, &|r| (r.busy_ns as f64 / window_ns).min(1.0))).collect();
+            let kv_ratios: Vec<f64> = serving.iter().map(|&i| per_replica(i, &|r| r.kv_tokens as f64 / cap)).collect();
+            let busy_sum = sum(&|f| f.replicas.iter().map(|r| r.busy_ns).sum::<u64>());
+            let compute_sum = sum(&|f| f.replicas.iter().map(|r| r.compute_ns).sum::<u64>());
             value(wire::METRIC_GPU_UTILIZATION, gpu.iter().sum::<f64>() / n);
             value(wire::METRIC_GPU_COMPUTE_BOUND_FRACTION, compute_sum as f64 / busy_sum as f64);
             // Ratio of sums, not a mean of per-replica ratios, so a replica with no prompt tokens
@@ -1025,8 +1082,8 @@ pub fn row(f: &Frame, sc: &Scenario, spec: &RowSpec) -> Option<MetricRow> {
             // the ratio alone can't tell "no cache" from "cache, nothing admitted" (both NaN-free
             // zero would be misleading; NaN, which `value` drops, is correct for the former).
             let prefix_hit_rate = if sc.prefix_roots > 0 {
-                let prompt_sum: u64 = f.replicas.iter().map(|r| r.prompt_tokens).sum();
-                let hit_sum: u64 = f.replicas.iter().map(|r| r.prefix_hit_tokens).sum();
+                let prompt_sum = sum(&|f| f.replicas.iter().map(|r| r.prompt_tokens).sum::<u64>());
+                let hit_sum = sum(&|f| f.replicas.iter().map(|r| r.prefix_hit_tokens).sum::<u64>());
                 hit_sum as f64 / prompt_sum as f64
             } else {
                 f64::NAN
@@ -1046,10 +1103,13 @@ pub fn row(f: &Frame, sc: &Scenario, spec: &RowSpec) -> Option<MetricRow> {
                 }
             }
             // The memory tiers are cluster-scoped, so they are fleet gauges and no replica row
-            // carries them; see `tier_gauges` for the per-tier encoding.
+            // carries them; see `tier_gauges` for the per-tier encoding. Over a window each tier's
+            // reading is its mean, slot by slot: the slots are the scenario's tiers, the same in
+            // every frame.
             if spec.wants(wire::METRIC_TIER_UTILIZATION) || spec.wants(wire::METRIC_TIER_BANDWIDTH_UTILIZATION) {
-                let (fill, busy) = tier_gauges(f, sc);
-                let (fill_v, fabric_v) = tier_values(f, sc);
+                let (fill, busy) = tier_gauges_over(window, sc);
+                let fill_v = avg(&|f| tier_values(f, sc).0);
+                let fabric_v = avg(&|f| tier_values(f, sc).1);
                 if spec.wants(wire::METRIC_TIER_UTILIZATION) {
                     row.value(wire::METRIC_TIER_UTILIZATION, fill_v);
                     row.distribution(wire::METRIC_TIER_UTILIZATION, fill);
@@ -1059,19 +1119,56 @@ pub fn row(f: &Frame, sc: &Scenario, spec: &RowSpec) -> Option<MetricRow> {
                     row.distribution(wire::METRIC_TIER_BANDWIDTH_UTILIZATION, busy);
                 }
             }
-            for (m, h) in [
-                (wire::METRIC_TTFT, &f.ttft),
-                (wire::METRIC_ITL, &f.itl_max),
-                (wire::METRIC_E2E, &f.e2e),
-                (wire::METRIC_QUEUE_WAIT, &f.queue_wait),
-            ] {
+            for m in [wire::METRIC_TTFT, wire::METRIC_ITL, wire::METRIC_E2E, wire::METRIC_QUEUE_WAIT] {
                 if spec.wants(m) {
-                    row.distribution(m, distribution(h, &spec.percentiles));
+                    row.distribution(m, distribution(&merged_histogram(window, m), &spec.percentiles));
                 }
             }
         }
     }
     Some(row)
+}
+
+/// The frame's windowed histogram for one of the four latency metrics.
+fn latency_histogram(f: &Frame, metric: i32) -> &SparseHistogram {
+    match metric {
+        wire::METRIC_TTFT => &f.ttft,
+        wire::METRIC_ITL => &f.itl_max,
+        wire::METRIC_E2E => &f.e2e,
+        _ => &f.queue_wait,
+    }
+}
+
+/// The frames' histograms of one latency merged bucket-wise; a window of one is that frame's own.
+fn merged_histogram(window: &[Frame], metric: i32) -> SparseHistogram {
+    let mut it = window.iter().map(|f| latency_histogram(f, metric));
+    let mut h = it.next().cloned().unwrap_or_default();
+    for other in it {
+        h.merge(other);
+    }
+    h
+}
+
+/// `tier_gauges` over a window: each tier's fill and busy fraction averaged across the frames. The
+/// tier ids and their order are the scenario's, identical in every frame, so the slots line up.
+fn tier_gauges_over(window: &[Frame], sc: &Scenario) -> (Distribution, Distribution) {
+    let per_frame: Vec<(Distribution, Distribution)> = window.iter().map(|f| tier_gauges(f, sc)).collect();
+    let (last_fill, last_busy) = per_frame.last().cloned().expect("a window has at least one frame");
+    let mean_slots = |busy: bool, template: &Distribution| {
+        let values: Vec<f64> = (0..template.value.len())
+            .map(|k| mean_finite(per_frame.iter().map(|p| if busy { p.1.value[k] } else { p.0.value[k] })))
+            .collect();
+        Distribution {
+            count: values.len() as u64,
+            mean: values.iter().sum::<f64>() / values.len() as f64,
+            min: values.iter().cloned().fold(f64::INFINITY, f64::min),
+            max: values.iter().cloned().fold(f64::NEG_INFINITY, f64::max),
+            percentile: template.percentile.clone(),
+            value: values,
+            from_merged_histogram: false,
+        }
+    };
+    (mean_slots(false, &last_fill), mean_slots(true, &last_busy))
 }
 
 /// Coefficient of variation of queued-plus-running across replicas at the sample, the per-instant
@@ -1213,6 +1310,125 @@ mod tests {
         assert_eq!(d.percentile, vec![50.0, 90.0, 99.0]);
         assert_eq!(d.count, 2);
         assert!(d.value.iter().all(|v| (0.0..=1.0).contains(v)), "{:?}", d.value);
+    }
+
+    /// A frame with nothing in it at `t`, for windows built by hand.
+    fn blank_frame(t: Nanos) -> Frame {
+        Frame {
+            t,
+            offered_rps: 0.0,
+            admitted: 0,
+            completed: 0,
+            rejected: 0,
+            timed_out: 0,
+            within_slo: 0,
+            output_tokens: 0,
+            goodput_tokens: 0,
+            ttft: SparseHistogram::default(),
+            itl_max: SparseHistogram::default(),
+            e2e: SparseHistogram::default(),
+            queue_wait: SparseHistogram::default(),
+            preemptions: 0,
+            retries: 0,
+            tier_dram_used: 0,
+            tier_ssd_used: 0,
+            tier_dram_busy_ns: 0,
+            tier_ssd_busy_ns: 0,
+            replicas: vec![sim_metrics::ReplicaSample { state: 1, speed: 1.0, ..Default::default() }],
+        }
+    }
+
+    fn fleet_value(r: &MetricRow, m: i32) -> Option<f64> {
+        r.values.iter().find(|(k, _)| *k == m).map(|(_, v)| *v)
+    }
+
+    #[test]
+    fn a_smoothing_window_covers_ceil_window_over_interval_frames_never_fewer_than_one() {
+        let iv = 250_000_000;
+        assert_eq!(frames_in_window(0, iv), 1, "zero is the raw cadence");
+        assert_eq!(frames_in_window(100_000_000, iv), 1, "shorter than one sample is raw too");
+        assert_eq!(frames_in_window(250_000_000, iv), 1);
+        assert_eq!(frames_in_window(1_000_000_000, iv), 4);
+        assert_eq!(frames_in_window(1_100_000_000, iv), 5, "(t - 1.1 s, t] holds five frames at 250 ms");
+        assert_eq!(frames_in_window(30_000_000_000, iv), 120);
+        assert_eq!(frames_in_window(120_000_000_000, iv), 480);
+    }
+
+    #[test]
+    fn an_offered_rate_alternating_0_and_100_smooths_to_50_over_any_even_window() {
+        // Issao: "a global selector of a window average ... to make it easier to smooth out
+        // variation/oscilatory patterns". The oscillation is one sample long; every window of an
+        // even number of samples sees half of each, and a window of one is the raw sample.
+        let sc = Scenario::default();
+        let iv = ((sc.sample_interval_ms * 1e6) as Nanos).max(1);
+        let frames: Vec<Frame> = (0..16)
+            .map(|i| {
+                let mut f = blank_frame(EPOCH_BASE + (i + 1) as Nanos * iv);
+                f.offered_rps = if i % 2 == 0 { 0.0 } else { 100.0 };
+                f.replicas[0].queued = if i % 2 == 0 { 0 } else { 10 };
+                f
+            })
+            .collect();
+        let spec = RowSpec { target: Target::Fleet, metrics: Vec::new(), percentiles: Vec::new() };
+        let last = frames.len() - 1;
+        for m in [2usize, 4, 8, 16] {
+            let r = row_over(&frames[last + 1 - m..], &sc, &spec).unwrap();
+            assert_eq!(fleet_value(&r, wire::METRIC_OFFERED_RPS), Some(50.0), "window of {m}");
+            assert_eq!(fleet_value(&r, wire::METRIC_QUEUED_SEQS), Some(5.0), "window of {m}");
+        }
+        let raw = row(&frames[last], &sc, &spec).unwrap();
+        assert_eq!(fleet_value(&raw, wire::METRIC_OFFERED_RPS), Some(100.0));
+        let raw = row_over(&frames[last..], &sc, &spec).unwrap();
+        assert_eq!(fleet_value(&raw, wire::METRIC_OFFERED_RPS), Some(100.0), "a window of one is the raw row");
+        // The replica scope smooths the same way, and its state is the sample's, not a mean.
+        let spec = RowSpec { target: Target::Replica(0), metrics: Vec::new(), percentiles: Vec::new() };
+        let r = row_over(&frames[last + 1 - 4..], &sc, &spec).unwrap();
+        assert_eq!(fleet_value(&r, wire::METRIC_QUEUED_SEQS), Some(5.0));
+        assert_eq!(fleet_value(&r, wire::METRIC_REPLICA_STATE), Some(1.0));
+    }
+
+    #[test]
+    fn a_smoothed_p99_is_the_p99_of_every_request_in_the_window() {
+        // Three frames of very different tails. The window's p99 must be the p99 of the
+        // concatenated records, not an average of the three p99s, which is a number that is not a
+        // percentile of anything.
+        let sc = Scenario::default();
+        let iv = ((sc.sample_interval_ms * 1e6) as Nanos).max(1);
+        let sets: [Vec<u64>; 3] = [
+            (1..=100).map(|i| i * 1_000_000).collect(),
+            (1..=20).map(|i| i * 50_000_000).collect(),
+            vec![3_000_000_000, 4_000_000_000, 400_000_000],
+        ];
+        let mut all = sim_metrics::Histogram::new();
+        let frames: Vec<Frame> = sets
+            .iter()
+            .enumerate()
+            .map(|(i, records)| {
+                let mut f = blank_frame(EPOCH_BASE + (i + 1) as Nanos * iv);
+                let mut h = sim_metrics::Histogram::new();
+                for r in records {
+                    h.record(*r);
+                    all.record(*r);
+                }
+                f.ttft = h.to_sparse();
+                f.completed = records.len() as u64;
+                f
+            })
+            .collect();
+        let spec = RowSpec { target: Target::Fleet, metrics: Vec::new(), percentiles: vec![50.0, 99.0] };
+        let r = row_over(&frames, &sc, &spec).unwrap();
+        let d = r.distributions.iter().find(|(m, _)| *m == wire::METRIC_TTFT).map(|(_, d)| d).unwrap();
+        assert_eq!(d.count, 123);
+        assert_eq!(d.value, vec![all.percentile(50.0) as f64, all.percentile(99.0) as f64]);
+        assert_eq!(d.min, all.min() as f64);
+        assert_eq!(d.max, all.max() as f64);
+        assert_eq!(d.mean, all.mean());
+        assert!(d.from_merged_histogram);
+        let mean_of_p99s: f64 = frames.iter().map(|f| f.ttft.percentile(99.0) as f64).sum::<f64>() / 3.0;
+        assert_ne!(d.value[1], mean_of_p99s, "merged, not averaged");
+        // The rate over the window is the mean of the per-frame rates.
+        let iv_s = sc.sample_interval_ms / 1000.0;
+        assert_eq!(fleet_value(&r, wire::METRIC_COMPLETED_RPS), Some(123.0 / 3.0 / iv_s));
     }
 
     #[test]

@@ -82,6 +82,9 @@ pub const SSE_WRITE_TIMEOUT: Duration = Duration::from_secs(30);
 struct Sub {
     spec: RowSpec,
     samples_per_sim_second: f64,
+    /// `OpenSubscriptionRequest.smoothing_window_ns`: each row is built over the trailing window of
+    /// frames this long, ending at the sample's own frame (`run::row_over`). Zero is the raw cadence.
+    smoothing_window_ns: u64,
     /// The next event id to allocate, from 1.
     next_seq: u64,
     /// The next sample index to deliver, from 1.
@@ -413,6 +416,11 @@ impl Server {
                 Err(_) => return error(stream, 400, "percentiles must be comma-separated numbers"),
             },
         };
+        let smoothing_window_ns = match get("smoothing_window_ns").map(|v| v.parse::<u64>()) {
+            None => 0,
+            Some(Ok(v)) => v,
+            Some(Err(_)) => return error(stream, 400, "smoothing_window_ns must be a decimal string"),
+        };
         let spec = match subscription_spec(&run, get("scope"), get("replica_id"), get("metrics"), percentiles, rate) {
             Ok(spec) => spec,
             Err(reason) => {
@@ -429,6 +437,7 @@ impl Server {
             Sub {
                 spec,
                 samples_per_sim_second: rate,
+                smoothing_window_ns,
                 next_seq: 1,
                 next_k: 1,
                 ring: VecDeque::new(),
@@ -523,7 +532,12 @@ impl Server {
                             } else {
                                 let generated = pick(j, n, ending).and_then(|(idx, is_final)| {
                                     let frame = &st.frames[idx];
-                                    let row = run::row(frame, &st.scenario, &sub.spec)?;
+                                    // The trailing window ends at this frame and covers as many
+                                    // frames before it as exist: a run's first seconds smooth
+                                    // over what there is rather than wait for a full window.
+                                    let m = run::frames_in_window(sub.smoothing_window_ns, st.sample_interval_ns());
+                                    let window = &st.frames[(idx + 1).saturating_sub(m)..=idx];
+                                    let row = run::row_over(window, &st.scenario, &sub.spec)?;
                                     let u = SubscriptionUpdate {
                                         subscription_id: format!("s-{id}"),
                                         sim_time_unix_ns: frame.t,
@@ -974,6 +988,7 @@ mod tests {
         "metrics",
         "samples_per_sim_second",
         "percentiles",
+        "smoothing_window_ns",
     ];
     /// The one documented deviation: the scenario travels as text plus overrides until codegen.
     const WIRE_MD_DEVIATIONS: &[&str] = &["text", "overrides"];
@@ -1224,6 +1239,7 @@ mod tests {
             Sub {
                 spec: RowSpec { target: Target::Fleet, metrics: Vec::new(), percentiles: Vec::new() },
                 samples_per_sim_second: 4.0,
+                smoothing_window_ns: 0,
                 next_seq: 4,
                 next_k: 4,
                 ring: VecDeque::from(vec![(3, "{}".to_string(), true)]),

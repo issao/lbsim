@@ -201,6 +201,49 @@ impl SparseHistogram {
         let below: u64 = self.pairs.iter().filter(|(i, _)| *i as usize <= limit).map(|(_, c)| *c).sum();
         below as f64 / self.count as f64
     }
+
+    /// Bucket-wise addition, the dense form's `merge` on the sparse form: the result answers every
+    /// question exactly as the dense merge of the two would, because the pairs stay in bucket order.
+    /// This is what a smoothing window over frames needs, and why p99 over a window is the p99 of
+    /// every request in it rather than an average of per-frame p99s.
+    pub fn merge(&mut self, other: &SparseHistogram) {
+        if other.count == 0 {
+            return;
+        }
+        let mut merged = Vec::with_capacity(self.pairs.len() + other.pairs.len());
+        let (mut a, mut b) = (self.pairs.iter().peekable(), other.pairs.iter().peekable());
+        loop {
+            match (a.peek(), b.peek()) {
+                (Some(&&(i, x)), Some(&&(j, y))) if i == j => {
+                    merged.push((i, x + y));
+                    a.next();
+                    b.next();
+                }
+                (Some(&&(i, x)), Some(&&(j, _))) if i < j => {
+                    merged.push((i, x));
+                    a.next();
+                }
+                (Some(_), Some(&&(j, y))) => {
+                    merged.push((j, y));
+                    b.next();
+                }
+                (Some(&&pair), None) => {
+                    merged.push(pair);
+                    a.next();
+                }
+                (None, Some(&&pair)) => {
+                    merged.push(pair);
+                    b.next();
+                }
+                (None, None) => break,
+            }
+        }
+        self.min = if self.count == 0 { other.min } else { self.min.min(other.min) };
+        self.max = self.max.max(other.max);
+        self.pairs = merged;
+        self.count += other.count;
+        self.sum += other.sum;
+    }
 }
 
 impl Histogram {

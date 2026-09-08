@@ -187,3 +187,39 @@ fn extreme_values_clamp_instead_of_panicking() {
     assert!(h.percentile(100.0) > 0);
     assert!(h.percentile(50.0) <= h.percentile(100.0));
 }
+
+/// The sparse form merges bucket-wise like the dense one, to the bit: a window of frames merged
+/// sparse answers every question exactly as the dense histogram of every record would.
+#[test]
+fn sparse_merge_equals_the_dense_merge() {
+    use lbsim::metrics::SparseHistogram;
+    let sets: [Vec<u64>; 4] = [
+        (1..=1000).map(|i| i * 1_000).collect(),
+        (1..=50).map(|i| i * 40_000_000).collect(),
+        vec![7, 9_000_000_000, 123_456_789],
+        Vec::new(),
+    ];
+    let mut dense = Histogram::new();
+    let mut sparse = SparseHistogram::default();
+    for records in &sets {
+        let mut h = Histogram::new();
+        for r in records {
+            h.record(*r);
+            dense.record(*r);
+        }
+        sparse.merge(&h.to_sparse());
+    }
+    assert_eq!(sparse, dense.to_sparse());
+    for q in [0.0, 1.0, 50.0, 90.0, 99.0, 99.9, 100.0] {
+        assert_eq!(sparse.percentile(q), dense.percentile(q), "p{q}");
+    }
+    assert_eq!(sparse.mean(), dense.mean());
+    assert_eq!((sparse.min(), sparse.max()), (dense.min(), dense.max()));
+    // Merging into an empty histogram takes the other's bounds rather than the empty one's zeros.
+    let mut empty = SparseHistogram::default();
+    empty.merge(&sets[2].iter().fold(Histogram::new(), |mut h, r| { h.record(*r); h }).to_sparse());
+    assert_eq!((empty.min(), empty.max(), empty.count()), (7, 9_000_000_000, 3));
+    let untouched = empty.clone();
+    empty.merge(&SparseHistogram::default());
+    assert_eq!(empty, untouched, "an empty other changes nothing");
+}

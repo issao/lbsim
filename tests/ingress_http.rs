@@ -562,6 +562,11 @@ fn a_subscription_streams_at_the_asked_cadence_renews_and_closes() {
     }
     assert_eq!(open_subscription(addr, "run_id=r-9&scope=SCOPE_FLEET&samples_per_sim_second=1", &[]).unwrap_err().0, 404);
     assert_eq!(open_subscription(addr, &format!("run_id={run_id}&scope=SCOPE_FLEET&samples_per_sim_second=x"), &[]).unwrap_err().0, 400);
+    assert_eq!(
+        open_subscription(addr, &format!("run_id={run_id}&scope=SCOPE_FLEET&samples_per_sim_second=1&smoothing_window_ns=30s"), &[]).unwrap_err().0,
+        400,
+        "smoothing_window_ns is a decimal string of simulated nanoseconds"
+    );
 
     // On a finished run the stream replays every sample and ends with `final`.
     wait_for_state(addr, &run_id, "STATE_COMPLETE", Duration::from_secs(60));
@@ -573,6 +578,41 @@ fn a_subscription_streams_at_the_asked_cadence_renews_and_closes() {
     assert_eq!(updates.len(), 40, "one per simulated second of a 40 s run");
     assert!(updates[..39].iter().all(|u| u.bool("final") == Some(false)));
     assert_eq!(updates[39].bool("final"), Some(true));
+
+    // `smoothing_window_ns`: the same run over a 10 s trailing window. Same instants, same count,
+    // and every completion rate is the mean of the raw rates over the frames the window covers
+    // (forty raw frames at 1/s here, so the window is ten of them and the first rows fewer).
+    let (mut sse, _) = subscribe(
+        addr,
+        &format!("run_id={run_id}&scope=SCOPE_FLEET&samples_per_sim_second=1&smoothing_window_ns={}&lease_ns={}", 10 * S, 30 * S),
+    );
+    let mut smoothed = Vec::new();
+    while let Some(ev) = sse.next() {
+        smoothed.push(parse_json(&ev.data).unwrap());
+    }
+    assert_eq!(smoothed.len(), 40);
+    let completed = |u: &Json| u.get("row").unwrap().get("values").unwrap().f64("42").unwrap_or(0.0);
+    let raw_at_1s: Vec<f64> = updates.iter().map(completed).collect();
+    for (i, u) in smoothed.iter().enumerate() {
+        assert_eq!(u.str("sim_time_unix_ns"), updates[i].str("sim_time_unix_ns"), "row {i} keeps its instant");
+    }
+    // Raw rows are one per second but the engine's frames are 250 ms apart; the smoothed row
+    // averages the forty 250 ms frames in its window, which the 1/s raw rows only sample. So the
+    // check is on the shape: once every window is full the smoothed series varies less than the
+    // raw one and its mean stays close to the raw mean.
+    let var = |xs: &[f64]| {
+        let m = xs.iter().sum::<f64>() / xs.len() as f64;
+        xs.iter().map(|x| (x - m) * (x - m)).sum::<f64>() / xs.len() as f64
+    };
+    let smooth_at_1s: Vec<f64> = smoothed.iter().map(completed).collect();
+    assert!(var(&smooth_at_1s[10..]) < var(&raw_at_1s[10..]), "smoothed {smooth_at_1s:?} vs raw {raw_at_1s:?}");
+    let mean = |xs: &[f64]| xs.iter().sum::<f64>() / xs.len() as f64;
+    assert!((mean(&smooth_at_1s[10..]) - mean(&raw_at_1s[10..])).abs() < 0.15 * mean(&raw_at_1s[10..]).max(1.0));
+    assert!(smoothed.iter().all(|u| u
+        .get("row")
+        .unwrap()
+        .get("distributions")
+        .map_or(true, |d| d.get("1").map_or(true, |t| t.bool("from_merged_histogram") == Some(true)))));
 }
 
 #[test]

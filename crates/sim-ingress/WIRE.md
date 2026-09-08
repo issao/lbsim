@@ -91,7 +91,8 @@ next arrival. A run that is complete or failed answers 409.
 `OpenSubscription` query parameters, mirroring `OpenSubscriptionRequest`:
 `run_id`, `scope` (`SCOPE_FLEET` | `SCOPE_REPLICA`), `replica_id` (required for `SCOPE_REPLICA`),
 `metrics` (comma-separated `METRIC_*` names), `samples_per_sim_second` (float), `percentiles`
-(comma-separated floats), `lease_ns` (wall-clock, decimal string).
+(comma-separated floats), `lease_ns` (wall-clock, decimal string), `smoothing_window_ns` (simulated,
+decimal string, 0 or absent for the raw cadence; see "Smoothing" below).
 
 First event, `OpenSubscriptionResponse`:
 ```
@@ -119,6 +120,40 @@ tracks distributions as bucketed Frame histograms and the server reads them as-i
 `fleet.jsonl` computes its windowed rows straight from the exact per-request samples and writes
 `from_merged_histogram: false` (see below), so a client must not treat a live row and its later-exported
 counterpart as bit-identical merely because both describe the same window.
+
+### Smoothing
+
+`smoothing_window_ns` is `OpenSubscriptionRequest.smoothing_window_ns`: simulated nanoseconds, a
+decimal string like every `uint64`, and a malformed value is HTTP 400. It lives on the subscription
+rather than in the client, per Issao: *"ideally it is a metric subscription that we pass down to the
+leaves"*, so the same window means the same thing on a live stream and on a recording, and a viewer
+changing it reopens the subscription rather than re-deriving numbers from samples it may not hold.
+
+Every row is built over the **trailing window ending at its sample**: the recorded frames whose
+instant lies in `(t − window, t]`, which at the engine's cadence is `ceil(window / sample_interval)`
+frames, never fewer than one. A window of zero, or shorter than one sample, is the raw cadence, and a
+row built over one frame is bit-for-bit the raw row. A run's first seconds smooth over the frames that
+exist rather than wait for a full window. `sim_time_unix_ns` stays the sample's own instant and the
+row count is unchanged, so a smoothed stream lines up with a raw one point for point. The rules, in
+`run::row_over`:
+
+- every gauge and rate in `values` is the **mean of its per-frame values** over the window (a frame
+  covers one sample interval, so the mean of per-frame rates is the rate over the window);
+- a fraction of requests or of time (`METRIC_SLO_ATTAINMENT`, `METRIC_GPU_COMPUTE_BOUND_FRACTION`,
+  `METRIC_PREFIX_HIT_RATE`) is the **ratio of the window's sums**, so a frame that ended two requests
+  does not weigh as much as one that ended two hundred;
+- every latency `Distribution` is the **merge of the frames' histograms**: p99 over a 30 s window is
+  the p99 of every request that finished in those 30 s, not an average of per-frame p99s (percentiles
+  are not mergeable; bucketed histograms are), and `from_merged_histogram` stays `true`;
+- the distributions over replicas (`METRIC_GPU_UTILIZATION`, `METRIC_KV_UTILIZATION`) are taken over
+  each replica's mean across the window, since the question is how many replicas sat idle over the
+  window while others saturated;
+- `METRIC_READY_REPLICAS`, `METRIC_WARMING_REPLICAS`, `METRIC_DRAINING_REPLICAS` and a replica row's
+  `METRIC_REPLICA_STATE` are read **at the sample**, never averaged: a fraction of a replica is not a
+  count, and the dashboard enumerates replica ids from the ready count.
+
+The checkpoint (`runs/<run_id>/fleet.jsonl`) and `sim-run export` are always raw; smoothing is a view
+of the stream, not of the record.
 
 ## What the first server supports
 
