@@ -833,8 +833,20 @@ pub fn row(f: &Frame, sc: &Scenario, spec: &RowSpec) -> Option<MetricRow> {
                 wire::METRIC_SLO_ATTAINMENT,
                 if ended == 0 { f64::NAN } else { f.within_slo as f64 / ended as f64 },
             );
-            value(wire::METRIC_READY_REPLICAS, f.replicas.len() as f64);
-            value(wire::METRIC_TRUE_SPEED_MULTIPLIER, f.replicas.iter().map(|r| r.speed).sum::<f64>() / n);
+            // 3 is EJECTED (`ReplicaSample::state`'s doc comment): a crashed replica is still in
+            // `f.replicas` so the frame keeps a slot per replica id, but it is not ready, and a
+            // client deriving "how many are down" as fleet size minus this must see it drop.
+            let live: Vec<&sim_metrics::ReplicaSample> =
+                f.replicas.iter().filter(|r| r.state != 3).collect();
+            value(wire::METRIC_READY_REPLICAS, live.len() as f64);
+            value(
+                wire::METRIC_TRUE_SPEED_MULTIPLIER,
+                if live.is_empty() {
+                    0.0
+                } else {
+                    live.iter().map(|r| r.speed).sum::<f64>() / live.len() as f64
+                },
+            );
             // GPU utilization and the KV-utilization band: the mean is never the interesting
             // number, it is how many replicas sit idle while others saturate. Same percentiles as
             // the latency distributions below, falling back to 50/90/99 when the spec asked for
