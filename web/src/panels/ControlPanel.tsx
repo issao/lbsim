@@ -67,7 +67,7 @@ export function ControlPanel({
         {tab === 'scenarios' ? <ScenariosTab run={run} /> : null}
         {tab === 'load' ? lockOnReplay(<LoadTab c={c} set={set} dropped={dropped} />) : null}
         {tab === 'policies' ? lockOnReplay(<PoliciesTab c={c} set={set} dropped={dropped} />) : null}
-        {tab === 'cluster' ? lockOnReplay(<ClusterTab c={c} set={set} dropped={dropped} />) : null}
+        {tab === 'cluster' ? lockOnReplay(<ClusterTab c={c} set={set} dropped={dropped} readonly={isReplay} />) : null}
         {tab === 'run' ? <RunTab run={run} set={set} /> : null}
       </div>
     </Panel>
@@ -109,7 +109,7 @@ function ScenariosTab({ run }: { run: RunHandle }) {
 
 // ---------------------------------------------------------------------------
 
-type TabProps = { c: ScenarioConfig; set: (m: (d: ScenarioConfig) => void) => void; dropped?: string[] };
+type TabProps = { c: ScenarioConfig; set: (m: (d: ScenarioConfig) => void) => void; dropped?: string[]; readonly?: boolean };
 
 /** A field the current server does not take: greyed and inert, with the one word that says why. */
 function Dropped({ path, dropped, children }: { path: string; dropped?: string[]; children: ReactNode }) {
@@ -411,13 +411,15 @@ function RoutingParams({
 
 // ---------------------------------------------------------------------------
 
-function ClusterTab({ c, set, dropped }: TabProps) {
+function ClusterTab({ c, set, dropped, readonly }: TabProps) {
   return (
     <>
       <p className="section-label">Fleet shape</p>
       <p className="note" style={{ marginTop: -2 }}>
         1 cluster, 1 pool. Multi-cluster and multi-pool are phase 2 in <code>docs/ARCHITECTURE.md</code> section 12, so
-        this panel does not pretend to offer them yet.
+        this panel does not pretend to offer them yet. The server reads every knob on this tab at{' '}
+        <code>StartRun</code> only: an edit is staged, and the banner's <b>Restart</b> starts a run from it at the
+        same seed.
       </p>
       <Slider
         label="replicas per pool"
@@ -427,7 +429,7 @@ function ClusterTab({ c, set, dropped }: TabProps) {
         step={4}
         format={(v) => `${v}`}
         onChange={(v) => set((d) => { d.fleet.replicas = v; })}
-        note="changing fleet size restarts the run: a snapshot of a differently shaped fleet cannot be restored; a fleet this large may run behind real time"
+        note="changing fleet size needs a restart: a snapshot of a differently shaped fleet cannot be restored; a fleet this large may run behind real time"
       />
       <Slider
         label="max batch"
@@ -481,32 +483,62 @@ function ClusterTab({ c, set, dropped }: TabProps) {
         }
       />
       </Dropped>
+      {/* The five physics terms of the step model, in docs/calibration.md's words. Sliders on a live
+          run, where a restart applies them; readouts on a recording, which cannot change. */}
       <Slider
         label="step base"
         value={c.fleet.stepBaseMs}
-        min={0.5}
-        max={12}
-        step={0.05}
+        min={2}
+        max={40}
+        step={0.25}
+        readonly={readonly}
         format={(v) => `${v.toFixed(2)} ms`}
         onChange={(v) => set((d) => { d.fleet.stepBaseMs = v; })}
+        note="the fixed cost of a decode step: the weight read plus launch overhead, paid whatever the batch holds"
       />
       <Slider
         label="step per sequence"
         value={c.fleet.stepPerSeqMs}
-        min={0.02}
-        max={1.2}
+        min={0}
+        max={1}
         step={0.01}
+        readonly={readonly}
         format={(v) => `${v.toFixed(2)} ms`}
         onChange={(v) => set((d) => { d.fleet.stepPerSeqMs = v; })}
+        note="the marginal cost of one more decoding sequence in the batch"
+      />
+      <Slider
+        label="step per KV ktoken"
+        value={c.fleet.stepPerKvKtokenMs}
+        min={0}
+        max={0.1}
+        step={0.0005}
+        readonly={readonly}
+        format={(v) => `${v.toFixed(4)} ms`}
+        onChange={(v) => set((d) => { d.fleet.stepPerKvKtokenMs = v; })}
+        note="the bandwidth term: per thousand resident KV tokens read by a step, which is what makes long contexts slow the batch"
       />
       <Slider
         label="prefill rate"
         value={c.fleet.prefillTokensPerS}
-        min={4000}
-        max={60000}
+        min={5000}
+        max={100000}
         step={1000}
+        readonly={readonly}
         format={(v) => `${fmtTokens(v)} tok/s`}
         onChange={(v) => set((d) => { d.fleet.prefillTokensPerS = v; })}
+        note="prompt tokens processed per second; a prompt's prefill time is its length over this rate"
+      />
+      <Slider
+        label="step token budget"
+        value={c.fleet.stepTokenBudget}
+        min={256}
+        max={16384}
+        step={256}
+        readonly={readonly}
+        format={(v) => `${fmtTokens(v)} tok`}
+        onChange={(v) => set((d) => { d.fleet.stepTokenBudget = v; })}
+        note="the prefill chunk budget per step: it bounds how long one prompt's prefill stalls the sequences decoding beside it; smaller is smoother inter-token latency, larger is more throughput"
       />
       <p className="note inset">
         <code>step_base_ms</code> is calibrated against a published batch-1 measurement. The numbers drawn from them

@@ -214,7 +214,7 @@ await checkAsync('(b) live frames equal replay frames for the same rows', async 
   eq(id, 'r-1', 'run id');
   eq(fake.run('r-1')?.state, 'STATE_RUNNING', 'state after StartRun');
   const started = calls(fake, 'StartRun')[0].body as { scenario: { text: string; overrides: Record<string, string> }; record_traces: boolean };
-  ok(started.scenario.text.includes('arrival_rps = 70'), 'the whole config went as scenario text');
+  ok(started.scenario.text.includes('arrival_rps = 560'), 'the whole config went as scenario text');
   eq(Object.keys(started.scenario.overrides).length, 0, 'no overrides on a fresh start');
   const opened = calls(fake, 'OpenSubscription')[0];
   eq(opened.body.scope, 'SCOPE_FLEET', 'fleet scope');
@@ -361,8 +361,10 @@ await checkAsync('(e) update sends UpdateWorkload / UpdatePolicies and lastUpdat
   const reshaped = cloneConfig(rerouted);
   reshaped.fleet.replicas += 1;
   await live.engine.update(reshaped);
-  eq(live.engine.lastUpdate?.accepted, false, 'a fleet change is not live-tunable');
-  ok((live.engine.refused ?? '').includes('restart the run'), 'and the refusal is visible');
+  // U106: a fleet change is not live-tunable, so it is staged for a restart rather than refused.
+  eq(live.engine.lastUpdate, null, 'a fleet change raises no update banner');
+  eq(live.engine.refused, null, 'and no refusal');
+  eq(live.engine.pendingKeys.join(','), 'replica count', 'it waits for a restart instead');
   eq(calls(live.fake, 'UpdatePolicies').length + calls(live.fake, 'UpdateWorkload').length, 2, 'and sends nothing');
   live.engine.dispose();
   return `501 -> lastUpdate "${SERVER_NOT_YET}"; echo -> accepted, changed [${live.engine.lastUpdate?.changed.join(', ')}]`;
@@ -693,6 +695,60 @@ await checkAsync('(m) dispose_during_the_starting_SetSpeed_leaves_no_stream_and_
   await until(() => calls(r.fake, 'StopRun').some((c) => c.body.run_id === 'r-4'), 'the fourth run is stopped by the dispose that beat its StartRun');
   eq(r.fake.openStreams(), 0, 'no stream left open');
   return 'no OpenSubscription or GetRun after a dispose mid-SetSpeed; no interval outlives start/dispose/start/dispose';
+});
+
+// ---------------------------------------------------------------------------
+// (n) a structural edit is staged for a restart, not sent as an update (U106)
+// ---------------------------------------------------------------------------
+
+await checkAsync('(n) a structural edit stages a restart; restart sends StopRun then StartRun with the value', async () => {
+  // Issao: "where do i tune step token budget?" The knob was a slider whose every move ended in a
+  // refusal banner, because no Update call carries a physics key. Now it stages.
+  const { fake, engine } = rig({ liveUpdates: true });
+  await engine.start(false);
+  eq(engine.pendingRestart, null, 'nothing pending on a fresh run');
+  const before = fake.calls.length;
+  const next = cloneConfig(engine.config);
+  next.fleet.stepTokenBudget = 2048;
+  await engine.update(next);
+  eq(fake.calls.length, before, 'no RPC for a structural edit');
+  eq(calls(fake, 'UpdateWorkload').length + calls(fake, 'UpdatePolicies').length, 0, 'no update call');
+  eq(engine.pendingKeys.join(','), 'step token budget', 'the key is staged under its label');
+  eq(engine.pendingRestart?.fleet.stepTokenBudget, 2048, 'the staged config carries the value');
+  eq(engine.config.fleet.stepTokenBudget, 2048, 'the panel keeps showing the edit');
+  eq(engine.lastUpdate, null, 'no update banner');
+  eq(engine.refused, null, 'no refusal banner');
+
+  // A workload edit on top still goes live, and leaves the staged key staged.
+  const live = cloneConfig(engine.config);
+  live.workload.arrivalRps = 600;
+  await engine.update(live);
+  eq(calls(fake, 'UpdateWorkload').length, 1, 'the workload edit went as UpdateWorkload');
+  eq(engine.lastUpdate?.accepted, true, 'and was accepted');
+  eq(engine.pendingKeys.join(','), 'step token budget', 'the structural key is still pending');
+
+  // Moving the knob back to the running fleet's value leaves nothing to restart for.
+  const back = cloneConfig(engine.config);
+  back.fleet.stepTokenBudget = 1024;
+  await engine.update(back);
+  eq(engine.pendingRestart, null, 'restored value: nothing pending');
+  await engine.update(next);
+  eq(engine.pendingKeys.join(','), 'step token budget', 'staged again');
+
+  const pending = engine.pendingRestart!;
+  await engine.restart(pending);
+  const seq = fake.calls.slice(before).map((c) => c.rpc).filter((r) => r === 'StopRun' || r === 'StartRun');
+  eq(seq.join(','), 'StopRun,StartRun', 'StopRun, then StartRun');
+  eq(calls(fake, 'StopRun')[0].body.run_id, 'r-1', 'the old run is the one stopped');
+  eq(engine.runId, 'r-2', 'a new run');
+  const started = calls(fake, 'StartRun')[1].body as { scenario: { text: string } };
+  ok(started.scenario.text.includes('step_token_budget = 2048'), 'the new run carries the value');
+  ok(started.scenario.text.includes(`seed = ${BASE.seed}`), 'at the same seed');
+  eq(engine.pendingRestart, null, 'nothing pending after the restart');
+  eq(engine.pendingKeys.length, 0, 'no keys either');
+  await until(() => calls(fake, 'OpenSubscription').length === 2, 'the subscription reopened');
+  engine.dispose();
+  return 'staged without an RPC; StopRun r-1, StartRun with step_token_budget = 2048 at the same seed, stream reopened';
 });
 
 // ---------------------------------------------------------------------------
