@@ -2,20 +2,23 @@ import { useEffect, useMemo, useState } from 'react';
 import type { Frame, ReplicaSample } from '../../lib/engine';
 import type { ScenarioConfig } from '../../lib/config';
 import { REPLICA_COLUMNS, type ReplicaColumn } from '../../lib/derive';
-import { Panel } from '../../components/ui';
+import { Panel, Unwired } from '../../components/ui';
 import { Heatmap } from '../../components/charts/Heatmap';
 import { Sparkline } from '../../components/charts/Sparkline';
 import { fmtMs, fmtNum, fmtPct, fmtTokens } from '../../lib/format';
 import { useRegistryStats, useSubscriptions } from '../../lib/useSubscriptions';
 import { useServerReplicas } from '../../lib/useServerRun';
 import { Metric, type Target } from '../../lib/types';
-import { realness } from '../../lib/wired';
+import { isWireFrame, realness, WIRED_REPLICA_FIELDS } from '../../lib/wired';
 
 const PAGE_SIZES = [10, 20, 50];
 
 // Fields this panel reads off Frame / ReplicaSample. Keep these lists honest: they drive the mock
 // tag on every Panel below. `weight` is read only via the sort-value switch below, reachable when a
 // viewer sorts by that column, but the tag is a static claim about the panel, not the current sort.
+// U95b: on a wire frame the unwired replica fields (state, prefix hit rate, TTFT mean, speed
+// multiplier, weight) render as `Unwired` rather than as the adapter's placeholders, and sorting
+// by one of them falls back to id, so a live page never ranks rows by an invented value.
 const FRAME_READS: (keyof Frame)[] = ['loadImbalanceCv', 'replicas'];
 const REPLICA_READS: (keyof ReplicaSample)[] = [
   'id',
@@ -63,6 +66,7 @@ export function MachineLevel({
   const [heatMetric, setHeatMetric] = useState<'queuedSeqs' | 'kvUtilization' | 'batchSize'>('queuedSeqs');
 
   const data = realness(frame, FRAME_READS, REPLICA_READS);
+  const wire = isWireFrame(frame);
 
   // Live frames carry no replica rows: the fleet stream is one entity, and the protos have no "all
   // replicas" call. What the fleet row does say is how many replicas are ready, and the server
@@ -80,8 +84,8 @@ export function MachineLevel({
   const sorted = useMemo(() => {
     const rows = [...present];
     rows.sort((a, b) => {
-      const av = sortValue(a, sort);
-      const bv = sortValue(b, sort);
+      const av = sortValue(a, sort, wire);
+      const bv = sortValue(b, sort, wire);
       // A value the wire has not carried (a live row not yet streamed, a NaN column on replay)
       // sorts after every measured one in either direction, then by id, so the order is stable.
       const an = Number.isNaN(av);
@@ -90,7 +94,7 @@ export function MachineLevel({
       return dir === 'desc' ? bv - av : av - bv;
     });
     return rows;
-  }, [present, sort, dir]);
+  }, [present, sort, dir, wire]);
 
   const pages = Math.max(1, Math.ceil(sorted.length / pageSize));
   const p = Math.min(page, pages - 1);
@@ -211,15 +215,21 @@ export function MachineLevel({
           </thead>
           <tbody>
             {visible.map((r) => (
-              <tr key={r.id} className={r.state !== 'READY' ? 'sel' : ''}>
+              <tr key={r.id} className={!wire && r.state !== 'READY' ? 'sel' : ''}>
                 <td className="n">{r.id}</td>
                 <td style={{ textAlign: 'left' }}>
-                  <i
-                    className={`dot ${r.state === 'READY' ? (r.trueSpeedMultiplier < 0.9 ? 'critical' : 'good') : r.state === 'EJECTED' ? 'warning' : 'info'}`}
-                    style={{ marginRight: 5 }}
-                  />
-                  {r.state.toLowerCase()}
-                  {r.trueSpeedMultiplier < 0.9 ? ` ${r.trueSpeedMultiplier.toFixed(2)}x` : ''}
+                  {wire ? (
+                    <Unwired what="state" />
+                  ) : (
+                    <>
+                      <i
+                        className={`dot ${r.state === 'READY' ? (r.trueSpeedMultiplier < 0.9 ? 'critical' : 'good') : r.state === 'EJECTED' ? 'warning' : 'info'}`}
+                        style={{ marginRight: 5 }}
+                      />
+                      {r.state.toLowerCase()}
+                      {r.trueSpeedMultiplier < 0.9 ? ` ${r.trueSpeedMultiplier.toFixed(2)}x` : ''}
+                    </>
+                  )}
                 </td>
                 <td className={`n bar-cell${r.queuedSeqs > config.fleet.maxQueue * 0.5 ? ' bad' : ''}`}>
                   <i style={{ width: `${Math.min((r.queuedSeqs / config.fleet.maxQueue) * 100, 100)}%` }} />
@@ -230,8 +240,10 @@ export function MachineLevel({
                 </td>
                 <td className="n">{fmt1(r.batchSize)}</td>
                 <td className="n">{fmtMs(r.stepTimeMs)}</td>
-                <td className="n">{fmtPct(r.prefixHitRate, 0)}</td>
-                <td className={`n${r.ttftMeanMs > config.slo.ttftMs ? ' bad' : ''}`}>{fmtMs(r.ttftMeanMs)}</td>
+                <td className="n">{wire ? <Unwired what="prefixHitRate" /> : fmtPct(r.prefixHitRate, 0)}</td>
+                <td className={`n${!wire && r.ttftMeanMs > config.slo.ttftMs ? ' bad' : ''}`}>
+                  {wire ? <Unwired what="ttftMeanMs" /> : fmtMs(r.ttftMeanMs)}
+                </td>
                 <td>
                   <Sparkline points={spark.get(r.id) ?? []} max={sparkMax} />
                 </td>
@@ -319,7 +331,9 @@ export function MachineLevel({
   );
 }
 
-function sortValue(r: ReplicaSample, key: ReplicaColumn): number {
+/** `wire`: the row is from a live or replay frame, so a column the engine does not produce sorts by id instead. */
+function sortValue(r: ReplicaSample, key: ReplicaColumn, wire: boolean): number {
+  if (wire && !WIRED_REPLICA_FIELDS.has(key)) return r.id;
   switch (key) {
     case 'id':
       return r.id;

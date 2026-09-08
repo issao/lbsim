@@ -99,6 +99,35 @@ const finalLine = extraFail => {
       seen ? `${seen.exist} exist, ${seen.rows} rows on the page, ${seen.streamed} with values` : tab ? 'pager says 0 replicas exist, or no row has streamed a value' : 'no Machine level tab');
   };
 
+  // U95b (Issao, again: "what is mock about a live showcase run?"): on a live or replay run no
+  // panel may show an invented number. Walk every observation tab, since a panel only mounts once
+  // its tab is selected: no tag may read the bare word "mock", no partial note may remain, and on
+  // the Machines tab the five columns the engine does not produce (state, prefix hit rate, TTFT
+  // mean, and the speed multiplier / weight folded into them) must read "—" rather than the
+  // adapter's "ready" / "1.00x" placeholders.
+  const noInvented = async (page, label) => {
+    const obsTabs = await page.$$eval('button[data-tab^="observe:"]', els => els.map(e => e.getAttribute('data-tab')));
+    const bad = obsTabs.length === 0 ? ['no observation tabs'] : [];
+    for (const tabId of obsTabs) {
+      await page.click(`button[data-tab="${tabId}"]`);
+      await sleep(500);
+      const mockTags = await page.$$eval('.panel .mock-tag', els => els.map(e => e.textContent.trim()).filter(w => w === 'mock'));
+      if (mockTags.length) bad.push(`${tabId}: ${mockTags.length} mock tag(s)`);
+      const notes = await page.$$eval('.partial-note', els => els.length);
+      if (notes) bad.push(`${tabId}: ${notes} partial note(s)`);
+      if (tabId === 'observe:machine') {
+        const rows = await page.$$eval('#replicas tbody tr', trs => trs.map(tr => [...tr.querySelectorAll('td')].map(td => td.textContent.trim())));
+        if (rows.length === 0) bad.push('machine: no rows');
+        const placeholder = rows.flat().filter(c => /^ready$/i.test(c) || /\b\d\.\d\dx\b/.test(c));
+        if (placeholder.length) bad.push(`machine: placeholder cells ${JSON.stringify(placeholder.slice(0, 3))}`);
+        // state, prefix hit rate, ttft mean: the columns REPLICA_COLUMNS puts at 1, 6, 7.
+        const dashed = rows.filter(r => [1, 6, 7].every(i => r[i] === '—')).length;
+        if (dashed !== rows.length) bad.push(`machine: ${rows.length - dashed} of ${rows.length} rows carry a value in an unwired column`);
+      }
+    }
+    check(label, bad.length === 0, bad.length ? bad.join(' · ') : `${obsTabs.length} tabs clean`);
+  };
+
   // a. home
   {
     const { page, log, body, until } = await fresh('#/');
@@ -145,23 +174,7 @@ const finalLine = extraFail => {
     const controlTag = await page.$eval('#control .mock-tag', el => el.textContent.trim()).catch(() => null);
     check('dashboard: control panel tagged live', controlTag === 'live', controlTag);
     await machines(page, until, 'dashboard');
-    // U95: a panel that still invents a few fields on a live run borrows the page's own word
-    // ("live") and names what it invents in the tag's title -- it must never fall back to the
-    // bare word "mock" while the run is live. Walk every observation tab, since the machine-level
-    // panel (the one Issao saw this on) only mounts once its tab is selected.
-    const obsTabs = await page.$$eval('button[data-tab^="observe:"]', els => els.map(e => e.getAttribute('data-tab')));
-    for (const tabId of obsTabs) {
-      await page.click(`button[data-tab="${tabId}"]`);
-      await sleep(500);
-      const tags = await page.$$eval('.panel .mock-tag', els => els.map(e => [e.textContent.trim(), e.title]));
-      // A panel with nothing wired at all (Traces: no Realness data prop) legitimately still says
-      // the bare word "mock" with the generic gloss title -- that is by design, not this unit's
-      // bug. The regression this guards is a *partial* panel (one with specific unwired fields to
-      // name) falling back to the bare word instead of the run's own word: that shows up as a
-      // "mock" tag whose title lists fields ("mock: ...") rather than the generic gloss.
-      const bad = tags.filter(([word, ttl]) => word === 'mock' && ttl.startsWith('mock: '));
-      check(`dashboard: no partial panel says mock while the page is live (U95, ${tabId})`, bad.length === 0, JSON.stringify(bad));
-    }
+    await noInvented(page, 'dashboard: no invented numbers on live (U95b)');
     await page.close();
   }
 
@@ -210,6 +223,8 @@ const finalLine = extraFail => {
       (t.match(/run r-\d+[^|]{0,50}/) || ['no run'])[0],
       ...log.errs.slice(0, 2), ...log.bad.slice(0, 2),
     ].filter(Boolean).join(' · '));
+    // The first card only, to keep the run short: every card drives the same dashboard.
+    if (ok && title === titles[0]) await noInvented(page, 'showcase: no invented numbers on a live run (U95b)');
     if (REQUIRED_KEYS[title]) {
       const bodies = log.startRuns.map(b => { try { return JSON.parse(b)?.scenario?.text ?? b; } catch { return b; } });
       for (const re of REQUIRED_KEYS[title]) {

@@ -3,19 +3,24 @@ import type { Frame } from '../../lib/engine';
 import type { ScenarioConfig } from '../../lib/config';
 import type { FrameSource } from '../../lib/useRun';
 import { healthCounts, series, xs } from '../../lib/derive';
-import { Panel, Tile } from '../../components/ui';
+import { Panel, Tile, Unwired } from '../../components/ui';
 import { LineChart } from '../../components/charts/LineChart';
 import { fmtNum } from '../../lib/format';
 import { useSubscriptions } from '../../lib/useSubscriptions';
 import { Metric } from '../../lib/types';
-import { realness } from '../../lib/wired';
+import { isWireFrame, realness } from '../../lib/wired';
 
 // Fields this panel reads off Frame. Keep this list honest: it drives the mock tag on every Panel below.
+// U95b: on a wire frame the unwired ones (warming, draining, ejected counts; the failure events,
+// which the engine does not record) render as `Unwired` or as a "not simulated yet" note, and the
+// fleet-state chart keeps only its wired `ready` series.
 const FRAME_READS: (keyof Frame)[] = [
   'loadImbalanceCv',
   'readyReplicas',
   'warmingReplicas',
   'drainingReplicas',
+  'ejectedReplicas',
+  'events',
   'offeredRps',
   'completedRps',
   'rejectedRps',
@@ -46,6 +51,7 @@ export function ClusterHealth({
 
   const h = healthCounts(frame);
   const data = realness(frame, FRAME_READS);
+  const wire = isWireFrame(frame);
   const x = xs(frames);
   const events = useMemo(() => engine.eventsUpTo(cursorS).slice(-12).reverse(), [engine, cursorS, frames.length]);
 
@@ -54,13 +60,13 @@ export function ClusterHealth({
       <Panel title="Fleet state" sub={`${config.fleet.accelerator}, 1 cluster / 1 pool`} highlight={highlight === 'fleet-state'} id="fleet-state" data={data}>
         <div className="grid c4" style={{ gap: 6 }}>
           <Tile label="ready" value={String(h.ready)} />
-          <Tile label="warming" value={String(h.warming)} note="cold start" />
-          <Tile label="draining" value={String(h.draining)} />
+          <Tile label="warming" value={wire ? <Unwired what="warmingReplicas" /> : String(h.warming)} note="cold start" />
+          <Tile label="draining" value={wire ? <Unwired what="drainingReplicas" /> : String(h.draining)} />
           <Tile
             label="ejected"
-            value={String(h.ejected)}
-            status={h.ejected > 0 ? 'warning' : undefined}
-            statusText={h.ejected > 0 ? 'removed from routing' : undefined}
+            value={wire ? <Unwired what="ejectedReplicas" /> : String(h.ejected)}
+            status={!wire && h.ejected > 0 ? 'warning' : undefined}
+            statusText={!wire && h.ejected > 0 ? 'removed from routing' : undefined}
           />
         </div>
         <div style={{ marginTop: 8 }}>
@@ -68,8 +74,12 @@ export function ClusterHealth({
             xs={x}
             series={[
               { key: 'ready', label: 'ready', color: 'var(--series-1)', points: series(frames, (f) => f.readyReplicas) },
-              { key: 'warming', label: 'warming', color: 'var(--series-2)', points: series(frames, (f) => f.warmingReplicas) },
-              { key: 'draining', label: 'draining', color: 'var(--series-3)', points: series(frames, (f) => f.drainingReplicas) },
+              ...(wire
+                ? []
+                : [
+                    { key: 'warming', label: 'warming', color: 'var(--series-2)', points: series(frames, (f) => f.warmingReplicas) },
+                    { key: 'draining', label: 'draining', color: 'var(--series-3)', points: series(frames, (f) => f.drainingReplicas) },
+                  ]),
             ]}
             format={(v) => v.toFixed(0)}
             height={92}
@@ -112,7 +122,9 @@ export function ClusterHealth({
       </Panel>
 
       <Panel title="Failure events" sub="on the simulated timeline" bodyClass="scroll" highlight={highlight === 'events'} id="events" data={data}>
-        {events.length === 0 ? (
+        {wire ? (
+          <p className="note" style={{ margin: 0 }}>not simulated yet</p>
+        ) : events.length === 0 ? (
           <p className="note" style={{ margin: 0 }}>nothing yet. The scripted schedule starts at 52 s.</p>
         ) : (
           <ul className="events">

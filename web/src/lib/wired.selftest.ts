@@ -153,9 +153,9 @@ check('every_data_mode_has_a_label_and_a_gloss', () => {
   return 'mock/server/replay -> mock/live/replay, each with a non-empty gloss';
 });
 
-// U95: a partial panel on a live or replay run borrows the run's own word -- it is not lying
-// about the run, only about a handful of columns on it. Only mock mode, and a genuinely mock
-// frame, still say the bare word `mock`.
+// U95/U95b: a partial panel on a live or replay run borrows the run's own word, full stop -- its
+// unwired fields render as "—" rather than as placeholders, so the tag has nothing to qualify.
+// Only mock mode, a genuinely mock frame, and absent realness still say the bare word `mock`.
 check('a_partial_panel_borrows_the_runs_word_on_live_or_replay', () => {
   const partial = wired.realness(wireFrame, ['offeredRps', 'prefixHitRate']);
   eq(partial.kind, 'partial', 'fixture is actually partial');
@@ -167,16 +167,6 @@ check('a_partial_panel_borrows_the_runs_word_on_live_or_replay', () => {
   eq(wired.panelTagWord(real, 'server'), 'live', 'a fully-wired panel borrows the active mode\'s own word');
   eq(wired.panelTagWord(real, 'replay'), 'replay', 'same, in replay mode');
   return 'a partial panel says the run\'s own word except in mock mode, where the word is mock either way';
-});
-
-check('partialNote reads as one plain-English sentence', () => {
-  const note = wired.partialNote('live', ['state', 'prefixHitRate', 'ttftMeanMs', 'trueSpeedMultiplier', 'weight']);
-  eq(
-    note,
-    'live — 5 values not simulated yet, shown as placeholders: replica state, prefix hit rate, TTFT mean, speed multiplier, weight',
-    'partialNote(live, [...5 fields])',
-  );
-  return note;
 });
 
 check('fieldLabel falls back to splitting camelCase for an unlisted identifier', () => {
