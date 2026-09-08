@@ -309,34 +309,31 @@ fn rated_capacity_scales_with_the_fleet_and_the_cost_of_a_request() {
     assert!(s.rated_rps() < base, "quadrupling prompt length did not reduce rated capacity");
 }
 
-/// The event ceiling scales with the run instead of being a fixed constant, so a legitimately
-/// large fleet does not trip a tripwire meant for a runaway rate. A modest scenario should still
-/// land on the 50M floor.
+/// The event ceiling is gone (it was a day-one OOM tripwire against a runaway retry loop that is
+/// tested now; it tripped on legitimately large runs, such as 10,000 replicas at 25,000 rps for
+/// 120 s, well before anything was wrong). What replaced it is a memory guard read from the
+/// environment, plus the remaining state ceilings scaled with the run. This test assumes
+/// `LBSIM_MEMORY_BUDGET_MB` is unset in the test process's environment; if another test in this
+/// workspace ever sets it, this assertion would need to move behind a `serial_test`-style guard or
+/// be dropped.
 #[test]
-fn event_ceiling_floors_at_the_constant_for_a_modest_scenario() {
-    let sc = Scenario::default();
-    assert_eq!(sim::event_ceiling(&sc), 50_000_000);
+fn memory_budget_defaults_to_20000_mb_when_the_variable_is_unset() {
+    assert_eq!(sim::memory_budget_mb(), 20_000);
 }
 
-/// A fleet and load big enough to matter (10,000 replicas at 25,000 rps for 120 s) both validates
-/// -- `Sim::new` reaches the run loop -- and raises the ceiling well past the 50M floor.
+/// A fleet and load big enough to matter -- 10,000 replicas at 25,000 rps for 120 s -- validates and
+/// reaches the run loop, which is the scenario that used to trip the old fixed 50M event ceiling
+/// with 44% of the run remaining.
 #[test]
-fn event_ceiling_scales_up_and_a_large_fleet_still_validates() {
+fn a_ten_thousand_replica_twenty_five_thousand_rps_scenario_validates() {
     let sc = Scenario { replicas: 10_000, arrival_rps: 25_000.0, duration_s: 120.0, ..Scenario::default() };
     assert!(
         sim::Sim::new(&sc).is_ok(),
         "a 10,000-replica, 25,000 rps, 120 s scenario should validate and reach the run loop"
     );
-    assert!(
-        sim::event_ceiling(&sc) >= 120_000_000 + 240_000_000,
-        "ceiling {} should be at least 40 events/request x 25,000 rps x 120s (120,000,000) plus \
-         200 step-events/replica-second x 10,000 replicas x 120s (240,000,000)",
-        sim::event_ceiling(&sc)
-    );
 }
 
-/// A short run against a 10,000-replica fleet actually completes -- the point of the scaled
-/// ceiling is that this no longer trips the old fixed 50M tripwire partway through.
+/// A short run against a 10,000-replica fleet actually completes.
 #[test]
 fn a_short_run_against_a_ten_thousand_replica_fleet_completes() {
     let sc = Scenario {
@@ -348,5 +345,30 @@ fn a_short_run_against_a_ten_thousand_replica_fleet_completes() {
     };
     if let Err(why) = sim::run(&sc) {
         panic!("expected a short 10,000-replica run to complete: {why}");
+    }
+}
+
+/// A `Sim` built with a tiny memory budget and a short check interval aborts once it checks, citing
+/// the environment variable a real operator would raise. The check interval is overridden too,
+/// since 1,000,000 dispatched events is far more than a short test run reaches.
+#[test]
+fn a_tiny_memory_budget_aborts_the_run() {
+    let sc = Scenario {
+        replicas: 10_000,
+        arrival_rps: 25_000.0,
+        duration_s: 3.0,
+        warmup_s: 1.0,
+        ..Scenario::default()
+    };
+    let mut sim = sim::Sim::new(&sc).expect("scenario should validate");
+    sim.set_memory_budget_bytes(1);
+    sim.set_memory_check_interval(1_000);
+    let end = sim.end();
+    match sim.advance_to(end) {
+        Ok(()) => panic!("expected a 1-byte memory budget to trip the guard"),
+        Err(err) => assert!(
+            err.contains("LBSIM_MEMORY_BUDGET_MB"),
+            "error does not name the environment variable to raise: {err}"
+        ),
     }
 }
