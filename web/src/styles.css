@@ -463,12 +463,21 @@ table.data caption { caption-side: bottom; text-align: left; padding: 5px 6px; f
   max-height: calc(100vh - 32px); max-height: calc(100dvh - 32px); overflow: auto;
   background: var(--surface-1); border: 1px solid var(--accent-line); border-radius: var(--r);
   box-shadow: var(--shadow);
+  /* right/bottom/max-height are the natural, undragged position. useDraggable switches to
+     explicit left/top (right/bottom: auto) the moment it is first dragged or restored from a
+     saved position, so the box stops tracking its own content height; reset clears that override
+     and puts these rules back in charge. */
 }
 .walkthrough .wt-head { display: flex; align-items: center; gap: 8px; padding: 6px 9px; border-bottom: 1px solid var(--line); }
 .walkthrough .wt-step { font-family: var(--mono); font-size: 10px; color: var(--ink-3); }
 .walkthrough .wt-mode { font-size: 10px; color: var(--ink-3); margin: 0 6px; }
 .walkthrough .wt-title { font-size: 12px; font-weight: 600; flex: 1 1 auto; }
 .walkthrough .wt-play { flex: 0 0 auto; margin-left: auto; padding: 2px 8px; font-size: 11px; }
+.walkthrough .wt-reset { flex: 0 0 auto; }
+/* Drag target: the header, minus any button inside it (the play/reset controls stay clickable). */
+.walkthrough .wt-drag-handle { touch-action: none; cursor: grab; }
+.walkthrough .wt-drag-handle.dragging { cursor: grabbing; }
+.walkthrough .wt-drag-handle button { cursor: pointer; }
 .walkthrough .wt-body { padding: 8px 9px; font-size: 11.5px; color: var(--ink-2); }
 .walkthrough .wt-body p { margin: 0 0 6px; }
 .walkthrough .wt-body p:last-child { margin: 0; }
