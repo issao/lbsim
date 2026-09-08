@@ -462,8 +462,8 @@ impl Replica {
         self.last_view_len
     }
 
-    /// `step_with_prefixes`, with the replica's scheduler. The policy is consulted at exactly three
-    /// points: the admission order, the prefill budget, and each victim.
+    /// `step_with_prefixes`, with the replica's scheduler. The policy is consulted at exactly four
+    /// points: the admission order, the prefill budget and its order, and each victim.
     pub fn step_scheduled(
         &mut self,
         sc: &Scenario,
@@ -618,18 +618,39 @@ impl Replica {
         // else's token stream. The scheduler sets the budget from the batch it just built.
         r.queued_view(sc, &mut queued);
         r.running_view(&mut running);
-        let mut budget = sched.prefill_budget(&r.view(sc, now, &queued, &running));
+        let view = r.view(sc, now, &queued, &running);
+        let mut budget = sched.prefill_budget(&view);
+        let order = sched.prefill_order(&view);
         let mut prefill_tokens = 0u32;
-        for s in r.running.iter_mut() {
-            if budget == 0 {
-                break;
-            }
+        let chunk = |s: &mut Seq, tracer: &mut Tracer, budget: &mut u32, prefill_tokens: &mut u32| {
             if s.prefill_left > 0 {
-                let take = s.prefill_left.min(budget);
+                let take = s.prefill_left.min(*budget);
                 s.prefill_left -= take;
-                budget -= take;
-                prefill_tokens += take;
-                r.tracer.prefill_chunk(s.req.id, take);
+                *budget -= take;
+                *prefill_tokens += take;
+                tracer.prefill_chunk(s.req.id, take);
+            }
+        };
+        match order {
+            None => {
+                for s in r.running.iter_mut() {
+                    if budget == 0 {
+                        break;
+                    }
+                    chunk(s, &mut r.tracer, &mut budget, &mut prefill_tokens);
+                }
+            }
+            Some(order) => {
+                let mut seen = vec![false; r.running.len()];
+                for i in order {
+                    if budget == 0 {
+                        break;
+                    }
+                    if i < seen.len() && !seen[i] {
+                        seen[i] = true;
+                        chunk(&mut r.running[i], &mut r.tracer, &mut budget, &mut prefill_tokens);
+                    }
+                }
             }
         }
         let mut decoding = r.running.iter().filter(|s| s.prefill_left == 0).count();

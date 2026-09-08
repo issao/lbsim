@@ -1,8 +1,8 @@
 //! lbsim-policy: scheduling names=deadline_first,earliest_deadline_first,edf
-//! Least slack first at admission, latest deadline evicted first. Slack is the deadline minus now
-//! minus the time this replica's prefill rate needs for the tokens still to prefill, so a long prompt
-//! with a later deadline can go ahead of a short one whose deadline is sooner: what matters is who
-//! can still make it. Ties keep queue order.
+//! Least slack first, at admission and when the step's prefill budget is handed out; latest deadline
+//! evicted first. Slack is the deadline minus now minus the time this replica's prefill rate needs
+//! for the tokens still to prefill, so a long prompt with a later deadline can go ahead of a short
+//! one whose deadline is sooner: what matters is who can still make it. Ties keep queue order.
 //!
 //! The rate comes from the view (`prefill_tokens_per_s`), the scenario's per-replica figure, not a
 //! measurement of this replica's current speed; a slowed replica's slack is therefore optimistic.
@@ -44,6 +44,13 @@ impl SchedulingPolicy for DeadlineFirst {
 
     fn prefill_budget(&mut self, v: &StepView<'_>) -> u32 {
         v.step_token_budget
+    }
+
+    fn prefill_order(&mut self, v: &StepView<'_>) -> Option<Vec<usize>> {
+        let mut order: Vec<usize> =
+            (0..v.running.len()).filter(|&i| v.running[i].prefill_left > 0).collect();
+        order.sort_by_key(|&i| slack(v, &v.running[i]));
+        Some(order)
     }
 
     fn victim(&mut self, _v: &StepView<'_>, candidates: &[SeqView]) -> Option<usize> {
@@ -96,6 +103,15 @@ mod tests {
         // A missed deadline sorts first: it is the most urgent thing there is.
         let q = [seq(1, 50 * ms, 0), seq(2, 10 * ms, 0)];
         assert_eq!(DeadlineFirst.admit_order(&view(20 * ms, &q, &[])), vec![1, 0]);
+    }
+
+    #[test]
+    fn prefill_goes_to_the_least_slack_and_skips_finished_prompts() {
+        let ms = 1_000_000u64;
+        let r = [seq(1, 100 * ms, 1), seq(2, 50 * ms, 0), seq(3, 60 * ms, 30)];
+        // The second has nothing left to prefill, so only the other two are ordered: least slack
+        // first, and the third's 30 ms of prefill puts it ahead of the first.
+        assert_eq!(DeadlineFirst.prefill_order(&view(0, &[], &r)), Some(vec![2, 0]));
     }
 
     #[test]

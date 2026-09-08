@@ -50,6 +50,7 @@ mod tests {
         let mut p = FifoChunked::new("newest");
         assert_eq!(p.admit_order(&view(&q, &[])), vec![0, 1, 2]);
         assert_eq!(p.prefill_budget(&view(&q, &[])), 1024);
+        assert_eq!(p.prefill_order(&view(&q, &[])), None, "fifo spends the budget in batch order");
     }
 
     #[test]

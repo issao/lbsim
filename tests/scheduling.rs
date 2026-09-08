@@ -148,3 +148,32 @@ fn class_priority_moves_interactive_ahead_and_batch_pays() {
         successes(&fifo, 3)
     );
 }
+
+/// Demo 16's per-class table, which the HTML report does not render. Ignored because it is three
+/// 120 s runs; `SCHED_DEMO_RPS` overrides the load:
+/// `tools/build.sh test --release --test scheduling -- --ignored --nocapture demo_16_class_table`.
+#[test]
+#[ignore]
+fn demo_16_class_table() {
+    let rps: Option<f64> = std::env::var("SCHED_DEMO_RPS").ok().and_then(|v| v.parse().ok());
+    println!("scenario          class         goodput tok/s   attainment   successes   records");
+    for file in ["sched_fifo", "sched_class", "sched_deadline"] {
+        let text = std::fs::read_to_string(format!("scenarios/{file}.txt")).unwrap();
+        let mut s = Scenario::parse(&text).unwrap();
+        if let Some(rps) = rps {
+            s.arrival_rps = rps;
+        }
+        let r = sim::run(&s).unwrap();
+        for class in r.classes() {
+            let name = lbsim::scenario::SLO_CLASSES[class as usize - 1].name;
+            let n = r.records.iter().filter(|x| x.class == class).count();
+            let ok = r.records.iter().filter(|x| x.class == class && x.outcome.is_success()).count();
+            println!(
+                "{file:<17} {name:<12} {:>14.0} {:>12.3} {ok:>11} {n:>9}",
+                r.class_goodput_tokens_s(class),
+                r.class_attainment(class)
+            );
+        }
+        println!("{file:<17} {:<12} {:>14.0} {:>12.3}", "all", r.goodput_tokens_s(), r.slo_attainment());
+    }
+}

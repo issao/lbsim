@@ -1,8 +1,8 @@
 //! lbsim-policy: scheduling names=class_priority,slo_class_priority_queues
-//! The scheduling half of the SLO classes: interactive before agent before batch at admission, FIFO
-//! within a class, and batch is the first thing evicted when the cache overflows. Class 0 (classes
-//! off, or a session's parked context) goes with interactive, so a scenario without classes behaves
-//! as FIFO with `newest` eviction.
+//! The scheduling half of the SLO classes: interactive before agent before batch, at admission and
+//! again when the step's prefill budget is handed out, FIFO within a class; and batch is the first
+//! thing evicted when the cache overflows. Class 0 (classes off, or a session's parked context) goes
+//! with interactive, so a scenario without classes behaves as FIFO with `newest` eviction.
 //!
 //! What this can and cannot do: it orders the work the replica already holds. When the fleet is inside
 //! its capacity every class is served whatever the order, and when it is far past it no order rescues
@@ -40,6 +40,15 @@ impl SchedulingPolicy for ClassPriority {
 
     fn prefill_budget(&mut self, v: &StepView<'_>) -> u32 {
         v.step_token_budget
+    }
+
+    /// Interactive prompts get their chunks first: a batch prompt admitted a step earlier no longer
+    /// puts twenty steps between an interactive request and its first token.
+    fn prefill_order(&mut self, v: &StepView<'_>) -> Option<Vec<usize>> {
+        let mut order: Vec<usize> =
+            (0..v.running.len()).filter(|&i| v.running[i].prefill_left > 0).collect();
+        order.sort_by_key(|&i| rank(v.running[i].class));
+        Some(order)
     }
 
     /// The newest of the lowest class present: batch before agent before interactive.
@@ -86,6 +95,13 @@ mod tests {
         let got = ClassPriority.admit_order(&view(&q, &[]));
         assert_eq!(got, vec![2, 3, 5, 1, 0, 4]);
         assert_eq!(ClassPriority.prefill_budget(&view(&q, &[])), 1024);
+    }
+
+    #[test]
+    fn prefill_goes_to_interactive_prompts_first_and_skips_finished_ones() {
+        let mut r = [seq(1, 3, 10), seq(2, 1, 20), seq(3, 2, 30), seq(4, 1, 40)];
+        r[2].prefill_left = 0;
+        assert_eq!(ClassPriority.prefill_order(&view(&[], &r)), Some(vec![1, 3, 0]));
     }
 
     #[test]

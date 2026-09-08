@@ -8,7 +8,7 @@ const fs = require('fs');
 
 const BASE = process.env.QA_BASE || 'http://localhost:8181';
 const MIN_CARDS = 18;
-const EXPECTED_REPORTS = 16;
+const EXPECTED_REPORTS = 17;
 // Two cards whose scenario overrides are the whole point of the demo; a walkthrough that runs
 // without them looks fine and shows nothing.
 const REQUIRED_KEYS = {
@@ -143,7 +143,7 @@ const finalLine = extraFail => {
       const r = await page.request.get(BASE + '/' + h);
       check(`home link ${h}`, r.status() === 200, String(r.status()));
     }
-    check('home: sixteen reports', hrefs.length === EXPECTED_REPORTS, `${hrefs.length} links`);
+    check('home: seventeen reports', hrefs.length === EXPECTED_REPORTS, `${hrefs.length} links`);
     check('home: no js errors', log.errs.length === 0, log.errs.slice(0, 3).join(' | '));
     const homeBadge = await badge(page);
     check('home: badge empty', homeBadge === '', homeBadge);

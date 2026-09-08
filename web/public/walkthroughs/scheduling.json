@@ -1,0 +1,68 @@
+{
+  "id": "slo-classes",
+  "dynamic": 7,
+  "title": "Mixed SLO classes: the replica's scheduler orders work, it does not create capacity",
+  "summary": "Three schedulers over interactive, agent and batch traffic at 2x load. class_priority lifts interactive attainment 0.926 to 0.943 and agent pays; deadline_first over chunked prefill is longest-job-first in disguise; throughput never moves.",
+  "scenario": {
+    "name": "sched_class",
+    "seed": 20260906,
+    "durationS": 120,
+    "arrival_rps": 1120,
+    "slo_classes": "interactive:0.7,agent:0.2,batch:0.1",
+    "scheduling": "class_priority"
+  },
+  "run": "16-scheduling/sched-fifo",
+  "compare": "16-scheduling/sched-class",
+  "steps": [
+    {
+      "at_sim_s": 20,
+      "speed": 2,
+      "control_tab": "scenarios",
+      "observe_tab": "cluster",
+      "highlight": "capacity",
+      "title": "sched_class: the p2c baseline with three classes, at twice the load",
+      "body": [
+        "sched_fifo, sched_class and sched_deadline are route_p2c with slo_classes = interactive:0.7,agent:0.2,batch:0.1 and arrival_rps = 1120, twice the baseline. They differ in exactly one key: scheduling = fifo_chunked, class_priority or deadline_first. fifo_chunked is what the engine always did; every earlier report is a run of it.",
+        "Twice the load, because at 1.2x and 1.5x nothing separates the three: 256 replicas at batch 256 hold thirty or so sequences each, so a queue never forms at the replica and the admission order has nothing to order. The class shares are a guess per calibration section 9.1, not a measurement."
+      ],
+      "look_for": "The scenario panel showing scheduling, slo_classes and arrival_rps as the only keys that differ from route_p2c."
+    },
+    {
+      "at_sim_s": 48,
+      "speed": 2,
+      "observe_tab": "utilization",
+      "highlight": "capacity",
+      "title": "Where a replica scheduler actually decides: inside the batch, not at its door",
+      "body": [
+        "Chunked prefill spends step_token_budget = 1024 tokens a step, and fifo_chunked spends it in batch order. A 24,000-token prompt admitted one step ahead of yours is 24 steps, about a third of a second, before your first chunk. That queue is invisible in the queue depth, because everyone in it has already been admitted.",
+        "class_priority hands each step's budget to interactive prompts first, then agent, then batch, FIFO within a class; and when the cache overflows it evicts the newest batch sequence first. deadline_first hands it to the least slack: deadline minus now minus the prefill still owed at the replica's rate."
+      ],
+      "look_for": "Prefill tokens per step pinned at the budget on every replica: the budget is the contended resource, not the batch slots."
+    },
+    {
+      "at_sim_s": 76,
+      "speed": 2,
+      "control_tab": "run",
+      "observe_tab": "quality",
+      "highlight": "headline",
+      "title": "Per class: interactive gains 0.926 to 0.943, and agent pays",
+      "body": [
+        "Under fifo_chunked, attainment by class is interactive 0.926, agent 0.972, batch 0.997, with interactive goodput 156,563 tok/s. Under class_priority (B in the A/B view) interactive rises to 0.943 and 159,615 tok/s; agent falls 0.972 to 0.960 and 47,087 to 46,412 tok/s; batch stays at 0.997.",
+        "Batch was supposed to be what gets preempted, and it is, but its 60 s time-to-first-token target has slack to spare, so pushing it back costs it nothing. The class that actually pays is agent, whose 5 s target does not. Fleet attainment 94.2% to 95.2%, goodput 229,943 to 232,141 tok/s."
+      ],
+      "look_for": "Attainment up and the p99 time to first token up at the same time: interactive's improved, and the p99 now belongs to agent and batch."
+    },
+    {
+      "at_sim_s": 100,
+      "speed": 1,
+      "observe_tab": "throughput",
+      "highlight": "headline",
+      "title": "What it cannot do, and why deadline_first loses",
+      "body": [
+        "Throughput is 266,101 tok/s under fifo_chunked and 265,587 under class_priority. The scheduler moved who waits; it did not change how much the fleet does, because the device time per step is set by the batch and the cost model, not by the order inside it. A scheduler orders the work a replica already holds. It cannot create capacity, and it cannot reach the queue it does not see: the view is at most max_batch entries.",
+        "deadline_first drops interactive to 0.883 and the fleet to 91.1%. Least slack first charges the prefill still owed against slack, so the 24,000-token prompts, which owe the most, look the most urgent and take the budget first: earliest-deadline-first over chunked prefill is longest-job-first in disguise. A deadline scheduler needs a cost term that penalises size, not one that rewards it."
+      ],
+      "look_for": "Throughput within a fifth of a percent across all three runs while per-class attainment moves by whole points."
+    }
+  ]
+}

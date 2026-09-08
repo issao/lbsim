@@ -3,11 +3,14 @@
 //! Issao: *"I assumed policies would cover the routing decision, the host and gpu local scheduling
 //! decision and the global admission/rejection decisions."* Routing and admission had seams; the
 //! replica's own scheduler was hard-wired into the engine's step. This is the third seam, at replica
-//! scope, and it decides exactly three things per step:
+//! scope, and it decides exactly four things per step:
 //!
 //! 1. **Batch admission and priority**: which queued sequences join the batch, and in what order.
 //! 2. **The prefill chunk budget** for this step.
-//! 3. **The preemption victim** when the key-value budget is exceeded.
+//! 3. **Who gets that budget**: the order in which the batch's unfinished prompts are prefilled.
+//!    In a fleet whose replicas never queue, this is the only scheduling decision left: a long
+//!    prompt ahead of you in the batch is many steps before your first chunk.
+//! 4. **The preemption victim** when the key-value budget is exceeded.
 //!
 //! Everything else stays in the engine because it is accounting rather than policy: parked context
 //! is evicted before a running sequence, the queue head's own parked context is exempt, an evicted
@@ -74,8 +77,15 @@ pub trait SchedulingPolicy {
     /// queued this step; an index out of range or repeated is ignored. FIFO is `0..n`.
     fn admit_order(&mut self, v: &StepView<'_>) -> Vec<usize>;
 
-    /// Prefill tokens this step may spend, taken in batch order.
+    /// Prefill tokens this step may spend.
     fn prefill_budget(&mut self, v: &StepView<'_>) -> u32;
+
+    /// The order in which that budget is spent, as indices into `v.running`. `None` means batch
+    /// order, which is what chunked prefill always did and what the default returns; an index with
+    /// no prefill left, out of range or repeated is skipped.
+    fn prefill_order(&mut self, _v: &StepView<'_>) -> Option<Vec<usize>> {
+        None
+    }
 
     /// Which of `candidates` to evict, as an index into it, or `None` to evict nothing. The engine
     /// calls this first over the eligible parked contexts and only then over the running batch, so a
