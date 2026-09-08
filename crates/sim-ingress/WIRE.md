@@ -201,6 +201,16 @@ ended — `final`, `no frames` (stopped or failed before its first closed frame)
 `superseded` (a reconnect took over), `closed` (`CloseSubscription`), or `write error: <cause>` — and the
 reason is logged; see the request log below.
 
+The server holds at most eight runs, and a run counts toward the eight only while it is busy or leased:
+unpaced-running, mid-`StepForward`, or paced with a live lease. An idle-stopped run — checkpoint written,
+no lease — does not count, because the cap exists to bound CPU and memory for live work and a parked
+checkpoint is neither. When a `StartRun` arrives and eight non-terminal runs are held, the server evicts
+the oldest idle-stopped run (by registration order) to make room, and answers `503` only when there is
+none to evict, so a crashed tab can never lock the public site. A run that stays idle-stopped for
+`2 × IDLE_SHUTDOWN_SECONDS` is reaped on its own, so memory stays bounded with no new arrivals. Either
+way the run is simply gone from the registry: `GetRun` answers `404` from then on, while its checkpoint
+under `runs/<run_id>/` stays on disk. Finished and failed runs never count and are never reaped.
+
 `GET /requests.log` answers `text/plain` with the last 512 request lines, oldest first, because the
 deploy identity cannot read Cloud Logging and a stall has to be diagnosable from the outside. One line
 per ingress request, `req <method> <rpc> <status> <ms>ms [run=<id>] [sub=s-<n>]`; for a subscription,
