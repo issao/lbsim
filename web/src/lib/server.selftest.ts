@@ -12,7 +12,7 @@
 // The resolve hook is replay.selftest.ts's: the modules under test import extensionless, which
 // Vite resolves and Node does not.
 
-import type { FetchLike, SseEvent } from './api';
+import type { FetchLike, SseEvent, StreamHandle } from './api';
 import type { RunHandle } from './useRun';
 import type { ServerRunHandle } from './useServerRun';
 
@@ -42,7 +42,8 @@ const replay = await load<typeof import('./replay')>('replay');
 const mode = await load<typeof import('./mode')>('mode');
 const fx = await load<typeof import('./apiFixtures')>('apiFixtures');
 const { fakeIngress } = await load<typeof import('./fakeIngress')>('fakeIngress');
-const { ServerRunEngine, SERVER_DISABLED_REASON, SERVER_NOT_YET, speedLabel } = await load<typeof import('./useServerRun')>('useServerRun');
+const { ServerRunEngine, SERVER_DISABLED_REASON, SERVER_NOT_YET, speedLabel, ReplicaStreams, openStreamCount } =
+  await load<typeof import('./useServerRun')>('useServerRun');
 const { STEP_S } = await load<typeof import('./useRun')>('useRun');
 const { BASE, cloneConfig, FIELD_LABEL } = await load<typeof import('./config')>('config');
 
@@ -749,6 +750,76 @@ await checkAsync('(n) a structural edit stages a restart; restart sends StopRun 
   await until(() => calls(fake, 'OpenSubscription').length === 2, 'the subscription reopened');
   engine.dispose();
   return 'staged without an RPC; StopRun r-1, StartRun with step_token_budget = 2048 at the same seed, stream reopened';
+});
+
+// ---------------------------------------------------------------------------
+// (o) replica streams stay within the stream budget (U112)
+// ---------------------------------------------------------------------------
+
+await checkAsync('(o) a page of ten replicas holds three streams under budget 4 and rotates over all ten; ten under budget 32', async () => {
+  // U102's finding: over HTTP/1.1 the ten replica streams of the Machines page plus the fleet stream
+  // filled Chrome's six connections per host, and every later SetSpeed / GetRun / Renew queued behind
+  // them. The page must never starve its own RPCs, so the streams are budgeted and the rest of the
+  // page takes turns.
+  const { client } = rig();
+  let open = 0;
+  let peak = 0;
+  let opens = 0;
+  const openStreamImpl = (): StreamHandle => {
+    open++;
+    opens++;
+    peak = Math.max(peak, open);
+    let finish!: () => void;
+    const done = new Promise<void>((r) => (finish = r));
+    let closed = false;
+    return {
+      done,
+      close: () => {
+        if (closed) return;
+        closed = true;
+        open--;
+        finish();
+      },
+    };
+  };
+  const ids = Array.from({ length: 10 }, (_, i) => i);
+  const base = { client, runId: 'r-1', ids, samplesPerSimSecond: 4, onRow: () => undefined, openStreamImpl };
+
+  const narrow = new ReplicaStreams({ ...base, budget: 4 });
+  eq(open, 3, 'budget 4: three replica streams open at once (one slot is the fleet stream, one is kept free)');
+  eq(narrow.slots(), 3, 'slots() says so');
+  eq(openStreamCount(), 3, 'the module counter sees them');
+  ok(narrow.rotates(), 'ten rows in three slots rotate');
+  const seen = new Set<number>(narrow.streaming());
+  let ticks = 0;
+  for (let rotation = 0; rotation < 4; rotation++) {
+    for (let k = 0; k < narrow.slots(); k++) {
+      narrow.tick();
+      ticks++;
+      for (const id of narrow.streaming()) seen.add(id);
+      ok(open <= 3, `never more than three open (tick ${ticks}: ${open})`);
+      eq(narrow.streaming().length, 3, `three streaming after tick ${ticks}`);
+    }
+  }
+  eq(peak, 3, 'peak open streams over four rotations');
+  eq(seen.size, 10, `every id streamed at least once within four rotations (${ticks} ticks, ${opens} opens)`);
+  eq(new Set(narrow.streaming()).size, 3, 'no id streams twice at once');
+  narrow.close();
+  eq(open, 0, 'close() closes every stream');
+  eq(openStreamCount(), 0, 'and the counter returns to zero');
+  narrow.tick();
+  eq(open, 0, 'a tick after close opens nothing');
+
+  const wide = new ReplicaStreams({ ...base, budget: 32 });
+  eq(open, 10, 'budget 32: all ten open at once');
+  ok(!wide.rotates(), 'nothing rotates when the page fits');
+  const before = opens;
+  wide.tick();
+  eq(opens, before, 'a tick then opens nothing');
+  eq(open, 10, 'and closes nothing');
+  wide.close();
+  eq(open, 0, 'closed');
+  return `budget 4: 3 at once, ten ids within ${ticks} ticks; budget 32: 10 at once`;
 });
 
 // ---------------------------------------------------------------------------

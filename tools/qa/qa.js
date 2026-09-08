@@ -84,7 +84,9 @@ const finalLine = extraFail => {
   // said "0 replicas exist" (Issao: "the machine page always shows 0 replicas"). The pager count and
   // the table must agree that at least one replica is there.
   const machines = async (page, until, label) => {
-    const tab = await page.$('button[data-tab="observe:machine"]');
+    // Waited for, not looked for once: on a replay page the tab strip follows the recording's first
+    // frames, and a one-shot lookup that lost the race read as "no Machine level tab".
+    const tab = await until(() => page.$('button[data-tab="observe:machine"]'), 4000);
     if (tab) await tab.click();
     const seen = await until(async () => {
       const pager = await page.$eval('#replicas .pager .grow', el => el.textContent).catch(() => '');
