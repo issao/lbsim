@@ -184,6 +184,10 @@ origin master` by hand; it runs the script.
 tech lead keeps at least six in flight and spawns on every completion. The graph's per-unit sections are the
 briefs, so a spawn costs a preamble, not a design session.
 
+**Widen a unit by spawning, never by message.** Twice on 2026-09-07 a running subagent correctly declined a
+mid-flight redirect sent as a peer message and finished its original brief. A brief is a contract; a change of
+scope is a new unit with its own brief, or a follow-up after the first lands.
+
 **Every agent is restartable from files.** A session restart kills every agent. Each agent's memory is a
 file it owns (`docs/execution-graph.md`, `STATUS.md`/`TASKS.md`, `docs/deploy.md`), and its spawn brief is
 in `docs/agents/`. The main session re-spawns the fleet from there; see `docs/agents/README.md`. `git add` is always by explicit
