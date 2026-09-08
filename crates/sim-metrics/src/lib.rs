@@ -243,6 +243,17 @@ pub struct ReplicaSample {
     /// rate is the ratio, and it is what affinity routing is trying to raise.
     pub prompt_tokens: u64,
     pub prefix_hit_tokens: u64,
+    /// `METRIC_REPLICA_STATE`'s number: 1 READY, 2 DEGRADED, 3 EJECTED. `Default`'s 0 is not a real
+    /// state; a sample built by the engine always carries `Replica::state()`.
+    pub state: u8,
+    /// The engine's modelled speed fraction, 1.0 healthy. `Default`'s 0.0 is not a real reading, for
+    /// the same reason as `state`: a sample the engine produced always carries `Replica::speed()`.
+    pub speed: f64,
+    /// Nanoseconds to first token summed over the window `(previous sample, t]`, paired with
+    /// `ttft_count` for `METRIC_TTFT`'s windowed mean at replica scope. Zero when no sequence in the
+    /// replica got its first token this window.
+    pub ttft_sum_ns: u64,
+    pub ttft_count: u64,
 }
 
 /// Everything observable about one sample interval, closed at `t`.

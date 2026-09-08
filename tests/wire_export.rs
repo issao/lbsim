@@ -219,6 +219,16 @@ fn field_percentiles(obj: &str) -> Vec<f64> {
     rest[..end].split(',').filter(|s| !s.is_empty()).map(|s| s.parse().unwrap()).collect()
 }
 
+/// An `f64` field of a small JSON object slice, like the ones `metric_distribution` returns —
+/// `mean`, `min`, `max`, unquoted doubles unlike `count`.
+fn field_f64(obj: &str, name: &str) -> f64 {
+    let key = format!(r#""{name}":"#);
+    let start = obj.find(&key).unwrap_or_else(|| panic!("{name} missing in {obj}")) + key.len();
+    let rest = &obj[start..];
+    let end = rest.find(',').unwrap();
+    rest[..end].parse().unwrap_or_else(|e| panic!("{}: {e}", &rest[..end]))
+}
+
 /// U94b part (2): the fleet row carries GPU utilization as a mean plus a distribution over
 /// replicas at 50/90/99, and the same distribution now exists for KV utilization; the replica row
 /// carries the plain scalar. Both scopes' values stay in [0, 1], and the small scenario's fleet is
@@ -300,6 +310,32 @@ fn replica_rows_follow_the_frames() {
         let last = i + 1 == lines.len();
         assert!(line.ends_with(if last { r#","final":true}"# } else { r#","final":false}"# }), "line {i}: {line}");
     }
+}
+
+#[test]
+fn replica_ttft_is_a_windowed_mean_with_no_percentiles() {
+    // U31a's failure injection is not wired into this scenario, so every replica in a small,
+    // failure-free run is READY at true speed 1.0 — the two-line emission this test does not
+    // cover, because there is no scenario handle here to force a failure. `sim-model`'s own tests
+    // hold `state()` to READY/DEGRADED/EJECTED directly.
+    let dir = fresh_dir("ttft");
+    let r = small_run();
+    let run_dir = export::export_run_from(&r, "ttft", None, &dir).unwrap();
+    let lines: Vec<String> = read(&run_dir.join("replicas.jsonl")).lines().map(String::from).collect();
+    assert!(!lines.is_empty());
+
+    let mut any_ttft = false;
+    for (i, line) in lines.iter().enumerate() {
+        assert_eq!(metric_value(line, wire::METRIC_REPLICA_STATE), Some(1.0), "line {i}: {line}");
+        assert_eq!(metric_value(line, wire::METRIC_TRUE_SPEED_MULTIPLIER), Some(1.0), "line {i}: {line}");
+        if let Some(dist) = metric_distribution(line, wire::METRIC_TTFT) {
+            assert!(field_u64(dist, "count") > 0, "line {i}: a carried distribution has a count: {line}");
+            assert!(field_f64(dist, "mean") > 0.0, "line {i}: a carried distribution has a positive mean: {line}");
+            assert!(field_percentiles(dist).is_empty(), "line {i}: no percentiles on a windowed mean: {line}");
+            any_ttft = true;
+        }
+    }
+    assert!(any_ttft, "at least one replica row should carry a TTFT distribution somewhere in the run");
 }
 
 #[test]

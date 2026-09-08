@@ -423,6 +423,10 @@ struct Window {
     prev_compute: Vec<Nanos>,
     prev_prompt: Vec<u64>,
     prev_hit: Vec<u64>,
+    /// Same pattern as `prev_busy`, for the cumulative TTFT counters: a frame's share is this
+    /// window's delta, not the run's.
+    prev_ttft_sum: Vec<u64>,
+    prev_ttft_count: Vec<u64>,
 }
 
 impl Window {
@@ -458,6 +462,8 @@ impl Window {
         w.prev_compute.resize(replicas.len(), 0);
         w.prev_prompt.resize(replicas.len(), 0);
         w.prev_hit.resize(replicas.len(), 0);
+        w.prev_ttft_sum.resize(replicas.len(), 0);
+        w.prev_ttft_count.resize(replicas.len(), 0);
         let samples: Vec<ReplicaSample> = replicas
             .iter()
             .enumerate()
@@ -466,6 +472,8 @@ impl Window {
                 let compute = r.compute_ns_through(t);
                 let prompt = r.prompt_tokens_total();
                 let hit = r.prefix_hit_tokens_total();
+                let ttft_sum = r.ttft_sum_ns();
+                let ttft_count = r.ttft_count();
                 let sample = ReplicaSample {
                     queued: r.queued() as u32,
                     running: r.running() as u32,
@@ -475,11 +483,17 @@ impl Window {
                     compute_ns: compute - w.prev_compute[i],
                     prompt_tokens: prompt - w.prev_prompt[i],
                     prefix_hit_tokens: hit - w.prev_hit[i],
+                    state: r.state(),
+                    speed: r.speed(),
+                    ttft_sum_ns: ttft_sum - w.prev_ttft_sum[i],
+                    ttft_count: ttft_count - w.prev_ttft_count[i],
                 };
                 w.prev_busy[i] = busy;
                 w.prev_compute[i] = compute;
                 w.prev_prompt[i] = prompt;
                 w.prev_hit[i] = hit;
+                w.prev_ttft_sum[i] = ttft_sum;
+                w.prev_ttft_count[i] = ttft_count;
                 sample
             })
             .collect();
@@ -488,6 +502,8 @@ impl Window {
         self.prev_compute = w.prev_compute;
         self.prev_prompt = w.prev_prompt;
         self.prev_hit = w.prev_hit;
+        self.prev_ttft_sum = w.prev_ttft_sum;
+        self.prev_ttft_count = w.prev_ttft_count;
         Frame {
             t,
             offered_rps,

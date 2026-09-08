@@ -171,6 +171,12 @@ pub struct Replica {
     /// spared; the loop differences them per sample window.
     prompt_total: u64,
     hit_total: u64,
+    /// Cumulative nanoseconds to first token, and the count of sequences it covers, over the whole
+    /// run. Same definition as the run-wide TTFT histogram: `first_token_at - req.arrived_at`. What
+    /// the per-replica TTFT mean on the wire is built from; a per-replica histogram would not be
+    /// cheap at scale, but two running totals are.
+    ttft_sum_ns: u64,
+    ttft_count: u64,
 }
 
 impl Default for Replica {
@@ -202,6 +208,8 @@ impl Default for Replica {
             prefix_evicted: Vec::new(),
             prompt_total: 0,
             hit_total: 0,
+            ttft_sum_ns: 0,
+            ttft_count: 0,
         }
     }
 }
@@ -589,6 +597,8 @@ impl Replica {
                 if prefix_cap > 0 && s.req.prefix_node != 0 {
                     prefilled.push(s.req.prefix_node);
                 }
+                r.ttft_sum_ns += token_at - s.req.arrived_at;
+                r.ttft_count += 1;
             } else {
                 let gap = token_at - s.last_token_at;
                 s.max_itl = s.max_itl.max(gap);
@@ -772,5 +782,65 @@ impl Replica {
     }
     pub fn speed(&self) -> f64 {
         self.speed
+    }
+    /// The replica's state as the engine knows it, `METRIC_REPLICA_STATE`'s number: 1 READY, 2
+    /// DEGRADED (slow or hung: `speed < 1.0`), 3 EJECTED (`down`). Down wins over slow because
+    /// `crash` does not reset `speed`.
+    pub fn state(&self) -> u8 {
+        if self.down {
+            3
+        } else if self.speed < 1.0 {
+            2
+        } else {
+            1
+        }
+    }
+    /// Cumulative nanoseconds to first token across every sequence that has emitted one, this
+    /// replica's whole run. Paired with `ttft_count` for a mean; `Window::close` differences
+    /// consecutive readings into a per-window mean the same way it does `busy_ns_through`.
+    pub fn ttft_sum_ns(&self) -> u64 {
+        self.ttft_sum_ns
+    }
+    pub fn ttft_count(&self) -> u64 {
+        self.ttft_count
+    }
+}
+
+#[cfg(test)]
+mod state_tests {
+    use super::Replica;
+
+    #[test]
+    fn state_is_ready_by_default() {
+        assert_eq!(Replica::default().state(), 1);
+    }
+
+    #[test]
+    fn state_is_degraded_under_a_slow_failure() {
+        let mut r = Replica::default();
+        r.set_speed(0.3);
+        assert_eq!(r.state(), 2);
+    }
+
+    #[test]
+    fn state_is_degraded_hung() {
+        let mut r = Replica::default();
+        r.set_speed(0.0);
+        assert_eq!(r.state(), 2);
+    }
+
+    #[test]
+    fn state_is_ejected_after_a_crash() {
+        let mut r = Replica::default();
+        r.crash();
+        assert_eq!(r.state(), 3);
+    }
+
+    #[test]
+    fn crash_wins_over_a_slow_failure() {
+        let mut r = Replica::default();
+        r.set_speed(0.3);
+        r.crash();
+        assert_eq!(r.state(), 3);
     }
 }

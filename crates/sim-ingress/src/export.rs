@@ -293,6 +293,23 @@ pub fn replica_rows(r: &RunResult, s: usize) -> Vec<SubscriptionUpdate> {
         let window_ns = sample_interval(r) as f64;
         row.value(wire::METRIC_GPU_UTILIZATION, (rep.busy_ns as f64 / window_ns).min(1.0));
         row.value(wire::METRIC_GPU_COMPUTE_BOUND_FRACTION, rep.compute_ns as f64 / rep.busy_ns as f64);
+        row.value(wire::METRIC_REPLICA_STATE, rep.state as f64);
+        row.value(wire::METRIC_TRUE_SPEED_MULTIPLIER, rep.speed);
+        // Same rule as run.rs::row: a mean of nothing is a gap, not 0 ns.
+        if rep.ttft_count > 0 {
+            row.distribution(
+                wire::METRIC_TTFT,
+                Distribution {
+                    count: rep.ttft_count,
+                    mean: rep.ttft_sum_ns as f64 / rep.ttft_count as f64,
+                    min: 0.0,
+                    max: 0.0,
+                    percentile: Vec::new(),
+                    value: Vec::new(),
+                    from_merged_histogram: false,
+                },
+            );
+        }
         out.push(SubscriptionUpdate {
             subscription_id: EXPORT_SUBSCRIPTION_ID.to_string(),
             sim_time_unix_ns: r.fleet_queue.t[s],

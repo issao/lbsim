@@ -80,6 +80,8 @@ pub const METRIC_LOAD_IMBALANCE_CV: i32 = 64;
 pub const METRIC_SLO_ATTAINMENT: i32 = 66;
 pub const METRIC_GPU_UTILIZATION: i32 = 67;
 pub const METRIC_GPU_COMPUTE_BOUND_FRACTION: i32 = 68;
+pub const METRIC_REPLICA_STATE: i32 = 69;
+pub const METRIC_TRUE_SPEED_MULTIPLIER: i32 = 70;
 
 /// `common.proto` `Outcome` numbers, keyed by the engine's outcome labels. `Scorecard.outcome_counts`
 /// is keyed by this number.
