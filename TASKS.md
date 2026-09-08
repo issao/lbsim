@@ -1,8 +1,8 @@
 # TASKS — things that need Issao
 
-Last updated: 2026-09-07 19:13 PDT by Claude.
+Last updated: 2026-09-07 19:15 PDT by Claude.
 
-**RESUMED 2026-09-07 19:13 PDT** at your "resume", relayed by main. The pause (11:22–19:13, quota) changed nothing on `master` but the tech lead's graph checkpoint (1a58186). The tech lead is `a56ff1d3950e7375f` now, resuming U79–U83 from the four WIP branches; U80's checkpoint is already merged (023672d, 19:13); `STATUS.md` has their state. Everything below stands as it was; one thing needs a word from you tonight, item 2.
+**RESUMED 2026-09-07 19:13 PDT** at your "resume", relayed by main. The pause (11:22–19:13, quota) changed nothing on `master` but the tech lead's graph checkpoint (1a58186). The tech lead is `a56ff1d3950e7375f` now, resuming U79–U83 from the four WIP branches; U80 (Home in Live / Replay / Mock sections) landed at 023672d, 19:13, not yet deployed; `STATUS.md` has their state. Everything below stands as it was; one thing needs a word from you tonight, item 2.
 
 **Resumed 2026-09-07 11:17 PDT.** The fleet stopped at 21:00 on 2026-09-06 at your request (*"we are approaching
 limit... tie up loose ends... give me a doc summarizing the state and most interesting outcomes with deep
