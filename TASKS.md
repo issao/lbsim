@@ -1,6 +1,11 @@
 # TASKS — things that need Issao
 
-Last updated: 2026-09-07 20:24 PDT by Claude.
+Last updated: 2026-09-07 20:25 PDT by Claude.
+
+**STOPPED 2026-09-07 20:25 PDT, per main: nothing else needed tonight.** The tech lead stopped at 20:24 with 77 done, 0 in flight, 13 queued; ten units
+and three deploys tonight; your whole morning instruction, follow-ups included, is on <https://lbsim.ai> as of `lbsim-00016-nbc` (20:23). Resume by
+a message from main; agents re-spawned from `docs/agents/`. One thing still needs a word from you, item 2. Main's three harness runs against
+`lbsim-00016-nbc` were in progress at the stop; main holds the counts.
 
 **RESUMED 2026-09-07 19:13 PDT** at your "resume", relayed by main. The pause (11:22–19:13, quota) changed nothing on `master` but the tech lead's graph checkpoint (1a58186). The tech lead is `a56ff1d3950e7375f` now, resuming U79–U83 from the four WIP branches; U80 (Home in Live / Replay / Mock sections) landed at 023672d, 19:13, not yet deployed; `STATUS.md` has their state. Everything below stands as it was; one thing needs a word from you tonight, item 2.
 
