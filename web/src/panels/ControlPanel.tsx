@@ -17,6 +17,17 @@ const TABS: TabDef<ControlTab>[] = [
   { id: 'run', label: 'Run' },
 ];
 
+/** A tab whose knobs a recording cannot act on: greyed, inert, and saying why, in the shape of
+ *  the tab bodies' own `Dropped` wrapper (see below in this file). */
+function ReplayLocked({ reason, children }: { reason: string | null; children: ReactNode }) {
+  return (
+    <fieldset className="dropped" disabled title={reason ?? undefined}>
+      {children}
+      <span className="dropped-why">recording</span>
+    </fieldset>
+  );
+}
+
 export function ControlPanel({
   run,
   tab,
@@ -37,6 +48,11 @@ export function ControlPanel({
   // Config paths a live server does not take. Naming them in a banner left the knobs looking
   // live; they are disabled where they stand instead.
   const dropped: string[] = 'dropped' in run ? (run as { dropped: string[] }).dropped : [];
+  // A recording cannot change: load/policy/cluster knobs go inert with a one-word reason instead
+  // of looking live while doing nothing.
+  const isReplay = run.source?.kind === 'replay';
+  const replayReason = run.source?.disabledReason ?? null;
+  const lockOnReplay = (body: ReactNode) => (isReplay ? <ReplayLocked reason={replayReason}>{body}</ReplayLocked> : body);
 
   return (
     <Panel
@@ -45,13 +61,14 @@ export function ControlPanel({
       bodyClass="tight"
       highlight={highlight === 'control'}
       id="control"
+      data={{ kind: 'real', mockFields: [] }}
     >
       <Tabs tabs={TABS} value={tab} onChange={onTab} scope="control" />
       <div style={{ padding: 9, overflow: 'auto' }}>
         {tab === 'scenarios' ? <ScenariosTab run={run} /> : null}
-        {tab === 'load' ? <LoadTab c={c} set={set} dropped={dropped} /> : null}
-        {tab === 'policies' ? <PoliciesTab c={c} set={set} dropped={dropped} /> : null}
-        {tab === 'cluster' ? <ClusterTab c={c} set={set} dropped={dropped} /> : null}
+        {tab === 'load' ? lockOnReplay(<LoadTab c={c} set={set} dropped={dropped} />) : null}
+        {tab === 'policies' ? lockOnReplay(<PoliciesTab c={c} set={set} dropped={dropped} />) : null}
+        {tab === 'cluster' ? lockOnReplay(<ClusterTab c={c} set={set} dropped={dropped} />) : null}
         {tab === 'run' ? <RunTab run={run} set={set} /> : null}
       </div>
     </Panel>
