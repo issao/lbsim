@@ -365,7 +365,7 @@ function CompareBody({ a, b, mode, banner }: { a: RunHandle; b: RunHandle; mode:
         <MockTag what={DATA_SOURCE_LABEL[mode]} />
       </div>
 
-      <div className="dash-body" style={{ gridTemplateColumns: 'minmax(0, 1fr)' }}>
+      <div className="dash-body ab-body">
         <Panel
           title="Shared scenario"
           sub="applied to both runs at once, so they cannot drift apart by accident"
