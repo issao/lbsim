@@ -4,7 +4,7 @@ Building a simulator of a global scale LLM serving cluster
 
 - Live demo at [lbsim.ai]()
 - [GitHub](https://github.com/issao/lbsim)
-- [This doc  - tbf](tbf)
+- [Self-link](https://github.com/issao/lbsim/blob/master/docs/overview.md)
 
 ## Inspiration
 
