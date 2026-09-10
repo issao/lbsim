@@ -275,8 +275,15 @@ pub struct ReplicaSample {
     /// Nanoseconds of the window `(previous sample, t]` the replica spent inside a step, as opposed
     /// to idle with nothing to run. A step that straddles a sample instant is split at it, so this is
     /// never more than the window. The consumer divides by the window length for
-    /// `METRIC_GPU_UTILIZATION`; no ratio is stored because the window length is the scenario's.
+    /// `METRIC_GPU_UTILIZATION`, what nvidia-smi calls GPU-Util; no ratio is stored because the
+    /// window length is the scenario's.
     pub busy_ns: Nanos,
+    /// Of `busy_ns`, the part that was useful against the replica's rated capacity: each decode step
+    /// for its decode time times `batch / effective_batch_limit`, each prefill chunk in full, swap
+    /// transfers not at all. Over the window this is `METRIC_GPU_USEFUL_FRACTION`. At batch 1 a
+    /// replica is busy the whole step and 1/256 useful, so `busy_ns` reads 55% for a fleet at 2% of
+    /// capacity; the ratio of the two fields is the mean batch fill, which is why there are two.
+    pub useful_ns: Nanos,
     /// Of `busy_ns`, the part the cost model priced at the compute roofline: prefill and speculative
     /// verification. The rest was the weight read and key-value re-read, bandwidth-bound decode.
     /// `METRIC_GPU_COMPUTE_BOUND_FRACTION` is this over `busy_ns`.

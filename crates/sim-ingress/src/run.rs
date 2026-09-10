@@ -774,6 +774,7 @@ pub const FLEET_METRICS: &[i32] = &[
     wire::METRIC_WARMING_REPLICAS,
     wire::METRIC_DRAINING_REPLICAS,
     wire::METRIC_GPU_UTILIZATION,
+    wire::METRIC_GPU_USEFUL_FRACTION,
     wire::METRIC_GPU_COMPUTE_BOUND_FRACTION,
     wire::METRIC_TRUE_SPEED_MULTIPLIER,
     wire::METRIC_PREFIX_HIT_RATE,
@@ -787,6 +788,7 @@ pub const REPLICA_METRICS: &[i32] = &[
     METRIC_KV_TOKENS_RESIDENT,
     METRIC_STEP_TIME,
     wire::METRIC_GPU_UTILIZATION,
+    wire::METRIC_GPU_USEFUL_FRACTION,
     wire::METRIC_GPU_COMPUTE_BOUND_FRACTION,
     wire::METRIC_REPLICA_STATE,
     wire::METRIC_TRUE_SPEED_MULTIPLIER,
@@ -958,11 +960,15 @@ pub fn row_over(window: &[Frame], sc: &Scenario, spec: &RowSpec) -> Option<Metri
             value(wire::METRIC_RUNNING_SEQS, avg_r(&|r| r.running as f64));
             value(wire::METRIC_KV_UTILIZATION, avg_r(&|r| r.kv_tokens as f64 / cap));
             value(METRIC_KV_TOKENS_RESIDENT, avg_r(&|r| r.kv_tokens as f64));
-            // Busy is not useful work: compute-bound is busy's complement of `WASTED_GPU_FRACTION`.
-            // `busy_ns` never exceeds the window by construction, but the ratio is clamped anyway
-            // rather than trust an upstream invariant. 0/0 (never stepped) is NaN, which `value`
-            // drops.
-            value(wire::METRIC_GPU_UTILIZATION, avg_r(&|r| (r.busy_ns as f64 / window_ns).min(1.0)));
+            // Utilization is the time-in-step share (what a GPU counter reports), useful the share of
+            // the maximum possible work; both are ratios of the window's sums, so a frame in which
+            // the replica stepped little weighs what it did, not a full frame's worth. Neither sum
+            // exceeds the window by construction, but the ratio is clamped anyway rather than trust
+            // an upstream invariant. Compute-bound is busy's complement of `WASTED_GPU_FRACTION`;
+            // 0/0 (never stepped) is NaN, which `value` drops.
+            let span_ns = samples.len() as f64 * window_ns;
+            value(wire::METRIC_GPU_UTILIZATION, (sum_r(&|r| r.busy_ns) as f64 / span_ns).min(1.0));
+            value(wire::METRIC_GPU_USEFUL_FRACTION, (sum_r(&|r| r.useful_ns) as f64 / span_ns).min(1.0));
             value(
                 wire::METRIC_GPU_COMPUTE_BOUND_FRACTION,
                 sum_r(&|r| r.compute_ns) as f64 / sum_r(&|r| r.busy_ns) as f64,
@@ -1062,19 +1068,26 @@ pub fn row_over(window: &[Frame], sc: &Scenario, spec: &RowSpec) -> Option<Metri
                     if live.is_empty() { 0.0 } else { live.iter().map(|r| r.speed).sum::<f64>() / live.len() as f64 }
                 }),
             );
-            // GPU utilization and the KV-utilization band: the mean is never the interesting
-            // number, it is how many replicas sit idle while others saturate. Same percentiles as
-            // the latency distributions below, falling back to 50/90/99 when the spec asked for
-            // none, because "no percentiles requested" means "give me the defaults", not "give me
-            // none". Each replica's reading is its mean over the window.
+            // GPU utilization, GPU useful and the KV-utilization band: the mean is never the
+            // interesting number, it is how many replicas sit idle while others saturate. Same
+            // percentiles as the latency distributions below, falling back to 50/90/99 when the spec
+            // asked for none, because "no percentiles requested" means "give me the defaults", not
+            // "give me none". Each replica's reading is its mean over the window; for the two time
+            // shares that is the ratio of its window sums to the span it was sampled over.
             let per_replica = |i: usize, g: &dyn Fn(&sim_metrics::ReplicaSample) -> f64| {
                 mean_finite(window.iter().filter_map(|f| f.replicas.get(i)).map(g))
             };
-            let gpu: Vec<f64> = serving.iter().map(|&i| per_replica(i, &|r| (r.busy_ns as f64 / window_ns).min(1.0))).collect();
+            let share = |i: usize, g: &dyn Fn(&sim_metrics::ReplicaSample) -> u64| {
+                let samples: Vec<u64> = window.iter().filter_map(|f| f.replicas.get(i)).map(g).collect();
+                (samples.iter().sum::<u64>() as f64 / (samples.len() as f64 * window_ns)).min(1.0)
+            };
+            let gpu: Vec<f64> = serving.iter().map(|&i| share(i, &|r| r.busy_ns)).collect();
+            let gpu_useful: Vec<f64> = serving.iter().map(|&i| share(i, &|r| r.useful_ns)).collect();
             let kv_ratios: Vec<f64> = serving.iter().map(|&i| per_replica(i, &|r| r.kv_tokens as f64 / cap)).collect();
             let busy_sum = sum(&|f| f.replicas.iter().map(|r| r.busy_ns).sum::<u64>());
             let compute_sum = sum(&|f| f.replicas.iter().map(|r| r.compute_ns).sum::<u64>());
             value(wire::METRIC_GPU_UTILIZATION, gpu.iter().sum::<f64>() / n);
+            value(wire::METRIC_GPU_USEFUL_FRACTION, gpu_useful.iter().sum::<f64>() / n);
             value(wire::METRIC_GPU_COMPUTE_BOUND_FRACTION, compute_sum as f64 / busy_sum as f64);
             // Ratio of sums, not a mean of per-replica ratios, so a replica with no prompt tokens
             // this window does not skew the fleet number. Gated on `prefix_roots` for the same
@@ -1095,6 +1108,11 @@ pub fn row_over(window: &[Frame], sc: &Scenario, spec: &RowSpec) -> Option<Metri
             if spec.wants(wire::METRIC_GPU_UTILIZATION) {
                 if let Some(d) = distribution_over_replicas(&gpu, percentiles) {
                     row.distribution(wire::METRIC_GPU_UTILIZATION, d);
+                }
+            }
+            if spec.wants(wire::METRIC_GPU_USEFUL_FRACTION) {
+                if let Some(d) = distribution_over_replicas(&gpu_useful, percentiles) {
+                    row.distribution(wire::METRIC_GPU_USEFUL_FRACTION, d);
                 }
             }
             if spec.wants(wire::METRIC_KV_UTILIZATION) {
@@ -1292,24 +1310,29 @@ mod tests {
             tier_ssd_busy_ns: 0,
             // `state: 1`, READY: the default 0 is ABSENT, a slot with no device, which the fleet
             // means leave out, as the engine's samples always carry a real state.
+            // The second replica stepped the whole window at a quarter of the work it could do:
+            // utilization (busy) 1.0, useful 0.25. Fleet means over the two are 0.5 and 0.125.
             replicas: vec![
-                sim_metrics::ReplicaSample { busy_ns: 0, state: 1, ..Default::default() },
-                sim_metrics::ReplicaSample { busy_ns: window_ns, state: 1, ..Default::default() },
+                sim_metrics::ReplicaSample { busy_ns: 0, useful_ns: 0, state: 1, ..Default::default() },
+                sim_metrics::ReplicaSample { busy_ns: window_ns, useful_ns: window_ns / 4, state: 1, ..Default::default() },
             ],
         };
         let spec = RowSpec { target: Target::Fleet, metrics: Vec::new(), percentiles: Vec::new() };
         let r = row(&frame, &sc, &spec).expect("fleet row");
-        let mean = r.values.iter().find(|(m, _)| *m == wire::METRIC_GPU_UTILIZATION).map(|(_, v)| *v);
-        assert_eq!(mean, Some(0.5));
-        let d = r
-            .distributions
-            .iter()
-            .find(|(m, _)| *m == wire::METRIC_GPU_UTILIZATION)
-            .map(|(_, d)| d)
-            .expect("gpu utilization distribution over replicas");
-        assert_eq!(d.percentile, vec![50.0, 90.0, 99.0]);
-        assert_eq!(d.count, 2);
-        assert!(d.value.iter().all(|v| (0.0..=1.0).contains(v)), "{:?}", d.value);
+        let mean_of = |m: i32| r.values.iter().find(|(k, _)| *k == m).map(|(_, v)| *v);
+        assert_eq!(mean_of(wire::METRIC_GPU_UTILIZATION), Some(0.5));
+        assert_eq!(mean_of(wire::METRIC_GPU_USEFUL_FRACTION), Some(0.125));
+        for m in [wire::METRIC_GPU_UTILIZATION, wire::METRIC_GPU_USEFUL_FRACTION] {
+            let d = r
+                .distributions
+                .iter()
+                .find(|(k, _)| *k == m)
+                .map(|(_, d)| d)
+                .unwrap_or_else(|| panic!("metric {m}: distribution over replicas"));
+            assert_eq!(d.percentile, vec![50.0, 90.0, 99.0]);
+            assert_eq!(d.count, 2);
+            assert!(d.value.iter().all(|v| (0.0..=1.0).contains(v)), "{:?}", d.value);
+        }
     }
 
     /// A frame with nothing in it at `t`, for windows built by hand.

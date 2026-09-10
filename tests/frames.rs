@@ -159,6 +159,7 @@ fn busy_time_is_zero_when_idle_and_never_exceeds_the_window() {
         for (k, x) in f.replicas.iter().enumerate() {
             assert!(x.busy_ns <= window, "frame {i} replica {k}: busy {} > window {window}", x.busy_ns);
             assert!(x.compute_ns <= x.busy_ns, "frame {i} replica {k}: compute {} > busy {}", x.compute_ns, x.busy_ns);
+            assert!(x.useful_ns <= x.busy_ns, "frame {i} replica {k}: useful {} > busy {}", x.useful_ns, x.busy_ns);
             if x.busy_ns > 0 {
                 busy_frames += 1;
             }

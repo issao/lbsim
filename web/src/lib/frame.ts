@@ -30,8 +30,14 @@ export interface ReplicaSample {
   batchSize: number;
   kvTokensResident: number;
   kvUtilization: number;
-  /** Busy share of the sample window (in a step, as opposed to idle with an empty batch). */
+  /** Time in step: the share of the window inside a step at all, what nvidia-smi calls GPU-Util. */
   gpuUtilization: number;
+  /**
+   * Useful work over the maximum possible in the window: a decode step counts for its batch against
+   * the effective batch limit, a prefill chunk in full. At batch 1 this is ~1/256 while
+   * `gpuUtilization` is ~1; the ratio of the two is the mean batch fill.
+   */
+  gpuUsefulFraction: number;
   /** Share of busy time under the compute roofline; the complement of the wasted fraction. */
   gpuComputeBoundFraction: number;
   stepTimeMs: number;
@@ -72,10 +78,13 @@ export interface Frame {
   drainingReplicas: number;
   ejectedReplicas: number;
   kvUtilization: number;
-  /** Fleet mean of the replicas' `gpuUtilization`, and its spread across them; null when unknown. */
+  /** Fleet mean of the replicas' `gpuUtilization` (time in step), and its spread across them; null when unknown. */
   gpuUtilization: number;
+  /** Fleet mean of the replicas' `gpuUsefulFraction` (useful work over the maximum possible), and its spread. */
+  gpuUsefulFraction: number;
   gpuComputeBoundFraction: number;
   gpuUtilizationP: FractionPercentiles | null;
+  gpuUsefulFractionP: FractionPercentiles | null;
   kvUtilizationP: FractionPercentiles | null;
   prefixHitRate: number;
   tierUtilization: { hbm: number; dram: number; ssd: number };

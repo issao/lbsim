@@ -140,14 +140,16 @@ row count is unchanged, so a smoothed stream lines up with a raw one point for p
 - every gauge and rate in `values` is the **mean of its per-frame values** over the window (a frame
   covers one sample interval, so the mean of per-frame rates is the rate over the window);
 - a fraction of requests or of time (`METRIC_SLO_ATTAINMENT`, `METRIC_GPU_COMPUTE_BOUND_FRACTION`,
-  `METRIC_PREFIX_HIT_RATE`) is the **ratio of the window's sums**, so a frame that ended two requests
-  does not weigh as much as one that ended two hundred;
+  `METRIC_PREFIX_HIT_RATE`, and per replica `METRIC_GPU_UTILIZATION` and `METRIC_GPU_USEFUL_FRACTION`)
+  is the **ratio of the window's sums**, so a frame that ended two requests does not weigh as much as
+  one that ended two hundred, and a replica's useful or busy nanoseconds are summed over the window
+  before they are divided by it;
 - every latency `Distribution` is the **merge of the frames' histograms**: p99 over a 30 s window is
   the p99 of every request that finished in those 30 s, not an average of per-frame p99s (percentiles
   are not mergeable; bucketed histograms are), and `from_merged_histogram` stays `true`;
-- the distributions over replicas (`METRIC_GPU_UTILIZATION`, `METRIC_KV_UTILIZATION`) are taken over
-  each replica's mean across the window, since the question is how many replicas sat idle over the
-  window while others saturated;
+- the distributions over replicas (`METRIC_GPU_UTILIZATION`, `METRIC_GPU_USEFUL_FRACTION`,
+  `METRIC_KV_UTILIZATION`) are taken over each replica's mean across the window, since the question
+  is how many replicas sat idle over the window while others saturated;
 - `METRIC_READY_REPLICAS`, `METRIC_WARMING_REPLICAS`, `METRIC_DRAINING_REPLICAS` and a replica row's
   `METRIC_REPLICA_STATE` are read **at the sample**, never averaged: a fraction of a replica is not a
   count, and the dashboard enumerates replica ids from the ready count.
@@ -181,6 +183,9 @@ Scopes: `SCOPE_FLEET` and `SCOPE_REPLICA`. Everything else returns `rejected_rea
 | `METRIC_QUEUED_SEQS` 23, `METRIC_RUNNING_SEQS` 22 | sum | yes | replica queue and batch |
 | `METRIC_KV_UTILIZATION` 20, `METRIC_KV_TOKENS_RESIDENT` 21 | mean / sum | yes | replica KV |
 | `METRIC_STEP_TIME` 8 | | yes | last step duration, seconds as a double like every other duration gauge |
+| `METRIC_GPU_UTILIZATION` 67 | mean, and a distribution over replicas | yes | time in step: `busy_ns / window`, what nvidia-smi calls GPU-Util; at batch 1 this is ~1 while 71 is ~1/256 |
+| `METRIC_GPU_USEFUL_FRACTION` 71 | mean, and a distribution over replicas | yes | useful work over the maximum possible in the window: `useful_ns / window`, where a decode step is useful for its batch against the effective batch limit and a prefill chunk in full; 71 over 67 is the mean batch fill |
+| `METRIC_GPU_COMPUTE_BOUND_FRACTION` 68 | ratio of sums | yes | of busy time, the part priced at the compute roofline |
 | `METRIC_LOAD_IMBALANCE_CV` 64 | yes | | CV of per-replica load at the sample |
 | `METRIC_SLO_ATTAINMENT` 66 | yes | | window completions within SLO / all window completions |
 | `METRIC_TTFT` 1, `METRIC_ITL` 2, `METRIC_E2E` 3, `METRIC_QUEUE_WAIT` 4 | yes | | window histograms |

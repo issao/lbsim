@@ -35,6 +35,7 @@ export const Metric = {
   SLO_ATTAINMENT: 66,
   GPU_UTILIZATION: 67,
   GPU_COMPUTE_BOUND_FRACTION: 68,
+  GPU_USEFUL_FRACTION: 71,
 } as const;
 export type MetricId = (typeof Metric)[keyof typeof Metric];
 
