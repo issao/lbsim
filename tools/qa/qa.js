@@ -730,8 +730,24 @@ const finalLine = extraFail => {
       const finished = new Set(['OUTCOME_OK', 'OUTCOME_OK_SLO_VIOLATED']);
       let traces = [];
       if (runId) {
-        const r = await ctx.request.post(BASE + '/v1/ingress/GetTraces', { data: { run_id: runId, limit: 20 } }).catch(() => null);
-        traces = r && r.ok() ? ((await r.json().catch(() => ({}))).traces || []) : [];
+        // The walkthrough pauses at its first narration point (12 s) and this fleet's first requests
+        // complete at ~20 s, so press the card's Play and let the run reach 30 simulated seconds,
+        // then poll for the first sampled traces.
+        const playBtn = await page.$('.btn.wt-play').catch(() => null);
+        if (playBtn) await playBtn.click().catch(() => undefined);
+        for (let attempt = 0; attempt < 30; attempt++) {
+          const g = await ctx.request.post(BASE + '/v1/ingress/GetRun', { data: { run_id: runId } }).catch(() => null);
+          const j = g && g.ok() ? await g.json().catch(() => ({})) : {};
+          const simS = j.sim_time_unix_ns ? Number((BigInt(j.sim_time_unix_ns) - 1767225600000000000n) / 1000000000n) : 0;
+          if (simS >= 30 || j.state === 'STATE_COMPLETE') break;
+          if (j.state === 'STATE_PAUSED' && playBtn) await playBtn.click().catch(() => undefined);
+          await sleep(2000);
+        }
+        for (let attempt = 0; attempt < 15 && traces.length === 0; attempt++) {
+          const r = await ctx.request.post(BASE + '/v1/ingress/GetTraces', { data: { run_id: runId, limit: 20 } }).catch(() => null);
+          traces = r && r.ok() ? ((await r.json().catch(() => ({}))).traces || []) : [];
+          if (traces.length === 0) await sleep(3000);
+        }
       }
       const gaps = [];
       let preempted = 0;
