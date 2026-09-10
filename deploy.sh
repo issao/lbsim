@@ -137,8 +137,8 @@ echo "deploying $SERVICE"
 gcloud run deploy "$SERVICE" \
   --image "$TAG" \
   --project "$PROJECT" --region "$REGION" \
-  --cpu 2 --memory 2Gi \
-  --set-env-vars "LBSIM_MEMORY_BUDGET_MB=1600" \
+  --cpu 2 --memory 8Gi \
+  --set-env-vars "LBSIM_MEMORY_BUDGET_MB=6000" \
   --cpu-throttling \
   --no-cpu-boost \
   --concurrency 80 \
@@ -162,11 +162,11 @@ gcloud run deploy "$SERVICE" \
 #   --no-cpu-throttling  : not used; --cpu-throttling stays. A paced run advances only while a request
 #                          is in flight, and an open subscription is one, so the dashboard case has CPU;
 #                          a run nobody is watching stands still, which is WIRE.md's idle rule.
-#   --cpu 2 --memory 2Gi : the execution plan's sizing ladder for a 10,000-replica fleet is 2 vCPU /
-#                          2 GiB; the 1 vCPU / 512 MiB static-server shape could not hold the 580 MB a
-#                          10k-replica run measured locally. LBSIM_MEMORY_BUDGET_MB is the engine's own
-#                          guard at ~80% of the container, so a runaway run aborts with a reason rather
-#                          than an OOM kill. Nothing runs, and nothing bills, while no instance exists.
+#   --cpu 2 --memory 8Gi : Issao hit the engine's memory budget at 2 GiB (long-prompt and 10k-replica
+#                          runs), so the container is 8 GiB and LBSIM_MEMORY_BUDGET_MB is 6000, ~75% of
+#                          it, the engine's own guard so a runaway run aborts with a reason rather than
+#                          an OOM kill. 2 vCPU is the most Cloud Run needs for 8 GiB and the engine is
+#                          single-threaded. Nothing runs, and nothing bills, while no instance exists.
 #   --session-affinity   : SET since the live Ingress (U18). A run lives in one instance's memory,
 #                          so a StartRun answered by instance A followed by an OpenSubscription routed
 #                          to instance B leaves the browser reconnecting forever; the browser gate saw
