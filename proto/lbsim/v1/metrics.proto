@@ -75,7 +75,12 @@ message TraceSpan {
   uint64 start_unix_ns = 1;
   uint64 end_unix_ns = 2;
   string component = 3;    // "gateway", "router", "replica:1234"
-  string operation = 4;    // "queue", "route", "prefill", "decode", "kv_fetch", "preempted"
+  // "queue", "route", "prefill", "prefill_wait", "decode", "kv_fetch", "preempted". A "prefill_wait"
+  // span is the request admitted to the batch but not served: the step's prefill budget went to the
+  // sequences ahead of it, and tokens_processed says how many. It exists because a trace showed a
+  // 600-800 ms hole between the queue and the first prefill chunk (Issao: "There shouldn't be a big gap
+  // in the trace view with unaccounted time"); every replica span now starts where the previous ended.
+  string operation = 4;
   uint64 replica_id = 5;
 
   // Sequences in flight on the resource, including those not in this span's step.
