@@ -273,7 +273,28 @@ the oldest idle-stopped run (by registration order) to make room, and answers `5
 none to evict, so a crashed tab can never lock the public site. A run that stays idle-stopped for
 `2 × IDLE_SHUTDOWN_SECONDS` is reaped on its own, so memory stays bounded with no new arrivals. Either
 way the run is simply gone from the registry: `GetRun` answers `404` from then on, while its checkpoint
-under `runs/<run_id>/` stays on disk. Finished and failed runs never count and are never reaped.
+under `runs/<run_id>/` stays on disk. Finished and failed runs never count toward the eight.
+
+A finished run — `STATE_COMPLETE` by its own end or by `StopRun`, or `STATE_FAILED` — is **released**
+rather than reaped: it leaves memory once its checkpoint is on disk, it has no live lease, and
+`LBSIM_COMPLETED_RETENTION_S` (default 120) have passed since it ended; or at once, checkpoint written and
+lease-free, when a `StartRun` arrives with eight runs held in any state. Before this rule every finished
+run stayed until the instance died, ninety-odd MB each at 256 replicas, which reached the engine's memory
+budget in about ten dashboard runs. The checkpoint of a completed run is written the moment it ends, from
+the frames the viewer saw: `status.json`, `scenario.txt`, `result.json`, `fleet.jsonl`, `replicas.jsonl`
+thinned to the export's budget with the stride in `checkpoint.json`, and `traces.jsonl` with its
+`manifest.json` when the run sampled any. After the release the server keeps a hundred-byte status stub:
+`ListRuns` still lists the run and `GetRun` answers its final status; `GetResult` answers `result.json`
+from disk, byte for byte the in-memory answer (`409` for a failed run, as before); everything that needs
+the engine or the frames — `StopRun`, `SetSpeed`, `StepForward`, `UpdateWorkload`, `UpdatePolicies`,
+`GetTraces`, `OpenSubscription` — answers `410` with `released; replay from runs/<run_id>/`. The
+released run is not merged into `runs/index.json`, which lists the showcase's recordings, so a dashboard
+replay of it is a follow-up rather than a promise.
+
+While a run is alive the server holds its frames, one per sample interval with a row per replica, and
+nothing per request: the engine folds each record into the whole-run tally and histograms as it lands
+(`Sim::fold_records`), so a ten-minute run at 560 rps holds no 336k-record vector to its end. What
+`/requests.log` reports (below) is therefore the frames.
 
 `GET /requests.log` answers `text/plain` with the last 512 request lines, oldest first, because the
 deploy identity cannot read Cloud Logging and a stall has to be diagnosable from the outside. One line
@@ -281,7 +302,11 @@ per ingress request, `req <method> <rpc> <status> <ms>ms [run=<id>] [sub=s-<n>]`
 `sse open sub=s-<n> run=<id>` once the head has gone out and `sse end sub=s-<n> reason=<reason> <ms>ms`
 when the stream returns; and `busy 503 connections=<n>` whenever the accept loop sheds a connection.
 Every line also goes to stderr with a wall-clock prefix, which Cloud Run captures. `/health` and the log
-itself are not logged, and `/health` never touches run state.
+itself are not logged, and `/health` never touches run state. The log opens with a memory report, `#`
+lines ahead of the request lines: `# rss_mb=<n> held_runs=<n> released_runs=<n> open_subscriptions=<n>
+completed_retention_s=<n>` (the resident set from `/proc/self/statm`), then `# run <id> <STATE>
+frames=<n> traces=<n>` per run in memory. A memory question about the public site starts by reading
+these numbers rather than by guessing them.
 
 ## What `sim-run export` writes, and the decisions it settled
 

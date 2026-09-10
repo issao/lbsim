@@ -121,13 +121,32 @@ impl Server {
         log.push_back(line);
     }
 
-    /// The request log, oldest first, one line each.
+    /// The request log, oldest first, one line each, under the memory report's `#` lines.
     pub fn request_log(&self) -> String {
+        let mut out = self.memory_report();
         let log = self.log.lock().unwrap_or_else(|e| e.into_inner());
-        let mut out = String::new();
         for line in log.iter() {
             out.push_str(line);
             out.push('\n');
+        }
+        out
+    }
+
+    /// What the process holds, as the head of `/requests.log`: the resident set, how many runs are
+    /// in memory and how many were released, then one line per held run with its state and what
+    /// it holds. So the next memory report is a number read off the site rather than a guess.
+    pub fn memory_report(&self) -> String {
+        let held = self.runs.held();
+        let rss_mb = run::process_rss_bytes().map_or("?".to_string(), |b| (b / (1024 * 1024)).to_string());
+        let mut out = format!(
+            "# rss_mb={rss_mb} held_runs={} released_runs={} open_subscriptions={} completed_retention_s={}\n",
+            held.len(),
+            self.runs.released_count(),
+            self.open_subscriptions(),
+            self.runs.completed_retention_ns() / 1_000_000_000
+        );
+        for h in held {
+            out.push_str(&format!("# run {} {} frames={} traces={}\n", h.run_id, h.state.name(), h.frames, h.traces));
         }
         out
     }
@@ -146,6 +165,13 @@ impl Server {
     /// Tests lower the write timeout so a stalled reader is detected in well under a second.
     pub fn with_sse_write_timeout(mut self, timeout: Duration) -> Server {
         self.sse_write_timeout = timeout;
+        self
+    }
+
+    /// How long a finished run stays in memory after its checkpoint is written and its last lease
+    /// is gone; `run::completed_retention_ns_from_env` for the served process, seconds for a test.
+    pub fn with_completed_retention(self, ns: u64) -> Server {
+        self.runs.set_completed_retention_ns(ns);
         self
     }
 
@@ -203,8 +229,38 @@ impl Server {
         }
     }
 
+    /// A run in memory; `410` for one this process finished and let go of, whose documents are on
+    /// disk (WIRE.md, "Leases and idle shutdown"); `404` otherwise.
     fn run(&self, run_id: &str) -> Result<Arc<Run>, Refused> {
-        self.runs.get(run_id).ok_or_else(|| Refused { code: 404, message: format!("unknown run {run_id:?}") })
+        self.runs.get(run_id).ok_or_else(|| match self.runs.released_status(run_id) {
+            Some(_) => Refused { code: 410, message: format!("run {run_id} was released; replay from runs/{run_id}/") },
+            None => Refused { code: 404, message: format!("unknown run {run_id:?}") },
+        })
+    }
+
+    /// `GetRun` for a released run: the status it had when it was let go.
+    fn released_status_json(&self, run_id: &str) -> Result<String, Refused> {
+        match self.runs.released_status(run_id) {
+            Some(s) => Ok(wire::run_status_json(&s)),
+            None => Err(Refused { code: 404, message: format!("unknown run {run_id:?}") }),
+        }
+    }
+
+    /// `GetResult` for a released run: `result.json` from its checkpoint, byte for byte what the
+    /// in-memory answer was. A run that failed has none, and answers 409 as it did in memory.
+    fn released_result_json(&self, run_id: &str) -> Result<String, Refused> {
+        let status = self
+            .runs
+            .released_status(run_id)
+            .ok_or_else(|| Refused { code: 404, message: format!("unknown run {run_id:?}") })?;
+        if status.state == wire::State::Failed {
+            return Err(Refused { code: 409, message: format!("run {run_id} failed: {}", status.error) });
+        }
+        let path = self.root.join("runs").join(run_id).join("result.json");
+        match std::fs::read_to_string(&path) {
+            Ok(body) => Ok(body.trim_end().to_string()),
+            Err(e) => Err(Refused { code: 410, message: format!("run {run_id} was released and {} cannot be read: {e}", path.display()) }),
+        }
     }
 
     fn unary(&self, rpc: &str, body: &[u8]) -> Result<String, Refused> {
@@ -233,7 +289,13 @@ impl Server {
                 j.begin_object().field_str("run_id", &id).end_object();
                 Ok(j.finish())
             }
-            "GetRun" => Ok(wire::run_status_json(&self.run(run_id()?)?.status())),
+            "GetRun" => {
+                let id = run_id()?;
+                match self.runs.get(id) {
+                    Some(run) => Ok(wire::run_status_json(&run.status())),
+                    None => self.released_status_json(id),
+                }
+            }
             "StopRun" => Ok(wire::run_status_json(&self.run(run_id()?)?.stop())),
             "ListRuns" => {
                 let limit = req.f64("limit").unwrap_or(0.0) as usize;
@@ -261,7 +323,13 @@ impl Server {
                 let by = if ns > 0 { ns } else { windows.saturating_mul(run.lock().sample_interval_ns()) };
                 Ok(wire::run_status_json(&run.step(by)?))
             }
-            "GetResult" => self.run(run_id()?)?.result_json(),
+            "GetResult" => {
+                let id = run_id()?;
+                match self.runs.get(id) {
+                    Some(run) => run.result_json(),
+                    None => self.released_result_json(id),
+                }
+            }
             "RenewSubscription" => {
                 let id = req.str("subscription_id").and_then(parse_subscription_id);
                 let lease_ns = req.u64("lease_ns").unwrap_or(DEFAULT_LEASE_NS);
