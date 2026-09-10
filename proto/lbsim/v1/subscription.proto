@@ -98,16 +98,20 @@ enum Metric {
   // overload it is most of the fleet's capacity.
   METRIC_WASTED_GPU_FRACTION = 65;
   METRIC_SLO_ATTAINMENT = 66;
-  // GPU utilization: the share of the sample window a replica spent inside a step (busy), as
-  // opposed to idle with an empty batch. Per replica it is a scalar; at fleet scope it is both the
-  // mean (in `values`) and a distribution across replicas (in `distributions`, percentiles over
-  // replicas at that instant), because the interesting question is never the average but how many
-  // replicas sit idle while others saturate. Issao: "I would like to see gpu utilization in the
-  // utilization page, and show percentile graphs for utilization too." Busy is not useful work:
-  // `METRIC_WASTED_GPU_FRACTION` says how much of busy time was bandwidth-bound decode at small
-  // batch, and `METRIC_GPU_COMPUTE_BOUND_FRACTION` is its complement, the share of busy time the
-  // step sat under the compute roofline.
+  // GPU utilization is the share of the replica's rated capacity actually used in the window: each
+  // decode step counts for step_time × batch_size / effective_batch_limit, each prefill chunk for its
+  // tokens at the prefill rate, summed and divided by the window. A replica decoding one sequence at
+  // batch 1 reads all its weights every step and so is *busy* nearly all the time, yet does 1/256 of
+  // the work it could; the first definition of this metric counted that busy time and reported 55%
+  // utilization for a fleet at 2% of its capacity (Issao: "when I run a simulation with 10rps and 50
+  // replicas, utilization is quite high (mean at 53%) with pretty much any policy. That seems way off").
+  // The busy share now lives in METRIC_GPU_BUSY_FRACTION, because it is what a GPU counter reports
+  // and the gap between the two is the whole story of batching. Per replica a scalar; at fleet scope
+  // the mean in `values` and a distribution across replicas in `distributions`, because the question
+  // is never the average but how many replicas idle while others saturate.
   METRIC_GPU_UTILIZATION = 67;
+  // Of busy time, the share the cost model priced at the compute roofline (prefill, speculative
+  // drafts, large batches); its complement is METRIC_WASTED_GPU_FRACTION.
   METRIC_GPU_COMPUTE_BOUND_FRACTION = 68;
   // A replica's state as the engine knows it, replica scope only: the value is the state's number,
   // 0 ABSENT (a slot the autoscaler has not filled), 1 READY, 2 DEGRADED (slow or hung: true speed
@@ -119,6 +123,10 @@ enum Metric {
   // at fleet scope the mean. What a health-detection policy is trying to observe and a gray
   // failure hides from it.
   METRIC_TRUE_SPEED_MULTIPLIER = 70;
+  // Time in step: the share of the window a replica spent stepping at all, whatever the batch held.
+  // What nvidia-smi calls GPU-Util, and why that number is a poor autoscaling signal: it saturates
+  // at batch 1. Compare with METRIC_GPU_UTILIZATION, which is the useful share.
+  METRIC_GPU_BUSY_FRACTION = 71;
 }
 
 // Exactly one entity. Per Issao, selecting a single replica and opening one subscription per
