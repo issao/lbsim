@@ -753,6 +753,65 @@ await checkAsync('(n) a structural edit stages a restart; restart sends StopRun 
 });
 
 // ---------------------------------------------------------------------------
+// (n2) the buffered_batch scheduler and its buffer stage a restart too, same as (n)
+// ---------------------------------------------------------------------------
+
+await checkAsync('(n2) a scheduling or buffer edit stages a restart; UpdatePolicies never carries it', async () => {
+  // `Scenario::override_kind` answers Policy for `scheduling` and the buffer knobs (no restart
+  // needed server-side), but the panel treats a scheduler swap as physics-class regardless -- it
+  // is staged for the banner's restart, the same as the Cluster tab's fleet knobs, rather than sent
+  // forward-only mid-run underneath whatever batch the fleet is already assembling.
+  const { fake, engine } = rig({ liveUpdates: true });
+  await engine.start(false);
+  const before = fake.calls.length;
+  const next = cloneConfig(engine.config);
+  next.extra = { ...next.extra, scheduling: 'buffered_batch', buffer_max_hold_ms: 10 };
+  await engine.update(next);
+  eq(fake.calls.length, before, 'no RPC for a scheduling edit');
+  eq(calls(fake, 'UpdateWorkload').length + calls(fake, 'UpdatePolicies').length, 0, 'no update call');
+  eq(engine.pendingKeys.join(','), [FIELD_LABEL['extra.scheduling'], FIELD_LABEL['extra.buffer_max_hold_ms']].join(','), 'both keys staged under their labels');
+  eq(engine.pendingRestart?.extra.scheduling, 'buffered_batch', 'the staged config carries the scheduler');
+  eq(engine.pendingRestart?.extra.buffer_max_hold_ms, 10, 'and the hold time');
+  eq(engine.lastUpdate, null, 'no update banner');
+  eq(engine.refused, null, 'no refusal banner');
+
+  const pending = engine.pendingRestart!;
+  await engine.restart(pending);
+  const started = calls(fake, 'StartRun')[1].body as { scenario: { text: string } };
+  ok(started.scenario.text.includes('scheduling = buffered_batch'), 'the new run carries the scheduler');
+  ok(started.scenario.text.includes('buffer_max_hold_ms = 10'), 'and the hold time');
+  eq(engine.pendingRestart, null, 'nothing pending after the restart');
+  engine.dispose();
+  return 'staged without an RPC; restart carries scheduling = buffered_batch, buffer_max_hold_ms = 10';
+});
+
+// ---------------------------------------------------------------------------
+// (n3) weighted_random's coefficients go live with the routing update, forward-only
+// ---------------------------------------------------------------------------
+
+await checkAsync("(n3) a wr_c* edit under weighted_random is an UpdatePolicies, not a restart", async () => {
+  const { fake, engine } = rig({ liveUpdates: true });
+  await engine.start(false);
+  // Select weighted_random first: same call shape as any other routing.kind change (case (e)).
+  const routed = cloneConfig(engine.config);
+  routed.routing = { ...routed.routing, kind: 'weighted_random' };
+  await engine.update(routed);
+  eq(calls(fake, 'UpdatePolicies').length, 1, 'selecting the router is one UpdatePolicies');
+  const before = calls(fake, 'UpdatePolicies').length;
+  const tuned = cloneConfig(engine.config);
+  tuned.extra = { ...tuned.extra, wr_c2: -0.5 };
+  await engine.update(tuned);
+  eq(calls(fake, 'UpdatePolicies').length, before + 1, 'moving c2 alone is another UpdatePolicies');
+  eq(engine.pendingRestart, null, 'a policy key never stages a restart');
+  eq(engine.lastUpdate?.accepted, true, 'accepted');
+  const last = fake.run('r-1')?.policyUpdates.at(-1) as Record<string, string> | undefined;
+  eq(last?.wr_c2, '-0.5', 'the coefficient reached the server, as text');
+  eq(last?.wr_c1, '1', "c1 rides along at its current value, not just the one that changed");
+  engine.dispose();
+  return `UpdatePolicies carries wr_c2 = ${last?.wr_c2}, wr_c1 = ${last?.wr_c1}`;
+});
+
+// ---------------------------------------------------------------------------
 // (o) replica streams stay within the stream budget (U112)
 // ---------------------------------------------------------------------------
 

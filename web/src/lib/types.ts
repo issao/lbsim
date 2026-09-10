@@ -85,7 +85,16 @@ export type RoutingKind =
   | 'least_kv_tokens'
   | 'least_kv_probe'
   | 'power_of_two_choices'
-  | 'prefix_affinity';
+  | 'prefix_affinity'
+  | 'weighted_random';
+
+/**
+ * scenario.proto SchedulingPolicy.kind, the four names `crates/sim-policy` registers (U-scheduling,
+ * U-buffered-batch). Unlike `RoutingKind`, `ScenarioConfig` carries no typed `scheduling` field --
+ * the engine key rides in `extra` like the buffer knobs beside it -- so this exists only for the
+ * panel's Select options and its glosses.
+ */
+export type SchedulingKind = 'fifo_chunked' | 'class_priority' | 'deadline_first' | 'buffered_batch';
 
 /** subscription.proto Distribution, minus the histogram-on-the-wire fields. */
 export interface Distribution {

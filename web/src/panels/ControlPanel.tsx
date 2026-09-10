@@ -1,8 +1,17 @@
 import { useState, type ReactNode } from 'react';
 import type { RunHandle } from '../lib/useRun';
 import type { RoutingConfig, ScenarioConfig } from '../lib/config';
-import { cloneConfig, PRESETS, ROUTING_LABEL, ROUTING_NOTE, VIEW_ONLY_EXPLANATION, diffConfig } from '../lib/config';
-import type { RoutingKind } from '../lib/types';
+import {
+  cloneConfig,
+  PRESETS,
+  ROUTING_LABEL,
+  ROUTING_NOTE,
+  SCHEDULING_LABEL,
+  SCHEDULING_NOTE,
+  VIEW_ONLY_EXPLANATION,
+  diffConfig,
+} from '../lib/config';
+import type { RoutingKind, SchedulingKind } from '../lib/types';
 import { ratedFleetRps } from '../lib/config';
 import { Check, Panel, Select, Slider, Tabs, type TabDef } from '../components/ui';
 import { fmtNum, fmtTime, fmtTokens } from '../lib/format';
@@ -284,7 +293,15 @@ function PoliciesTab({ c, set, dropped }: TabProps) {
         onChange={(v) => set((d) => { d.routing.kind = v; })}
       />
       <p className="note inset" style={{ margin: '-4px 0 10px' }}>{ROUTING_NOTE[c.routing.kind]}</p>
-      <RoutingParams routing={c.routing} set={set} dropped={dropped} />
+      <RoutingParams routing={c.routing} extra={c.extra} set={set} dropped={dropped} />
+
+      <div className="sep" />
+      <p className="section-label">Scheduling</p>
+      <p className="note inset" style={{ marginTop: -2 }}>
+        The replica's own scheduler: it orders the work already admitted, and cannot create capacity. No live
+        update carries it, so a change here stages for the banner's restart like the Cluster tab's physics knobs.
+      </p>
+      <SchedulingParams c={c} set={set} />
 
       <div className="sep" />
       <p className="section-label">What the policy sees</p>
@@ -350,12 +367,43 @@ function PoliciesTab({ c, set, dropped }: TabProps) {
   );
 }
 
+/** `RoutingPolicy.WeightedRandom`'s five coefficients, in scenario.proto's order and words. */
+const WR_COEFFS: {
+  key: 'wr_c1' | 'wr_c2' | 'wr_c3' | 'wr_c4' | 'wr_c5';
+  label: string;
+  term: string;
+  min: number;
+  max: number;
+  step: number;
+  default: number;
+  note: string;
+}[] = [
+  { key: 'wr_c1', label: 'c1', term: '', min: 0, max: 5, step: 0.1, default: 1, note: 'the base weight every replica starts with; alone, this is Random' },
+  { key: 'wr_c2', label: 'c2', term: 'queued decode', min: -2, max: 2, step: 0.05, default: 0, note: 'added once if the replica already has any queued decode sequence' },
+  { key: 'wr_c3', label: 'c3', term: 'queued prefill', min: -2, max: 2, step: 0.05, default: 0, note: 'added once if the replica already has any queued prefill' },
+  { key: 'wr_c4', label: 'c4', term: 'decode beyond buffer', min: -2, max: 2, step: 0.05, default: 0, note: "added per decode sequence this step's batch buffer cannot fit" },
+  { key: 'wr_c5', label: 'c5', term: 'prefill beyond buffer', min: -2, max: 2, step: 0.05, default: 0, note: "added per prefill item this step's batch buffer cannot fit" },
+];
+
+function wrValue(extra: Record<string, number | string>, key: (typeof WR_COEFFS)[number]['key'], def: number): number {
+  const v = Number(extra[key]);
+  return Number.isFinite(v) ? v : def;
+}
+
+/** The formula, plugged in with the sliders' current values, so the weight is never a mystery. */
+function wrFormula(extra: Record<string, number | string>): string {
+  const term = (c: number, label: string) => (label ? ` ${c >= 0 ? '+' : '−'} ${Math.abs(c).toFixed(2)}·${label}` : c.toFixed(2));
+  return `weight = max(0,${WR_COEFFS.map((w) => term(wrValue(extra, w.key, w.default), w.term)).join('')})`;
+}
+
 function RoutingParams({
   routing,
+  extra,
   set,
   dropped,
 }: {
   routing: RoutingConfig;
+  extra: Record<string, number | string>;
   set: (m: (d: ScenarioConfig) => void) => void;
   dropped?: string[];
 }) {
@@ -409,9 +457,91 @@ function RoutingParams({
           </Dropped>
         </>
       );
+    case 'weighted_random':
+      return (
+        <>
+          {WR_COEFFS.map((w) => (
+            <Slider
+              key={w.key}
+              label={w.label}
+              value={wrValue(extra, w.key, w.default)}
+              min={w.min}
+              max={w.max}
+              step={w.step}
+              format={(v) => v.toFixed(2)}
+              onChange={(v) => set((d) => { d.extra[w.key] = v; })}
+              note={w.note}
+            />
+          ))}
+          <p className="note inset" style={{ fontFamily: 'var(--mono, monospace)' }}>{wrFormula(extra)}</p>
+        </>
+      );
     default:
       return <p className="note inset">This policy has no settings.</p>;
   }
+}
+
+function SchedulingParams({ c, set }: { c: ScenarioConfig; set: (m: (d: ScenarioConfig) => void) => void }) {
+  const kinds = Object.keys(SCHEDULING_LABEL) as SchedulingKind[];
+  const kind = (String(c.extra.scheduling ?? 'fifo_chunked') as SchedulingKind) in SCHEDULING_LABEL
+    ? (String(c.extra.scheduling ?? 'fifo_chunked') as SchedulingKind)
+    : 'fifo_chunked';
+  return (
+    <>
+      <Select
+        label="scheduler"
+        value={kind}
+        options={kinds.map((k) => ({ value: k, label: SCHEDULING_LABEL[k] }))}
+        onChange={(v) => set((d) => { d.extra.scheduling = v; })}
+      />
+      <p className="note inset" style={{ margin: '-4px 0 10px' }}>{SCHEDULING_NOTE[kind]}</p>
+      {kind === 'buffered_batch' ? (
+        <>
+          <Slider
+            label="buffer max batch"
+            value={Number(c.extra.buffer_max_batch) || c.fleet.maxBatch}
+            min={1}
+            max={c.fleet.maxBatch}
+            step={1}
+            format={(v) => `${v} seq`}
+            onChange={(v) => set((d) => { d.extra.buffer_max_batch = v; })}
+            note="sequences admitted into the step, at most the replica's own batch limit"
+          />
+          <Slider
+            label="buffer max prefill tokens"
+            value={Number(c.extra.buffer_max_prefill_tokens) || c.fleet.stepTokenBudget}
+            min={64}
+            max={16384}
+            step={1}
+            log
+            format={(v) => `${fmtTokens(Math.round(v))} tok`}
+            onChange={(v) => set((d) => { d.extra.buffer_max_prefill_tokens = Math.round(v); })}
+            note="prefill tokens spent in the step: the compute-bound chunk budget"
+          />
+          <Slider
+            label="buffer max decode seqs"
+            value={Number(c.extra.buffer_max_decode_seqs) || c.fleet.maxBatch}
+            min={1}
+            max={c.fleet.maxBatch}
+            step={1}
+            format={(v) => `${v} seq`}
+            onChange={(v) => set((d) => { d.extra.buffer_max_decode_seqs = v; })}
+            note="decoding sequences per step, bounded by the step's bandwidth line"
+          />
+          <Slider
+            label="buffer max hold"
+            value={Number(c.extra.buffer_max_hold_ms ?? 5)}
+            min={0}
+            max={100}
+            step={0.5}
+            format={(v) => `${v.toFixed(1)} ms`}
+            onChange={(v) => set((d) => { d.extra.buffer_max_hold_ms = v; })}
+            note="how long an idle replica waits for company before it steps anyway"
+          />
+        </>
+      ) : null}
+    </>
+  );
 }
 
 // ---------------------------------------------------------------------------

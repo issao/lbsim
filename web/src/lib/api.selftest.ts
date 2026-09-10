@@ -43,7 +43,7 @@ const api = await load<typeof import('./api')>('api');
 const fx = await load<typeof import('./apiFixtures')>('apiFixtures');
 const mode = await load<typeof import('./mode')>('mode');
 const replay = await load<typeof import('./replay')>('replay');
-const { BASE, cloneConfig, LOAD_TEST_DEFAULT, loadTestInitial } = await load<typeof import('./config')>('config');
+const { BASE, cloneConfig, LOAD_TEST_DEFAULT, loadTestInitial, PRESETS } = await load<typeof import('./config')>('config');
 
 // Node's fs, without @types/node: a variable specifier keeps tsc out of it, and this file is the
 // only one that reads the disk.
@@ -831,6 +831,37 @@ check('workload and policy updates carry only their own keys, as string override
   eq(p.fields, { routing: 'round_robin', p2c_choices: 2, probe_live: false }, 'policy fields');
   eq(api.toOverrides(p.fields), { routing: 'round_robin', p2c_choices: '2', probe_live: 'false' }, 'overrides are strings, like --set');
   return `workload ${Object.keys(w.fields).length} keys, policies ${Object.keys(p.fields).length} keys`;
+});
+
+check("weighted_random's five coefficients travel with `routing` on UpdatePolicies, only under that kind", () => {
+  const wr = cloneConfig(BASE);
+  wr.routing = { ...wr.routing, kind: 'weighted_random' };
+  wr.extra = { ...wr.extra, wr_c1: 1, wr_c2: -0.3, wr_c3: -0.5, wr_c4: -0.05, wr_c5: -0.1 };
+  const p = api.policiesToWire(wr);
+  eq(api.unacceptedKeys(p.fields, api.POLICY_KEYS), [], 'policy keys outside POLICY_KEYS');
+  eq(p.fields, { routing: 'weighted_random', p2c_choices: 2, probe_live: false, wr_c1: 1, wr_c2: -0.3, wr_c3: -0.5, wr_c4: -0.05, wr_c5: -0.1 }, 'policy fields carry the coefficients');
+  // Unset back on p2c: the coefficients are meaningless to any other router, so they stay off the
+  // wire entirely rather than sending stale numbers nothing will read.
+  const p2c = api.policiesToWire(BASE);
+  eq(Object.keys(p2c.fields).some((k) => k.startsWith('wr_c')), false, 'no wr_c* key when the kind is not weighted_random');
+  return `weighted_random sends ${Object.keys(p.fields).length} policy fields; round_robin sends ${Object.keys(p2c.fields).length}, none of them wr_c*`;
+});
+
+check("the two batch-buffer presets carry all nine buffered_batch / weighted_random keys as scenario text", () => {
+  const batch = PRESETS.find((p) => p.id === 'batch-buffer')!;
+  const weighted = PRESETS.find((p) => p.id === 'weighted-random')!;
+  ok(Boolean(batch) && Boolean(weighted), 'both presets exist');
+  const textOf = (c: ReturnType<typeof cloneConfig>) => api.scenarioText(api.scenarioConfigToWire(c).fields);
+  const batchText = textOf(batch.apply(cloneConfig(BASE)));
+  const weightedText = textOf(weighted.apply(cloneConfig(BASE)));
+  const wantBatch = [/^scheduling = buffered_batch$/m, /^buffer_max_hold_ms = 5$/m, /^routing = p2c$/m];
+  const wantWeighted = [
+    /^scheduling = buffered_batch$/m, /^buffer_max_hold_ms = 5$/m, /^routing = weighted_random$/m,
+    /^wr_c1 = 1$/m, /^wr_c2 = -0\.3$/m, /^wr_c3 = -0\.5$/m, /^wr_c4 = -0\.05$/m, /^wr_c5 = -0\.1$/m,
+  ];
+  eq(wantBatch.every((re) => re.test(batchText)), true, `batch-buffer text missing a line; got:\n${batchText}`);
+  eq(wantWeighted.every((re) => re.test(weightedText)), true, `weighted-random text missing a line; got:\n${weightedText}`);
+  return `batch-buffer: ${wantBatch.length} lines present; weighted-random: ${wantWeighted.length} lines present`;
 });
 
 check('StartRunRequest.scenario is {text, overrides}, and the text round-trips through the parser', () => {

@@ -1,7 +1,7 @@
 // The scenario shape the control panel edits, and the classification that decides whether a change
 // is view-only or physics. `scenarios/*.txt` in the repo root is the source for the preset numbers.
 
-import type { RoutingKind } from './types';
+import type { RoutingKind, SchedulingKind } from './types';
 import { queryParam } from './mode';
 
 export interface Workload {
@@ -260,6 +260,43 @@ export const PRESETS: Preset[] = [
       return c;
     },
   },
+  {
+    id: 'batch-buffer',
+    title: 'Batch buffer, p2c',
+    file: 'scenarios/buffer_batch.txt',
+    summary: 'Demo 21. 1.2x rated load (2,254 rps): buffered_batch holds an idle queue up to 5 ms for company under power-of-two-choices routing.',
+    apply: () => {
+      const c = cloneConfig(BASE);
+      c.name = 'buffer_batch_p2c';
+      c.workload = { ...c.workload, arrivalRps: 2254 };
+      c.routing = { ...c.routing, kind: 'power_of_two_choices', choices: 2 };
+      c.extra = { ...c.extra, scheduling: 'buffered_batch', buffer_max_hold_ms: 5 };
+      return c;
+    },
+  },
+  {
+    id: 'weighted-random',
+    title: 'Batch buffer, weighted random',
+    file: 'scenarios/buffer_weighted.txt',
+    summary: "Demo 21. The same buffer, steered by weighted_random: weight 1 minus 0.3 for a queued decode, 0.5 for a queued prefill, 0.05/0.1 per item beyond the open buffer.",
+    apply: () => {
+      const c = cloneConfig(BASE);
+      c.name = 'buffer_batch_weighted';
+      c.workload = { ...c.workload, arrivalRps: 2254 };
+      c.routing = { ...c.routing, kind: 'weighted_random' };
+      c.extra = {
+        ...c.extra,
+        scheduling: 'buffered_batch',
+        buffer_max_hold_ms: 5,
+        wr_c1: 1,
+        wr_c2: -0.3,
+        wr_c3: -0.5,
+        wr_c4: -0.05,
+        wr_c5: -0.1,
+      };
+      return c;
+    },
+  },
 ];
 
 export const ROUTING_LABEL: Record<RoutingKind, string> = {
@@ -270,6 +307,7 @@ export const ROUTING_LABEL: Record<RoutingKind, string> = {
   least_kv_probe: 'Least KV, live probe',
   power_of_two_choices: 'Power of two choices',
   prefix_affinity: 'Prefix affinity',
+  weighted_random: 'Weighted random',
 };
 
 /** The comment on each `RoutingPolicy` variant in scenario.proto, condensed. */
@@ -281,6 +319,23 @@ export const ROUTING_NOTE: Record<RoutingKind, string> = {
   least_kv_probe: "Probes d candidates' live KV at dispatch instead of reading the telemetry snapshot; p2c_choices is d.",
   power_of_two_choices: 'Sample d replicas, take the least loaded. Bounds herding by construction, and is O(1).',
   prefix_affinity: 'Prefer the replica holding this prefix until imbalance exceeds the cap. Trades balance for cache hits.',
+  weighted_random: "Each replica's weight is a linear function of the stale view: queued decode, queued prefill, and how much of either sits beyond the batch buffer. c1 alone is Random.",
+};
+
+/** scenario.proto SchedulingPolicy.kind labels, for the panel's Select. */
+export const SCHEDULING_LABEL: Record<SchedulingKind, string> = {
+  fifo_chunked: 'First come, chunked prefill',
+  class_priority: 'Class priority',
+  deadline_first: 'Deadline first',
+  buffered_batch: 'Batch buffer',
+};
+
+/** The comment on each `SchedulingPolicy` variant in scenario.proto, condensed. */
+export const SCHEDULING_NOTE: Record<SchedulingKind, string> = {
+  fifo_chunked: 'First come first served, chunked prefill at the step token budget: what the engine always did.',
+  class_priority: 'Interactive before agent before batch at admission; batch sequences are the first preemption victims.',
+  deadline_first: 'Earliest deadline first over the queue; the request with the least slack is evicted first.',
+  buffered_batch: 'Collects prefill and decode work into the next step’s batch until it is full or the oldest entry has waited max_hold_ms.',
 };
 
 /**
@@ -360,6 +415,21 @@ export const FIELD_LABEL: Record<string, string> = {
   'extra.preemption': 'preemption',
   'extra.preemption_victim': 'preemption victim',
   'extra.dram_capacity_tokens': 'host memory for swapped context',
+  // The buffered_batch scheduler and its buffer: no live update path (`Scenario::override_kind`
+  // classifies these as policy keys, but the panel treats a scheduler swap as physics-class rather
+  // than send it forward-only mid-run), so a change stages here like the Cluster tab's knobs above.
+  'extra.scheduling': 'scheduler',
+  'extra.buffer_max_batch': 'buffer max batch',
+  'extra.buffer_max_prefill_tokens': 'buffer max prefill tokens',
+  'extra.buffer_max_decode_seqs': 'buffer max decode seqs',
+  'extra.buffer_max_hold_ms': 'buffer max hold',
+  // The weighted_random router's coefficients: no typed field (like the affinity knobs), but a
+  // policy key on the wire, so `useServerRun.ts` sends them live alongside `routing.kind`.
+  'extra.wr_c1': 'weighted random c1',
+  'extra.wr_c2': 'weighted random c2',
+  'extra.wr_c3': 'weighted random c3',
+  'extra.wr_c4': 'weighted random c4',
+  'extra.wr_c5': 'weighted random c5',
 };
 
 function flat(c: ScenarioConfig): Record<string, unknown> {
