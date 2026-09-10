@@ -97,8 +97,10 @@ pub enum SpanKind {
     DecodeStep,
     /// Bringing the KV cache back from a lower tier.
     KvFetch,
-    /// Evicted from the batch, waiting to resume.
-    Preempted,
+    /// Evicted from the batch, waiting to resume. `tokens` is the KV context that left the tier the
+    /// span's own `kv_tier` names it went to: dropped for a recompute (the span's `kv_tier` is
+    /// `MemoryTier::None`) or moved there for a swap.
+    Preempted { tokens: u32 },
 }
 
 impl SpanKind {
@@ -111,18 +113,19 @@ impl SpanKind {
             SpanKind::PrefillWait { .. } => "prefill_wait",
             SpanKind::DecodeStep => "decode",
             SpanKind::KvFetch => "kv_fetch",
-            SpanKind::Preempted => "preempted",
+            SpanKind::Preempted { .. } => "preempted",
         }
     }
 
-    /// The proto's `tokens_processed`: prompt tokens for a prefill chunk, one for a decode step, and
-    /// for a wait in the batch the prefill tokens the step spent on the other sequences, which is
-    /// what the wait is made of; nothing for a queue.
+    /// The proto's `tokens_processed`: prompt tokens for a prefill chunk, one for a decode step, the
+    /// prefill tokens the step spent on the others for a wait in the batch, the KV tokens dropped or
+    /// swapped for a preemption, and nothing for a queue.
     pub fn tokens_processed(&self) -> u32 {
         match self {
             SpanKind::PrefillChunk { tokens } => *tokens,
             SpanKind::PrefillWait { others_prefill } => *others_prefill,
             SpanKind::DecodeStep => 1,
+            SpanKind::Preempted { tokens } => *tokens,
             _ => 0,
         }
     }
@@ -464,7 +467,14 @@ pub mod fixtures {
             sum_itl += dur;
         }
         if outcome == Outcome::TimeoutRunning {
-            tl.push(SpanKind::Preempted, 400 * MS, replica_id, replica(batch, 0, BandwidthOrCompute::Bandwidth), MemoryTier::Dram);
+            let dropped = kv_resident.min(u32::MAX as u64) as u32;
+            tl.push(
+                SpanKind::Preempted { tokens: dropped },
+                400 * MS,
+                replica_id,
+                replica(batch, 0, BandwidthOrCompute::Bandwidth),
+                MemoryTier::Dram,
+            );
         }
         let finished = tl.t;
         let produced = if outcome == Outcome::TimeoutRunning { steps } else { output_tokens };

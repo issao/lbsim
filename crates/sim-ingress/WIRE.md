@@ -178,6 +178,16 @@ a step a sequence spent admitted to the batch with prompt left and none of the s
 reaching it; its `tokens_processed` is the prefill the step spent on the sequences ahead of it. One
 per step waited, so a journey's replica spans are contiguous and a trace carries no unaccounted time.
 
+`preempted` is a step a sequence spent evicted from the batch, waiting to resume: dropped for a
+recompute (`kv_tier` `MEMORY_TIER_NONE`) or moved to a lower tier (`MEMORY_TIER_DRAM` or
+`MEMORY_TIER_SSD`) for a swap. Its `tokens_processed` is the KV tokens that were dropped or moved,
+the sequence's resident total at eviction (prompt plus whatever it had already generated, whatever
+its prefill progress, since a running sequence's prompt is charged in full at admission). One per
+step it waits, the same granularity as `prefill_wait`, so several steps of waiting read as
+contiguous spans; re-admission is an ordinary `Admitted` event (the same one a fresh admission gets),
+so the chain into whatever comes next has no gap, and a recomputed sequence's second prefill is a
+normal `prefill` span.
+
 Scopes: `SCOPE_FLEET` and `SCOPE_REPLICA`. Everything else returns `rejected_reason`.
 
 | Metric | Fleet | Replica | Source in the engine |

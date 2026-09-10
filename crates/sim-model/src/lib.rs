@@ -569,7 +569,8 @@ impl Replica {
         let mut s = self.running.swap_remove(i);
         let tokens = s.resident();
         self.kv_tokens = self.kv_tokens.saturating_sub(tokens);
-        if let Some(tier) = tiers.place(policy, tokens, self.dram_tokens, dram_cap) {
+        let placed = tiers.place(policy, tokens, self.dram_tokens, dram_cap);
+        if let Some(tier) = placed {
             s.tier = tier;
             self.hold(tiers, tier, tokens);
             *extra_ns += tiers.transfer(cost, tier, tokens, now);
@@ -578,6 +579,9 @@ impl Replica {
             // step, if any, is wasted work the device still did.
             s.prefill_left = tokens as u32;
         }
+        // `placed` is exactly the trace's `tier`: `None` for the drop a recompute is, `Some` for the
+        // tier a swap moved it to. The span this opens closes on re-admission's `Admitted` event.
+        self.tracer.preempted(s.req.id, tokens, placed);
         self.preempted.push_front(s);
         self.preemptions += 1;
         true
@@ -799,7 +803,11 @@ impl Replica {
                     s.tier = Tier::Hbm;
                 }
                 r.kv_tokens += tokens;
+                let id = s.req.id;
                 r.running.push(s);
+                // Re-admission is the same event a fresh admission gets, so the following
+                // prefill_wait/prefill spans chain onto it with no gap left by the preempted span.
+                r.tracer.admitted(id);
                 continue;
             }
             let Some(pos) = order.pop_front() else { break };
@@ -913,6 +921,13 @@ impl Replica {
                 if s.prefill_left > 0 {
                     r.tracer.prefill_wait(s.req.id);
                 }
+            }
+            // Whatever is still in `preempted` here is left over from an earlier step's eviction:
+            // the admission loop above already re-admitted anything it had room for. One more step
+            // of the same wait, so the span this opened at eviction keeps growing with no gap.
+            for s in &r.preempted {
+                let tier = if s.tier == Tier::Hbm { None } else { Some(s.tier) };
+                r.tracer.preempted(s.req.id, s.resident(), tier);
             }
         }
         let mut decoding = r.running.iter().filter(|s| s.prefill_left == 0).count();

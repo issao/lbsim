@@ -701,6 +701,37 @@ const finalLine = extraFail => {
           bodies.length ? bodies[bodies.length - 1].slice(0, 160) : 'no StartRun captured');
       }
     }
+    // Follow-up to 8a425fe/the prefill_wait fix: a *preempted* traced request left a gap too, since
+    // nothing emitted a `preempted` span and re-admission never chained onto the next one. This
+    // card is where a preemption spiral is the whole point, so it is where the harness reads the
+    // engine's own spans and demands the same no-gap invariant `prefill_wait` already has. Its
+    // scenario is `preemption = never` (checked above, and finding 8: 0 preemptions/s for `never`),
+    // so a preempted span existing here would itself be the invented number; the count is reported,
+    // not required, the same way the dashboard's own no-gap check reports `prefill_wait` spans
+    // without requiring at least one.
+    if (title === 'KV preemption spiral at low load') {
+      const runId = ((cardBadge || '').match(/run (r-\d+)/) || [])[1];
+      const finished = new Set(['OUTCOME_OK', 'OUTCOME_OK_SLO_VIOLATED']);
+      let traces = [];
+      if (runId) {
+        const r = await ctx.request.post(BASE + '/v1/ingress/GetTraces', { data: { run_id: runId, limit: 20 } }).catch(() => null);
+        traces = r && r.ok() ? ((await r.json().catch(() => ({}))).traces || []) : [];
+      }
+      const gaps = [];
+      let preempted = 0;
+      for (const t of traces) {
+        if (!finished.has(t.record && t.record.outcome)) continue;
+        const spans = (t.spans || []).map(s => ({ op: s.operation, start: BigInt(s.start_unix_ns), end: BigInt(s.end_unix_ns) }));
+        for (let i = 1; i < spans.length; i++) {
+          const gapMs = Number(spans[i].start - spans[i - 1].end) / 1e6;
+          if (gapMs > 100) gaps.push(`${t.record.id}: ${gapMs.toFixed(0)} ms between ${spans[i - 1].op} and ${spans[i].op}`);
+          if (spans[i].op === 'preempted') preempted++;
+        }
+      }
+      check('showcase "KV preemption spiral at low load": no gap over 100 ms between consecutive spans',
+        Boolean(runId) && traces.length > 0 && gaps.length === 0,
+        !runId ? 'no run id on the card badge' : traces.length === 0 ? 'GetTraces returned no traces' : gaps.length ? gaps.slice(0, 3).join(' · ') : `${traces.length} traces, ${preempted} preempted spans, contiguous`);
+    }
     // A driven page may still hold a control in flight when its run is stopped below; that lands
     // as a 409 in a console the nav check reads, so the nav page is the next clean card.
     if (ok && !open && !drove) open = { page, log, until }; else await page.close();

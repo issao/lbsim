@@ -16,7 +16,7 @@ use sim_policy::{
 use sim_core::queue::{EventQueue, PRIO_OBSERVE};
 use sim_core::rng::{Rng, Streams};
 use sim_model::trace::{ResourceSnapshot, StepEvent};
-use sim_model::{Lifecycle, PrefixTree, Replica, Tiers};
+use sim_model::{Lifecycle, PrefixTree, Replica, Tier, Tiers};
 use sim_scenario::{FailureEvent, FailureKind, OverrideKind, Scenario};
 use sim_workload::{Request, Workload};
 use sim_core::{Nanos, EPOCH_BASE, MILLI};
@@ -2123,16 +2123,46 @@ fn spans_of(
     let replica_id = replica as u64;
     let mut admitted = false;
     for (ev, snap) in events {
-        let (start, end, kind) = match *ev {
-            StepEvent::Admitted { at, .. } => {
+        // The first `Admitted` closes the wait since `d.enqueued_at`, a `ReplicaQueue` span. A
+        // second one is a re-admission from the preempted set: the wait it closes already has its
+        // own `Preempted` span(s) ending exactly here (`tracer.admitted` fires on both, so the
+        // spans downstream chain with no gap), so there is nothing left here to draw.
+        if let StepEvent::Admitted { at, .. } = *ev {
+            if !admitted {
                 admitted = true;
-                (d.enqueued_at, at, SpanKind::ReplicaQueue)
+                spans.push(TraceSpan {
+                    start_unix_ns: d.enqueued_at,
+                    end_unix_ns: at,
+                    kind: SpanKind::ReplicaQueue,
+                    replica_id,
+                    resource: resource_of(snap, cost, kv_capacity),
+                    kv_tier: MemoryTier::Hbm,
+                });
             }
-            StepEvent::PrefillChunk { tokens, start, end, .. } => (start, end, SpanKind::PrefillChunk { tokens }),
+            continue;
+        }
+        let (start, end, kind, kv_tier) = match *ev {
+            // Handled above; every `Admitted` event continues before reaching this match.
+            StepEvent::Admitted { .. } => continue,
+            StepEvent::PrefillChunk { tokens, start, end, .. } => {
+                (start, end, SpanKind::PrefillChunk { tokens }, MemoryTier::Hbm)
+            }
             // The waiting sequence took none of the step's prefill, so the snapshot's total is what
             // went to the others.
-            StepEvent::PrefillWait { start, end, .. } => (start, end, SpanKind::PrefillWait { others_prefill: snap.prefill_tokens }),
-            StepEvent::DecodeStep { start, end, .. } => (start, end, SpanKind::DecodeStep),
+            StepEvent::PrefillWait { start, end, .. } => {
+                (start, end, SpanKind::PrefillWait { others_prefill: snap.prefill_tokens }, MemoryTier::Hbm)
+            }
+            StepEvent::DecodeStep { start, end, .. } => (start, end, SpanKind::DecodeStep, MemoryTier::Hbm),
+            // Dropped for a recompute (`tier: None`, the span's `kv_tier` is `MEMORY_TIER_NONE`) or
+            // moved to a lower tier for a swap; either way `tokens` is what left HBM. Re-admission is
+            // the next `Admitted` event for this id, so this span's end and that one's start-of-batch
+            // meet with no gap between them.
+            StepEvent::Preempted { start, end, tokens, tier, .. } => (
+                start,
+                end,
+                SpanKind::Preempted { tokens: tokens.min(u32::MAX as u64) as u32 },
+                memory_tier_of(tier),
+            ),
             StepEvent::Retired { .. } => continue,
         };
         spans.push(TraceSpan {
@@ -2141,7 +2171,7 @@ fn spans_of(
             kind,
             replica_id,
             resource: resource_of(snap, cost, kv_capacity),
-            kv_tier: MemoryTier::Hbm,
+            kv_tier,
         });
     }
     if d.enqueued_at > 0 && !admitted {
@@ -2155,6 +2185,19 @@ fn spans_of(
         });
     }
     spans
+}
+
+/// A preempted span's `kv_tier`: `Tier::Dram`/`Tier::Ssd` for a swap, `MemoryTier::None` for a
+/// recompute's drop (there is no tier tag for context with no owner, `sim_model::Tier` has no
+/// variant for it). `Tier::Hbm` never reaches here; eviction only ever places a victim in a lower
+/// tier or drops it.
+fn memory_tier_of(tier: Option<Tier>) -> MemoryTier {
+    match tier {
+        None => MemoryTier::None,
+        Some(Tier::Dram) => MemoryTier::Dram,
+        Some(Tier::Ssd) => MemoryTier::Ssd,
+        Some(Tier::Hbm) => MemoryTier::Hbm,
+    }
 }
 
 /// The step's conditions in the wire's terms. The step is compute-bound when its prefill term
