@@ -269,6 +269,22 @@ const finalLine = extraFail => {
             Boolean(tip) && /machine/i.test(tip) && /start/i.test(tip) && /stop/i.test(tip) && bars[0].component && tip.includes(bars[0].component),
             tip ? tip.replace(/\s+/g, ' ').slice(0, 200) : 'no tooltip appeared on hover');
         }
+
+        // Issao: "in the traces, please show prompt and output size for each request." Both are
+        // sortable columns like the latency ones, exact counts (thousands-separated, so strip
+        // commas before checking the cell is an integer).
+        const headers = await page.$$eval('#trace-list table.data thead th', els => els.map(e => e.textContent.trim().toLowerCase()));
+        const promptIdx = headers.findIndex(h => h.startsWith('prompt'));
+        const outputIdx = headers.findIndex(h => h.startsWith('output'));
+        check('traces: table header carries prompt and output columns',
+          promptIdx >= 0 && outputIdx >= 0, headers.join(', '));
+        if (promptIdx >= 0 && outputIdx >= 0) {
+          const firstRow = await page.$$eval('#trace-list tbody tr:first-child td', els => els.map(e => e.textContent.trim()));
+          const isIntCell = s => s === '—' || /^\d{1,3}(,\d{3})*$/.test(s);
+          check('traces: the first row\'s prompt and output cells are integers (or "—")',
+            isIntCell(firstRow[promptIdx]) && isIntCell(firstRow[outputIdx]),
+            `prompt=${JSON.stringify(firstRow[promptIdx])} output=${JSON.stringify(firstRow[outputIdx])}`);
+        }
       }
     }
     await noInvented(page, 'dashboard: no invented numbers on live (U95b)');

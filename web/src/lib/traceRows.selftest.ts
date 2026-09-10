@@ -98,6 +98,7 @@ check('shapeTraceRow reads every column the table shows, and only the engine\'s 
     arrivedAtUnixNs: ORIGIN + 500_000_000n,
     ttftNs: 12_000_000n,
     e2eNs: 340_000_000n,
+    promptTokens: 900,
     outputTokens: 128,
     replicaId: 7n,
     spans: 5,
@@ -109,10 +110,11 @@ check('shapeTraceRow reads every column the table shows, and only the engine\'s 
   eq(row.arrivedS, 0.5, 'arrivedS');
   eq(row.ttftMs, 12, 'ttftMs');
   eq(row.e2eMs, 340, 'e2eMs');
+  eq(row.promptTokens, 900, 'promptTokens');
   eq(row.outputTokens, 128, 'outputTokens');
   eq(row.replicaId, 7n, 'replicaId');
   eq(row.spanCount, 5, 'spanCount');
-  return `row ${row.id} at +${row.arrivedS}s, ttft ${row.ttftMs}ms, e2e ${row.e2eMs}ms, ${row.spanCount} spans`;
+  return `row ${row.id} at +${row.arrivedS}s, ttft ${row.ttftMs}ms, e2e ${row.e2eMs}ms, prompt ${row.promptTokens}, output ${row.outputTokens}, ${row.spanCount} spans`;
 });
 
 check('a request with no ttft/e2e/origin yet reads null, never a zero or an invented number', () => {
@@ -143,11 +145,12 @@ check('shapeTraceRows maps the whole page in order', () => {
 // ---------------------------------------------------------------------------
 
 const rows = [
-  shapeTraceRow(trace({ id: 1n, ttftNs: 30_000_000n, e2eNs: 900_000_000n, arrivedAtUnixNs: ORIGIN + 3_000_000_000n }), ORIGIN),
-  shapeTraceRow(trace({ id: 2n, ttftNs: 10_000_000n, e2eNs: 100_000_000n, arrivedAtUnixNs: ORIGIN + 1_000_000_000n }), ORIGIN),
-  shapeTraceRow(trace({ id: 3n, ttftNs: 20_000_000n, e2eNs: 500_000_000n, arrivedAtUnixNs: ORIGIN + 2_000_000_000n }), ORIGIN),
-  // Not finished: no ttft, no e2e — must sort last on both columns regardless of direction.
-  shapeTraceRow(trace({ id: 4n, outcome: 'OUTCOME_UNSPECIFIED', ttftNs: 0n, e2eNs: 0n, arrivedAtUnixNs: ORIGIN + 4_000_000_000n }), ORIGIN),
+  shapeTraceRow(trace({ id: 1n, ttftNs: 30_000_000n, e2eNs: 900_000_000n, arrivedAtUnixNs: ORIGIN + 3_000_000_000n, promptTokens: 3000, outputTokens: 90 }), ORIGIN),
+  shapeTraceRow(trace({ id: 2n, ttftNs: 10_000_000n, e2eNs: 100_000_000n, arrivedAtUnixNs: ORIGIN + 1_000_000_000n, promptTokens: 1000, outputTokens: 10 }), ORIGIN),
+  shapeTraceRow(trace({ id: 3n, ttftNs: 20_000_000n, e2eNs: 500_000_000n, arrivedAtUnixNs: ORIGIN + 2_000_000_000n, promptTokens: 2000, outputTokens: 50 }), ORIGIN),
+  // Not finished: no ttft, no e2e — must sort last on both columns regardless of direction. Also
+  // carries no prompt/output count yet, which must sort last the same way.
+  shapeTraceRow(trace({ id: 4n, outcome: 'OUTCOME_UNSPECIFIED', ttftNs: 0n, e2eNs: 0n, arrivedAtUnixNs: ORIGIN + 4_000_000_000n, promptTokens: 0, outputTokens: 0 }), ORIGIN),
 ];
 
 check('sortTraceRows by ttft, descending, is highest first with the un-timestamped row last', () => {
@@ -171,6 +174,18 @@ check('sortTraceRows by e2e agrees with the ttft ordering here but is computed i
 check('sortTraceRows by arrived time orders every row, since arrival is always known once the origin is', () => {
   const ids = sortTraceRows(rows, 'arrived', 'desc').map((r) => r.id);
   eq(ids.join(','), '4,1,3,2', 'order');
+  return ids.join(',');
+});
+
+check('sortTraceRows by prompt size, descending, is largest first with the countless row last', () => {
+  const ids = sortTraceRows(rows, 'prompt', 'desc').map((r) => r.id);
+  eq(ids.join(','), '1,3,2,4', 'order');
+  return ids.join(',');
+});
+
+check('sortTraceRows by output size, ascending, is smallest first with the countless row still last', () => {
+  const ids = sortTraceRows(rows, 'output', 'asc').map((r) => r.id);
+  eq(ids.join(','), '2,3,1,4', 'order');
   return ids.join(',');
 });
 

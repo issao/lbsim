@@ -15,6 +15,7 @@ export interface TraceRow {
   ttftMs: number | null;
   /** Milliseconds, or `null` before the request finished. */
   e2eMs: number | null;
+  promptTokens: number;
   outputTokens: number;
   /** `null` until the request finished on a replica: a failed or in-flight request named no home. */
   replicaId: bigint | null;
@@ -35,6 +36,7 @@ export function shapeTraceRow(t: WireRequestTrace, origin: bigint | null): Trace
     arrivedS: origin === null ? null : relSeconds(r.arrivedAtUnixNs, origin),
     ttftMs: r.ttftNs > 0n ? Number(r.ttftNs) / 1e6 : null,
     e2eMs: r.e2eNs > 0n ? Number(r.e2eNs) / 1e6 : null,
+    promptTokens: r.promptTokens,
     outputTokens: r.outputTokens,
     replicaId: finished(r.outcome) ? r.replicaId : null,
     spanCount: t.spans.length,
@@ -45,21 +47,26 @@ export function shapeTraceRows(traces: WireRequestTrace[], origin: bigint | null
   return traces.map((t) => shapeTraceRow(t, origin));
 }
 
-/** The table's three sortable latency columns; the id, bucket, outcome, replica and span-count
- * columns sort only implicitly, by leaving the natural (newest-first) order alone. */
-export type TraceSortKey = 'arrived' | 'ttft' | 'e2e';
+/** The table's five sortable columns — three latency, two size; the id, bucket, outcome, replica
+ * and span-count columns sort only implicitly, by leaving the natural (newest-first) order alone. */
+export type TraceSortKey = 'arrived' | 'ttft' | 'e2e' | 'prompt' | 'output';
 export type SortDir = 'asc' | 'desc';
 
 function sortValue(row: TraceRow, key: TraceSortKey): number | null {
   if (key === 'arrived') return row.arrivedS;
   if (key === 'ttft') return row.ttftMs;
-  return row.e2eMs;
+  if (key === 'e2e') return row.e2eMs;
+  // A count of 0 reads as "—" in the table (the engine never reports a real request with no
+  // prompt), so it sorts last here too, the same "unknown" way as a latency that has no value yet.
+  if (key === 'prompt') return row.promptTokens > 0 ? row.promptTokens : null;
+  return row.outputTokens > 0 ? row.outputTokens : null;
 }
 
 /**
- * `rows` sorted by one latency column, without mutating the input. A row with no value for that
- * column (not timestamped yet, or the origin not known) sorts after every row that has one,
- * in either direction, and ties break by id ascending so the order is stable across re-renders.
+ * `rows` sorted by one latency or size column, without mutating the input. A row with no value for
+ * that column (not timestamped yet, the origin not known, or a zero token count) sorts after every
+ * row that has one, in either direction, and ties break by id ascending so the order is stable
+ * across re-renders.
  */
 export function sortTraceRows(rows: TraceRow[], key: TraceSortKey, dir: SortDir): TraceRow[] {
   const out = rows.slice();
