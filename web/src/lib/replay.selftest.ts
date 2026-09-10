@@ -134,7 +134,8 @@ const ROW_25S = `{"subscription_id":"export","sim_time_unix_ns":"176722562500000
 const INDEX = `[
 {"run_id":"1-routing/p2c","name":"p2c","routing":"p2c(d=2)","scenario_file":"scenarios/route_p2c.txt","sim_start_unix_ns":"${ORIGIN}","sim_end_unix_ns":"1767225720000000000","sample_interval_ms":250,"replicas":32},
 {"run_id":"1-routing/round-robin","name":"round_robin","routing":"round_robin","scenario_file":"scenarios/route_round_robin.txt","sim_start_unix_ns":"${ORIGIN}","sim_end_unix_ns":"1767225720000000000","sample_interval_ms":250,"replicas":32},
-{"run_id":"6-retry/no-retries","name":"no_retries","routing":"p2c(d=2)","scenario_file":"scenarios/retry_none.txt","sim_start_unix_ns":"${ORIGIN}","sim_end_unix_ns":"1767225840000000000","sample_interval_ms":250,"replicas":32}
+{"run_id":"6-retry/no-retries","name":"no_retries","routing":"p2c(d=2)","scenario_file":"scenarios/retry_none.txt","sim_start_unix_ns":"${ORIGIN}","sim_end_unix_ns":"1767225840000000000","sample_interval_ms":250,"replicas":32},
+{"run_id":"r-7","name":"p2c","routing":"p2c(d=2)","sim_start_unix_ns":"${ORIGIN}","sim_end_unix_ns":"1767225720000000000","sample_interval_ms":250,"replicas":32,"replica_sample_stride":1}
 ]
 `;
 
@@ -376,7 +377,7 @@ check('frames merge over a window the way the panels merge them', () => {
 
 check('runs/index.json decodes: uint64 instants as bigint, groups from the run id', () => {
   const runs = replay.decodeRunIndex(JSON.parse(INDEX));
-  eq(runs.length, 3, 'entries');
+  eq(runs.length, 4, 'entries');
   eq(runs[0].runId, '1-routing/p2c', 'run id');
   eq(runs[0].group, '1-routing', 'group');
   eq(runs[0].label, 'p2c', 'label');
@@ -389,11 +390,25 @@ check('runs/index.json decodes: uint64 instants as bigint, groups from the run i
   eq(replay.runDurationS(runs[0]), 120, 'duration, warm-up included');
   eq(replay.runDurationS(runs[2]), 240, 'the retry runs are 240 s');
   const groups = replay.groupRuns(runs);
-  eq(groups.map((g) => g.group), ['1-routing', '6-retry'], 'groups in index order');
+  eq(groups.map((g) => g.group), ['1-routing', '6-retry', 'released live runs'], 'groups in index order');
   eq(groups[0].runs.length, 2, 'two routing runs');
   ok(/expected an array/.test(throws(() => replay.decodeRunIndex({}), 'object index')), 'non-array refused');
   ok(/run_id is empty/.test(throws(() => replay.decodeRunIndex([{ name: 'x' }]), 'missing run_id')), 'missing run_id refused');
-  return '3 runs, 2 groups, 120 s and 240 s';
+  return '4 runs, 3 groups, 120 s and 240 s';
+});
+
+check('a released live run (flat "r-N" id, no scenario_file) groups apart from a flat demo id', () => {
+  const runs = replay.decodeRunIndex(JSON.parse(INDEX));
+  const live = runs.find((r) => r.runId === 'r-7');
+  if (!live) throw new Error('r-7 missing from decoded runs');
+  eq(live.group, 'released live runs', 'group');
+  eq(live.label, 'r-7', 'label is the run id itself, no directory to strip');
+  eq(live.scenarioFile, '', 'a live run was never exported from a scenario file');
+  const groups = replay.groupRuns(runs);
+  const liveGroup = groups.find((g) => g.group === 'released live runs');
+  if (!liveGroup) throw new Error('no "released live runs" group');
+  eq(liveGroup.runs.map((r) => r.runId), ['r-7'], 'exactly the one released run');
+  return 'r-7 groups as "released live runs", not the empty-string bucket a flat id would fall into';
 });
 
 await checkAsync('loadRun fetches the four documents relative to runs/ and decodes them with the transport', async () => {
@@ -434,7 +449,7 @@ await checkAsync('loadRun fetches the four documents relative to runs/ and decod
 
 check('the index says the replica sample stride, and an index older than the field is stride 1', () => {
   const runs = replay.decodeRunIndex(JSON.parse(INDEX));
-  eq(runs.map((r) => r.replicaSampleStride), [1, 1, 1], 'no field: stride 1');
+  eq(runs.map((r) => r.replicaSampleStride), [1, 1, 1, 1], 'no field, or field 1: stride 1');
   const withStride = JSON.parse(INDEX.replace('"replicas":32}', '"replicas":32,"replica_sample_stride":6}'));
   eq(replay.decodeRunIndex(withStride)[0].replicaSampleStride, 6, 'the exporter\'s stride');
   return 'absent: 1; declared 6: 6';
@@ -524,12 +539,12 @@ await checkAsync('probeRunIndex answers null for a 404, for a dev server HTML sh
   eq(await replay.probeRunIndex(stubFetch({}, true).f, '/runs/'), null, 'HTML shell with HTTP 200');
   eq(await replay.probeRunIndex(stubFetch({ '/runs/index.json': '[]' }).f, '/runs/'), null, 'empty index');
   const runs = await replay.probeRunIndex(stubFetch({ '/runs/index.json': INDEX }).f, '/runs/');
-  eq(runs?.length, 3, 'a real index');
+  eq(runs?.length, 4, 'a real index');
   const failing: typeof fetch = async () => {
     throw new TypeError('network down');
   };
   eq(await replay.probeRunIndex(failing, '/runs/'), null, 'network error');
-  return 'null, null, null, 3 runs, null';
+  return 'null, null, null, 4 runs, null';
 });
 
 check('scenario.txt -> ScenarioConfig is the inverse of scenarioConfigToWire, key for key', () => {

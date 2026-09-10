@@ -288,8 +288,9 @@ thinned to the export's budget with the stride in `checkpoint.json`, and `traces
 from disk, byte for byte the in-memory answer (`409` for a failed run, as before); everything that needs
 the engine or the frames — `StopRun`, `SetSpeed`, `StepForward`, `UpdateWorkload`, `UpdatePolicies`,
 `GetTraces`, `OpenSubscription` — answers `410` with `released; replay from runs/<run_id>/`. The
-released run is not merged into `runs/index.json`, which lists the showcase's recordings, so a dashboard
-replay of it is a follow-up rather than a promise.
+released run's checkpoint is merged into `runs/index.json` the moment it is written, the same entry
+an export of it would get, so the dashboard's replay picker lists it at once, under a "released live
+runs" group, rather than waiting on a showcase export (Issao, 2026-09-10).
 
 While a run is alive the server holds its frames, one per sample interval with a row per replica, and
 nothing per request: the engine folds each record into the whole-run tally and histograms as it lands

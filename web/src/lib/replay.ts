@@ -65,6 +65,9 @@ export interface RunIndexEntry {
   label: string;
 }
 
+/** A live server's own run id, `r-<n>`: no group segment of its own, unlike a demo's `<group>/<run>`. */
+const LIVE_RUN_ID = /^r-\d+$/;
+
 export function decodeRunIndex(v: Json): RunIndexEntry[] {
   if (!Array.isArray(v)) throw new TypeError('runs/index.json: expected an array of runs');
   return v.map((e, i) => {
@@ -83,7 +86,11 @@ export function decodeRunIndex(v: Json): RunIndexEntry[] {
       sampleIntervalMs: dbl(e.sample_interval_ms, `${where}.sample_interval_ms`),
       replicas: i32(e.replicas, `${where}.replicas`),
       replicaSampleStride: e.replica_sample_stride === undefined ? 1 : Math.max(1, i32(e.replica_sample_stride, `${where}.replica_sample_stride`)),
-      group: slash === -1 ? '' : runId.slice(0, slash),
+      // A demo's id (`1-routing/p2c`) groups by its own directory; a released live run (`r-3`) has
+      // no directory of its own, so it gets one group of its own instead of falling into every
+      // flat id's empty-string bucket (Issao, 2026-09-10: "the dashboard's replay mode cannot
+      // open it" — once it can, it should read as a run, not an unlabeled leftover).
+      group: slash === -1 ? (LIVE_RUN_ID.test(runId) ? 'released live runs' : '') : runId.slice(0, slash),
       label: slash === -1 ? runId : runId.slice(slash + 1),
     };
   });

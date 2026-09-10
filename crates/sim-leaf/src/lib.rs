@@ -21,7 +21,7 @@ use sim_scenario::{FailureEvent, FailureKind, OverrideKind, Scenario};
 use sim_workload::{Request, Workload};
 use sim_core::{Nanos, EPOCH_BASE, MILLI};
 use std::cell::RefCell;
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
 /// A modelled router-to-replica round trip, paid when a policy probes for fresh state instead of
 /// reading the delayed snapshot.
@@ -750,7 +750,14 @@ pub struct Sim {
     replicas: Vec<Replica>,
     views: Vec<ReplicaView>,
     placed: HashMap<u64, usize>,
-    done: HashMap<u64, bool>,
+    /// Ids that finished before the `Ev::Timeout` their admission scheduled has fired, so that
+    /// event knows to do nothing. An id enters only when such a timeout is genuinely still
+    /// queued (never for a request shed before admission, since none was ever scheduled for it,
+    /// and never from inside the timeout's own handler, since nothing will check for this id
+    /// again after that), and leaves the moment that timeout is dispatched, hit or skipped. So
+    /// this holds at most one entry per request whose deadline has not yet arrived: bounded by
+    /// in-flight volume, not by how many requests the run has processed in total.
+    done: HashSet<u64>,
     records: Vec<RequestRecord>,
 
     tracing: Tracing,
@@ -1025,7 +1032,7 @@ impl Sim {
             replicas,
             views,
             placed: HashMap::new(),
-            done: HashMap::new(),
+            done: HashSet::new(),
             records: Vec::new(),
             tracing,
             cost,
@@ -1151,7 +1158,8 @@ impl Sim {
     /// its cache goes with it, so a slot that returns later returns cold.
     fn retire(&mut self, i: usize, now: Nanos) {
         for req in self.replicas[i].crash() {
-            self.abort(&req, i, Outcome::TimeoutRunning, now);
+            // Still on the replica, so its `Ev::Timeout` has not fired yet.
+            self.abort(&req, i, Outcome::TimeoutRunning, now, true);
         }
         let (inserted, evicted) = self.replicas[i].drain_prefix_changes();
         self.holders.apply(i, &inserted, &evicted);
@@ -1163,12 +1171,17 @@ impl Sim {
 
     /// Record a failed attempt and, under the retry budget, dispatch the next one. Timeouts, crashes
     /// and refused dispatches all end here, so a retry means the same thing whatever caused it.
-    fn abort(&mut self, req: &Request, i: usize, outcome: Outcome, now: Nanos) {
+    ///
+    /// `timeout_pending` is the caller's answer to "does this id still have an `Ev::Timeout` ahead
+    /// of it in the queue?": false from the timeout handler itself (this call *is* that check) and
+    /// from an admission-time refusal (nothing was scheduled yet), true from a crash or a retirement
+    /// that cuts a still-queued or still-running request off before its own deadline would have.
+    fn abort(&mut self, req: &Request, i: usize, outcome: Outcome, now: Nanos, timeout_pending: bool) {
         let sc = &self.sc;
         let start = self.start;
         finish(
             &mut self.records, &mut self.summary, &mut self.done, &mut self.window,
-            outcome, req, now, i, 0, 0, 0, 0,
+            outcome, req, now, i, 0, 0, 0, 0, timeout_pending,
         );
         self.tracing.settle(req.id, &self.records, &mut self.replicas, i, &self.cost);
         // Retry, under a budget. Retries are what turn a slowdown into a collapse, and
@@ -1463,7 +1476,9 @@ impl Sim {
                         // next telemetry delivery. Refused before any device time, and retried. A
                         // draining replica is the exception: it was routable when the request left,
                         // and finishing a straggler is cheaper than bouncing it.
-                        self.abort(&req, target, Outcome::TimeoutQueued, now);
+                        // Refused before `Ev::Admit`'s enqueue, so no `Ev::Timeout` was scheduled
+                        // for this id at all.
+                        self.abort(&req, target, Outcome::TimeoutQueued, now, false);
                         continue;
                     }
                     let r = &mut self.replicas[target];
@@ -1474,9 +1489,10 @@ impl Sim {
                         // turn shed here releases the context parked for it.
                         r.remove(id);
                         self.tiers.reclaim(r);
+                        // Shed before `Ev::Timeout` was scheduled: nothing to remember.
                         finish(
                             &mut self.records, &mut self.summary, &mut self.done, &mut self.window,
-                            Outcome::Rejected, &req, now, target, 0, 0, 0, 0,
+                            Outcome::Rejected, &req, now, target, 0, 0, 0, 0, false,
                         );
                         self.tracing.settle(id, &self.records, &mut self.replicas, target, &self.cost);
                         continue;
@@ -1523,10 +1539,12 @@ impl Sim {
                             && token_at - s.req.arrived_at <= (e2e_s * 1e9) as Nanos;
                         let outcome = if within { Outcome::Ok } else { Outcome::OkSloViolated };
                         self.admission.on_complete(s.req.tenant, s.req.output, token_at);
+                        // Finished ahead of its deadline: its `Ev::Timeout` is still ahead of it
+                        // in the queue and needs telling to do nothing when it gets there.
                         finish(
                             &mut self.records, &mut self.summary, &mut self.done, &mut self.window,
                             outcome, &s.req, token_at, i, s.admitted_at, s.first_token_at, s.max_itl,
-                            s.mean_itl,
+                            s.mean_itl, true,
                         );
                         self.tracing.settle(s.req.id, &self.records, &mut self.replicas, i, &self.cost);
                         follow_up(
@@ -1580,7 +1598,9 @@ impl Sim {
                 }
 
                 Ev::Timeout(id) => {
-                    if self.done.contains_key(&id) {
+                    // This is the one and only check any event will ever make for `id`, so an
+                    // entry found here has done its job and is removed rather than merely read.
+                    if self.done.remove(&id) {
                         continue;
                     }
                     let Some(&i) = self.placed.get(&id) else { continue };
@@ -1592,7 +1612,9 @@ impl Sim {
                         } else {
                             Outcome::TimeoutQueued
                         };
-                        self.abort(&req, i, outcome, now);
+                        // This call is that very timeout firing, so nothing will check `done` for
+                        // `id` again: no entry needed.
+                        self.abort(&req, i, outcome, now, false);
                         if self.replicas[i].lifecycle() == Lifecycle::Draining && self.replicas[i].load() == 0 {
                             self.retire(i, now);
                         }
@@ -1606,7 +1628,8 @@ impl Sim {
                         // is what a crash costs, and every client of it sees a timeout.
                         FailureKind::Crash => {
                             for req in self.replicas[f.replica].crash() {
-                                self.abort(&req, f.replica, Outcome::TimeoutRunning, now);
+                                // Still on the replica, so its `Ev::Timeout` has not fired yet.
+                                self.abort(&req, f.replica, Outcome::TimeoutRunning, now, true);
                             }
                             self.tiers.reclaim(&mut self.replicas[f.replica]);
                             let (inserted, evicted) = self.replicas[f.replica].drain_prefix_changes();
@@ -2040,7 +2063,7 @@ fn place(
     q: &mut EventQueue<Ev>,
     records: &mut Vec<RequestRecord>,
     summary: &mut Summary,
-    done: &mut HashMap<u64, bool>,
+    done: &mut HashSet<u64>,
     window: &mut Window,
     d: Dispatch,
     req: Request,
@@ -2048,8 +2071,10 @@ fn place(
 ) {
     match d {
         Dispatch::Route { target, delay } => q.schedule(now + delay, Ev::Admit(target, req)),
+        // Shed before admission: no `Ev::Timeout` was ever scheduled for this id, so `done`
+        // has nothing to remember it for.
         Dispatch::Rejected => finish(
-            records, summary, done, window, Outcome::Rejected, &req, now, NO_REPLICA, 0, 0, 0, 0,
+            records, summary, done, window, Outcome::Rejected, &req, now, NO_REPLICA, 0, 0, 0, 0, false,
         ),
         Dispatch::Dropped => {}
     }
@@ -2287,7 +2312,7 @@ fn resource_of(snap: &ResourceSnapshot, cost: &sim_physics::CostModel, kv_capaci
 fn finish(
     records: &mut Vec<RequestRecord>,
     summary: &mut Summary,
-    done: &mut HashMap<u64, bool>,
+    done: &mut HashSet<u64>,
     window: &mut Window,
     outcome: Outcome,
     req: &Request,
@@ -2297,8 +2322,15 @@ fn finish(
     first_token_at: Nanos,
     max_itl: Nanos,
     mean_itl: Nanos,
+    // Whether this id's `Ev::Timeout` is still ahead of `now` in the queue: false for a request
+    // shed before admission (nothing was ever scheduled) and for the timeout's own handler
+    // finishing the id it was woken for (nothing will look for it again). Only the true case
+    // needs an entry, so `done` never grows with volume it does not still owe a check to.
+    timeout_pending: bool,
 ) {
-    done.insert(req.id, true);
+    if timeout_pending {
+        done.insert(req.id);
+    }
     let rec = RequestRecord {
         id: req.id,
         arrived_at: req.arrived_at,
@@ -2364,5 +2396,38 @@ mod tests {
 
         assert_eq!(collected, whole.frames());
         assert!(!collected.is_empty(), "the fixture must produce at least one sample");
+    }
+
+    /// `done` remembers an id only for as long as its own `Ev::Timeout` is still ahead of it in the
+    /// queue, so its size tracks what is in flight near its deadline, not how many requests the run
+    /// has finished since the start. Sampled at four points across the run, it must stay under a cap
+    /// far below the number of requests the run goes on to finish — the old, unpruned map would have
+    /// grown to meet `summary.finished` instead of sitting near it.
+    #[test]
+    fn done_stays_bounded_by_in_flight_not_by_total_finished() {
+        const DONE_CAP: usize = 200;
+
+        let mut sc = fixture();
+        sc.duration_s = 240.0;
+        sc.warmup_s = 0.0;
+        let mut sim = Sim::new(&sc).unwrap();
+        let (start, end) = (sim.start, sim.end());
+        let span = end - start;
+
+        let mut samples = Vec::new();
+        for frac in [1, 2, 3, 4] {
+            sim.advance_to(start + span * frac / 4).unwrap();
+            samples.push((sim.done.len(), sim.summary.finished));
+        }
+
+        for &(done_len, finished) in &samples {
+            assert!(done_len < DONE_CAP, "done holds {done_len} entries at {finished} requests finished: {samples:?}");
+        }
+        let last_finished = samples.last().unwrap().1;
+        assert!(
+            last_finished > 10 * DONE_CAP as u64,
+            "the fixture should finish many times {DONE_CAP} requests, well past done's cap, to prove \
+             the cap is not just a slow run's small numbers: {samples:?}"
+        );
     }
 }
