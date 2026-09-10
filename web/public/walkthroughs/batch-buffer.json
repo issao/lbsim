@@ -1,0 +1,79 @@
+{
+  "id": "batch-buffer",
+  "dynamic": 3,
+  "title": "The GPU scheduler's batch buffer",
+  "summary": "At 1.2x rated, admitting only what a step's chunk can prefill raises throughput 24% and cuts timeouts by five sixths, and sends within-SLO goodput to zero, because a strict queue makes everyone wait the backlog while fifo_chunked serves the newest first and starves a quarter. Routing by what is beyond the buffer herds on the stale view and sheds its way back to health.",
+  "run": "21-batch-buffer/buffer-fifo-p2c",
+  "compare": "21-batch-buffer/buffer-batch-p2c",
+  "scenario": {
+    "name": "buffer_batch_p2c",
+    "seed": 20260906,
+    "durationS": 120,
+    "arrival_rps": 2254,
+    "scheduling": "buffered_batch",
+    "buffer_max_hold_ms": 5
+  },
+  "steps": [
+    {
+      "at_sim_s": 10,
+      "speed": 4,
+      "control_tab": "run",
+      "observe_tab": "cluster",
+      "highlight": "fleet-state",
+      "title": "Two schedulers, one overloaded fleet",
+      "body": [
+        "Two hundred and fifty-six replicas, a batch of 256 seats, 2,254 requests a second against a rated 1,878: 1.2x, so every replica runs a backlog for the whole run and what the scheduler admits into a step is the whole difference. This run is fifo_chunked, the engine's default: admit everything the cache can take, chunk 1,024 prefill tokens a step in batch order. The compared run is buffered_batch: a step admits only what its 1,024-token chunk covers, bounded by the batch's seats, the decode seats and the bandwidth line, the fixed cost plus the key-value re-read priced by the cost model against the 80 ms inter-token target; what does not fit stays queued, and an idle replica holds its queue up to 5 ms for company.",
+        "Ten seconds in, the fifo batches are already filling: 23,000 sequences running across the fleet at t=15 s, 47 queued. The buffered fleet runs 15,000 and queues 7,700. Same arrivals, same seed; the buffer has moved the wait from the batch to the queue."
+      ],
+      "look_for": "Fleet running climbing past 20,000 here while the queue stays under a hundred; running near 15,000 and a queue in the thousands in the compared run."
+    },
+    {
+      "at_sim_s": 30,
+      "speed": 4,
+      "observe_tab": "utilization",
+      "highlight": "fleet-state",
+      "title": "Where the wait lives decides what the step costs",
+      "body": [
+        "At t=30 s this fleet runs 38,000 sequences and by t=75 s it has filled every seat, 65,000, with key-value utilization at 60 percent and climbing. Most of those sequences are not decoding: they were admitted whole and are waiting their turn at the chunk, 218 sequences a replica on average over the measured window, and every step re-reads their resident tokens anyway, because the cost model charges the re-read for everything in the cache. The compared fleet holds 87 a replica, key-value at 23 to 28 percent, and its queue grows at the overload's rate, 375 requests a second fleet-wide, from 2,600 at t=5 s to 69,000 at the end.",
+        "That is the buffer's mechanism in one line: a step that carries only the sequences it can serve is a shorter step. Inter-token latency at the 99th percentile falls from 68 ms to 57 ms, completed throughput rises from 1,086 to 1,318 requests a second, output tokens from 210,000 to 261,000 a second, 24 percent more on the same silicon."
+      ],
+      "look_for": "Key-value utilization near 40 percent here against about 23 in the compared run, with running sequences at more than twice the count."
+    },
+    {
+      "at_sim_s": 60,
+      "speed": 4,
+      "observe_tab": "quality",
+      "highlight": "slo",
+      "title": "More throughput, no goodput: who waits is the whole difference",
+      "body": [
+        "The scorecard reads the other way. fifo_chunked delivers 80,500 output tokens a second within SLO, 25 percent attainment; buffered_batch delivers 253, 0.1 percent. The time-to-first-token target is 2 s, and the buffer is a strict queue: the median arrival in the first ten seconds waits 5.9 s in it, one arriving at t=70 s waits 29 s. Nobody is served on time after the first seconds, and everybody is served.",
+        "fifo_chunked's 25 percent are not the fleet keeping up. A newcomer takes the seat a retired sequence freed and inherits its place in the batch's prefill order, ahead of everything admitted before it, so half the arrivals in the first forty seconds get their first token in under two seconds while the sequences behind them wait for a chunk that keeps going to someone newer. Those are the 38,466 requests, one in four, that die in the batch at the 60 s client timeout. The buffer loses 6,562 the same way, a sixth as many."
+      ],
+      "look_for": "Attainment near 0.25 here and a flat zero in the compared run, on a fleet that is completing more requests a second."
+    },
+    {
+      "at_sim_s": 90,
+      "speed": 4,
+      "observe_tab": "cluster",
+      "highlight": "fleet-state",
+      "title": "Overload does not go away; the buffer changes who pays",
+      "body": [
+        "By t=90 s this fleet's queue is 18,000 and its batches are full at 65,000; the compared fleet's batches hold 23,000 and its queue is 52,000 and still growing at the overload's rate. Neither is a fleet that is coping, and at 1.2x rated none could be. The choice the scheduler makes is the order of service: fifo_chunked, through the seat it hands a newcomer, serves the newest first and lets a quarter starve; buffered_batch serves in order, late for everyone, and loses only the long prompts whose prefill alone outruns the timeout.",
+        "Preemptions are zero in both, because the base scenario runs with preemption off and the cache never fills; the buffer keeps it at a quarter. The mean batch is 218 seats against 87, and the 87 are decoding."
+      ],
+      "look_for": "Running at the seat cap and a queue in the tens of thousands here; running a third of that and a queue three times deeper in the compared run."
+    },
+    {
+      "at_sim_s": 115,
+      "speed": 4,
+      "observe_tab": "quality",
+      "highlight": "slo",
+      "title": "Routing by what is beyond the buffer: the stale view herds, then sheds its way back",
+      "body": [
+        "The third run in the report keeps the buffer and swaps p2c for weighted_random: each replica weighs 1, less 0.3 for any queued decode, less 0.5 for any queued prefill, less 0.05 per decode item and 0.1 per prefill item beyond the open buffer, clamped at zero, and the router draws in proportion over the one-second-old view. Under overload nearly every replica weighs zero, so the few whose stale view still showed room receive everything: load imbalance rises from 0.20 to 0.43, and 23,531 arrivals, 15 percent, are shed at full queues. That is least-loaded routing with a one-second blind spot, finding 2's herd in a new coat.",
+        "Then the shedding does what nobody designed it to: 15 percent off the top turns 1.2x into rated load, the queue drains, and from t=60 s the median queue wait is zero; at t=100 s 95 percent of arrivals see their first token within two seconds. Attainment ends at 9 percent, goodput at 32,000 tokens a second, between the other two. Not modelled: a decode-side queue, so a running sequence always decodes and the decode-beyond-buffer term stays near zero here; and the 5 ms hold, which only an idle replica uses, and at 1.2x rated a replica is idle only in the run's first seconds. At rated load and below, where replicas idle between arrivals, the hold is what the buffer does."
+      ],
+      "look_for": "The weighted run's imbalance at 0.43 on the report's scorecard, its rejected count where the other two show zero, and its attainment above the buffered p2c run's."
+    }
+  ]
+}

@@ -260,6 +260,14 @@ fn summary_csv(r: &RunResult) -> String {
     let (gpu_utilization_mean, gpu_useful_mean) = gpu_means(r, &frames);
     row("gpu_utilization_mean", format!("{gpu_utilization_mean:.4}"));
     row("gpu_useful_mean", format!("{gpu_useful_mean:.4}"));
+    // Demo 21: what a batch buffer changes is how full a step is and how often the cache evicts.
+    // Only for a run under the buffered scheduler, so every other run's summary stays byte
+    // identical, the same gate `prefix_hit_rate` uses. Batch fill is Issao's useful-over-busy ratio.
+    if r.scenario.scheduling == "buffered_batch" {
+        row("mean_batch_size", format!("{:.2}", mean_batch_size(&frames)));
+        row("batch_fill", format!("{:.4}", gpu_useful_mean / gpu_utilization_mean));
+        row("preemptions", preemptions(&frames).to_string());
+    }
     // U27c: only when the scenario has a prefix model — `prompt_tokens` accumulates on every
     // admission regardless, so a scenario without one would otherwise get a permanent, meaningless
     // 0% row. Gating here, rather than skipping only a NaN, is also what keeps `summary_md5` byte
@@ -303,6 +311,28 @@ fn gpu_means(r: &RunResult, frames: &[&Frame]) -> (f64, f64) {
             / frames.len() as f64
     };
     (mean_of(&|rep| rep.busy_ns), mean_of(&|rep| rep.useful_ns))
+}
+
+/// Sequences in the batch, averaged over replicas at each sample and then over the frames: the
+/// batch fill a buffer is trying to raise. Every replica slot counts, including an absent one,
+/// which is what "per replica of the fleet" means for a fixed fleet.
+fn mean_batch_size(frames: &[&Frame]) -> f64 {
+    if frames.is_empty() {
+        return f64::NAN;
+    }
+    let sum: f64 = frames
+        .iter()
+        .map(|f| {
+            let n = f.replicas.len().max(1) as f64;
+            f.replicas.iter().map(|rep| rep.running as f64).sum::<f64>() / n
+        })
+        .sum();
+    sum / frames.len() as f64
+}
+
+/// Contexts evicted from the cache over the frames, running or parked.
+fn preemptions(frames: &[&Frame]) -> u64 {
+    frames.iter().map(|f| f.preemptions).sum()
 }
 
 /// The prefix hit rate over a set of frames: hit tokens over prompt tokens, summed across replicas
@@ -728,11 +758,19 @@ decision, and anything proportional to fleet size does not hold at scale."##);
     // U27c: an extra column, added only when at least one run in the report has a prefix model, so
     // a report over scenarios that never asked for one keeps its `html_md5` byte identical.
     let show_prefix = runs.iter().any(|r| r.scenario.prefix_roots > 0);
+    // Demo 21: the same gate for the two columns a batch buffer moves, so a report over runs that
+    // never used one keeps its `html_md5` byte identical.
+    let show_buffer = runs.iter().any(|r| r.scenario.scheduling == "buffered_batch");
     let mut headers = vec!["scenario", "routing", "offered rps", "rated rps", "completed rps",
         "goodput tok/s", "throughput tok/s", "imbalance CV", "batch limit", "inspected",
         "gpu util<br><small>time in step</small>", "gpu useful<br><small>of max possible</small>"];
     if show_prefix {
         headers.push("prefix hit");
+    }
+    if show_buffer {
+        headers.push("mean batch");
+        headers.push("batch fill");
+        headers.push("preemptions");
     }
     table(h, &headers, runs.iter().enumerate().map(|(i, r)| {
         let mut row = format!(
@@ -760,6 +798,18 @@ decision, and anything proportional to fleet size does not hold at scale."##);
                 }
                 _ => row.push_str("<td>—</td>"),
             }
+        }
+        if show_buffer {
+            let measured: Vec<_> = r.frames.iter().filter(|f| f.t > r.measured_from).collect();
+            let frames = if measured.is_empty() { r.frames.iter().collect() } else { measured };
+            let (busy, useful) = gpu_means(r, &frames);
+            let _ = write!(
+                row,
+                "<td>{:.1}</td><td>{:.2}</td><td>{}</td>",
+                mean_batch_size(&frames),
+                useful / busy,
+                preemptions(&frames)
+            );
         }
         row.push_str("</tr>");
         row

@@ -16,6 +16,15 @@ pub struct ReplicaView {
     /// Resident key-value tokens. The load signal that is actually in the right unit.
     pub kv_tokens: u64,
     pub last_step_ns: Nanos,
+    /// Work waiting for a step, as the replica's scheduler sees it: decode items (a running
+    /// sequence past its prefill, or an evicted one waiting to re-enter) and prefill items (a
+    /// running sequence still owed prefill, or a queued request). Of each, the part the scheduler's
+    /// open buffer cannot hold in the next step, which is what waits a whole step cycle; zero under a
+    /// scheduler with no buffer. What `weighted_random` weighs. `sim_core::scheduling::QueuedWork`.
+    pub queued_decode: u32,
+    pub queued_prefill: u32,
+    pub decode_beyond_buffer: u32,
+    pub prefill_beyond_buffer: u32,
     pub ejected: bool,
 }
 

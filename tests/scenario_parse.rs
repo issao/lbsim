@@ -10,16 +10,17 @@ use lbsim::scenario::Scenario;
 use lbsim::sim;
 
 /// Every key `parse` accepts, which is also every key `to_text` must emit.
-const KEYS: [&str; 86] = [
+const KEYS: [&str; 95] = [
     "name", "seed", "duration_s", "warmup_s", "replicas", "max_batch", "step_base_ms",
     "step_per_seq_ms", "step_per_kv_ktoken_ms", "kv_capacity_tokens", "prefill_tokens_per_s",
     "step_token_budget", "max_queue", "disable_decode", "preemption", "preemption_victim", "scheduling",
+    "buffer_max_batch", "buffer_max_prefill_tokens", "buffer_max_decode_seqs", "buffer_max_hold_ms",
     "dram_capacity_tokens", "swap_gbps", "dram_pool_tokens", "ssd_pool_tokens", "ssd_gbps", "fabric_gbps", "arrival_rps", "arrival_rps_per_replica", "prompt_mean", "prompt_cv", "output_mean",
     "output_cv", "long_probability", "long_prompt_mean", "long_output_mean", "session_turns_mean",
     "session_think_s", "prefix_roots", "prefix_root_tokens", "prefix_zipf_s", "session_fork_rate",
     "prefix_cache_tokens", "affinity_max_load_ratio", "affinity_fallback_choices", "load_step_at_s",
     "load_step_factor", "load_step_until_s", "perturbation", "perturb_amplitude", "perturb_frequency_hz",
-    "routing", "p2c_choices", "probe_live",
+    "routing", "p2c_choices", "probe_live", "wr_c1", "wr_c2", "wr_c3", "wr_c4", "wr_c5",
     "admission", "admission_headroom", "fair_share_burst",
     "ejection", "ejection_ratio", "ejection_views", "ejection_cooldown_s",
     "autoscaling", "autoscale_target", "autoscale_interval_s", "autoscale_step", "autoscale_cooldown_s",
@@ -53,6 +54,10 @@ fn all_fields_distinct() -> Scenario {
         preemption: "swap_else_recompute".into(),
         preemption_victim: "largest_kv".into(),
         scheduling: "class_priority".into(),
+        buffer_max_batch: 9,
+        buffer_max_prefill_tokens: 768,
+        buffer_max_decode_seqs: 7,
+        buffer_max_hold_ms: 2.5,
         dram_capacity_tokens: 2_222_000.0,
         swap_gbps: 32.5,
         dram_pool_tokens: 3_333_000.0,
@@ -87,6 +92,11 @@ fn all_fields_distinct() -> Scenario {
         routing: "least_queue_tokens".into(),
         p2c_choices: 5,
         probe_live: true,
+        wr_c1: 1.5,
+        wr_c2: -0.25,
+        wr_c3: -0.75,
+        wr_c4: -0.05,
+        wr_c5: -0.125,
         admission: "accept_all".into(),
         admission_headroom: 0.35,
         fair_share_burst: 3.5,
@@ -171,6 +181,15 @@ fn to_text_then_parse_preserves_every_field() {
     assert_eq!(got.prefix_cache_tokens, want.prefix_cache_tokens);
     assert_eq!(got.affinity_max_load_ratio, want.affinity_max_load_ratio);
     assert_eq!(got.affinity_fallback_choices, want.affinity_fallback_choices);
+    assert_eq!(got.buffer_max_batch, want.buffer_max_batch);
+    assert_eq!(got.buffer_max_prefill_tokens, want.buffer_max_prefill_tokens);
+    assert_eq!(got.buffer_max_decode_seqs, want.buffer_max_decode_seqs);
+    assert_eq!(got.buffer_max_hold_ms, want.buffer_max_hold_ms);
+    assert_eq!(got.wr_c1, want.wr_c1);
+    assert_eq!(got.wr_c2, want.wr_c2);
+    assert_eq!(got.wr_c3, want.wr_c3);
+    assert_eq!(got.wr_c4, want.wr_c4);
+    assert_eq!(got.wr_c5, want.wr_c5);
     assert_eq!(got.load_step_at_s, want.load_step_at_s);
     assert_eq!(got.load_step_factor, want.load_step_factor);
     assert_eq!(got.load_step_until_s, want.load_step_until_s);

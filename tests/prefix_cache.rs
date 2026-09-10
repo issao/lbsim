@@ -82,7 +82,7 @@ fn req(id: u64, node: u64, tree: &PrefixTree) -> Request {
 
 /// Run one request through an otherwise idle replica to completion.
 fn serve(r: &mut Replica, sc: &Scenario, cost: &CostModel, tree: &PrefixTree, now: &mut Nanos, req: Request) {
-    r.enqueue(req, sc.max_queue).ok().unwrap();
+    r.enqueue(req, sc.max_queue, EPOCH_BASE).ok().unwrap();
     r.wake(*now);
     for _ in 0..1000 {
         let Some(out) = r.step_with_prefixes(sc, cost, *now, tree) else { return };

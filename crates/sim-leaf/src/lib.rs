@@ -1118,7 +1118,8 @@ impl Sim {
             // struggling replica by construction.
             let d = dispatch(
                 &mut *self.router, &mut *self.admission, &self.route_views, &self.route_slot, &self.replicas,
-                &self.tenant_shares, &mut self.route_rng, sc, at, &again, traced.then_some(&mut probed),
+                &self.schedulers, &self.cost, &self.tenant_shares, &mut self.route_rng, sc, at, &again,
+                traced.then_some(&mut probed),
                 &RoutableIndex { inner: self.holders.index(&self.tree), pos: &self.route_pos },
             );
             let (again_id, routed) = (again.id, matches!(d, Dispatch::Route { .. }));
@@ -1193,7 +1194,11 @@ impl Sim {
     /// Every replica as it is right now, not as the delayed telemetry shows it: live telemetry for a
     /// viewer, never for a policy.
     pub fn latest_views(&self) -> Vec<ReplicaView> {
-        self.replicas.iter().map(|r| view_of(r, self.now)).collect()
+        self.replicas
+            .iter()
+            .zip(&self.schedulers)
+            .map(|(r, sched)| view_of(r, &**sched, &self.cost, &self.sc, self.now))
+            .collect()
     }
     /// The fleet as the policies see it: the delayed telemetry, with the health policy's ejections
     /// written in. This is the view a test of detection latency has to read, because a policy's
@@ -1328,7 +1333,8 @@ impl Sim {
                     let mut probed = Vec::new();
                     let d = dispatch(
                         &mut *self.router, &mut *self.admission, &self.route_views, &self.route_slot, &self.replicas,
-                        &self.tenant_shares, &mut self.route_rng, sc, now, &req, traced.then_some(&mut probed),
+                        &self.schedulers, &self.cost, &self.tenant_shares, &mut self.route_rng, sc, now, &req,
+                        traced.then_some(&mut probed),
                         &RoutableIndex { inner: self.holders.index(&self.tree), pos: &self.route_pos },
                     );
                     let (id, routed) = (req.id, matches!(d, Dispatch::Route { .. }));
@@ -1374,7 +1380,7 @@ impl Sim {
                     }
                     let r = &mut self.replicas[target];
                     let (id, deadline) = (req.id, req.deadline);
-                    if let Err(req) = r.enqueue(req, sc.max_queue) {
+                    if let Err(req) = r.enqueue(req, sc.max_queue, now) {
                         // Shed before consuming device time: the cheap failure, and deliberately
                         // distinct in the outcome from one that fails after burning work. A session
                         // turn shed here releases the context parked for it.
@@ -1460,7 +1466,7 @@ impl Sim {
                         self.tele_pending[i] = false;
                         continue;
                     }
-                    let view = view_of(&self.replicas[i], now);
+                    let view = view_of(&self.replicas[i], &*self.schedulers[i], &self.cost, sc, now);
                     // Delayed delivery. This one line is the whole staleness mechanism: a policy cannot
                     // see the fleet as it is, only as it was.
                     self.q.schedule(now + self.tele_delay, Ev::TelemetryDeliver(i, view));
@@ -1818,8 +1824,17 @@ impl Leaf for LocalLeaf {
 }
 
 /// What a replica reports about itself, as a policy will see it after the telemetry delay, or right
-/// now if a policy pays for a probe. One function so the two views cannot disagree.
-fn view_of(r: &Replica, now: Nanos) -> ReplicaView {
+/// now if a policy pays for a probe. One function so the two views cannot disagree. The scheduler
+/// is consulted for its open buffer, which is what the "beyond the buffer" counts are measured
+/// against.
+fn view_of(
+    r: &Replica,
+    sched: &dyn SchedulingPolicy,
+    cost: &sim_physics::CostModel,
+    sc: &Scenario,
+    now: Nanos,
+) -> ReplicaView {
+    let work = r.queued_work(sc, cost, sched);
     ReplicaView {
         sampled_at: now,
         queued: r.queued() as u32,
@@ -1827,6 +1842,10 @@ fn view_of(r: &Replica, now: Nanos) -> ReplicaView {
         queued_tokens: r.outstanding_tokens(),
         kv_tokens: r.kv_tokens(),
         last_step_ns: r.last_step_ns(),
+        queued_decode: work.decode,
+        queued_prefill: work.prefill,
+        decode_beyond_buffer: work.decode_beyond,
+        prefill_beyond_buffer: work.prefill_beyond,
         // Only a crash is announced. A slow or hung replica reports itself as healthy, and the
         // growing `last_step_ns` is the one tell a policy has. A slot the autoscaler has not made
         // ready is not there to be routed to.
@@ -1853,6 +1872,8 @@ fn dispatch(
     views: &[ReplicaView],
     route_slot: &[usize],
     replicas: &[Replica],
+    schedulers: &[Box<dyn SchedulingPolicy>],
+    cost: &sim_physics::CostModel,
     tenant_shares: &[f64],
     rng: &mut Rng,
     sc: &Scenario,
@@ -1874,7 +1895,8 @@ fn dispatch(
         if let Some(p) = probed.borrow_mut().as_mut() {
             p.push(route_slot[i]);
         }
-        view_of(&replicas[route_slot[i]], now)
+        let slot = route_slot[i];
+        view_of(&replicas[slot], &*schedulers[slot], cost, sc, now)
     };
     let mut ctx = RouteContext::new(now, views, &request, rng, &live, prefix);
     match router.choose(&mut ctx) {

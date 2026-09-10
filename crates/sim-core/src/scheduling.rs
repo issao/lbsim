@@ -12,6 +12,12 @@
 //!    prompt ahead of you in the batch is many steps before your first chunk.
 //! 4. **The preemption victim** when the key-value budget is exceeded.
 //!
+//! A fifth, defaulted, exists for a scheduler that batches by waiting: [`SchedulingPolicy::hold`]
+//! lets an idle replica keep its queue for a bounded time so one step serves several arrivals, and
+//! [`SchedulingPolicy::buffer`] tells the telemetry how much of the queue the next step can hold.
+//! Issao: *"a buffer for collecting multiple prefill/decode requests in a single batch within
+//! available hbm bandwidth."* The engine owns the timer; the policy owns the verdict.
+//!
 //! Everything else stays in the engine because it is accounting rather than policy: parked context
 //! is evicted before a running sequence, the queue head's own parked context is exempt, an evicted
 //! sequence re-enters ahead of the queue, and the step's cost comes from the cost model.
@@ -57,7 +63,7 @@ pub struct SeqView {
 
 /// The replica at the moment of a decision. `queued` is the head of the queue only, see the module
 /// doc; `running` is the whole batch.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy)]
 pub struct StepView<'a> {
     pub now: Nanos,
     pub queued: &'a [SeqView],
@@ -68,6 +74,124 @@ pub struct StepView<'a> {
     pub step_token_budget: u32,
     /// The replica's prefill rate, so a policy can turn tokens left into time left.
     pub prefill_tokens_per_s: f64,
+    /// The cost model's price of a step, `(decoding sequences, resident key-value tokens, prefill
+    /// tokens this step)` to nanoseconds, so a scheduler can price the batch it is assembling. A
+    /// borrowed function rather than the model itself, because the layering keeps `sim-physics` out
+    /// of `sim-policy` and the formula must stay in the one place it lives.
+    pub step_ns: &'a dyn Fn(usize, u64, u32) -> Nanos,
+}
+
+impl std::fmt::Debug for StepView<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StepView")
+            .field("now", &self.now)
+            .field("queued", &self.queued)
+            .field("running", &self.running)
+            .field("kv_tokens", &self.kv_tokens)
+            .field("kv_capacity", &self.kv_capacity)
+            .field("max_batch", &self.max_batch)
+            .field("step_token_budget", &self.step_token_budget)
+            .field("prefill_tokens_per_s", &self.prefill_tokens_per_s)
+            .finish_non_exhaustive()
+    }
+}
+
+/// The open buffer's capacity: what one step may hold, for a scheduler that collects work into a
+/// batch rather than admitting whatever is there (`SchedulingPolicy.BufferedBatch` in the proto).
+/// Three counts and a bandwidth line: `step_budget_ns` is the longest the bandwidth-bound part of
+/// the step may take, the fixed cost, the per-sequence cost and the key-value re-read, priced
+/// through [`StepView::step_ns`] with no prefill chunk, so the tokens a step re-reads stay inside
+/// what the device's memory bandwidth covers in that time. The chunk has its own line,
+/// `max_prefill_tokens`, and is compute-bound, which is why it is not in this one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BufferLimits {
+    pub max_batch: usize,
+    pub max_prefill_tokens: u32,
+    pub max_decode_seqs: usize,
+    pub step_budget_ns: Nanos,
+}
+
+/// What filling a buffer from a view admits, and what it leaves waiting.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Fill {
+    /// Indices into [`StepView::queued`] that fit, in queue order: the admission order.
+    pub admit: Vec<usize>,
+    /// Sequences that decode this step: the batch's finished prefills, plus every admitted entry
+    /// whose whole prompt fits the chunk.
+    pub decoding: usize,
+    /// Running sequences still owed prefill that get no tokens this step: prefill work the buffer
+    /// cannot hold.
+    pub prefill_starved: usize,
+    /// Prefill tokens the step spends.
+    pub prefill_tokens: u32,
+    /// A line bound the fill: no further queued entry can join this step.
+    pub full: bool,
+}
+
+/// Fill the buffer from `v` under `l`: the batch first, in its own order, then the queue head entry
+/// by entry until a line binds. The lines are the seat count, the prefill tokens, the decode
+/// seats, the key-value capacity and the priced step; every one of them is monotone in what is
+/// already in, so the first entry that does not fit ends the fill, exactly as the engine's own
+/// admission loop stops at the first entry the cache cannot take. An empty batch always admits its
+/// first entry, as the engine does, because refusing it would idle the replica with work queued.
+/// A queued prompt is priced whole, as [`SeqView::prefill_left`] reports it. O(batch + queue head).
+pub fn fill_buffer(v: &StepView<'_>, l: &BufferLimits) -> Fill {
+    let mut f = Fill::default();
+    let seats = l.max_batch.min(v.max_batch);
+    let mut tokens = l.max_prefill_tokens;
+    let mut kv = v.kv_tokens;
+    let mut in_batch = v.running.len();
+    for s in v.running {
+        if s.prefill_left == 0 {
+            f.decoding += 1;
+        } else if tokens == 0 {
+            f.prefill_starved += 1;
+        } else {
+            let take = s.prefill_left.min(tokens);
+            tokens -= take;
+            f.prefill_tokens += take;
+            if take == s.prefill_left {
+                f.decoding += 1;
+            }
+        }
+    }
+    for (i, s) in v.queued.iter().enumerate() {
+        let take = s.prefill_left.min(tokens);
+        let whole = take == s.prefill_left;
+        let fits = in_batch == 0
+            || (in_batch < seats
+                && tokens > 0
+                && f.decoding < l.max_decode_seqs
+                && kv + s.prefill_left as u64 <= v.kv_capacity
+                && (v.step_ns)(f.decoding + whole as usize, kv + s.prefill_left as u64, 0)
+                    <= l.step_budget_ns);
+        if !fits {
+            f.full = true;
+            break;
+        }
+        tokens -= take;
+        f.prefill_tokens += take;
+        kv += s.prefill_left as u64;
+        in_batch += 1;
+        if whole {
+            f.decoding += 1;
+        }
+        f.admit.push(i);
+    }
+    f.full |= in_batch >= seats || tokens == 0 || f.decoding >= l.max_decode_seqs;
+    f
+}
+
+/// What a replica has waiting, as its telemetry reports it: decode items and prefill items, and of
+/// each the part the open buffer cannot hold, which is the work that waits a whole step cycle. The
+/// engine computes it (`Replica::queued_work`) from [`SchedulingPolicy::buffer`]; a scheduler with
+/// no buffer reports nothing beyond it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct QueuedWork {
+    pub decode: u32,
+    pub prefill: u32,
+    pub decode_beyond: u32,
+    pub prefill_beyond: u32,
 }
 
 pub trait SchedulingPolicy {
@@ -91,6 +215,21 @@ pub trait SchedulingPolicy {
     /// calls this first over the eligible parked contexts and only then over the running batch, so a
     /// policy never has to choose between the two.
     fn victim(&mut self, v: &StepView<'_>, candidates: &[SeqView]) -> Option<usize>;
+
+    /// On a replica with nothing running and something queued: how long the oldest queued entry may
+    /// wait for company before the step runs, or `None` to step now. The engine defers the step to
+    /// that entry's enqueue time plus this and asks again on every arrival, so a buffer that fills
+    /// early steps early. Never asked while anything decodes: holding a running sequence's next
+    /// token is a stall, not a buffer. The default steps at once, which is what every step did.
+    fn hold(&mut self, _v: &StepView<'_>) -> Option<Nanos> {
+        None
+    }
+
+    /// The open buffer's limits, for the telemetry's "beyond the buffer" counts ([`QueuedWork`]);
+    /// `None` for a scheduler that admits whatever is there.
+    fn buffer(&self) -> Option<BufferLimits> {
+        None
+    }
 }
 
 /// The index whose `key` is largest, ties to the later entry, so the choice is a pure function of

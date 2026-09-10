@@ -30,7 +30,7 @@ pub use sim_workload::PrefixTree;
 const NO_TREE: PrefixTree = PrefixTree::empty();
 
 pub mod trace;
-use sim_core::scheduling::{FifoChunked, SchedulingPolicy, SeqView, StepView};
+use sim_core::scheduling::{fill_buffer, FifoChunked, QueuedWork, SchedulingPolicy, SeqView, StepView};
 use trace::{ResourceSnapshot, Tracer};
 
 struct Seq {
@@ -228,6 +228,9 @@ pub enum Lifecycle {
 
 pub struct Replica {
     queue: VecDeque<Request>,
+    /// When each entry of `queue` joined it, in lockstep: the front is the oldest, and the oldest is
+    /// what a scheduler's hold is measured from.
+    queued_at: VecDeque<Nanos>,
     running: Vec<Seq>,
     /// Running sequences evicted under pressure, head first. They re-enter ahead of the queue,
     /// because they were admitted before anything in it.
@@ -247,6 +250,9 @@ pub struct Replica {
     released_ssd: u64,
     next_step_at: Nanos,
     scheduled: bool,
+    /// Non-zero while the scheduler holds the queue for company (`SchedulingPolicy::hold`): the
+    /// instant the step is deferred to. A wake during a hold re-asks the scheduler at once.
+    hold_deadline: Nanos,
     last_step_ns: Nanos,
     /// The step clock: nanoseconds spent inside a step since the run began, and of those the part the
     /// cost model priced as compute. Both are charged in full when a step starts, and `[step_start,
@@ -305,6 +311,7 @@ impl Default for Replica {
     fn default() -> Self {
         Replica {
             queue: VecDeque::new(),
+            queued_at: VecDeque::new(),
             running: Vec::new(),
             preempted: VecDeque::new(),
             parked: Vec::new(),
@@ -316,6 +323,7 @@ impl Default for Replica {
             released_ssd: 0,
             next_step_at: 0,
             scheduled: false,
+            hold_deadline: 0,
             last_step_ns: 0,
             busy_total_ns: 0,
             compute_total_ns: 0,
@@ -365,22 +373,27 @@ pub struct StepOutcome {
 }
 
 impl Replica {
-    /// Queue a request, or hand it back unchanged when the queue is full so the caller can shed it
-    /// before it consumes any device time.
-    pub fn enqueue(&mut self, req: Request, max_queue: usize) -> Result<(), Request> {
+    /// Queue a request at `now`, or hand it back unchanged when the queue is full so the caller can
+    /// shed it before it consumes any device time.
+    pub fn enqueue(&mut self, req: Request, max_queue: usize, now: Nanos) -> Result<(), Request> {
         if self.queue.len() >= max_queue {
             return Err(req);
         }
         self.queued_tokens += req.prompt as u64;
         self.queue.push_back(req);
+        self.queued_at.push_back(now);
         Ok(())
     }
 
     /// Mark the replica as due to step at `now`. True when the caller must schedule that step; false
-    /// when one is already pending, so a replica never has two step events in flight.
+    /// when one is already pending, so a replica never has two step events in flight. A step held
+    /// for company is the exception: an arrival ends the hold and the scheduler decides afresh, and
+    /// the step event already pending for the old deadline is ignored when it fires, because it no
+    /// longer matches `next_step_at`.
     pub fn wake(&mut self, now: Nanos) -> bool {
-        if !self.scheduled {
+        if !self.scheduled || self.hold_deadline != 0 {
             self.scheduled = true;
+            self.hold_deadline = 0;
             self.next_step_at = now;
             true
         } else {
@@ -431,6 +444,7 @@ impl Replica {
     fn view<'a>(
         &self,
         sc: &Scenario,
+        step_ns: &'a dyn Fn(usize, u64, u32) -> Nanos,
         now: Nanos,
         queued: &'a [SeqView],
         running: &'a [SeqView],
@@ -444,6 +458,41 @@ impl Replica {
             max_batch: sc.max_batch,
             step_token_budget: sc.step_token_budget,
             prefill_tokens_per_s: sc.prefill_tokens_per_s,
+            step_ns,
+        }
+    }
+
+    /// What this replica has waiting, for its telemetry: decode and prefill items, and the part of
+    /// each the scheduler's open buffer cannot hold (zero for a scheduler with no buffer). A running
+    /// sequence with its prefill done is a decode item, as is an evicted one waiting to re-enter;
+    /// a running sequence still owed prefill is a prefill item, as is every queued request. Beyond
+    /// the buffer is what `fill_buffer` leaves out, plus every queued entry behind the head the
+    /// scheduler is shown. O(batch + queue head), the cost of the view.
+    pub fn queued_work(&self, sc: &Scenario, cost: &CostModel, sched: &dyn SchedulingPolicy) -> QueuedWork {
+        let decoding = self.running.iter().filter(|s| s.prefill_left == 0).count();
+        let decode = decoding + self.preempted.len();
+        let prefill = self.running.len() - decoding + self.queue.len();
+        let (decode_beyond, prefill_beyond) = match sched.buffer() {
+            None => (0, 0),
+            Some(limits) => {
+                let mut queued = Vec::new();
+                let mut running = Vec::new();
+                self.queued_view(sc, &mut queued);
+                self.running_view(&mut running);
+                let step_ns = |d: usize, kv: u64, p: u32| cost.step_ns(d, kv, p);
+                let fill = fill_buffer(&self.view(sc, &step_ns, 0, &queued, &running), &limits);
+                (
+                    decode.saturating_sub(limits.max_decode_seqs),
+                    fill.prefill_starved + (self.queue.len() - fill.admit.len()),
+                )
+            }
+        };
+        let clamp = |n: usize| n.min(u32::MAX as usize) as u32;
+        QueuedWork {
+            decode: clamp(decode),
+            prefill: clamp(prefill),
+            decode_beyond: clamp(decode_beyond),
+            prefill_beyond: clamp(prefill_beyond),
         }
     }
 
@@ -472,7 +521,8 @@ impl Replica {
         let mut running = Vec::new();
         self.queued_view(sc, &mut queued);
         self.running_view(&mut running);
-        let view = self.view(sc, now, &queued, &running);
+        let step_ns = |d: usize, kv: u64, p: u32| cost.step_ns(d, kv, p);
+        let view = self.view(sc, &step_ns, now, &queued, &running);
         // Eligible parked contexts and where each sits in `parked`.
         let mut slots = Vec::new();
         let mut candidates = Vec::new();
@@ -644,6 +694,12 @@ impl Replica {
         tiers: &mut Tiers,
     ) -> Option<StepOutcome> {
         let r = self;
+        // A step event that is not the one the replica is waiting for is a hold timer an arrival
+        // already superseded (see `wake`): it must not run a second step. Only under the loop's
+        // scheduling; a test driving `step` by hand never calls `wake` and is never refused.
+        if r.scheduled && now != r.next_step_at {
+            return None;
+        }
         tiers.reclaim(r);
         let prefix_cap = sc.prefix_cache_tokens as u64;
         // A crashed replica holds nothing and a hung one never finishes a step. Either way there is
@@ -651,6 +707,29 @@ impl Replica {
         if r.down || r.speed <= 0.0 {
             r.scheduled = false;
             return None;
+        }
+        let step_ns = |d: usize, kv: u64, p: u32| cost.step_ns(d, kv, p);
+        // Nothing running and something queued: the scheduler may hold the queue for company, and
+        // the engine keeps the clock. A held step costs no device time and finishes nothing; it is
+        // rescheduled at the deadline, and any arrival before then asks again through `wake`.
+        r.hold_deadline = 0;
+        if r.running.is_empty() && r.preempted.is_empty() && !r.queue.is_empty() {
+            let mut queued = Vec::new();
+            r.queued_view(sc, &mut queued);
+            if let Some(wait) = sched.hold(&r.view(sc, &step_ns, now, &queued, &[])) {
+                let until = r.queued_at[0].saturating_add(wait);
+                if until > now {
+                    r.hold_deadline = until;
+                    r.next_step_at = until;
+                    return Some(StepOutcome {
+                        step_ns: 0,
+                        token_at: until,
+                        finished: Vec::new(),
+                        idle: false,
+                        preempted: 0,
+                    });
+                }
+            }
         }
         let policy = Policy::parse(&sc.preemption);
         let dram_cap = sc.dram_capacity_tokens() as u64;
@@ -679,7 +758,7 @@ impl Replica {
         let mut order: VecDeque<usize> = VecDeque::new();
         {
             let mut seen = vec![false; queued.len()];
-            for i in sched.admit_order(&r.view(sc, now, &queued, &running)) {
+            for i in sched.admit_order(&r.view(sc, &step_ns, now, &queued, &running)) {
                 if i < seen.len() && !seen[i] {
                     seen[i] = true;
                     order.push_back(i);
@@ -731,6 +810,7 @@ impl Replica {
             }
             match r.queue.remove(pos) {
                 Some(req) => {
+                    r.queued_at.remove(pos);
                     r.queued_tokens = r.queued_tokens.saturating_sub(req.prompt as u64);
                     // Parked context and a prefix hit both spare prefill over the same leading
                     // tokens, so the larger wins and they never add. The key-value charge is the
@@ -790,7 +870,7 @@ impl Replica {
         // else's token stream. The scheduler sets the budget from the batch it just built.
         r.queued_view(sc, &mut queued);
         r.running_view(&mut running);
-        let view = r.view(sc, now, &queued, &running);
+        let view = r.view(sc, &step_ns, now, &queued, &running);
         let mut budget = sched.prefill_budget(&view);
         let order = sched.prefill_order(&view);
         let mut prefill_tokens = 0u32;
@@ -976,6 +1056,7 @@ impl Replica {
         let mut victim: Option<(Request, bool)> = None;
         if let Some(pos) = r.queue.iter().position(|x| x.id == id) {
             let req = r.queue.remove(pos).unwrap();
+            r.queued_at.remove(pos);
             r.queued_tokens = r.queued_tokens.saturating_sub(req.prompt as u64);
             victim = Some((req, false));
         } else if let Some(pos) = r.running.iter().position(|s| s.req.id == id) {
@@ -1124,7 +1205,9 @@ impl Replica {
         let r = self;
         r.down = true;
         r.scheduled = false;
+        r.hold_deadline = 0;
         let mut lost: Vec<Request> = r.queue.drain(..).collect();
+        r.queued_at.clear();
         lost.extend(r.running.drain(..).map(|s| s.req));
         lost.extend(r.preempted.drain(..).map(|s| s.req));
         r.parked.clear();

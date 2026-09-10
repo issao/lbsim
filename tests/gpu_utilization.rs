@@ -58,7 +58,7 @@ fn batch_one_is_busy_but_one_batch_slot_useful() {
     let cost = sc.cost_model();
     let mut sched = lbsim::policy::make_scheduling(&sc).unwrap();
     let mut r = Replica::default();
-    r.enqueue(req(1, 16, 100_000), sc.max_queue).unwrap();
+    r.enqueue(req(1, 16, 100_000), sc.max_queue, EPOCH_BASE).unwrap();
     // The first step carries the 16-token prefill; the window starts after it.
     let first = r.step_scheduled(&sc, &cost, EPOCH_BASE, &PrefixTree::empty(), &mut *sched).unwrap();
     let (busy, useful) = window(&mut r, &sc, first.token_at, first.token_at + SECOND);
@@ -78,7 +78,7 @@ fn a_full_batch_is_fully_useful() {
     assert_eq!(n, sc.max_batch, "the default scenario's limit is the sequence cap");
     let mut r = Replica::default();
     for id in 0..n as u64 {
-        r.enqueue(req(id, 16, 100_000), sc.max_queue).unwrap();
+        r.enqueue(req(id, 16, 100_000), sc.max_queue, EPOCH_BASE).unwrap();
     }
     // 32 prefills of 16 tokens fit one 1,024-token chunk, so after one step everything decodes.
     let first = r.step_scheduled(&sc, &cost, EPOCH_BASE, &PrefixTree::empty(), &mut *sched).unwrap();
@@ -95,7 +95,7 @@ fn a_prefill_window_is_fully_useful() {
     let sc = Scenario::default();
     let mut r = Replica::default();
     // 200,000 tokens at 1,024 a step is ~195 steps of ~46 ms; the window ends well inside them.
-    r.enqueue(req(1, 200_000, 4), sc.max_queue).unwrap();
+    r.enqueue(req(1, 200_000, 4), sc.max_queue, EPOCH_BASE).unwrap();
     let (busy, useful) = window(&mut r, &sc, EPOCH_BASE, EPOCH_BASE + SECOND);
     assert!(r.running() == 1 && r.completed() == 0, "the window must end mid-prefill");
     assert!((busy - 1.0).abs() < 1e-6, "busy {busy}");

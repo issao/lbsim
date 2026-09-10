@@ -93,5 +93,9 @@ echo; echo "== 20. autoscaling with a cold start: a 200 s day on a fixed 256-rep
 $S compare scenarios/autoscale_none.txt scenarios/autoscale_cold30.txt scenarios/autoscale_cold5.txt \
            --out out/20-autoscaling.html
 
+echo; echo "== 21. the GPU scheduler's batch buffer at 1.2x rated: fifo_chunked against buffered_batch (5 ms hold) under p2c, then the buffer under weighted_random steering by what is beyond it =="
+$S compare scenarios/buffer_fifo.txt scenarios/buffer_batch.txt scenarios/buffer_weighted.txt \
+           --out out/21-batch-buffer.html
+
 echo; echo "reports in out/"
 echo "for machine-readable telemetry, add: --telemetry out/NAME.tele [--telemetry-budget-mb N]"

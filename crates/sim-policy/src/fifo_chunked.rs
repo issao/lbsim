@@ -41,6 +41,7 @@ mod tests {
             max_batch: 8,
             step_token_budget: 1024,
             prefill_tokens_per_s: 28_286.0,
+            step_ns: &|_, _, _| 0,
         }
     }
 

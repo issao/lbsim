@@ -42,6 +42,9 @@
 20-autoscaling/00-autoscale_none.summary.csv                 fingerprint=5386345349897519539    events=8029441   summary_md5=332b63a409bb
 20-autoscaling/01-autoscale_cold30.summary.csv               fingerprint=13060766991648619877   events=5243408   summary_md5=cf7ac746a0f5
 20-autoscaling/02-autoscale_cold5.summary.csv                fingerprint=8937971653094848932    events=5966691   summary_md5=368762243324
+21-batch-buffer/00-buffer_fifo_p2c.summary.csv               fingerprint=4755115566772355026    events=1285163   summary_md5=8baf53da3412
+21-batch-buffer/01-buffer_batch_p2c.summary.csv              fingerprint=10302154598236544530   events=1345413   summary_md5=4ef729c84bf3
+21-batch-buffer/02-buffer_batch_weighted.summary.csv         fingerprint=18175640993468719122   events=1386633   summary_md5=968dd8896ad4
 3-chunking/00-step_token_budget___512.summary.csv            fingerprint=10009565252466278158   events=2379996   summary_md5=e5920cfdc9da
 3-chunking/01-step_token_budget___1024.summary.csv           fingerprint=15913688846466930736   events=2391338   summary_md5=67f2cd526bc2
 3-chunking/02-step_token_budget___2048.summary.csv           fingerprint=18263792306167486998   events=2397207   summary_md5=c97ce7eb808b
@@ -92,6 +95,7 @@ h-h8-retry-storm/00-h8_retry_storm.summary.csv               fingerprint=4264169
 19-tiering.html                                              html_md5=2f77b7c0c4a7
 2-staleness.html                                             html_md5=d161b1988c2e
 20-autoscaling.html                                          html_md5=2a67495dbb70
+21-batch-buffer.html                                         html_md5=dfb3e80657e7
 3-chunking.html                                              html_md5=557fbcb491a3
 4-load-curve.html                                            html_md5=a14dbfd586a0
 5-long-context.html                                          html_md5=81b0f21c5ccd
