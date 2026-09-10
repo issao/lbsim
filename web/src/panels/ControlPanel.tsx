@@ -193,7 +193,8 @@ function LoadTab({ c, set, dropped }: TabProps) {
         label="prompt mean"
         value={c.workload.promptMean}
         min={100}
-        max={8000}
+        max={100000}
+        log
         step={100}
         format={(v) => `${fmtTokens(v)} tok`}
         onChange={(v) => set((d) => { d.workload.promptMean = v; })}
@@ -243,7 +244,8 @@ function LoadTab({ c, set, dropped }: TabProps) {
         label="long prompt mean"
         value={c.workload.longPromptMean}
         min={4000}
-        max={64000}
+        max={1000000}
+        log
         step={1000}
         format={(v) => `${fmtTokens(v)} tok`}
         onChange={(v) => set((d) => { d.workload.longPromptMean = v; })}
