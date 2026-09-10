@@ -180,8 +180,23 @@ export interface ServerRunEngineOptions {
   now?: () => number;
 }
 
+/**
+ * The scheduler and its buffer: `Scenario::override_kind` answers `Policy` for these (no restart
+ * required server-side), but a scheduler swap is treated as physics-class here, the same as the
+ * Cluster tab's fleet knobs, rather than sent forward-only mid-run -- it stages for the banner's
+ * restart instead of taking effect immediately underneath whatever the fleet is holding.
+ */
+const STRUCTURAL_EXTRA = new Set([
+  'extra.scheduling',
+  'extra.buffer_max_batch',
+  'extra.buffer_max_prefill_tokens',
+  'extra.buffer_max_decode_seqs',
+  'extra.buffer_max_hold_ms',
+]);
+
 /** A config path the server reads only at StartRun: no Update call carries it. */
-const isStructural = (p: string): boolean => p === 'seed' || p === 'durationS' || p === 'warmupS' || p.startsWith('fleet.');
+const isStructural = (p: string): boolean =>
+  p === 'seed' || p === 'durationS' || p === 'warmupS' || p.startsWith('fleet.') || STRUCTURAL_EXTRA.has(p);
 
 /**
  * The panels' view of a live run. Frames arrive over the stream and accumulate; the reads are the
@@ -693,7 +708,12 @@ export class ServerRunEngine implements FrameSource {
     const client = this.opts.client;
     const calls: Promise<{ accepted: boolean; requiredResimulation: boolean; rewoundToUnixNs: bigint; rejectedReason: string }>[] = [];
     if (d.paths.some((p) => p.startsWith('workload.'))) calls.push(client.updateWorkload(id, toOverrides(workloadToWire(next).fields)));
-    if (d.paths.some((p) => p.startsWith('routing.'))) calls.push(client.updatePolicies(id, toOverrides(policiesToWire(next).fields)));
+    // routing.* covers a kind change and the typed affinity knobs; extra.wr_* covers the
+    // weighted_random coefficients, which have no typed field but travel with `routing` on the wire
+    // (`policiesToWire`) because `Scenario::override_kind` counts them as the same policy key group.
+    if (d.paths.some((p) => p.startsWith('routing.') || p.startsWith('extra.wr_'))) {
+      calls.push(client.updatePolicies(id, toOverrides(policiesToWire(next).fields)));
+    }
     if (calls.length === 0) {
       if (structural) this.lastUpdate = null;
       else this.settle({ accepted: false, requiredResimulation: false, rewoundToS: this.cursorS, rejectedReason: 'only workload and policy are live-tunable; restart the run for this change', changed });

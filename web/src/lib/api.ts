@@ -1460,8 +1460,19 @@ export const WORKLOAD_KEYS: readonly ScenarioKey[] = [
   'load_step_at_s', 'load_step_factor', 'load_step_until_s',
 ];
 
-/** The subset UpdatePolicies may carry: routing only, per the proto's PolicySpec. */
-export const POLICY_KEYS: readonly ScenarioKey[] = ['routing', 'p2c_choices', 'probe_live'];
+/**
+ * The subset UpdatePolicies may carry: routing, per the proto's PolicySpec, plus the
+ * weighted_random router's five coefficients -- `Scenario::override_kind` classifies `wr_c1..c5`
+ * as policy keys too, so a coefficient change goes out with the rest of the routing update.
+ */
+export const POLICY_KEYS: readonly ScenarioKey[] = [
+  'routing', 'p2c_choices', 'probe_live', 'wr_c1', 'wr_c2', 'wr_c3', 'wr_c4', 'wr_c5',
+];
+
+/** `WeightedRandom`'s default per its proto comment: c1 alone, which is `Random` to the byte. */
+export const WR_DEFAULTS: Record<'wr_c1' | 'wr_c2' | 'wr_c3' | 'wr_c4' | 'wr_c5', number> = {
+  wr_c1: 1, wr_c2: 0, wr_c3: 0, wr_c4: 0, wr_c5: 0,
+};
 
 /**
  * config.ts's `RoutingKind` to the engine's routing name (`crates/sim-policy`), spelled as the
@@ -1480,6 +1491,7 @@ export const ROUTING_TO_ENGINE: Record<RoutingKind, string | null> = {
   least_kv_probe: 'least_kv_probe',
   power_of_two_choices: 'p2c',
   prefix_affinity: 'prefix_affinity',
+  weighted_random: 'weighted_random',
 };
 
 export interface WireEncoding {
@@ -1590,6 +1602,15 @@ export function policiesToWire(c: ScenarioConfig): WireEncoding {
     fields.affinity_fallback_choices = c.routing.fallbackChoices;
   } else {
     dropped.push('routing.maxLoadRatio', 'routing.fallbackChoices');
+  }
+  // wr_c1..c5 ride in `extra`, not a typed field (the panel renders their sliders only under
+  // `weighted_random`, the same as the affinity knobs above render only under `prefix_affinity`),
+  // sent alongside `routing` exactly when that is the active kind, so a live update carries what
+  // the router at the other end will actually read.
+  if (c.routing.kind === 'weighted_random') {
+    for (const k of Object.keys(WR_DEFAULTS) as (keyof typeof WR_DEFAULTS)[]) {
+      fields[k] = Number(c.extra[k] ?? WR_DEFAULTS[k]);
+    }
   }
   return { fields, dropped };
 }

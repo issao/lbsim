@@ -68,7 +68,7 @@ const finalLine = extraFail => {
   // Every load gets a fresh page so it is a real navigation and its event log starts empty.
   const fresh = async (hash) => {
     const page = await ctx.newPage();
-    const log = { errs: [], bad: [], startRuns: [], requests: [] };
+    const log = { errs: [], bad: [], startRuns: [], updatePolicies: [], requests: [] };
     page.on('pageerror', e => log.errs.push(e.message.slice(0, 200)));
     page.on('console', m => { if (m.type() === 'error' && !m.text().includes('SetSpeed')) log.errs.push('console: ' + m.text().slice(0, 200)); });
     page.on('response', r => {
@@ -78,6 +78,9 @@ const finalLine = extraFail => {
     page.on('request', r => {
       log.requests.push(r.url());
       if (r.url().endsWith('/StartRun') && r.postData()) log.startRuns.push(r.postData());
+      // wr_c1..c5 (weighted_random) and scheduling/buffer_max_* (buffered_batch) go by two
+      // different paths -- UpdatePolicies live, StartRun on restart -- so the harness needs both bodies.
+      if (r.url().endsWith('/UpdatePolicies') && r.postData()) log.updatePolicies.push(r.postData());
     });
     await page.goto(BASE + '/' + hash, { waitUntil: 'domcontentloaded', timeout: 30000 });
     const body = async () => (await page.evaluate(() => document.body.innerText)).replace(/\s+/g, ' ');
@@ -384,6 +387,70 @@ const finalLine = extraFail => {
       const applied = bodies.some(b => /^step_token_budget = 2048$/m.test(b));
       check('cluster: restart applies the new value (U106)', Boolean(after) && applied,
         `${before} -> ${after || 'no new run'}; ${bodies.length} StartRun(s), ${applied ? 'step_token_budget = 2048 sent' : (bodies[bodies.length - 1] || 'no scenario text').match(/step_token_budget[^\n]*/)?.[0] || 'no step_token_budget'}`);
+    }
+
+    // Issao: "the buffer batch scheduler and the weighted random router (with ability to tune in
+    // ui)". Routing and its coefficients are live (UpdatePolicies, forward-only); the scheduler and
+    // its buffer are physics-class, staged for a restart like the Cluster tab's knobs above.
+    {
+      const selectByLabel = (label, value) => page.evaluate(({ label, value }) => {
+        const lab = [...document.querySelectorAll('label.field')].find(l => (l.querySelector('.field-label')?.textContent || '').trim() === label);
+        const el = lab && lab.querySelector('select');
+        if (!el) return false;
+        const set = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set;
+        set.call(el, value);
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+        return el.value === value;
+      }, { label, value });
+      const setSlider = (label, value) => page.evaluate(({ label, value }) => {
+        const lab = [...document.querySelectorAll('label.field')].find(l => (l.querySelector('.field-label')?.textContent || '').trim() === label);
+        const el = lab && lab.querySelector('input[type=range]');
+        if (!el) return null;
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, String(value));
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        return el.value;
+      }, { label, value });
+      const lastOverrides = body => { try { return JSON.parse(body)?.overrides ?? null; } catch { return null; } };
+
+      await page.click('button[data-tab="control:policies"]').catch(() => null);
+      await sleep(300);
+
+      // weighted_random: routing.kind and its five coefficients apply live.
+      const wrSelected = await selectByLabel('policy', 'weighted_random');
+      const hasC1 = await until(() => page.evaluate(() =>
+        [...document.querySelectorAll('label.field .field-label')].some(el => el.textContent.trim() === 'c1')), 2000);
+      const c2Before = log.updatePolicies.length;
+      const c2Moved = await setSlider('c2', -0.5);
+      const c2Sent = await until(() => {
+        for (let i = log.updatePolicies.length - 1; i >= c2Before; i--) {
+          const o = lastOverrides(log.updatePolicies[i]);
+          if (o && o.wr_c2 !== undefined) return o;
+        }
+        return null;
+      }, 4000);
+      check('policies: weighted_random is selectable', wrSelected, wrSelected ? 'selected' : 'no <select> labeled "policy", or option missing');
+      check('policies: moving c2 sends UpdatePolicies with wr_c2 = -0.5 (live, forward-only)',
+        Boolean(c2Sent) && c2Sent.wr_c2 === '-0.5',
+        c2Moved === null ? 'no c2 slider on the Policies tab' : c2Sent ? `overrides ${JSON.stringify(c2Sent)}` : `${log.updatePolicies.length - c2Before} UpdatePolicies since selecting weighted_random, none carrying wr_c2`);
+
+      // buffered_batch: the scheduler and its buffer stage a restart instead.
+      const runIdOf = t => (/run (r-\d+)/.exec(t) || [])[1];
+      const beforeSched = runIdOf(await body());
+      const schedSelected = await selectByLabel('scheduler', 'buffered_batch');
+      const holdMoved = await until(() => setSlider('buffer max hold', 10), 2000);
+      const stagedSched = await until(async () => { const b = await body(); return /restart the run to apply/i.test(b) ? b : null; }, 3000) || await body();
+      check('policies: buffered_batch scheduler is selectable', schedSelected, schedSelected ? 'selected' : 'no <select> labeled "scheduler", or option missing');
+      check('policies: the buffer knobs appear once buffered_batch is selected, and hold is settable',
+        holdMoved !== null && holdMoved !== '5', holdMoved === null ? 'no "buffer max hold" slider appeared' : `moved to ${holdMoved}`);
+      check('policies: scheduling change shows the restart banner (buffer max hold)', /restart the run to apply.*buffer max hold/i.test(stagedSched),
+        (stagedSched.match(/restart the run to apply[^|]{0,120}/) || ['no banner'])[0]);
+      const startRunsBeforeSched = log.startRuns.length;
+      await page.click('#restart-pending').catch(() => null);
+      const afterSched = await until(async () => { const id = runIdOf(await body()); return id && id !== beforeSched ? id : null; }, 15000);
+      const schedBodies = log.startRuns.slice(startRunsBeforeSched).map(b => { try { return JSON.parse(b)?.scenario?.text ?? b; } catch { return b; } });
+      const schedApplied = schedBodies.some(b => /^scheduling = buffered_batch$/m.test(b) && /^buffer_max_hold_ms = 10$/m.test(b));
+      check('policies: restart applies scheduling = buffered_batch, buffer_max_hold_ms = 10', Boolean(afterSched) && schedApplied,
+        `${beforeSched} -> ${afterSched || 'no new run'}; ${schedBodies.length} StartRun(s), ${schedApplied ? 'both keys sent' : (schedBodies[schedBodies.length - 1] || 'no scenario text').match(/(scheduling|buffer_max_hold_ms)[^\n]*/g)?.join(', ') || 'no scheduling/buffer_max_hold_ms'}`);
     }
     await page.close();
   }
