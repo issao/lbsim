@@ -1,17 +1,19 @@
 //! What a replica did to a traced sequence, step by step.
 //!
-//! `Replica::step` calls into the `Tracer` at six points: admission, each prefill chunk, each step a
-//! sequence with prompt left got no chunk, once when the step's duration is known, each decode step,
-//! and retirement. The tracer ignores every id it was not told to track, so with tracing off each
-//! call is one branch on an empty list, and the loop in `sim-leaf` decides which ids to track and
-//! turns what it reads back into `sim_metrics` spans. The split keeps this crate typed on `sim-core`
-//! alone: the physics does not know what a trace is for.
+//! `Replica::step` calls into the `Tracer` at seven points: admission (a fresh one from the queue or
+//! a re-admission from the preempted set, both the same call), each prefill chunk, each step a
+//! sequence with prompt left got no chunk, each step a sequence sits evicted, once when the step's
+//! duration is known, each decode step, and retirement. The tracer ignores every id it was not told
+//! to track, so with tracing off each call is one branch on an empty list, and the loop in
+//! `sim-leaf` decides which ids to track and turns what it reads back into `sim_metrics` spans. The
+//! split keeps this crate typed on `sim-core` alone: the physics does not know what a trace is for.
 //!
 //! Timing is the step's, not the event's. Every event inside a step spans the whole step, because a
 //! step is the engine's unit of time: a prefill chunk or a decode token is not done until the step
 //! ends, and a sequence admitted at the top of a step first computes in that step. So events record
 //! which step they belong to and take their times from that step's snapshot.
 
+use crate::Tier;
 use sim_core::Nanos;
 
 /// What the replica was doing during one step, recorded once per step while any traced sequence is
@@ -47,6 +49,13 @@ pub enum StepEvent {
     PrefillWait { id: u64, start: Nanos, end: Nanos },
     /// One token, emitted at `end`.
     DecodeStep { id: u64, start: Nanos, end: Nanos },
+    /// Evicted from the batch and waiting to resume, for this one step: dropped for recompute
+    /// (`tier: None`) or moved to `tier`. `tokens` is the KV context that was dropped or moved.
+    /// One span per step it waits, the same granularity as `PrefillWait`, so several steps spent
+    /// waiting read as contiguous spans rather than one merged span; re-admission is an ordinary
+    /// `Admitted` event, so the chain has no gap and a recomputed sequence's second prefill is a
+    /// normal prefill span.
+    Preempted { id: u64, start: Nanos, end: Nanos, tokens: u64, tier: Option<Tier> },
     /// Emitted its last token at `at`.
     Retired { id: u64, at: Nanos },
 }
@@ -58,6 +67,7 @@ impl StepEvent {
             | StepEvent::PrefillChunk { id, .. }
             | StepEvent::PrefillWait { id, .. }
             | StepEvent::DecodeStep { id, .. }
+            | StepEvent::Preempted { id, .. }
             | StepEvent::Retired { id, .. } => id,
         }
     }
@@ -69,6 +79,7 @@ enum Raw {
     Prefill(u32),
     PrefillWait,
     Decode,
+    Preempted { tokens: u64, tier: Option<Tier> },
     Retired,
 }
 
@@ -130,6 +141,17 @@ impl Tracer {
         }
     }
 
+    /// Evicted from the batch (or still waiting from an earlier eviction) for the step about to be
+    /// recorded: dropped for recompute (`tier: None`) or moved to `tier`. Called once per step a
+    /// traced sequence spends outside the batch, before the snapshot, like a prefill chunk, so a
+    /// multi-step wait becomes a run of contiguous spans rather than a gap.
+    #[inline]
+    pub fn preempted(&mut self, id: u64, tokens: u64, tier: Option<Tier>) {
+        if self.tracks(id) {
+            self.events.push((id, Raw::Preempted { tokens, tier }, self.steps.len()));
+        }
+    }
+
     /// Once per step, after the step's duration is known and before its decode tokens are attributed.
     #[inline]
     pub fn snapshot(&mut self, snap: ResourceSnapshot) {
@@ -172,6 +194,9 @@ impl Tracer {
                 Raw::Prefill(tokens) => StepEvent::PrefillChunk { id, tokens, start: snap.start, end: snap.end },
                 Raw::PrefillWait => StepEvent::PrefillWait { id, start: snap.start, end: snap.end },
                 Raw::Decode => StepEvent::DecodeStep { id, start: snap.start, end: snap.end },
+                Raw::Preempted { tokens, tier } => {
+                    StepEvent::Preempted { id, start: snap.start, end: snap.end, tokens, tier }
+                }
                 Raw::Retired => StepEvent::Retired { id, at: snap.end },
             };
             out.push((ev, snap));

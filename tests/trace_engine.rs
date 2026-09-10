@@ -9,7 +9,7 @@
 
 mod common;
 
-use lbsim::metrics::trace::{fixtures, latency_of, SpanKind, TraceBucket};
+use lbsim::metrics::trace::{fixtures, latency_of, MemoryTier, SpanKind, TraceBucket};
 use lbsim::scenario::Scenario;
 use lbsim::sim::{self, RunResult};
 use sim_ingress::{export, trace_wire};
@@ -29,6 +29,67 @@ fn short(rate: f64) -> Scenario {
     s.duration_s = 40.0;
     s.warmup_s = 5.0;
     s
+}
+
+/// `kv_spiral_swap.txt` or `kv_spiral_never.txt`, at their own size: the finding they demonstrate
+/// (Issao, 2026-09-07) depends on the small fleet and the full two minutes, so unlike `short` this
+/// does not cut them down.
+fn kv_spiral(name: &str, rate: f64) -> Scenario {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("scenarios/{name}.txt"));
+    let mut s = Scenario::parse(&fs::read_to_string(&path).unwrap()).unwrap();
+    s.trace_sample_rate = rate;
+    s
+}
+
+/// Gaps between consecutive replica spans of every trace in `traces`: how many, and the worst one
+/// in nanoseconds with the request id it was on. Shared by every "no unaccounted time" assertion so
+/// the measurement is the same one whichever scenario is under test. An overlap (`b` starting
+/// before `a` ended) fails loudly rather than folding into a zero gap via `saturating_sub`: that is
+/// exactly the shape of the bug a second, unguarded `Admitted` event once produced here, a
+/// `ReplicaQueue` span re-drawn from the original enqueue time on every re-admission from the
+/// preempted set, retroactively overlapping the whole journey before it.
+fn replica_span_gaps<'a>(traces: impl IntoIterator<Item = &'a lbsim::metrics::trace::RequestTrace>) -> (usize, u64, u64) {
+    let (mut gaps, mut worst, mut worst_id) = (0usize, 0u64, 0u64);
+    for t in traces {
+        for w in t.spans.windows(2) {
+            let (a, b) = (&w[0], &w[1]);
+            if !(a.kind.is_replica_span() && b.kind.is_replica_span()) {
+                continue;
+            }
+            // The physical exceptions: every replica event but `Admitted` and `Retired` covers the
+            // whole step it ran in ([snapshot.start, snapshot.end)), so two of them for the same
+            // sequence in the same step are identical intervals rather than one following the
+            // other. Finishing a prompt's prefill emits its first token in that same step; a
+            // decode-time eviction can land on a sequence the same step it took a prefill chunk (or
+            // waited for one), since the eviction loop runs after the prefill loop but before the
+            // decode loop that would otherwise have to follow a prefill in the same step.
+            let same_step = (a.start_unix_ns, a.end_unix_ns) == (b.start_unix_ns, b.end_unix_ns)
+                && matches!(
+                    (&a.kind, &b.kind),
+                    (SpanKind::PrefillChunk { .. }, SpanKind::DecodeStep)
+                        | (SpanKind::PrefillChunk { .. } | SpanKind::PrefillWait { .. }, SpanKind::Preempted { .. })
+                );
+            assert!(
+                b.start_unix_ns >= a.end_unix_ns || same_step,
+                "request {}: {} span [{}, {}) overlaps the next {} span starting at {}",
+                t.record.id,
+                a.kind.operation(),
+                a.start_unix_ns,
+                a.end_unix_ns,
+                b.kind.operation(),
+                b.start_unix_ns
+            );
+            let gap = b.start_unix_ns.saturating_sub(a.end_unix_ns);
+            if gap > 0 {
+                gaps += 1;
+                if gap > worst {
+                    worst = gap;
+                    worst_id = t.record.id;
+                }
+            }
+        }
+    }
+    (gaps, worst, worst_id)
 }
 
 fn fresh_dir(name: &str) -> common::ScratchDir {
@@ -261,26 +322,135 @@ fn a_traced_request_has_no_unaccounted_time_on_the_replica() {
     let ok: Vec<_> = r.traces.iter().filter(|t| t.record.outcome.is_success() && t.record.attempts == 1).collect();
     assert!(ok.len() > 20, "only {} successful traces", ok.len());
 
-    let (mut gaps, mut worst) = (0usize, 0u64);
-    let mut worst_id = 0;
-    for t in &ok {
-        for w in t.spans.windows(2) {
-            let (a, b) = (&w[0], &w[1]);
-            if !(a.kind.is_replica_span() && b.kind.is_replica_span()) {
-                continue;
-            }
-            let gap = b.start_unix_ns.saturating_sub(a.end_unix_ns);
-            if gap > 0 {
-                gaps += 1;
-                if gap > worst {
-                    worst = gap;
-                    worst_id = t.record.id;
+    let (gaps, worst, worst_id) = replica_span_gaps(ok.iter().copied());
+    eprintln!("gap statistics: {} traced requests, {gaps} gaps between replica spans, worst {:.1} ms on request {worst_id}", ok.len(), worst as f64 / 1e6);
+    assert_eq!(gaps, 0, "{gaps} gaps between consecutive replica spans, the worst {:.1} ms on request {worst_id}", worst as f64 / 1e6);
+}
+
+/// Checks any `Preempted` span in `traces` against `Seq::resident` at eviction: the request's
+/// whole prompt (charged in full at admission, whatever the prefill progress) plus however many
+/// decode steps it had already produced, and a `kv_tier` matching `expect_swap` (DRAM for a swap,
+/// `MemoryTier::None` for a recompute's drop). Returns how many spans it checked, so a caller that
+/// needs at least one existing can assert on the count.
+fn assert_preempted_spans_carry_resident_kv<'a>(
+    traces: impl IntoIterator<Item = &'a lbsim::metrics::trace::RequestTrace>,
+    expect_swap: bool,
+) -> usize {
+    let mut checked = 0;
+    for t in traces {
+        let mut decode_before = 0u32;
+        for s in &t.spans {
+            match &s.kind {
+                SpanKind::DecodeStep => decode_before += 1,
+                SpanKind::Preempted { tokens } => {
+                    let expected_tier = if expect_swap { MemoryTier::Dram } else { MemoryTier::None };
+                    assert_eq!(s.kv_tier, expected_tier, "request {}: wrong kv_tier for a preempted span", t.record.id);
+                    assert_eq!(*tokens, s.kind.tokens_processed(), "request {}: tokens_processed disagrees with the span's own field", t.record.id);
+                    let expected = t.record.prompt_tokens + decode_before;
+                    assert_eq!(*tokens, expected, "request {}: preempted span carries {tokens} KV tokens, resident was {expected}", t.record.id);
+                    checked += 1;
                 }
+                _ => {}
             }
         }
     }
-    eprintln!("gap statistics: {} traced requests, {gaps} gaps between replica spans, worst {:.1} ms on request {worst_id}", ok.len(), worst as f64 / 1e6);
+    checked
+}
+
+/// Follow-up to the prefill_wait fix (8a425fe): a *preempted* traced request still showed a gap,
+/// because nothing emitted `SpanKind::Preempted` and re-admission from the preempted set never
+/// called `tracer.admitted`. `kv_spiral_swap.txt` (Issao, 2026-09-07) is the scenario built to
+/// preempt: multi-turn sessions overrun a small cache at a small fleet, so eviction is not an edge
+/// case here, it is the finding. Run at the scenario's own size (120 s, 4 replicas), not `short`'s
+/// cut-down one, because the spiral is what a small fleet over two minutes looks like. Its evictions
+/// are almost all of *parked* context (between-turn sessions, never traced), so this does not lean
+/// on any trace actually carrying a `Preempted` span, only that if one does, it is correct; the
+/// dedicated test below forces the running-sequence path instead.
+#[test]
+fn a_preempted_trace_has_no_unaccounted_time_on_the_replica() {
+    let r = sim::run(&kv_spiral("kv_spiral_swap", 0.3)).unwrap();
+    let preempted: u64 = r.frames.iter().map(|f| f.preemptions).sum();
+    assert!(preempted > 0, "kv_spiral_swap did not preempt anything; the scenario is not exercising what this test is for");
+
+    let ok: Vec<_> = r.traces.iter().filter(|t| t.record.outcome.is_success() && t.record.attempts == 1).collect();
+    assert!(ok.len() > 5, "only {} successful traces", ok.len());
+    let checked = assert_preempted_spans_carry_resident_kv(ok.iter().copied(), true);
+
+    let (gaps, worst, worst_id) = replica_span_gaps(ok.iter().copied());
+    eprintln!(
+        "kv_spiral_swap: {} traced requests, {checked} preempted spans checked, {gaps} gaps, worst {:.1} ms on request {worst_id}",
+        ok.len(),
+        worst as f64 / 1e6
+    );
     assert_eq!(gaps, 0, "{gaps} gaps between consecutive replica spans, the worst {:.1} ms on request {worst_id}", worst as f64 / 1e6);
+}
+
+/// `kv_spiral_never.txt` is `kv_spiral_swap.txt` with `preemption = never`: the same overrun, but
+/// nothing is ever evicted, so admission stalls behind memory nobody is computing on instead. No
+/// preempted span should appear, and the much deeper queueing this produces is still contiguous.
+#[test]
+fn kv_spiral_never_preempts_and_still_has_no_unaccounted_time() {
+    let r = sim::run(&kv_spiral("kv_spiral_never", 0.3)).unwrap();
+    let preempted: u64 = r.frames.iter().map(|f| f.preemptions).sum();
+    assert_eq!(preempted, 0, "kv_spiral_never has preemption = never; nothing should ever be evicted");
+
+    let ok: Vec<_> = r.traces.iter().filter(|t| t.record.outcome.is_success() && t.record.attempts == 1).collect();
+    assert!(ok.len() > 5, "only {} successful traces", ok.len());
+    assert!(
+        ok.iter().all(|t| !t.spans.iter().any(|s| matches!(s.kind, SpanKind::Preempted { .. }))),
+        "kv_spiral_never produced a preempted span with preemption = never"
+    );
+
+    let (gaps, worst, worst_id) = replica_span_gaps(ok.iter().copied());
+    eprintln!("kv_spiral_never: {} traced requests, {gaps} gaps, worst {:.1} ms on request {worst_id}", ok.len(), worst as f64 / 1e6);
+    assert_eq!(gaps, 0, "{gaps} gaps between consecutive replica spans, the worst {:.1} ms on request {worst_id}", worst as f64 / 1e6);
+}
+
+/// A scenario tuned to force the *running*-sequence eviction path rather than the parked-context
+/// one `kv_spiral_swap.txt` almost always exercises: a handful of replicas, a tight
+/// `kv_capacity_tokens` against a batch of several concurrently decoding sequences, and no
+/// multi-turn sessions to compete for the budget, so the decoding batch's own growth is what tips
+/// the cap over and a running sequence is evicted mid-flight. `policy` is the scenario's
+/// `preemption`: `"swap_to_dram"` for a swap, `"recompute"` for a drop.
+fn tiny_overload(policy: &str) -> Scenario {
+    let mut s = p2c(1.0);
+    s.duration_s = 40.0;
+    s.warmup_s = 5.0;
+    s.replicas = 4;
+    s.max_batch = 8;
+    s.kv_capacity_tokens = 1200.0;
+    s.arrival_rps = 20.0;
+    s.prompt_mean = 300.0;
+    s.prompt_cv = 0.3;
+    s.output_mean = 300.0;
+    s.output_cv = 0.3;
+    s.long_probability = 0.0;
+    s.preemption = policy.into();
+    s
+}
+
+/// The property the bug report asked for directly: a preempted trace's `Preempted` span carries
+/// the KV tokens dropped (recompute) or swapped (swap_to_dram), tagged with the tier they went to,
+/// and the chain into the following span has no gap either. Checked for both policies, since a
+/// drop and a swap leave a different `kv_tier` on the wire.
+#[test]
+fn a_preempted_span_carries_the_dropped_or_swapped_kv_tokens() {
+    for &(policy, expect_swap) in &[("swap_to_dram", true), ("recompute", false)] {
+        let r = sim::run(&tiny_overload(policy)).unwrap();
+        let preempted: u64 = r.frames.iter().map(|f| f.preemptions).sum();
+        assert!(preempted > 0, "{policy}: this overload scenario did not preempt anything");
+
+        let with_span: Vec<_> =
+            r.traces.iter().filter(|t| t.spans.iter().any(|s| matches!(s.kind, SpanKind::Preempted { .. }))).collect();
+        assert!(!with_span.is_empty(), "{policy}: no traced request carries a preempted span");
+        let checked = assert_preempted_spans_carry_resident_kv(with_span.iter().copied(), expect_swap);
+        assert!(checked > 0);
+
+        let ok: Vec<_> = r.traces.iter().filter(|t| t.record.outcome.is_success() && t.record.attempts == 1).collect();
+        let (gaps, worst, worst_id) = replica_span_gaps(ok.iter().copied());
+        eprintln!("{policy}: {} traced requests, {} with a preempted span, {gaps} gaps, worst {:.1} ms on request {worst_id}", ok.len(), with_span.len(), worst as f64 / 1e6);
+        assert_eq!(gaps, 0, "{policy}: {gaps} gaps between consecutive replica spans, the worst {:.1} ms on request {worst_id}", worst as f64 / 1e6);
+    }
 }
 
 /// The reproduction: 50 replicas at 20 rps under p2c, the fleet main ran when it reproduced Issao's

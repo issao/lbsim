@@ -21,13 +21,28 @@ const WAIT_OP = 'prefill_wait';
 const WAIT_LABEL = 'in batch, waiting for prefill budget';
 const HATCH_ID = 'wf-hatch-wait';
 
+/** Follow-up to 8a425fe: a sequence evicted from the batch, waiting to resume. Dropped for a
+ * recompute (`kv_tier` NONE) or moved to a lower tier (`kv_tier` DRAM or SSD) for a swap; either
+ * way this is not the sequence computing, so it gets its own color rather than the replica's usual
+ * one, the same way `prefill_wait`'s hatch says "in the batch and idle" rather than busy. */
+const PREEMPT_OP = 'preempted';
+const PREEMPT_LABEL = 'evicted from the batch, waiting to resume';
+
 function rowLabel(s: WireTraceSpan): string {
-  return s.operation === WAIT_OP ? WAIT_LABEL : `${s.operation} · ${s.component}`;
+  if (s.operation === WAIT_OP) return WAIT_LABEL;
+  if (s.operation === PREEMPT_OP) return PREEMPT_LABEL;
+  return `${s.operation} · ${s.component}`;
 }
 
 /** Why the sequence waited, in words, with the budget the step spent on the others. */
 function waitExplanation(s: WireTraceSpan): string {
   return `admitted to the batch; the step's prefill budget (${fmtCount(s.tokensProcessed)} tokens) went to earlier sequences`;
+}
+
+/** Where the evicted context went, and how much of it, per Issao's spec for this span's hover. */
+function preemptExplanation(s: WireTraceSpan): string {
+  const to = s.kvTier === 'MEMORY_TIER_NONE' ? 'recompute' : `swap to ${s.kvTier.replace('MEMORY_TIER_', '')}`;
+  return `evicted from the batch: ${to}, ${fmtCount(s.tokensProcessed)} KV tokens`;
 }
 
 /**
@@ -89,6 +104,7 @@ export function Waterfall({ trace }: { trace: WireRequestTrace }) {
           const startMs = msBetween(arrivedAt, s.startUnixNs);
           const endMs = msBetween(arrivedAt, s.endUnixNs);
           const wait = s.operation === WAIT_OP;
+          const preempted = s.operation === PREEMPT_OP;
           return (
             <g
               key={i}
@@ -98,17 +114,17 @@ export function Waterfall({ trace }: { trace: WireRequestTrace }) {
               style={{ cursor: 'pointer' }}
             >
               <rect x={0} y={y} width={LABEL_W + PLOT_W + 40} height={ROW} fill={i === pick ? 'var(--accent-bg, rgba(0,0,0,0.06))' : 'transparent'} />
-              <text x={4} y={y + 13} fill={wait ? 'var(--ink-2, #555)' : 'var(--ink-1, #222)'} data-replica={replica ?? undefined}>
+              <text x={4} y={y + 13} fill={wait || preempted ? 'var(--ink-2, #555)' : 'var(--ink-1, #222)'} data-replica={replica ?? undefined}>
                 {rowLabel(s)}
               </text>
               <rect
-                className={wait ? 'wf-bar wf-bar-wait' : 'wf-bar'}
+                className={wait ? 'wf-bar wf-bar-wait' : preempted ? 'wf-bar wf-bar-preempted' : 'wf-bar'}
                 x={x(g.startMs)}
                 y={y + 3}
                 width={g.width}
                 height={ROW - 6}
                 rx={1.5}
-                fill={wait ? `url(#${HATCH_ID})` : onReplica(s) ? 'var(--series-1, #4a7)' : 'var(--series-2, #79a)'}
+                fill={wait ? `url(#${HATCH_ID})` : preempted ? 'var(--critical, #d03b3b)' : onReplica(s) ? 'var(--series-1, #4a7)' : 'var(--series-2, #79a)'}
                 stroke={wait ? 'var(--series-1, #4a7)' : undefined}
                 strokeWidth={wait ? 1 : undefined}
                 data-op={s.operation}
@@ -118,8 +134,9 @@ export function Waterfall({ trace }: { trace: WireRequestTrace }) {
                 data-width-px={g.width.toFixed(3)}
               >
                 <title>
-                  {wait ? WAIT_LABEL : s.operation} on {s.component}: {fmtMs(g.durationMs)}, from +{fmtMs(startMs)} to +{fmtMs(endMs)} ({fmtAbsNs(s.startUnixNs)}–
-                  {fmtAbsNs(s.endUnixNs)}){wait ? `. ${waitExplanation(s)}` : ''}
+                  {wait ? WAIT_LABEL : preempted ? PREEMPT_LABEL : s.operation} on {s.component}: {fmtMs(g.durationMs)}, from +{fmtMs(startMs)} to +
+                  {fmtMs(endMs)} ({fmtAbsNs(s.startUnixNs)}–{fmtAbsNs(s.endUnixNs)}){wait ? `. ${waitExplanation(s)}` : ''}
+                  {preempted ? `. ${preemptExplanation(s)}` : ''}
                 </title>
               </rect>
             </g>
@@ -143,6 +160,7 @@ function Dash() {
 function SpanTooltip({ s, arrivedAt, x, y }: { s: WireTraceSpan; arrivedAt: bigint; x: number; y: number }) {
   const rep = onReplica(s);
   const wait = s.operation === WAIT_OP;
+  const preempted = s.operation === PREEMPT_OP;
   const startMs = msBetween(arrivedAt, s.startUnixNs);
   const endMs = msBetween(arrivedAt, s.endUnixNs);
   const kvPct = s.kvCapacity > 0n ? ` (${((Number(s.kvTokensResident) / Number(s.kvCapacity)) * 100).toFixed(0)}%)` : '';
@@ -160,8 +178,9 @@ function SpanTooltip({ s, arrivedAt, x, y }: { s: WireTraceSpan; arrivedAt: bigi
   ];
   return (
     <div className="tooltip" style={{ left: x + 12, top: y + 12, minWidth: 150, maxWidth: 260 }}>
-      <div className="tt-time">{wait ? WAIT_LABEL : s.operation}</div>
+      <div className="tt-time">{wait ? WAIT_LABEL : preempted ? PREEMPT_LABEL : s.operation}</div>
       {wait ? <div className="tt-row" style={{ whiteSpace: 'normal', color: 'var(--ink-2)' }}>{waitExplanation(s)}</div> : null}
+      {preempted ? <div className="tt-row" style={{ whiteSpace: 'normal', color: 'var(--ink-2)' }}>{preemptExplanation(s)}</div> : null}
       {rows.map(([k, v]) => (
         <div className="tt-row" key={k}>
           <span style={{ color: 'var(--ink-2)' }}>{k}</span>
@@ -176,13 +195,15 @@ function SpanDetail({ span: s, arrivedAt }: { span: WireTraceSpan; arrivedAt: bi
   const rep = onReplica(s);
   const kvPct = s.kvCapacity > 0n ? `${((Number(s.kvTokensResident) / Number(s.kvCapacity)) * 100).toFixed(0)}%` : null;
   const wait = s.operation === WAIT_OP;
+  const preempted = s.operation === PREEMPT_OP;
   const cells: [string, ReactNode][] = [
-    ['span', wait ? `${WAIT_LABEL} · ${s.component}` : `${s.operation} · ${s.component}`],
+    ['span', wait ? `${WAIT_LABEL} · ${s.component}` : preempted ? `${PREEMPT_LABEL} · ${s.component}` : `${s.operation} · ${s.component}`],
     ...(wait ? ([['why', waitExplanation(s)]] as [string, ReactNode][]) : []),
+    ...(preempted ? ([['why', preemptExplanation(s)]] as [string, ReactNode][]) : []),
     ['start', `+${fmtMs(msBetween(arrivedAt, s.startUnixNs))}`],
     ['duration', fmtMs(msBetween(s.startUnixNs, s.endUnixNs))],
     ['in flight', String(s.concurrentSeqs)],
-    [wait ? 'others\' prefill' : 'tokens', s.tokensProcessed > 0 ? fmtTokens(s.tokensProcessed) : <Dash />],
+    [wait ? 'others\' prefill' : preempted ? 'KV tokens' : 'tokens', s.tokensProcessed > 0 ? fmtTokens(s.tokensProcessed) : <Dash />],
     ['batch', rep ? String(s.batchSize) : <Dash />],
     ['queued behind', rep ? String(s.queued) : <Dash />],
     ['kv resident', rep && s.kvCapacity > 0n ? `${fmtTokens(Number(s.kvTokensResident))} / ${fmtTokens(Number(s.kvCapacity))}${kvPct ? ` (${kvPct})` : ''}` : <Dash />],
