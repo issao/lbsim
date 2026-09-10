@@ -1,6 +1,17 @@
 # TASKS — things that need Issao
 
-Last updated: 2026-09-10 11:48 PDT by Claude.
+Last updated: 2026-09-10 15:50 PDT by Claude.
+
+**2026-09-10 15:50 PDT, from `git log 771021c..origin/master` and `docs/wrap-up-2026-09-06.md` §§5j–5l (housekeeping is not running;
+this round is `claude/docs-round42`; no tech lead or productivity agent is running either, and the execution graph has been STOPPED
+since 2026-09-07 — everything below landed through the main agent directly).** Nothing here needs you urgently: fifteen more commits
+landed clean since round 41, all of it either your own instruction verbatim in the commit (the prompt-size sliders, the Policies tab's
+`weighted_random`/`buffered_batch` knobs, the 8 GiB instance) or a bug fix with no design choice attached (the trace-gap `prefill_wait`
+span, the `Preempted` span, the memory-release rule that stopped completed runs from piling up against `LBSIM_MEMORY_BUDGET_MB`, two
+harness-flake fixes for the kv-spiral trace check, the last (`claude/qa-traces-api`) landing mid-round as `bc7c0d6`. Current site:
+`lbsim-00029-7lz`, deployed 15:05 PDT from master 3430476; harness went 143 passed / 1 failed, then, after the third fix landed,
+144 passed / 0 failed (0aa636f, 15:54). Full detail, by hash and deploy, is in `STATUS.md`. Every item below stands exactly
+as round 41 left it; nothing new is added, and nothing in the last fifteen commits opened a review item.
 
 **2026-09-10 11:48 PDT, from `git log 3de8220..origin/master` (housekeeping is not running; this round is `claude/docs-round41`).**
 Nothing here needed you urgently: two days of engine and dashboard work landed clean, and every design decision in it was either
