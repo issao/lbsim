@@ -464,6 +464,7 @@ struct Window {
     /// changes size mid-run reads as new replicas that were idle until now.
     prev_busy: Vec<Nanos>,
     prev_compute: Vec<Nanos>,
+    prev_useful: Vec<Nanos>,
     prev_prompt: Vec<u64>,
     prev_hit: Vec<u64>,
     /// Same pattern as `prev_busy`, for the cumulative TTFT counters: a frame's share is this
@@ -507,6 +508,7 @@ impl Window {
         let mut w = std::mem::take(self);
         w.prev_busy.resize(replicas.len(), 0);
         w.prev_compute.resize(replicas.len(), 0);
+        w.prev_useful.resize(replicas.len(), 0);
         w.prev_prompt.resize(replicas.len(), 0);
         w.prev_hit.resize(replicas.len(), 0);
         w.prev_ttft_sum.resize(replicas.len(), 0);
@@ -518,6 +520,7 @@ impl Window {
             .map(|(i, r)| {
                 let busy = r.busy_ns_through(t);
                 let compute = r.compute_ns_through(t);
+                let useful = r.useful_ns_through(t);
                 let prompt = r.prompt_tokens_total();
                 let hit = r.prefix_hit_tokens_total();
                 let ttft_sum = r.ttft_sum_ns();
@@ -530,6 +533,7 @@ impl Window {
                     last_step_ns: r.last_step_ns(),
                     busy_ns: busy - w.prev_busy[i],
                     compute_ns: compute - w.prev_compute[i],
+                    useful_ns: useful - w.prev_useful[i],
                     prompt_tokens: prompt - w.prev_prompt[i],
                     prefix_hit_tokens: hit - w.prev_hit[i],
                     state: r.state(),
@@ -540,6 +544,7 @@ impl Window {
                 };
                 w.prev_busy[i] = busy;
                 w.prev_compute[i] = compute;
+                w.prev_useful[i] = useful;
                 w.prev_prompt[i] = prompt;
                 w.prev_hit[i] = hit;
                 w.prev_ttft_sum[i] = ttft_sum;
@@ -551,6 +556,7 @@ impl Window {
         // The clocks outlive the window they were read in.
         self.prev_busy = w.prev_busy;
         self.prev_compute = w.prev_compute;
+        self.prev_useful = w.prev_useful;
         self.prev_prompt = w.prev_prompt;
         self.prev_hit = w.prev_hit;
         self.prev_ttft_sum = w.prev_ttft_sum;

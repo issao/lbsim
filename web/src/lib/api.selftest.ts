@@ -735,6 +735,16 @@ check('loadTestInitial reads duration_s / warmup_s from either the query string 
   return 'query string, hash-route query, absent, non-numeric and zero all resolve correctly';
 });
 
+check('loadTestInitial reads replicas / arrival_rps too, so the harness can stand up Issao\'s 50-replica, 10 rps fleet', () => {
+  const c = loadTestInitial('', '#/dashboard?replicas=50&arrival_rps=10');
+  eq(c.fleet.replicas, 50, 'replicas from the hash route\'s query');
+  eq(c.workload.arrivalRps, 10, 'arrival_rps from the hash route\'s query');
+  eq(c.durationS, LOAD_TEST_DEFAULT.durationS, 'duration untouched');
+  eq(loadTestInitial('?replicas=2.5', '#/dashboard').fleet.replicas, LOAD_TEST_DEFAULT.fleet.replicas, 'a fractional replica count is ignored');
+  eq(loadTestInitial('?arrival_rps=-1', '#/dashboard').workload.arrivalRps, LOAD_TEST_DEFAULT.workload.arrivalRps, 'a non-positive rate is ignored');
+  return '50 replicas, 10 rps; fractional and negative overrides ignored';
+});
+
 check('the two engine name mismatches are translated, and prefix affinity sends its two knobs', () => {
   const leastKv = cloneConfig(BASE);
   leastKv.routing = { ...leastKv.routing, kind: 'least_kv_tokens' };

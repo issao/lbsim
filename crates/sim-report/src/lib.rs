@@ -248,26 +248,18 @@ fn summary_csv(r: &RunResult) -> String {
     row("replicas_inspected_per_decision", r.replicas_inspected_per_decision.to_string());
     row("retries", r.retries.to_string());
     row("first_attempts", r.first_attempts.to_string());
-    // U94b: the fleet-mean of GPU utilization (busy share of the sample window, averaged over
-    // replicas at each instant), then averaged over the measured frames — those closing after
-    // `measured_from`, i.e. past warmup. Falls back to every frame if warmup somehow ate them all,
-    // rather than reporting NaN for a run that plainly ran.
-    let window_ns = (r.scenario.sample_interval_ms * 1e6).max(1.0);
+    // U94b: the fleet mean of GPU utilization (time in step, averaged over replicas at each
+    // instant), then averaged over the measured frames — those closing after `measured_from`, i.e.
+    // past warmup. Falls back to every frame if warmup somehow ate them all, rather than reporting
+    // NaN for a run that plainly ran. Useful is the work done over the maximum possible, the row
+    // Issao asked for on seeing 55% utilization at 2% of capacity: "Keep the old gpu utilization,
+    // but add a new metric with useful GPU work / max possible, so we can get a sense of how small
+    // the batches are." The ratio of the two rows is the mean batch fill.
     let measured: Vec<_> = r.frames.iter().filter(|f| f.t > r.measured_from).collect();
     let frames = if measured.is_empty() { r.frames.iter().collect() } else { measured };
-    let gpu_utilization_mean = if frames.is_empty() {
-        f64::NAN
-    } else {
-        let sum: f64 = frames
-            .iter()
-            .map(|f| {
-                let n = f.replicas.len().max(1) as f64;
-                f.replicas.iter().map(|rep| (rep.busy_ns as f64 / window_ns).min(1.0)).sum::<f64>() / n
-            })
-            .sum();
-        sum / frames.len() as f64
-    };
+    let (gpu_utilization_mean, gpu_useful_mean) = gpu_means(r, &frames);
     row("gpu_utilization_mean", format!("{gpu_utilization_mean:.4}"));
+    row("gpu_useful_mean", format!("{gpu_useful_mean:.4}"));
     // U27c: only when the scenario has a prefix model — `prompt_tokens` accumulates on every
     // admission regardless, so a scenario without one would otherwise get a permanent, meaningless
     // 0% row. Gating here, rather than skipping only a NaN, is also what keeps `summary_md5` byte
@@ -291,6 +283,26 @@ fn summary_csv(r: &RunResult) -> String {
         row("recovered", ok.to_string());
     }
     s
+}
+
+/// `(utilization, useful)` fleet means over `frames`: per frame the mean over replicas of the busy
+/// (resp. useful) share of the sample window, then the mean over frames. NaN with no frames.
+fn gpu_means(r: &RunResult, frames: &[&Frame]) -> (f64, f64) {
+    if frames.is_empty() {
+        return (f64::NAN, f64::NAN);
+    }
+    let window_ns = (r.scenario.sample_interval_ms * 1e6).max(1.0);
+    let mean_of = |pick: &dyn Fn(&sim_metrics::ReplicaSample) -> u64| {
+        frames
+            .iter()
+            .map(|f| {
+                let n = f.replicas.len().max(1) as f64;
+                f.replicas.iter().map(|rep| (pick(rep) as f64 / window_ns).min(1.0)).sum::<f64>() / n
+            })
+            .sum::<f64>()
+            / frames.len() as f64
+    };
+    (mean_of(&|rep| rep.busy_ns), mean_of(&|rep| rep.useful_ns))
 }
 
 /// The prefix hit rate over a set of frames: hit tokens over prompt tokens, summed across replicas
@@ -717,7 +729,8 @@ decision, and anything proportional to fleet size does not hold at scale."##);
     // a report over scenarios that never asked for one keeps its `html_md5` byte identical.
     let show_prefix = runs.iter().any(|r| r.scenario.prefix_roots > 0);
     let mut headers = vec!["scenario", "routing", "offered rps", "rated rps", "completed rps",
-        "goodput tok/s", "throughput tok/s", "imbalance CV", "batch limit", "inspected"];
+        "goodput tok/s", "throughput tok/s", "imbalance CV", "batch limit", "inspected",
+        "gpu util<br><small>time in step</small>", "gpu useful<br><small>of max possible</small>"];
     if show_prefix {
         headers.push("prefix hit");
     }
@@ -736,9 +749,11 @@ decision, and anything proportional to fleet size does not hold at scale."##);
             r.scenario.effective_batch(),
             r.replicas_inspected_per_decision
         );
+        let measured: Vec<_> = r.frames.iter().filter(|f| f.t > r.measured_from).collect();
+        let frames = if measured.is_empty() { r.frames.iter().collect() } else { measured };
+        let (util, useful) = gpu_means(r, &frames);
+        let _ = write!(row, "<td>{:.1}%</td><td>{:.1}%</td>", util * 100.0, useful * 100.0);
         if show_prefix {
-            let measured: Vec<_> = r.frames.iter().filter(|f| f.t > r.measured_from).collect();
-            let frames = if measured.is_empty() { r.frames.iter().collect() } else { measured };
             match prefix_hit_rate(&frames) {
                 Some(rate) if r.scenario.prefix_roots > 0 => {
                     let _ = write!(row, "<td>{:.1}%</td>", rate * 100.0);

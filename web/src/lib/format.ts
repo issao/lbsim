@@ -26,7 +26,23 @@ export function fmtTime(s: number): string {
   return `${m}:${sec < 10 ? '0' : ''}${sec.toFixed(1)}`;
 }
 
+/** An absolute simulated instant (unix-ns, per api.ts's convention) as `HH:MM:SS.mmm`, UTC — a
+ * label for a hover, never a value read back as data. Safe to go through `Number`: ms-since-epoch
+ * for a simulated 2026 instant is ~1.8e12, far under 2^53. */
+export function fmtAbsNs(ns: bigint): string {
+  const d = new Date(Number(ns / 1_000_000n));
+  if (!isFinite(d.getTime())) return '-';
+  return d.toISOString().slice(11, 23);
+}
+
 export function fmtTokens(n: number): string {
   if (n >= 1000) return `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k`;
   return n.toFixed(0);
+}
+
+/** An exact token count, comma-grouped (e.g. "12,345") — unlike `fmtTokens`' compact "12.3k", this
+ * is for a single request's own prompt/output size, where the exact number is the point. */
+export function fmtCount(n: number): string {
+  if (!isFinite(n)) return '-';
+  return Math.trunc(n).toLocaleString('en-US');
 }

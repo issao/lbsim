@@ -6,7 +6,7 @@ import type { OutcomeName, WireRequestTrace } from '../../lib/api';
 import { OUTCOMES, TRACE_BUCKETS, type Outcome, type TraceBucket } from '../../lib/types';
 import { shapeTraceRows, sortTraceRows, type TraceRow, type TraceSortKey } from '../../lib/traceRows';
 import { Waterfall } from '../../components/charts/Waterfall';
-import { fmtMs, fmtTokens } from '../../lib/format';
+import { fmtMs, fmtCount } from '../../lib/format';
 
 /** The table's own row height, so the wrapper's fixed height (`TABLE_VISIBLE_ROWS` of them, plus
  * the header) is a CSS constant rather than something measured after the fact. */
@@ -32,7 +32,7 @@ function originOf(run: RunHandle): bigint | null {
   return origin ?? null;
 }
 
-const SORT_LABEL: Record<TraceSortKey, string> = { arrived: 'arrived', ttft: 'ttft', e2e: 'e2e' };
+const SORT_LABEL: Record<TraceSortKey, string> = { arrived: 'arrived', ttft: 'ttft', e2e: 'e2e', prompt: 'prompt', output: 'output' };
 
 /**
  * Sampled request journeys, as the engine recorded them. Per Issao: "for the traces view, show
@@ -167,7 +167,8 @@ export function Traces({ run }: { run: RunHandle }) {
                 {header('arrived', 'arrived')}
                 {header('ttft', 'ttft')}
                 {header('e2e', 'e2e')}
-                <th>output tok</th>
+                {header('prompt', 'prompt')}
+                {header('output', 'output')}
                 <th>outcome</th>
                 <th>replica</th>
                 <th>spans</th>
@@ -189,7 +190,8 @@ export function Traces({ run }: { run: RunHandle }) {
                     <td className="n">{r.arrivedS === null ? '—' : `${r.arrivedS.toFixed(3)} s`}</td>
                     <td className="n">{r.ttftMs === null ? '—' : fmtMs(r.ttftMs)}</td>
                     <td className="n">{r.e2eMs === null ? '—' : fmtMs(r.e2eMs)}</td>
-                    <td className="n">{r.outputTokens > 0 ? fmtTokens(r.outputTokens) : '—'}</td>
+                    <td className="n">{r.promptTokens > 0 ? fmtCount(r.promptTokens) : '—'}</td>
+                    <td className="n">{r.outputTokens > 0 ? fmtCount(r.outputTokens) : '—'}</td>
                     <td>{o ? o.toLowerCase() : '—'}</td>
                     <td className="n" data-replica={r.replicaId !== null ? r.replicaId.toString() : undefined}>
                       {r.replicaId !== null ? r.replicaId.toString() : '—'}
@@ -204,6 +206,10 @@ export function Traces({ run }: { run: RunHandle }) {
       ) : null}
       {currentTrace ? (
         <div className="trace-detail" style={{ marginTop: 8 }}>
+          <p className="note" style={{ margin: '0 0 4px' }}>
+            prompt {current!.promptTokens > 0 ? `${fmtCount(current!.promptTokens)} tokens` : '—'} · output{' '}
+            {current!.outputTokens > 0 ? `${fmtCount(current!.outputTokens)} tokens` : '—'}
+          </p>
           <Waterfall key={current!.id.toString()} trace={currentTrace} />
         </div>
       ) : null}

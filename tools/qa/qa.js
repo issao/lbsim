@@ -233,6 +233,58 @@ const finalLine = extraFail => {
           tableBox && detailBox
             ? `table top ${tableBox.top.toFixed(0)}, detail top ${detailBox.top.toFixed(0)}, ${spans} span timeline(s)`
             : `table ${JSON.stringify(tableBox)}, detail ${JSON.stringify(detailBox)}`);
+
+        // Issao: "The traces seems to show bars with a point in time. They should show width
+        // proportional of each trace duration (so e.g. if a request was in a queue for a while, the
+        // bar for queue should be wide indicating start and stop)." Read the decoded duration and
+        // rendered width straight off the DOM data attributes `Waterfall.tsx` sets (`data-duration-ms`,
+        // `data-width-px`), rather than trusting a screenshot, and find a pair of spans whose
+        // durations differ by at least 3x to prove the width follows.
+        const bars = await page.$$eval('#trace-list .trace-detail .wf-bar', els => els.map(e => ({
+          durationMs: Number(e.getAttribute('data-duration-ms')),
+          widthPx: Number(e.getAttribute('data-width-px')),
+          op: e.getAttribute('data-op'),
+          component: e.getAttribute('data-component'),
+        })));
+        const findWidePair = () => {
+          for (const a of bars) for (const b of bars) if (a.durationMs > 0 && b.durationMs / a.durationMs >= 3) return [a, b];
+          return null;
+        };
+        const widePair = findWidePair();
+        check('traces: a span bar at least 3x longer in duration is at least 3x wider, not a point',
+          Boolean(widePair) && widePair[1].widthPx / widePair[0].widthPx >= 3,
+          widePair
+            ? `${widePair[0].op} ${widePair[0].durationMs.toFixed(2)}ms = ${widePair[0].widthPx.toFixed(1)}px vs ${widePair[1].op} ${widePair[1].durationMs.toFixed(2)}ms = ${widePair[1].widthPx.toFixed(1)}px`
+            : `no pair of the ${bars.length} span bars differs by >=3x in duration on this trace`);
+
+        // Hovering a bar must show the machine (component/replica id) and both the start and stop
+        // times, per Issao: "a mouse over to a bar in the trace should show machine id, start and
+        // stop time."
+        if (bars.length > 0) {
+          const target = await page.$('#trace-list .trace-detail .wf-bar');
+          await target?.hover().catch(() => null);
+          const tip = await until(async () =>
+            page.$eval('#trace-list .trace-detail .tooltip', el => el.textContent).catch(() => null), 2000);
+          check('traces: hovering a span bar shows the machine id and both start/stop times',
+            Boolean(tip) && /machine/i.test(tip) && /start/i.test(tip) && /stop/i.test(tip) && bars[0].component && tip.includes(bars[0].component),
+            tip ? tip.replace(/\s+/g, ' ').slice(0, 200) : 'no tooltip appeared on hover');
+        }
+
+        // Issao: "in the traces, please show prompt and output size for each request." Both are
+        // sortable columns like the latency ones, exact counts (thousands-separated, so strip
+        // commas before checking the cell is an integer).
+        const headers = await page.$$eval('#trace-list table.data thead th', els => els.map(e => e.textContent.trim().toLowerCase()));
+        const promptIdx = headers.findIndex(h => h.startsWith('prompt'));
+        const outputIdx = headers.findIndex(h => h.startsWith('output'));
+        check('traces: table header carries prompt and output columns',
+          promptIdx >= 0 && outputIdx >= 0, headers.join(', '));
+        if (promptIdx >= 0 && outputIdx >= 0) {
+          const firstRow = await page.$$eval('#trace-list tbody tr:first-child td', els => els.map(e => e.textContent.trim()));
+          const isIntCell = s => s === '—' || /^\d{1,3}(,\d{3})*$/.test(s);
+          check('traces: the first row\'s prompt and output cells are integers (or "—")',
+            isIntCell(firstRow[promptIdx]) && isIntCell(firstRow[outputIdx]),
+            `prompt=${JSON.stringify(firstRow[promptIdx])} output=${JSON.stringify(firstRow[outputIdx])}`);
+        }
       }
     }
     await noInvented(page, 'dashboard: no invented numbers on live (U95b)');
@@ -325,6 +377,34 @@ const finalLine = extraFail => {
       check('cluster: restart applies the new value (U106)', Boolean(after) && applied,
         `${before} -> ${after || 'no new run'}; ${bodies.length} StartRun(s), ${applied ? 'step_token_budget = 2048 sent' : (bodies[bodies.length - 1] || 'no scenario text').match(/step_token_budget[^\n]*/)?.[0] || 'no step_token_budget'}`);
     }
+    await page.close();
+  }
+
+  // b1b. GPU utilization against useful work on Issao's fleet: "when I run a simulation with 10rps
+  // and 50 replicas, utilization is quite high (mean at 53%) with pretty much any policy. That
+  // seems way off." Utilization is the time-in-step share and keeps that meaning; the new useful
+  // tile is work over the maximum possible, and the two must disagree by the width of the batch:
+  // after 30 simulated seconds useful sits in the low single digits while utilization stays over
+  // half.
+  {
+    const { page, until } = await fresh('#/dashboard?replicas=50&arrival_rps=10&duration_s=90&warmup_s=5');
+    const cursor = () => page.$eval('.playback [aria-valuenow]', el => Number(el.getAttribute('aria-valuenow'))).catch(() => NaN);
+    const tile = async sel => {
+      const t = await page.$eval(`[data-tile="${sel}"] .tile-value`, el => el.textContent).catch(() => '');
+      const m = /(-?\d+(?:\.\d+)?)\s*%/.exec(t || '');
+      return m ? Number(m[1]) : NaN;
+    };
+    const reached = await until(async () => (await cursor()) >= 30, 75000, 500);
+    // Only the active observe tab is mounted, so the tiles exist only once Utilization is open.
+    const tab = await until(() => page.$('button[data-tab="observe:utilization"]'), 4000);
+    if (tab) await tab.click();
+    await until(async () => Number.isFinite(await tile('gpu-utilization')), 6000, 250);
+    const util = await tile('gpu-utilization');
+    const useful = await tile('gpu-useful');
+    const detail = `at ${await cursor()} s: utilization ${util}%, useful ${useful}%`;
+    check('gpu: 50 replicas at 10 rps reach 30 simulated seconds', Boolean(reached), detail);
+    check('gpu: utilization (time in step) stays above 30% at 10 rps on 50 replicas, the number Issao saw', util > 30, detail);
+    check('gpu: useful work of the maximum possible is under 10% on the same fleet (Issao)', useful < 10, detail);
     await page.close();
   }
 

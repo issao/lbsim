@@ -20,9 +20,9 @@ function spread(f: Frame, fleet: FractionPercentiles | null, perReplica: (r: Fra
 }
 
 /** Mean plus p50/p90/p99 bands, the latency panels' idiom on a fraction. */
-function bands(frames: Frame[], mean: (f: Frame) => number, pick: (f: Frame) => FractionPercentiles | null) {
+function bands(frames: Frame[], mean: (f: Frame) => number, pick: (f: Frame) => FractionPercentiles | null, label = 'mean') {
   return [
-    { key: 'mean', label: 'mean', color: 'var(--series-1)', points: series(frames, mean) },
+    { key: 'mean', label, color: 'var(--series-1)', points: series(frames, mean) },
     ...UTIL_PCTS.map((p, i) => ({
       key: `p${p}`,
       label: `p${p}`,
@@ -31,6 +31,20 @@ function bands(frames: Frame[], mean: (f: Frame) => number, pick: (f: Frame) => 
       points: fractionPercentileSeries(frames, pick, p),
     })),
   ];
+}
+
+/**
+ * The readout's one sentence on batching: utilization over useful is the mean batch fill, so
+ * "55% busy, 0.5% useful: batches average 1/100 of the limit". A gap when either is unmeasured.
+ */
+function batchFill(f: Frame): string {
+  const busy = f.gpuUtilization;
+  const useful = f.gpuUsefulFraction;
+  if (!isFinite(busy) || !isFinite(useful) || busy <= 0) return 'no steps in this window yet';
+  if (useful <= 0) return `${fmtPct(busy, 0)} busy, nothing useful yet`;
+  const fill = useful / busy;
+  const denominator = Math.max(1, Math.round(1 / fill));
+  return `${fmtPct(busy, 0)} busy, ${fmtPct(useful, 1)} useful: batches average 1/${fmtNum(denominator, 0)} of the limit`;
 }
 
 /** The engine's `preemption` key as the KV panel states it; `never` is the engine default. */
@@ -63,19 +77,30 @@ export function Utilization({
 
   return (
     <div className="grid c2">
-      <Panel title="GPU utilization" sub={`fleet mean and percentiles across replicas · ${window}`} highlight={highlight === 'gpu'} id="gpu">
+      <Panel title="GPU utilization" sub={`time in step, mean and percentiles across replicas; useful work in grey · ${window}`} highlight={highlight === 'gpu'} id="gpu">
         <LineChart
           xs={x}
-          series={bands(frames, (f) => f.gpuUtilization, gpuSpread)}
+          series={[
+            ...bands(frames, (f) => f.gpuUtilization, gpuSpread, 'utilization'),
+            // Useful work over the maximum possible, on the same axes in a lighter line. Issao, on
+            // seeing 53% utilization for a fleet doing 3% of its rated work: "Keep the old gpu
+            // utilization, but add a new metric with useful GPU work / max possible, so we can get
+            // a sense of how small the batches are."
+            { key: 'useful', label: 'useful work', color: 'var(--ink-2)', points: series(frames, (f) => f.gpuUsefulFraction) },
+          ]}
           format={(v) => fmtPct(v, 0)}
           yMax={1.05}
           height={116}
         />
         <p className="note" style={{ margin: '7px 0 0' }}>
-          Wasted GPU fraction is invisible in a utilization metric: a decode-bound replica reports high utilization
-          across a wide range of actual useful work, which is why autoscaling on GPU utilization does not work here.
-          Compute-bound is the share of busy time under the compute roofline, {fmtPct(frame.gpuComputeBoundFraction, 0)} across
-          the fleet now; the rest is bandwidth-bound decode at small batch.
+          Utilization is time inside a step, what a GPU counter reports; useful work is the share of the maximum the
+          replica could do, and the ratio of the two is how full the batches are: {batchFill(frame)}. At batch 1 a
+          replica is busy but 1/{fmtNum(config.fleet.maxBatch, 0)} useful, because every step re-reads the weights
+          whether one sequence or a full batch rides on the read, which is why autoscaling on GPU-Util does not work
+          here. Wasted GPU fraction is invisible in either: a decode-bound replica reports high utilization across a
+          wide range of actual useful work. Compute-bound is the share of busy time under the compute roofline,{' '}
+          {fmtPct(frame.gpuComputeBoundFraction, 0)} across the fleet now; the rest is bandwidth-bound decode at small
+          batch.
         </p>
       </Panel>
 
@@ -84,10 +109,12 @@ export function Utilization({
           <Tile
             label="gpu utilization"
             value={fmtPct(frame.gpuUtilization, 0)}
-            note="busy share of the window"
+            note="time in step (GPU-Util)"
             status={frame.gpuUtilization > 0.95 ? 'serious' : undefined}
             statusText={frame.gpuUtilization > 0.95 ? 'saturated' : undefined}
+            dataTile="gpu-utilization"
           />
+          <Tile label="gpu useful" value={fmtPct(frame.gpuUsefulFraction, 1)} note="useful work of max possible" dataTile="gpu-useful" />
           <Tile
             label="kv utilization"
             value={fmtPct(frame.kvUtilization, 0)}

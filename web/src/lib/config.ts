@@ -155,12 +155,14 @@ export function cloneConfig(c: ScenarioConfig): ScenarioConfig {
 }
 
 /**
- * LOAD_TEST_DEFAULT, unless the Load Test page's own link carries `duration_s` and/or `warmup_s`
- * (`#/dashboard?duration_s=20&warmup_s=1`) -- `queryParam` is mode.ts's, so this reads a link's
- * query the same way `?server=` and `?replay=` already do. The one user today is the QA harness
- * (tools/qa/qa.js, `QA_SHORT_RUN`): a run has to actually reach STATE_COMPLETE to exercise the
- * playback bar's Restart button (U120), and ten minutes at 1x is not a browser-test budget.
- * `sim-leaf` refuses `warmup_s >= duration_s`, so a caller shortening one should shorten both.
+ * LOAD_TEST_DEFAULT, unless the Load Test page's own link carries `duration_s`, `warmup_s`,
+ * `replicas` and/or `arrival_rps` (`#/dashboard?duration_s=20&warmup_s=1`, engine key names) --
+ * `queryParam` is mode.ts's, so this reads a link's query the same way `?server=` and `?replay=`
+ * already do. The one user today is the QA harness (tools/qa/qa.js): a run has to actually reach
+ * STATE_COMPLETE to exercise the playback bar's Restart button (U120), and ten minutes at 1x is
+ * not a browser-test budget; and Issao's 50-replica, 10 rps fleet is the case where GPU utilization
+ * (time in step) and useful work part company. `sim-leaf` refuses `warmup_s >= duration_s`, so a caller
+ * shortening one should shorten both.
  */
 export function loadTestInitial(search: string, hash: string): ScenarioConfig {
   const c = cloneConfig(LOAD_TEST_DEFAULT);
@@ -168,6 +170,10 @@ export function loadTestInitial(search: string, hash: string): ScenarioConfig {
   if (Number.isFinite(d) && d > 0) c.durationS = d;
   const w = Number(queryParam('warmup_s', search, hash));
   if (Number.isFinite(w) && w >= 0) c.warmupS = w;
+  const n = Number(queryParam('replicas', search, hash));
+  if (Number.isInteger(n) && n > 0) c.fleet = { ...c.fleet, replicas: n };
+  const rps = Number(queryParam('arrival_rps', search, hash));
+  if (Number.isFinite(rps) && rps > 0) c.workload = { ...c.workload, arrivalRps: rps };
   return c;
 }
 

@@ -255,10 +255,19 @@ pub struct Replica {
     /// one side, so utilization never exceeds one by construction.
     busy_total_ns: Nanos,
     compute_total_ns: Nanos,
+    /// Of the step clock, the part that was useful against the replica's rated capacity: a decode
+    /// step counts for its modelled decode time times `decoding / effective_batch`, a prefill chunk
+    /// counts in full, a swap transfer not at all. Modelled time, not slowed time, because rated
+    /// capacity is the healthy rating, so a gray-failed replica is as busy as ever and less useful.
+    /// This is `METRIC_GPU_USEFUL_FRACTION`; `busy_total_ns` is `METRIC_GPU_UTILIZATION`. A replica
+    /// decoding one sequence at batch 1 is busy every step and 1/256 useful, which is the whole
+    /// gap between what a GPU counter reports and what the fleet is actually delivering.
+    useful_total_ns: Nanos,
     step_start: Nanos,
     step_end: Nanos,
-    /// Compute part of the step in flight, for the proportional clip.
+    /// Compute and useful parts of the step in flight, for the proportional clip.
     step_compute_ns: Nanos,
+    step_useful_ns: Nanos,
     completed: u64,
     preemptions: u64,
     /// See `last_view_len`.
@@ -310,9 +319,11 @@ impl Default for Replica {
             last_step_ns: 0,
             busy_total_ns: 0,
             compute_total_ns: 0,
+            useful_total_ns: 0,
             step_start: 0,
             step_end: 0,
             step_compute_ns: 0,
+            step_useful_ns: 0,
             completed: 0,
             preemptions: 0,
             last_view_len: 0,
@@ -848,6 +859,24 @@ impl Replica {
         // lives. Prefill and decode contend for one device, which is why a big prefill shows
         // up in everyone's inter-token latency.
         let (compute, modelled) = cost.step_split(decoding, r.kv_tokens, prefill_tokens);
+        // Useful work against rated capacity, in modelled time. The compute-priced part (prefill,
+        // verification) is useful in full. The bandwidth-priced part is the weight read and the
+        // key-value re-read, paid once a step whether one sequence or 256 ride on it, so it is
+        // useful in proportion to what rode on it: the decoding batch against the effective batch
+        // limit, or the prefill chunk against the step's token budget, whichever used the read
+        // more. A full batch or a full chunk is a fully useful step; a lone sequence at batch 1 is
+        // 1/256 useful while busy the whole step. Transfers charged below are busy and not useful.
+        // A batch can exceed the limit when contexts run shorter than the workload's mean, so the
+        // fill is clamped and useful never exceeds the step.
+        let decode_ns = modelled - compute;
+        let decode_fill = decoding as f64 / sc.effective_batch();
+        let prefill_fill = if sc.step_token_budget == 0 {
+            f64::from(prefill_tokens > 0)
+        } else {
+            prefill_tokens as f64 / sc.step_token_budget as f64
+        };
+        let fill = decode_fill.max(prefill_fill).min(1.0);
+        let useful_ns = (decode_ns as f64 * fill) as Nanos + compute;
         let modelled = modelled + extra_ns;
         // A slowed replica takes 1/speed of the modelled time. The healthy case skips the float trip
         // so a run with no failures is byte-identical to one before failures existed. Swap transfers
@@ -861,9 +890,11 @@ impl Replica {
         r.last_step_ns = step_ns;
         r.busy_total_ns += step_ns;
         r.compute_total_ns += compute_ns;
+        r.useful_total_ns += useful_ns;
         r.step_start = now;
         r.step_end = token_at;
         r.step_compute_ns = compute_ns;
+        r.step_useful_ns = useful_ns;
         r.tracer.snapshot(ResourceSnapshot { start: now, end: token_at, batch_size: r.running.len() as u32, running: r.running.len() as u32, queued: r.queue.len() as u32, kv_tokens: r.kv_tokens, decoding: decoding as u32, prefill_tokens, step_ns });
 
         // With speculation each sequence advances by the expected tokens per step, carried as a
@@ -1058,12 +1089,22 @@ impl Replica {
     /// The part of [`Replica::busy_ns_through`] the cost model priced as compute rather than
     /// bandwidth, clipped in proportion within a step in flight.
     pub fn compute_ns_through(&self, t: Nanos) -> Nanos {
+        self.clipped(t, self.compute_total_ns, self.step_compute_ns)
+    }
+    /// The part of [`Replica::busy_ns_through`] that was useful against rated capacity, clipped in
+    /// proportion within a step in flight like `compute_ns_through`. Divided by the window this is
+    /// `METRIC_GPU_USEFUL_FRACTION`; `busy_ns_through` over the window is `METRIC_GPU_UTILIZATION`.
+    pub fn useful_ns_through(&self, t: Nanos) -> Nanos {
+        self.clipped(t, self.useful_total_ns, self.step_useful_ns)
+    }
+    /// `total` less the share of `in_flight` that lies past `t`, in proportion to the step.
+    fn clipped(&self, t: Nanos, total: Nanos, in_flight: Nanos) -> Nanos {
         let over = self.overhang(t);
         if over == 0 {
-            return self.compute_total_ns;
+            return total;
         }
         let step = self.step_end - self.step_start;
-        self.compute_total_ns - (self.step_compute_ns as u128 * over as u128 / step as u128) as Nanos
+        total - (in_flight as u128 * over as u128 / step as u128) as Nanos
     }
     /// How much of the step in flight lies past `t`.
     fn overhang(&self, t: Nanos) -> Nanos {

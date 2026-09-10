@@ -2,17 +2,17 @@
 
 Building a simulator of a global scale LLM serving cluster
 
-- Live demo at [lbsim.ai]()
+- Live demo at [lbsim.ai](https://lbsim.ai)
 - [GitHub](https://github.com/issao/lbsim)
 - [Self-link](https://github.com/issao/lbsim/blob/master/docs/overview.md)
 
 ## Inspiration
 
-Running complex planet scale serving systems require a precise orchestration of policies at multiple layers (GPU/host level scheduling, load balancing and routing, cache affinity and eviction policies, admission control and capacity estimation, balacing multi-SLO loads - broadly calling these "policies") to achieve service quality, goodput and robustness goals.
+Running complex planet-scale serving systems requires a precise orchestration of policies at multiple layers (GPU/host level scheduling, load balancing and routing, cache affinity and eviction policies, admission control and capacity estimation, balancing multi-SLO loads - broadly calling these "policies") to achieve service quality, goodput and robustness goals.
 
 A reasonably realistic simulation engine would allow for (1) deepening understanding of cluster dynamics under different policies and load shapes with fast paced experiments, (2) evaluate existing policies and potential new changes, (3) speed up development of novel strategies that balance various measurements of efficiency, service quality and robustness.
 
-The ultimate vision is to build this as a full feedback loop from both a live production system as well as a production-sized load test environment, where sampled traces and statistics from the production system improved realism of the simulator, and insights from the simulator feed back into policies used in the real world cluster, with the potential to vastly accelerate development of cluster management policies.
+The ultimate vision is to build this as a full feedback loop from both a live production system as well as a production-sized load test environment, where sampled traces and statistics from the production system improve the realism of the simulator, and insights from the simulator feed back into policies used in the real world cluster, with the potential to vastly accelerate development of cluster management policies.
 
 ## Goal
 
@@ -25,18 +25,18 @@ The ultimate vision is to build this as a full feedback loop from both a live pr
 
 See it live:
 - [Load test dashboard](https://lbsim.ai/#/dashboard) gives you a free form interface to play with it.
-- [https://lbsim.ai/#/showcase](https://lbsim.ai/#/showcase) is my attempt to create step-by-step demonstration of reproducing interesting cluster dynamics.
-- [https://lbsim.ai/#/] has several "reports" linked under the "replay" section that provide a static summary of real runs that attempt to reproduce different serving dynamic scenarios.
+- [https://lbsim.ai/#/showcase](https://lbsim.ai/#/showcase) is my attempt to create step-by-step demonstrations of reproducing interesting cluster dynamics.
+- [https://lbsim.ai/#/](https://lbsim.ai/#/) has several "reports" linked under the "replay" section that provide a static summary of real runs that attempt to reproduce different serving dynamic scenarios.
 
 ## Design
 
 ### Architecture for scale
 - Design with global serving footprint scale target of 10K GPU clusters
-- Scale target, measured scale. (Claude, can you fill in latest loadtest.)
+- Scale target, measured scale. Target: 5 clusters × 10K GPUs (6,250 replicas of 8 GPUs) at ≥2× realtime. Measured on the release build, one core, `route_p2c` at 0.3 offered/capacity: 1,000 replicas (8K GPUs) at 2,500 rps runs 120 simulated seconds in 2.1 s wall, **57× realtime**, 95 MB; 10,000 replicas (80K GPUs) at 25,000 rps runs at **1.5–1.9× realtime**, 580 MB, ~1.1 M events/s. On the public Cloud Run instance (2 vCPU) the same runs are 11.3× and 0.42×. At the default 256 replicas the arrival-rate ceiling that keeps ≥1.7× on the public instance is 100,000 rps (53× rated).
 - Proto interfaces designed for sharding the simulator in the machine dimension, keeping the bulk of the O(machine) work at that layer. For faster iteration we kept implementation as a single process backend for now.
 - Scalable data flows. Subscription based observations designed for O(1) data flow between client and ingress, O(leaf replicas) data flow between ingress layer and leaves. Notably, data flow to and from the client stays constant with machine count, qps as well as simulation speed (simulation sec/wallclock sec).
 - Leaf computation should scale with number of requests and working set, but not with the actual work (e.g. tokens, batches, etc) or number of machines. This is achieved by maintaining
-batch level realism, but analytically advancing epochs for as many batches as the current "working set" in a given GPU. We did not implement any capability for work preemtion.
+batch level realism, but analytically advancing epochs for as many batches as the current "working set" in a given GPU. Work preemption (KV eviction by recompute or swap to DRAM) is implemented; see demo 11.
 
 ### Functionality
 - The load test dashboard enables defining:
@@ -50,23 +50,23 @@ batch level realism, but analytically advancing epochs for as many batches as th
 request count to the sim leaf, to keep a O(1) data flow to the client (assuming worker view uses bounded pagination)
 
 ### Fidelity.
-- Caputured dynamics of GPU compute constraint, HBM bandwidth and HBM storage size (implemented), DRAM/SSD cluster level storage and bandwidth (interfaces designed but not functional).
+- Captured dynamics of GPU compute constraint, HBM bandwidth and HBM storage size (implemented), DRAM/SSD cluster level storage and bandwidth (interfaces designed but not functional).
 - Telemetry delays at the admission and routing layers.
-- (Claude, any key points in fidelity that I forgot?)
+- Other fidelity points captured (Claude's addition): continuous batching with chunked prefill, so time-to-first-token and inter-token latency contend for the same device (demo 3); a KV-cache token budget with multi-turn sessions parking context, and eviction by recompute or swap (demo 11); DRAM and SSD tiers under a shared fabric (demo 19); speculative decoding with batch-dependent acceptance (demo 12); client retries with and without a budget, including metastable collapse (demo 6); gray failure, outlier ejection and an affinity failover cascade (demos 15, 17); autoscaling with a 30 s cold start (demo 20); prefix affinity from a session model with fork-off and merge-back (demo 14); per-request SLO classes and a pluggable local scheduler (demo 16); and sampled request traces with the resource state at every span. The cost model is calibrated to a 70B model on 8×H100 (batch-1 decode 10.25 ms, prefill 28,286 tok/s), and the analytic epoch advance is proven exact against a naive per-step oracle.
 
 ### Determinism
 - Stochastic modeling of request load and shape, failure events, etc. But using a single global seed to maintain determinism.
-- Enables using this a sandbox for a meaningful "policy regression test" engine.
+- Enables using this as a sandbox for a meaningful "policy regression test" engine.
 - Enables interactive rewind using periodic snapshots.
 
-## How much time did I spent?
+## How much time did I spend?
 
-I asked Claude to review the transcript and git commits to keep me honest. 6.1 hours on building this, not counting 1.9 hours of "ops time" (setting up and deploying to GCP, buying and configuring a domain name, etc), which totaled 9 hours. Time to write this doc was not included, and one last bug fix round I couldn't resist (lets call ~7 hours not including the ops time)
+I asked Claude to review the transcript and git commits to keep me honest. 6.1 hours on building this, not counting 1.9 hours of "ops time" (setting up and deploying to GCP, buying and configuring a domain name, etc), which totaled 9 hours. Time to write this doc was not included, and one last bug fix round I couldn't resist (let's call ~7 hours not including the ops time)
 
 ## Transparent AI use and Critical human input
 
-This project made extensive use of Claude Code for development. The most critical human inputs were the VISION.md document, UI functionality description, target cluster dynamics to capture, overall technical architecture, simulation fidelity level, observability interface and a through review of the proto interfaces between the different layers. I did not perform a thorough human code review for the majority of the code generated.
+This project made extensive use of Claude Code for development. The most critical human inputs were the VISION.md document, UI functionality description, target cluster dynamics to capture, overall technical architecture, simulation fidelity level, observability interface and a thorough review of the proto interfaces between the different layers. I did not perform a thorough human code review for the majority of the code generated.
 
 ## Biggest surprise and lesson learned
 
-I wish that I could say I discover some novel cluster management dynamic I wasn't expecting, but it wasn't the case. The biggest surprise to me likely reflects my relative inexperience using claude to build real world systems. It wasn't until I requested to have an agent actively profiling and improving the development cycle, and asked the TL to keep an explicitly execution graph that things significantly sped up.
+I wish that I could say I discovered some novel cluster management dynamic I wasn't expecting, but it wasn't the case. The biggest surprise to me likely reflects my relative inexperience using Claude to build real world systems. It wasn't until I requested to have an agent actively profiling and improving the development cycle, and asked the TL to keep an explicit execution graph that things significantly sped up.
