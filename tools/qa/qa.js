@@ -8,7 +8,15 @@ const fs = require('fs');
 
 const BASE = process.env.QA_BASE || 'http://localhost:8181';
 const MIN_CARDS = 19;
-const EXPECTED_REPORTS = 20;
+// The number of demo reports is whatever run-demos.sh produces, read from the script itself so a new
+// demo never fails this check by being new; it failed once at 21 with a hard-coded 20.
+const EXPECTED_REPORTS = (() => {
+  try {
+    const src = require('fs').readFileSync(require('path').join(__dirname, '..', '..', 'run-demos.sh'), 'utf8');
+    const n = new Set([...src.matchAll(/--out out\/(\d+)-[a-z0-9-]+\.html/g)].map((x) => x[1])).size;
+    return n || 20;
+  } catch { return 20; }
+})();
 // Cards whose scenario overrides are the whole point of the demo; a walkthrough that runs
 // without them looks fine and shows nothing.
 const REQUIRED_KEYS = {
@@ -158,7 +166,7 @@ const finalLine = extraFail => {
       const r = await page.request.get(BASE + '/' + h);
       check(`home link ${h}`, r.status() === 200, String(r.status()));
     }
-    check('home: twenty reports', hrefs.length === EXPECTED_REPORTS, `${hrefs.length} links`);
+    check('home: every demo report linked', hrefs.length === EXPECTED_REPORTS, `${hrefs.length} links, run-demos.sh has ${EXPECTED_REPORTS}`);
     check('home: no js errors', log.errs.length === 0, log.errs.slice(0, 3).join(' | '));
     const homeBadge = await badge(page);
     check('home: badge empty', homeBadge === '', homeBadge);
