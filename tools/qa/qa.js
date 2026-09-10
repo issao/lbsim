@@ -310,8 +310,13 @@ const finalLine = extraFail => {
       const finished = new Set(['OUTCOME_OK', 'OUTCOME_OK_SLO_VIOLATED']);
       let traces = [];
       if (runId) {
-        const r = await ctx.request.post(BASE + '/v1/ingress/GetTraces', { data: { run_id: runId, limit: 10 } }).catch(() => null);
-        traces = r && r.ok() ? ((await r.json().catch(() => ({}))).traces || []) : [];
+        // Traces exist only once requests complete; on the low-rps kv-spiral fleet the first completions
+        // land ~20 simulated seconds in, which a single read at ~18 s missed once on lbsim.ai.
+        for (let attempt = 0; attempt < 15 && traces.length === 0; attempt++) {
+          const r = await ctx.request.post(BASE + '/v1/ingress/GetTraces', { data: { run_id: runId, limit: 10 } }).catch(() => null);
+          traces = r && r.ok() ? ((await r.json().catch(() => ({}))).traces || []) : [];
+          if (traces.length === 0) await sleep(3000);
+        }
       }
       const gaps = [];
       let waits = 0;
