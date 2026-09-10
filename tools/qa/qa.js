@@ -40,6 +40,24 @@ const check = (name, ok, detail = '') => {
 };
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
+// A walkthrough pauses its run at every narration point, and a paused run completes nothing, so a
+// check that needs completed requests unpauses through the API (SetSpeed, deterministic, no card
+// button to find) and waits until the run reaches `targetS` simulated seconds or finishes. Returns
+// a one-line account of how far the run got, for the failure message when traces still do not appear.
+async function advanceRun(ctx, runId, targetS) {
+  let simS = 0, state = '';
+  for (let attempt = 0; attempt < 30; attempt++) {
+    const g = await ctx.request.post(BASE + '/v1/ingress/GetRun', { data: { run_id: runId } }).catch(() => null);
+    const j = g && g.ok() ? await g.json().catch(() => ({})) : {};
+    state = j.state || '';
+    simS = j.sim_time_unix_ns ? Number((BigInt(j.sim_time_unix_ns) - 1767225600000000000n) / 1000000000n) : 0;
+    if (simS >= targetS || state === 'STATE_COMPLETE' || state === 'STATE_FAILED') break;
+    if (state === 'STATE_PAUSED') await ctx.request.post(BASE + '/v1/ingress/SetSpeed', { data: { run_id: runId, realtime_factor: 4, paused: false } }).catch(() => null);
+    await sleep(2000);
+  }
+  return `run reached ${simS}s (${state || 'no GetRun answer'})`;
+}
+
 // A hung browser must still produce a verdict: the whole run is capped so a stuck page fails
 // loudly instead of waiting on whoever invoked us.
 setTimeout(() => { console.log('FAIL harness — global timeout'); console.log(finalLine(1)); process.exit(1); }, 15 * 60 * 1000).unref();
@@ -309,20 +327,12 @@ const finalLine = extraFail => {
       const runId = ((dashboardBadge || '').match(/run (r-\d+)/) || [])[1];
       const finished = new Set(['OUTCOME_OK', 'OUTCOME_OK_SLO_VIOLATED']);
       let traces = [];
+      let traceWaitDetail = '';
       if (runId) {
         // Traces exist only once requests complete; on the low-rps kv-spiral fleet the first completions
         // land ~20 simulated seconds in, and a walkthrough pauses at its first narration point (12 s), so
-        // press the card's Play and let the run reach 30 simulated seconds before reading.
-        const playBtn = await page.$('.btn.wt-play').catch(() => null);
-        if (playBtn) await playBtn.click().catch(() => undefined);
-        for (let attempt = 0; attempt < 30; attempt++) {
-          const g = await ctx.request.post(BASE + '/v1/ingress/GetRun', { data: { run_id: runId } }).catch(() => null);
-          const j = g && g.ok() ? await g.json().catch(() => ({})) : {};
-          const simS = j.sim_time_unix_ns ? Number((BigInt(j.sim_time_unix_ns) - 1767225600000000000n) / 1000000000n) : 0;
-          if (simS >= 30 || j.state === 'STATE_COMPLETE') break;
-          if (j.state === 'STATE_PAUSED' && playBtn) await playBtn.click().catch(() => undefined);
-          await sleep(2000);
-        }
+        // let the run reach 30 simulated seconds before reading.
+        traceWaitDetail = await advanceRun(ctx, runId, 30);
         for (let attempt = 0; attempt < 15 && traces.length === 0; attempt++) {
           const r = await ctx.request.post(BASE + '/v1/ingress/GetTraces', { data: { run_id: runId, limit: 10 } }).catch(() => null);
           traces = r && r.ok() ? ((await r.json().catch(() => ({}))).traces || []) : [];
@@ -342,7 +352,7 @@ const finalLine = extraFail => {
       }
       check('traces: no gap over 100 ms between consecutive spans of the first ten sampled journeys (Issao)',
         Boolean(runId) && traces.length > 0 && gaps.length === 0,
-        !runId ? 'no run id on the badge' : traces.length === 0 ? 'GetTraces returned no traces' : gaps.length ? gaps.slice(0, 3).join(' · ') : `${traces.length} traces, ${waits} prefill_wait spans, contiguous`);
+        !runId ? 'no run id on the badge' : traces.length === 0 ? `GetTraces returned no traces; ${traceWaitDetail}` : gaps.length ? gaps.slice(0, 3).join(' · ') : `${traces.length} traces, ${waits} prefill_wait spans, contiguous`);
     }
     await noInvented(page, 'dashboard: no invented numbers on live (U95b)');
 
@@ -729,9 +739,16 @@ const finalLine = extraFail => {
       const runId = ((cardBadge || '').match(/run (r-\d+)/) || [])[1];
       const finished = new Set(['OUTCOME_OK', 'OUTCOME_OK_SLO_VIOLATED']);
       let traces = [];
+      let traceWaitDetail = '';
       if (runId) {
-        const r = await ctx.request.post(BASE + '/v1/ingress/GetTraces', { data: { run_id: runId, limit: 20 } }).catch(() => null);
-        traces = r && r.ok() ? ((await r.json().catch(() => ({}))).traces || []) : [];
+        // The card pauses its run at the first narration point (12 s) and this fleet's first completions
+        // land ~20 s in, so a paused run has no traces yet; advance it the same way the dashboard check does.
+        traceWaitDetail = await advanceRun(ctx, runId, 30);
+        for (let attempt = 0; attempt < 15 && traces.length === 0; attempt++) {
+          const r = await ctx.request.post(BASE + '/v1/ingress/GetTraces', { data: { run_id: runId, limit: 20 } }).catch(() => null);
+          traces = r && r.ok() ? ((await r.json().catch(() => ({}))).traces || []) : [];
+          if (traces.length === 0) await sleep(3000);
+        }
       }
       const gaps = [];
       let preempted = 0;
@@ -746,7 +763,7 @@ const finalLine = extraFail => {
       }
       check('showcase "KV preemption spiral at low load": no gap over 100 ms between consecutive spans',
         Boolean(runId) && traces.length > 0 && gaps.length === 0,
-        !runId ? 'no run id on the card badge' : traces.length === 0 ? 'GetTraces returned no traces' : gaps.length ? gaps.slice(0, 3).join(' · ') : `${traces.length} traces, ${preempted} preempted spans, contiguous`);
+        !runId ? 'no run id on the card badge' : traces.length === 0 ? `GetTraces returned no traces; ${traceWaitDetail}` : gaps.length ? gaps.slice(0, 3).join(' · ') : `${traces.length} traces, ${preempted} preempted spans, contiguous`);
     }
     // A driven page may still hold a control in flight when its run is stopped below; that lands
     // as a 409 in a console the nav check reads, so the nav page is the next clean card.
