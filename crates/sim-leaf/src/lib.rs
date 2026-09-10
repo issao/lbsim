@@ -2129,6 +2129,9 @@ fn spans_of(
                 (d.enqueued_at, at, SpanKind::ReplicaQueue)
             }
             StepEvent::PrefillChunk { tokens, start, end, .. } => (start, end, SpanKind::PrefillChunk { tokens }),
+            // The waiting sequence took none of the step's prefill, so the snapshot's total is what
+            // went to the others.
+            StepEvent::PrefillWait { start, end, .. } => (start, end, SpanKind::PrefillWait { others_prefill: snap.prefill_tokens }),
             StepEvent::DecodeStep { start, end, .. } => (start, end, SpanKind::DecodeStep),
             StepEvent::Retired { .. } => continue,
         };

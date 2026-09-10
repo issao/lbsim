@@ -244,3 +244,90 @@ fn export_writes_engine_traces() {
         assert!(ids.contains(&t.record.id), "trace {} is not one of the run's records", t.record.id);
     }
 }
+
+/// Issao, 2026-09-10: "looking at traces, I see out of SLO request where there is a very short queue
+/// (31ms) then a big gap (1.6s) until the first prefill. There shouldn't be a big gap in the trace
+/// view with unaccounted time." The replica-queue span ends at admission, but a sequence admitted
+/// into a batch is served only once the step's prefill budget reaches it, and that wait was engine
+/// time the trace did not record. Every step a sequence spends in the batch is now a span, so the
+/// replica's part of a journey is contiguous: each span starts exactly where the one before it ended
+/// (or in the same step, for the last prefill chunk and the first decode step).
+#[test]
+fn a_traced_request_has_no_unaccounted_time_on_the_replica() {
+    let s = short(0.2);
+    let r = sim::run(&s).unwrap();
+    let preempted: u64 = r.frames.iter().map(|f| f.preemptions).sum();
+    assert_eq!(preempted, 0, "this scenario must not preempt: an evicted sequence leaves the batch, which is a gap of its own kind");
+    let ok: Vec<_> = r.traces.iter().filter(|t| t.record.outcome.is_success() && t.record.attempts == 1).collect();
+    assert!(ok.len() > 20, "only {} successful traces", ok.len());
+
+    let (mut gaps, mut worst) = (0usize, 0u64);
+    let mut worst_id = 0;
+    for t in &ok {
+        for w in t.spans.windows(2) {
+            let (a, b) = (&w[0], &w[1]);
+            if !(a.kind.is_replica_span() && b.kind.is_replica_span()) {
+                continue;
+            }
+            let gap = b.start_unix_ns.saturating_sub(a.end_unix_ns);
+            if gap > 0 {
+                gaps += 1;
+                if gap > worst {
+                    worst = gap;
+                    worst_id = t.record.id;
+                }
+            }
+        }
+    }
+    eprintln!("gap statistics: {} traced requests, {gaps} gaps between replica spans, worst {:.1} ms on request {worst_id}", ok.len(), worst as f64 / 1e6);
+    assert_eq!(gaps, 0, "{gaps} gaps between consecutive replica spans, the worst {:.1} ms on request {worst_id}", worst as f64 / 1e6);
+}
+
+/// The reproduction: 50 replicas at 20 rps under p2c, the fleet main ran when it reproduced Issao's
+/// report. A request that waits in the batch has a `prefill_wait` span for every step it waited, and
+/// each one is explained by the step's whole prefill budget going to the sequences ahead of it: the
+/// tokens the span carries are exactly `step_token_budget`, none of them this request's.
+#[test]
+fn a_prefill_wait_is_explained_by_the_budget_going_to_others() {
+    let mut s = short(0.2);
+    s.replicas = 50;
+    s.arrival_rps = 20.0;
+    let r = sim::run(&s).unwrap();
+    let ok: Vec<_> = r.traces.iter().filter(|t| t.record.outcome.is_success() && t.record.attempts == 1).collect();
+    assert!(ok.len() > 20, "only {} successful traces", ok.len());
+
+    let (mut waited, mut wait_spans, mut longest_wait) = (0usize, 0usize, 0u64);
+    for t in &ok {
+        let mut waiting_ns = 0u64;
+        let mut seen_chunk = false;
+        let mut seen_decode = false;
+        for s in &t.spans {
+            match s.kind {
+                SpanKind::PrefillWait { others_prefill } => {
+                    assert!(!seen_decode, "request {}: waiting for prefill after decoding began", t.record.id);
+                    assert_eq!(
+                        others_prefill, r.scenario.step_token_budget,
+                        "request {}: waited while the step spent {others_prefill} of {} prefill tokens on others",
+                        t.record.id, r.scenario.step_token_budget
+                    );
+                    assert_eq!(s.kind.tokens_processed(), others_prefill);
+                    assert!(s.resource.batch_size >= 2, "request {}: waited alone in the batch", t.record.id);
+                    assert!(s.end_unix_ns > s.start_unix_ns, "request {}: a wait of no time", t.record.id);
+                    wait_spans += 1;
+                    waiting_ns += s.end_unix_ns - s.start_unix_ns;
+                    let _ = seen_chunk;
+                }
+                SpanKind::PrefillChunk { .. } => seen_chunk = true,
+                SpanKind::DecodeStep => seen_decode = true,
+                _ => {}
+            }
+        }
+        if waiting_ns > 0 {
+            waited += 1;
+            longest_wait = longest_wait.max(waiting_ns);
+        }
+    }
+    eprintln!("{waited} of {} traced requests waited in the batch, {wait_spans} wait spans, longest total wait {:.1} ms", ok.len(), longest_wait as f64 / 1e6);
+    assert!(waited > 0, "the reproduction shows no request waiting in the batch");
+    assert!(longest_wait >= 100_000_000, "the longest wait is {:.1} ms; the report saw hundreds", longest_wait as f64 / 1e6);
+}
