@@ -39,3 +39,10 @@ export function fmtTokens(n: number): string {
   if (n >= 1000) return `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k`;
   return n.toFixed(0);
 }
+
+/** An exact token count, comma-grouped (e.g. "12,345") — unlike `fmtTokens`' compact "12.3k", this
+ * is for a single request's own prompt/output size, where the exact number is the point. */
+export function fmtCount(n: number): string {
+  if (!isFinite(n)) return '-';
+  return Math.trunc(n).toLocaleString('en-US');
+}
