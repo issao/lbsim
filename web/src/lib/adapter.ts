@@ -91,6 +91,7 @@ export function replicaFromUpdate(u: SubscriptionUpdate): ReplicaSample {
     kvTokensResident: v('METRIC_KV_TOKENS_RESIDENT'),
     kvUtilization: v('METRIC_KV_UTILIZATION'),
     gpuUtilization: v('METRIC_GPU_UTILIZATION'),
+    gpuUsefulFraction: v('METRIC_GPU_USEFUL_FRACTION'),
     gpuComputeBoundFraction: v('METRIC_GPU_COMPUTE_BOUND_FRACTION'),
     stepTimeMs: stepTimeS * 1000,
     queueWaitMs: NaN,
@@ -158,8 +159,10 @@ export function frameFromUpdate(
     ejectedReplicas: 0,
     kvUtilization: kv,
     gpuUtilization: v('METRIC_GPU_UTILIZATION'),
+    gpuUsefulFraction: v('METRIC_GPU_USEFUL_FRACTION'),
     gpuComputeBoundFraction: v('METRIC_GPU_COMPUTE_BOUND_FRACTION'),
     gpuUtilizationP: fraction('METRIC_GPU_UTILIZATION'),
+    gpuUsefulFractionP: fraction('METRIC_GPU_USEFUL_FRACTION'),
     kvUtilizationP: fraction('METRIC_KV_UTILIZATION'),
     prefixHitRate: v('METRIC_PREFIX_HIT_RATE'),
     tierUtilization: { hbm: kv, dram: NaN, ssd: NaN },
@@ -335,11 +338,11 @@ export function framesInWindow(windowS: number, intervalS: number): number {
 const FRAME_MEANS = [
   'offeredRps', 'admittedRps', 'completedRps', 'rejectedRps', 'outputTokensPerS', 'goodputTokensPerS',
   'sloAttainment', 'preemptionsPerS', 'loadImbalanceCv', 'wastedGpuFraction', 'kvUtilization',
-  'gpuUtilization', 'gpuComputeBoundFraction', 'prefixHitRate', 'queuedSeqs', 'runningSeqs',
+  'gpuUtilization', 'gpuUsefulFraction', 'gpuComputeBoundFraction', 'prefixHitRate', 'queuedSeqs', 'runningSeqs',
 ] as const;
 const REPLICA_MEANS = [
   'queuedSeqs', 'runningSeqs', 'batchSize', 'kvTokensResident', 'kvUtilization', 'gpuUtilization',
-  'gpuComputeBoundFraction', 'stepTimeMs', 'queueWaitMs', 'ttftMeanMs', 'itlMeanMs', 'prefixHitRate',
+  'gpuUsefulFraction', 'gpuComputeBoundFraction', 'stepTimeMs', 'queueWaitMs', 'ttftMeanMs', 'itlMeanMs', 'prefixHitRate',
   'admittedRps', 'completedRps', 'preemptionsPerS', 'trueSpeedMultiplier', 'telemetryStalenessMs',
 ] as const;
 const LATENCIES: LatencyKind[] = ['ttft', 'itl', 'e2e', 'queueWait'];
@@ -480,6 +483,7 @@ export function smoothFrames(frames: ReplayFrame[], windowS: number, intervalS?:
     };
     smoothed.tierBandwidth = { dram: meanOf(window.map((f) => f.tierBandwidth.dram)), ssd: meanOf(window.map((f) => f.tierBandwidth.ssd)) };
     smoothed.gpuUtilizationP = meanFractionPercentiles(window, (f) => f.gpuUtilizationP);
+    smoothed.gpuUsefulFractionP = meanFractionPercentiles(window, (f) => f.gpuUsefulFractionP);
     smoothed.kvUtilizationP = meanFractionPercentiles(window, (f) => f.kvUtilizationP);
 
     for (const k of LATENCIES) {

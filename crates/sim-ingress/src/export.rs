@@ -241,9 +241,10 @@ pub fn fleet_rows(r: &RunResult) -> Vec<SubscriptionUpdate> {
             if w.all == 0 { f64::NAN } else { w.ok as f64 / w.all as f64 },
         );
         row.value(wire::METRIC_LOAD_IMBALANCE_CV, imbalance_at(r, s));
-        // GPU utilization and the KV-utilization band across replicas, from the same frame the
-        // per-replica rows below read. `busy_ns` never exceeds the window by construction; the ratio
-        // is clamped anyway rather than trust an upstream invariant.
+        // GPU utilization (time in step), GPU useful (work over the maximum possible) and the
+        // KV-utilization band across replicas, from the same frame the per-replica rows below read.
+        // Neither `busy_ns` nor `useful_ns` exceeds the window by construction; the ratios are
+        // clamped anyway rather than trust an upstream invariant.
         let frame = &r.frames[s];
         // `r.scenario.replicas` is the fleet size, not how many are up: a crashed replica (state 3,
         // EJECTED) keeps its slot in `frame.replicas` so a client cannot see it dropped, and so do the
@@ -260,6 +261,8 @@ pub fn fleet_rows(r: &RunResult) -> Vec<SubscriptionUpdate> {
         let window_ns = sample_interval(r) as f64;
         let gpu: Vec<f64> =
             serving.iter().map(|rep| (rep.busy_ns as f64 / window_ns).min(1.0)).collect();
+        let gpu_useful: Vec<f64> =
+            serving.iter().map(|rep| (rep.useful_ns as f64 / window_ns).min(1.0)).collect();
         let kv_ratios: Vec<f64> = serving
             .iter()
             .map(|rep| rep.kv_tokens as f64 / r.scenario.kv_capacity_tokens.max(1.0))
@@ -268,6 +271,7 @@ pub fn fleet_rows(r: &RunResult) -> Vec<SubscriptionUpdate> {
         let compute_sum: u64 = frame.replicas.iter().map(|rep| rep.compute_ns).sum();
         let replica_n = serving.len().max(1) as f64;
         row.value(wire::METRIC_GPU_UTILIZATION, gpu.iter().sum::<f64>() / replica_n);
+        row.value(wire::METRIC_GPU_USEFUL_FRACTION, gpu_useful.iter().sum::<f64>() / replica_n);
         row.value(wire::METRIC_GPU_COMPUTE_BOUND_FRACTION, compute_sum as f64 / busy_sum as f64);
         // Ratio of sums, same reasoning as the GPU ratio above. Gated on `prefix_roots`:
         // `prompt_tokens` accumulates on every admission regardless of a prefix model, so the ratio
@@ -283,6 +287,9 @@ pub fn fleet_rows(r: &RunResult) -> Vec<SubscriptionUpdate> {
         row.value(wire::METRIC_PREFIX_HIT_RATE, prefix_hit_rate);
         if let Some(d) = distribution_over_replicas(&gpu, REPLICA_PERCENTILES) {
             row.distribution(wire::METRIC_GPU_UTILIZATION, d);
+        }
+        if let Some(d) = distribution_over_replicas(&gpu_useful, REPLICA_PERCENTILES) {
+            row.distribution(wire::METRIC_GPU_USEFUL_FRACTION, d);
         }
         if let Some(d) = distribution_over_replicas(&kv_ratios, REPLICA_PERCENTILES) {
             row.distribution(wire::METRIC_KV_UTILIZATION, d);
@@ -333,6 +340,7 @@ pub fn replica_rows(r: &RunResult, s: usize) -> Vec<SubscriptionUpdate> {
         row.value(wire::METRIC_STEP_TIME, rep.last_step_ns as f64 / 1e9);
         let window_ns = sample_interval(r) as f64;
         row.value(wire::METRIC_GPU_UTILIZATION, (rep.busy_ns as f64 / window_ns).min(1.0));
+        row.value(wire::METRIC_GPU_USEFUL_FRACTION, (rep.useful_ns as f64 / window_ns).min(1.0));
         row.value(wire::METRIC_GPU_COMPUTE_BOUND_FRACTION, rep.compute_ns as f64 / rep.busy_ns as f64);
         row.value(wire::METRIC_REPLICA_STATE, rep.state as f64);
         row.value(wire::METRIC_TRUE_SPEED_MULTIPLIER, rep.speed);

@@ -90,6 +90,7 @@ pub const METRIC_GPU_UTILIZATION: i32 = 67;
 pub const METRIC_GPU_COMPUTE_BOUND_FRACTION: i32 = 68;
 pub const METRIC_REPLICA_STATE: i32 = 69;
 pub const METRIC_TRUE_SPEED_MULTIPLIER: i32 = 70;
+pub const METRIC_GPU_USEFUL_FRACTION: i32 = 71;
 
 /// `common.proto` `Outcome` numbers, keyed by the engine's outcome labels. `Scorecard.outcome_counts`
 /// is keyed by this number.

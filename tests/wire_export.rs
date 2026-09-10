@@ -242,29 +242,38 @@ fn gpu_utilization_is_a_mean_and_a_distribution_over_replicas() {
 
     let fleet_lines: Vec<String> = read(&run_dir.join("fleet.jsonl")).lines().map(String::from).collect();
     assert!(!fleet_lines.is_empty());
+    // 67 is the time-in-step share, 71 the useful work over the maximum possible; useful never
+    // exceeds busy, and both carry a distribution over replicas at fleet scope.
     let mut fleet_gpu_positive = false;
     for line in &fleet_lines {
         let gpu = metric_value(line, wire::METRIC_GPU_UTILIZATION).expect("fleet gpu utilization value");
+        let useful = metric_value(line, wire::METRIC_GPU_USEFUL_FRACTION).expect("fleet gpu useful value");
         assert!((0.0..=1.0).contains(&gpu), "{line}");
-        fleet_gpu_positive |= gpu > 0.0;
+        assert!((0.0..=1.0).contains(&useful), "{line}");
+        assert!(useful <= gpu + 1e-9, "useful {useful} > busy {gpu}: {line}");
+        fleet_gpu_positive |= useful > 0.0;
 
-        let dist = metric_distribution(line, wire::METRIC_GPU_UTILIZATION).expect("gpu distribution");
-        assert_eq!(field_percentiles(dist), vec![50.0, 90.0, 99.0], "{line}");
-        assert_eq!(field_u64(dist, "count"), replicas, "{line}");
+        for m in [wire::METRIC_GPU_UTILIZATION, wire::METRIC_GPU_USEFUL_FRACTION] {
+            let dist = metric_distribution(line, m).expect("gpu distribution");
+            assert_eq!(field_percentiles(dist), vec![50.0, 90.0, 99.0], "{line}");
+            assert_eq!(field_u64(dist, "count"), replicas, "{line}");
+        }
 
         assert!(metric_distribution(line, wire::METRIC_KV_UTILIZATION).is_some(), "{line}");
     }
-    assert!(fleet_gpu_positive, "no fleet row shows any GPU busy");
+    assert!(fleet_gpu_positive, "no fleet row shows any useful GPU work");
 
     let replica_lines: Vec<String> = read(&run_dir.join("replicas.jsonl")).lines().map(String::from).collect();
     assert!(!replica_lines.is_empty());
     let mut replica_gpu_positive = false;
     for line in &replica_lines {
         let gpu = metric_value(line, wire::METRIC_GPU_UTILIZATION).expect("replica gpu utilization value");
+        let useful = metric_value(line, wire::METRIC_GPU_USEFUL_FRACTION).expect("replica gpu useful value");
         assert!((0.0..=1.0).contains(&gpu), "{line}");
-        replica_gpu_positive |= gpu > 0.0;
+        assert!(useful <= gpu + 1e-9, "useful {useful} > busy {gpu}: {line}");
+        replica_gpu_positive |= useful > 0.0;
     }
-    assert!(replica_gpu_positive, "no replica row shows any GPU busy");
+    assert!(replica_gpu_positive, "no replica row shows any useful GPU work");
 }
 
 /// U27c: the prefix hit rate only appears on the wire once a scenario has a prefix model.

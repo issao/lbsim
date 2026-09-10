@@ -296,12 +296,13 @@ export const FLEET_JSONL_EXCERPT = `{"subscription_id":"export","sim_time_unix_n
 `;
 
 /**
- * A fleet row as U94b's server emits it: `METRIC_GPU_UTILIZATION` (67) as the fleet mean in `values`
+ * A fleet row as U94b's server emits it: `METRIC_GPU_UTILIZATION` (67, time in step) and
+ * `METRIC_GPU_USEFUL_FRACTION` (71, useful work over the maximum possible) each as the fleet mean in `values`
  * and as a distribution across replicas, and `METRIC_KV_UTILIZATION` (20) with the same
  * distribution treatment. Hand-written, so the numbers are round; the excerpt above predates the
- * metric and stays as exported.
+ * metrics and stays as exported.
  */
-export const GPU_FLEET_ROW = `{"subscription_id":"export","sim_time_unix_ns":"1767225625000000000","realtime_factor":0,"row":{"target":{"scope":"SCOPE_FLEET"},"values":{"20":0.41,"40":70,"41":64,"42":64,"43":0,"60":32,"67":0.62,"68":0.35},"distributions":{"20":{"count":"32","mean":0.41,"min":0.05,"max":0.97,"percentile":[50,90,99],"value":[0.4,0.8,0.95],"from_merged_histogram":false},"67":{"count":"32","mean":0.62,"min":0.1,"max":0.99,"percentile":[50,90,99],"value":[0.6,0.9,0.98],"from_merged_histogram":false}}},"final":false}`;
+export const GPU_FLEET_ROW = `{"subscription_id":"export","sim_time_unix_ns":"1767225625000000000","realtime_factor":0,"row":{"target":{"scope":"SCOPE_FLEET"},"values":{"20":0.41,"40":70,"41":64,"42":64,"43":0,"60":32,"67":0.62,"68":0.35,"71":0.1},"distributions":{"20":{"count":"32","mean":0.41,"min":0.05,"max":0.97,"percentile":[50,90,99],"value":[0.4,0.8,0.95],"from_merged_histogram":false},"67":{"count":"32","mean":0.62,"min":0.1,"max":0.99,"percentile":[50,90,99],"value":[0.6,0.9,0.98],"from_merged_histogram":false},"71":{"count":"32","mean":0.1,"min":0.01,"max":0.3,"percentile":[50,90,99],"value":[0.08,0.2,0.3],"from_merged_histogram":false}}},"final":false}`;
 
 /** The same run's `scenario.txt`, resolved, so the fake can answer StartRun with a real one. */
 export const FLEET_EXCERPT_SCENARIO = `name = p2c

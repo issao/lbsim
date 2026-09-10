@@ -58,7 +58,7 @@ function eq<T>(got: T, want: T, what: string): void {
 // ---------------------------------------------------------------------------
 
 check('the fields the engine measures are wired; the ones it does not are not', () => {
-  for (const f of ['offeredRps', 'completedRps', 'ttft', 'kvUtilization', 'gpuUtilization', 'replicas', 'preemptionsPerS'] as const) {
+  for (const f of ['offeredRps', 'completedRps', 'ttft', 'kvUtilization', 'gpuUtilization', 'gpuUsefulFraction', 'gpuUsefulFractionP', 'replicas', 'preemptionsPerS'] as const) {
     eq(wired.WIRED_FRAME_FIELDS.has(f), true, `frame ${f} wired`);
   }
   for (const f of ['wastedGpuFraction', 'prefixHitRate', 'tierUtilization', 'tierBandwidth', 'events', 'warmingReplicas'] as const) {
@@ -68,7 +68,7 @@ check('the fields the engine measures are wired; the ones it does not are not', 
 });
 
 check("U101's three replica fields are wired now; prefix hit rate and weight are not", () => {
-  for (const f of ['id', 'queuedSeqs', 'stepTimeMs', 'state', 'trueSpeedMultiplier', 'ttftMeanMs'] as const) {
+  for (const f of ['id', 'queuedSeqs', 'stepTimeMs', 'state', 'trueSpeedMultiplier', 'ttftMeanMs', 'gpuUsefulFraction'] as const) {
     eq(wired.WIRED_REPLICA_FIELDS.has(f), true, `replica ${f} wired`);
   }
   for (const f of ['prefixHitRate', 'weight', 'itlMeanMs', 'telemetryStalenessMs'] as const) {

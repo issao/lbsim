@@ -234,7 +234,10 @@ check('a fleet row 25 s in becomes a Frame with the engine numbers', () => {
 check('gpu utilization arrives as a fleet mean plus percentiles across replicas, unscaled (U94)', () => {
   const f = adapter.frameFromUpdate(update(fixtures.GPU_FLEET_ROW), origin, 0);
   eq(f.gpuUtilization, 0.62, 'fleet mean is the wire fraction, untouched');
+  eq(f.gpuUsefulFraction, 0.1, 'useful work over the maximum possible (71) is its own field, below the busy share');
   eq(f.gpuComputeBoundFraction, 0.35, 'compute-bound share');
+  ok(f.gpuUsefulFractionP !== null, 'useful distribution present');
+  eq(f.gpuUsefulFractionP!.value[0], 0.08, 'useful p50 unscaled');
   ok(f.gpuUtilizationP !== null, 'gpu distribution present');
   eq(f.gpuUtilizationP!.count, 32, 'one sample per replica');
   eq(f.gpuUtilizationP!.percentile, [50, 90, 99], 'percentiles as requested');
@@ -245,6 +248,8 @@ check('gpu utilization arrives as a fleet mean plus percentiles across replicas,
   const old = adapter.frameFromUpdate(update(ROW_25S), origin, 0);
   eq(old.gpuUtilization, NaN, 'a row from before the metric reads as a gap');
   eq(old.gpuUtilizationP, null, 'no gpu distribution on an older row');
+  eq(old.gpuUsefulFraction, NaN, 'useful reads as a gap on a row from before metric 71');
+  eq(old.gpuUsefulFractionP, null, 'no useful distribution on an older row');
   eq(old.kvUtilizationP, null, 'no kv distribution on an older row');
   return 'mean 0.62, p50/p90/p99 0.6/0.9/0.98 over 32 replicas; older rows NaN and null';
 });
@@ -797,7 +802,7 @@ check('smoothing selector: the URL wins over storage, storage over the default; 
 function blankReplica(id: number): import('./frame').ReplicaSample {
   return {
     id, present: true, state: 'READY', weight: 1, queuedSeqs: NaN, runningSeqs: NaN, batchSize: NaN, kvTokensResident: NaN,
-    kvUtilization: NaN, gpuUtilization: NaN, gpuComputeBoundFraction: NaN, stepTimeMs: NaN, queueWaitMs: NaN, ttftMeanMs: NaN,
+    kvUtilization: NaN, gpuUtilization: NaN, gpuUsefulFraction: NaN, gpuComputeBoundFraction: NaN, stepTimeMs: NaN, queueWaitMs: NaN, ttftMeanMs: NaN,
     itlMeanMs: NaN, prefixHitRate: NaN, admittedRps: NaN, completedRps: NaN, preemptionsPerS: NaN, trueSpeedMultiplier: NaN,
     telemetryStalenessMs: NaN,
   };

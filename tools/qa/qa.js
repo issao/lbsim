@@ -364,6 +364,34 @@ const finalLine = extraFail => {
     await page.close();
   }
 
+  // b1b. GPU utilization against useful work on Issao's fleet: "when I run a simulation with 10rps
+  // and 50 replicas, utilization is quite high (mean at 53%) with pretty much any policy. That
+  // seems way off." Utilization is the time-in-step share and keeps that meaning; the new useful
+  // tile is work over the maximum possible, and the two must disagree by the width of the batch:
+  // after 30 simulated seconds useful sits in the low single digits while utilization stays over
+  // half.
+  {
+    const { page, until } = await fresh('#/dashboard?replicas=50&arrival_rps=10&duration_s=90&warmup_s=5');
+    const cursor = () => page.$eval('.playback [aria-valuenow]', el => Number(el.getAttribute('aria-valuenow'))).catch(() => NaN);
+    const tile = async sel => {
+      const t = await page.$eval(`[data-tile="${sel}"] .tile-value`, el => el.textContent).catch(() => '');
+      const m = /(-?\d+(?:\.\d+)?)\s*%/.exec(t || '');
+      return m ? Number(m[1]) : NaN;
+    };
+    const reached = await until(async () => (await cursor()) >= 30, 75000, 500);
+    // Only the active observe tab is mounted, so the tiles exist only once Utilization is open.
+    const tab = await until(() => page.$('button[data-tab="observe:utilization"]'), 4000);
+    if (tab) await tab.click();
+    await until(async () => Number.isFinite(await tile('gpu-utilization')), 6000, 250);
+    const util = await tile('gpu-utilization');
+    const useful = await tile('gpu-useful');
+    const detail = `at ${await cursor()} s: utilization ${util}%, useful ${useful}%`;
+    check('gpu: 50 replicas at 10 rps reach 30 simulated seconds', Boolean(reached), detail);
+    check('gpu: utilization (time in step) stays above 30% at 10 rps on 50 replicas, the number Issao saw', util > 30, detail);
+    check('gpu: useful work of the maximum possible is under 10% on the same fleet (Issao)', useful < 10, detail);
+    await page.close();
+  }
+
   // b2. load-test dashboard: a run that reaches STATE_COMPLETE offers Restart (U120, Issao: "add a
   // restart button when a loadtest run finishes"). The page's own default is 600 s; QA_SHORT_RUN
   // (default 20 s) overrides duration_s (and warmup_s, which sim-leaf requires stays below it) via
