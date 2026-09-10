@@ -49,7 +49,8 @@ import {
   workloadToWire,
   uiTargetToWire,
 } from './api';
-import { modeBanner, serverMode } from './mode';
+import { modeBanner, REPLAY_RELEASED_BANNER, serverMode } from './mode';
+import { loadRunFromCheckpoint } from './replay';
 import { smoothingWindowNs, useSmoothing } from './smoothing';
 
 // ---------------------------------------------------------------------------
@@ -211,6 +212,16 @@ export class ServerRunEngine implements FrameSource {
   connection: StreamPhase = 'opening';
   /** A transport or server error worth showing, rather than a blank chart. */
   error: string | null = null;
+  /**
+   * The fleet subscription 410'd because the *run* left memory (`IngressError.runReleased`), not
+   * because the ring lost the subscription: `LBSIM_COMPLETED_RETENTION_S` ran out while this page
+   * still held the run (WIRE.md, "released"). The engine backfills `frames` from the checkpoint
+   * under `runs/<id>/` -- the same documents `sim-run export` writes -- so the panels keep showing
+   * that run's real numbers instead of a stalled stream; the badge says so via `connection` and
+   * `mode.ts`'s `'released'` state, since `source.kind` stays `'server'` here (`ReplayRunHandle`
+   * carries fields, `loaded` among them, this engine has none of).
+   */
+  releasedFromMemory = false;
   /** Control-panel fields the engine has no equivalent for, so the UI can say they are inert. */
   dropped: string[] = [];
   /**
@@ -488,6 +499,34 @@ export class ServerRunEngine implements FrameSource {
     }
   }
 
+  /**
+   * The fleet subscription just 410'd because this run itself left memory (`connection === 'gone'`),
+   * not because the ring lost the subscription. Read the checkpoint `sim-run export` would have
+   * written and show that instead of a stalled stream, at the same base URL this engine's own
+   * client talks to -- a `?server=` pointed at another origin serves that origin's checkpoints, not
+   * this page's. The status poll stops: nothing further will change a run that is no longer live.
+   */
+  private async fellBackToCheckpoint(id: string): Promise<void> {
+    try {
+      const loaded = await loadRunFromCheckpoint(id, this.opts.client.fetchImpl, this.opts.client.url('/runs/'));
+      if (this.runId !== id || this.disposed) return;
+      if (this.poll !== null) {
+        clearInterval(this.poll);
+        this.poll = null;
+      }
+      this.frames.splice(0, this.frames.length, ...loaded.frames);
+      this.originUnixNs = loaded.originUnixNs;
+      this.setStatus(loaded.status);
+      this.releasedFromMemory = true;
+      this.error = null;
+      this.changed();
+    } catch (e) {
+      if (this.runId !== id || this.disposed) return;
+      this.error = `run ${id} was released, and its checkpoint could not be read: ${e instanceof Error ? e.message : String(e)}`;
+      this.changed();
+    }
+  }
+
   private subscribe(): void {
     const id = this.runId;
     if (!id) return;
@@ -521,6 +560,9 @@ export class ServerRunEngine implements FrameSource {
             return;
           }
           this.error = detail;
+        }
+        if (p === 'gone' && this.runId === id && !this.disposed) {
+          void this.fellBackToCheckpoint(id);
         }
         this.changed();
       },
@@ -835,6 +877,8 @@ export type ServerRunHandle = Omit<RunHandle, 'engine' | 'update' | 'source'> & 
   disabledReason: string;
   refused: string | null;
   dismissRefused: () => void;
+  /** See `ServerRunEngine.releasedFromMemory`: `frames` is the checkpoint's now, not the stream's. */
+  releasedFromMemory: boolean;
 };
 
 /**
@@ -934,7 +978,14 @@ export function useServerRun(initial: ScenarioConfig, opts: ServerRunOptions = {
       },
       restart: (next) => void engine.restart(next),
       dismissUpdate: () => engine.dismissUpdate(),
-      source: { kind: 'server', label: modeBanner(mode), disabledReason: SERVER_DISABLED_REASON, runId: engine.runId ?? undefined },
+      source: {
+        kind: 'server',
+        // `kind` stays `'server'`: `ReplayRunHandle`-only fields (`loaded`, among them) are not
+        // here to give a panel that trusts `kind === 'replay'`, so only the label changes.
+        label: engine.releasedFromMemory ? REPLAY_RELEASED_BANNER : modeBanner(mode),
+        disabledReason: SERVER_DISABLED_REASON,
+        runId: engine.runId ?? undefined,
+      },
       originUnixNs: engine.originUnixNs,
       runId: engine.runId,
       status: engine.status,
@@ -949,6 +1000,7 @@ export function useServerRun(initial: ScenarioConfig, opts: ServerRunOptions = {
       disabledReason: SERVER_DISABLED_REASON,
       refused: engine.refused,
       dismissRefused: () => engine.dismissRefused(),
+      releasedFromMemory: engine.releasedFromMemory,
     }),
     // `version` is what the engine bumps; every field above is read from it at that moment.
     // eslint-disable-next-line react-hooks/exhaustive-deps

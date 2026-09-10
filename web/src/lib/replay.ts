@@ -31,6 +31,7 @@ import {
   isObject,
   parseScenarioText,
   relSeconds,
+  secondsToNs,
   str,
   u64,
 } from './api';
@@ -204,6 +205,62 @@ export async function loadRun(entry: RunIndexEntry, f: FetchLike = defaultFetch(
   const frames = parseFleetJsonl(fleetText, entry.simStartUnixNs, replicas, entry.replicaSampleStride);
   if (frames.length === 0) throw new Error(`${entry.runId}/fleet.jsonl: no samples`);
   return { entry, status, result, scenarioText, config, unmapped, frames };
+}
+
+/** What `loadRunFromCheckpoint` returns: `loadRun`'s shape minus the index entry it has none of,
+ *  and `result` optional since a failed run's checkpoint has no `result.json` (WIRE.md, "released"). */
+export interface CheckpointRun {
+  runId: string;
+  status: RunStatus;
+  result: RunResult | null;
+  scenarioText: string;
+  config: ScenarioConfig;
+  unmapped: string[];
+  frames: ReplayFrame[];
+  /** The origin `frames[*].simS` is relative to, recovered rather than told; see below. */
+  originUnixNs: bigint;
+}
+
+/**
+ * A run's checkpoint read straight from `runs/<id>/` on the Ingress server that released it,
+ * bypassing `runs/index.json` (a released run is not merged into it, WIRE.md "released"). This is
+ * `useServerRun.ts`'s fallback when an `OpenSubscription` 410s because the run itself left memory
+ * while the page still held it: the same documents `loadRun` reads, addressed directly by run id
+ * rather than through an index entry.
+ *
+ * The one thing an index entry supplies that nothing else here does is `sim_start_unix_ns`: every
+ * run's simulated clock starts at the same constant and the first *closed* frame lands one sample
+ * interval later (`Checkpoint::inputs` in `run.rs` keeps every frame from the start, unlike
+ * `traces.jsonl`), so the origin is recovered from the checkpoint's own first two frames instead of
+ * being told. `replica_sample_stride` is read from `checkpoint.json` when a terminal checkpoint
+ * wrote one, 1 otherwise (an idle checkpoint's, or an older export's).
+ */
+export async function loadRunFromCheckpoint(runId: string, f: FetchLike = defaultFetch(), base = runsBase()): Promise<CheckpointRun> {
+  const dir = `${base}${runId}/`;
+  const [statusJson, fleetText, resultText, scenarioText, replicasText, checkpointText] = await Promise.all([
+    getJson(`${dir}status.json`, f),
+    getText(`${dir}fleet.jsonl`, f),
+    getOptionalText(`${dir}result.json`, f),
+    getText(`${dir}scenario.txt`, f),
+    getOptionalText(`${dir}replicas.jsonl`, f),
+    getOptionalText(`${dir}checkpoint.json`, f),
+  ]);
+  const status = decodeRunStatus(statusJson, `${runId}/status.json`);
+  const result = resultText === null ? null : decodeRunResult(JSON.parse(resultText) as Json, `${runId}/result.json`);
+  const { config, unmapped } = configFromScenarioText(scenarioText);
+  const replicas = replicasText === null ? new Map() : parseReplicasJsonl(replicasText);
+  let stride = 1;
+  if (checkpointText !== null) {
+    const cp = JSON.parse(checkpointText) as { replica_sample_stride?: unknown };
+    if (typeof cp.replica_sample_stride === 'number' && cp.replica_sample_stride > 0) stride = cp.replica_sample_stride;
+  }
+  // A first pass to recover the origin from the checkpoint's own frames, then the real parse.
+  const probe = parseFleetJsonl(fleetText, 0n, replicas, stride);
+  if (probe.length === 0) throw new Error(`${runId}/fleet.jsonl: no samples`);
+  const sampleIntervalNs = probe.length > 1 ? probe[1].simTimeUnixNs - probe[0].simTimeUnixNs : secondsToNs(1 / config.samplesPerSimSecond);
+  const originUnixNs = probe[0].simTimeUnixNs - sampleIntervalNs;
+  const frames = parseFleetJsonl(fleetText, originUnixNs, replicas, stride);
+  return { runId, status, result, scenarioText, config, unmapped, frames, originUnixNs };
 }
 
 /**

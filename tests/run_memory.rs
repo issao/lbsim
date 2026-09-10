@@ -125,6 +125,33 @@ fn start_run(addr: SocketAddr) -> String {
     parse_json(&body).unwrap().str("run_id").unwrap().to_string()
 }
 
+/// A short, warmup-free run that records traces: `warmup_s: 0` so the checkpoint's `traces.jsonl`
+/// (measured-from-the-start, per `Checkpoint::inputs`) holds exactly what the live trace ring
+/// holds, with nothing dropped for having arrived during a warmup the ring never filters out.
+fn start_run_with_traces(addr: SocketAddr) -> String {
+    let text = std::fs::read_to_string(workspace().join("scenarios/route_p2c.txt")).unwrap();
+    let escaped = text.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n");
+    let body = format!(
+        "{{\"scenario\":{{\"text\":\"{escaped}\",\"overrides\":{{\"duration_s\":\"5\",\"warmup_s\":\"0\",\"replicas\":\"8\",\"arrival_rps\":\"70\"}}}},\"max_realtime_factor\":0,\"record_traces\":true}}"
+    );
+    let (status, body) = post(addr, "StartRun", &body);
+    assert_eq!(status, 200, "{body}");
+    parse_json(&body).unwrap().str("run_id").unwrap().to_string()
+}
+
+/// A small, quick-to-finish run for tests that only need several terminal runs in a row rather
+/// than one with statistics worth measuring: `start_run`'s 300 s is otherwise the norm here.
+fn start_short_run(addr: SocketAddr) -> String {
+    let text = std::fs::read_to_string(workspace().join("scenarios/route_p2c.txt")).unwrap();
+    let escaped = text.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n");
+    let body = format!(
+        "{{\"scenario\":{{\"text\":\"{escaped}\",\"overrides\":{{\"duration_s\":\"20\",\"replicas\":\"8\",\"arrival_rps\":\"70\"}}}},\"max_realtime_factor\":0}}"
+    );
+    let (status, body) = post(addr, "StartRun", &body);
+    assert_eq!(status, 200, "{body}");
+    parse_json(&body).unwrap().str("run_id").unwrap().to_string()
+}
+
 fn state_of(addr: SocketAddr, run_id: &str) -> (u16, String) {
     let (status, body) = post(addr, "GetRun", &format!("{{\"run_id\":\"{run_id}\"}}"));
     let state = parse_json(&body).ok().and_then(|j| j.str("state").map(str::to_string)).unwrap_or_default();
@@ -278,4 +305,107 @@ fn a_finished_run_stays_for_the_retention_and_while_leased() {
     server.runs.leases().close(&lease.id);
     wait_for("the release once the lease closed", 10, || server.runs.held().is_empty());
     assert_eq!(state_of(addr, &id), (200, "STATE_COMPLETE".to_string()));
+}
+
+/// Follow-up to 38c36cf: two harness checks against lbsim.ai failed because a finished run had
+/// already been released by the time the check went to read it. `GetRun` every 500 ms is the
+/// dashboard's own poll while a viewer sits on a finished run; a read must hold the retention
+/// clock open for as long as it keeps landing, not just for the retention after the run ended.
+#[test]
+fn a_getrun_poll_holds_a_finished_run_past_its_one_second_retention() {
+    let (addr, server, _dir) = start_server("poll-holds", S);
+    let id = start_run(addr);
+    wait_for("the run's completion", 300, || state_of(addr, &id).1 == "STATE_COMPLETE");
+    wait_for("the checkpoint", 30, || server.runs.get(&id).unwrap().lock().terminal_checkpoint);
+
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < deadline {
+        let (status, _) = post(addr, "GetRun", &format!("{{\"run_id\":\"{id}\"}}"));
+        assert_eq!(status, 200);
+        std::thread::sleep(Duration::from_millis(500));
+        assert_eq!(server.runs.held().len(), 1, "a GetRun landed well under a second ago; the 1 s retention must still hold it");
+    }
+    // No more polling past this point: released a bit more than a second after the last one.
+    wait_for("the release once the polling stops", 5, || server.runs.held().is_empty());
+}
+
+/// The kv-spiral showcase's "no gap" check calls `GetTraces` right after the badge names a
+/// finished run; the nav page does the same when a viewer opens the Traces tab on a run that
+/// finished a while ago. Both read the checkpoint once the run has left memory, and both must see
+/// exactly what a live run would have shown.
+#[test]
+fn gettraces_answers_from_the_checkpoint_after_release_the_same_as_before_it() {
+    let (addr, server, _dir) = start_server("traces-equal-after-release", S);
+    let id = start_run_with_traces(addr);
+    wait_for("the run's completion", 60, || state_of(addr, &id).1 == "STATE_COMPLETE");
+    wait_for("the checkpoint", 30, || server.runs.get(&id).unwrap().lock().terminal_checkpoint);
+
+    let (status, before) = post(addr, "GetTraces", &format!("{{\"run_id\":\"{id}\"}}"));
+    assert_eq!(status, 200, "{before}");
+    let before_traces = match parse_json(&before).unwrap().get("traces") {
+        Some(Json::Arr(items)) => items.clone(),
+        other => panic!("{other:?}"),
+    };
+    assert!(!before_traces.is_empty(), "a warmup-free run with record_traces should have sampled something");
+
+    wait_for("the release", 10, || server.runs.held().is_empty());
+    let (status, after) = post(addr, "GetTraces", &format!("{{\"run_id\":\"{id}\"}}"));
+    assert_eq!(status, 200, "{after}");
+    assert_eq!(after, before, "GetTraces after release must equal GetTraces before it, byte for byte");
+}
+
+/// The harness's own repro: stop a run, wait 2 s (comfortably past a 1 s retention), then read its
+/// traces. Before this unit that returned "GetTraces returned no traces" because `GetTraces` 410'd
+/// on a released run; now it answers from `runs/<id>/traces.jsonl`.
+#[test]
+fn gettraces_still_returns_rows_two_seconds_after_a_stopped_run_is_released() {
+    let (addr, server, _dir) = start_server("harness-stop-then-wait", S);
+    let id = start_run_with_traces(addr);
+    wait_for("the run's completion", 60, || state_of(addr, &id).1 == "STATE_COMPLETE");
+    let (status, body) = post(addr, "StopRun", &format!("{{\"run_id\":\"{id}\"}}"));
+    assert_eq!(status, 200, "{body}");
+
+    std::thread::sleep(Duration::from_secs(2));
+    assert!(server.runs.held().is_empty(), "released well within the 2 s wait, which is the point of this test");
+
+    let (status, body) = post(addr, "GetTraces", &format!("{{\"run_id\":\"{id}\"}}"));
+    assert_eq!(status, 200, "{body}");
+    let traces = match parse_json(&body).unwrap().get("traces") {
+        Some(Json::Arr(items)) => items.clone(),
+        other => panic!("{other:?}"),
+    };
+    assert!(!traces.is_empty(), "GetTraces returned no traces");
+}
+
+/// At the cap, the least-recently-read finished run gives way; one a `GetRun` touched moments ago
+/// survives even though a `StartRun` needs the memory back.
+#[test]
+fn the_cap_spares_a_finished_run_read_moments_ago() {
+    let (addr, server, _dir) = start_server("cap-prefers-fresh-read", 3600 * S);
+    let mut stale = Vec::new();
+    for _ in 0..sim_ingress::run::MAX_LIVE_RUNS - 1 {
+        let id = start_short_run(addr);
+        wait_for("completion", 30, || state_of(addr, &id).1 == "STATE_COMPLETE");
+        wait_for("the checkpoint", 30, || server.runs.get(&id).unwrap().lock().terminal_checkpoint);
+        {
+            let run = server.runs.get(&id).unwrap();
+            let mut st = run.lock();
+            let old = sim_ingress::idle::wall_now_ns().saturating_sub(20 * S);
+            st.last_read_wall_ns = old;
+            st.finished_at_wall_ns = Some(old);
+        }
+        stale.push(id);
+    }
+    let fresh = start_short_run(addr);
+    wait_for("completion", 30, || state_of(addr, &fresh).1 == "STATE_COMPLETE");
+    wait_for("the checkpoint", 30, || server.runs.get(&fresh).unwrap().lock().terminal_checkpoint);
+    let (status, _) = post(addr, "GetRun", &format!("{{\"run_id\":\"{fresh}\"}}"));
+    assert_eq!(status, 200, "the GetRun just now is the fresh read the cap must respect");
+
+    // The ninth `StartRun` finds eight runs held and releases what it can.
+    let _ninth = start_short_run(addr);
+    for id in &stale {
+        assert!(server.runs.get(id).is_none(), "run {id} was last read 20 s ago: eligible under cap pressure");
+    }
+    assert!(server.runs.get(&fresh).is_some(), "a run read moments ago must survive the cap");
 }

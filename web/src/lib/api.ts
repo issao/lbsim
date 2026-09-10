@@ -785,6 +785,16 @@ export class IngressError extends Error {
   get gone(): boolean {
     return this.httpStatus === 410;
   }
+  /**
+   * A 410 that means the *run* left memory (`server.rs`'s `fn run`: `"run <id> was released;
+   * replay from runs/<id>/"`), not one of the subscription-specific 410s (`"subscription is gone;
+   * open a new one"`, `"the ring no longer covers ..."`). Those recover by opening a new
+   * subscription on the same run; this one never will, because the run itself is gone, so a
+   * client sees this as the signal to fall back to the run's checkpoint instead of retrying.
+   */
+  get runReleased(): boolean {
+    return this.gone && this.message.includes('was released');
+  }
 }
 
 export function toIngressError(body: Json, httpStatus: number, where: string): IngressError {
@@ -1148,9 +1158,11 @@ export function backoffDelayMs(attempt: number, rnd: () => number = Math.random)
  * `opening` is the first stream; `streaming` once its `open` event arrived; `reconnecting` is a
  * resumed stream on the same subscription with `Last-Event-ID`; `reopening` is a new subscription
  * after the old one was lost (lease expired, server said 410, or renew said `expired`); `complete`
- * is the run's `final` update; `closed` is the caller's doing; `failed` is a rejected open.
+ * is the run's `final` update; `closed` is the caller's doing; `failed` is a rejected open; `gone`
+ * is a 410 for the run itself (`IngressError.runReleased`), terminal unlike `reopening`: retrying
+ * only gets another 410, because the run left memory rather than just this subscription.
  */
-export type StreamPhase = 'opening' | 'streaming' | 'reconnecting' | 'reopening' | 'complete' | 'closed' | 'failed';
+export type StreamPhase = 'opening' | 'streaming' | 'reconnecting' | 'reopening' | 'complete' | 'closed' | 'failed' | 'gone';
 
 export interface SubscribeOptions {
   runId: string;
@@ -1335,9 +1347,17 @@ export function subscribeToTarget(client: IngressClient, o: SubscribeOptions): S
         if (closed) break;
         errored = true;
         if (e instanceof IngressError && e.gone) {
-          // The ring cannot cover the gap, or the subscription is unknown: start over.
           forget();
-          setPhase('reopening', e.message);
+          if (e.runReleased) {
+            // The run itself is gone, not merely this subscription: another open only gets
+            // another 410, so the loop ends here instead of reopening forever. The caller reads
+            // the `gone` phase and falls back to the run's checkpoint (WIRE.md, "released").
+            closed = true;
+            setPhase('gone', e.message);
+          } else {
+            // The ring cannot cover the gap, or the subscription is unknown: start over.
+            setPhase('reopening', e.message);
+          }
         } else {
           setPhase('reconnecting', e instanceof Error ? e.message : String(e));
         }
@@ -1361,7 +1381,7 @@ export function subscribeToTarget(client: IngressClient, o: SubscribeOptions): S
       }
     }
     if (renewTimer !== null) clearInterval(renewTimer);
-    if (currentPhase() !== 'complete' && currentPhase() !== 'failed') setPhase('closed');
+    if (currentPhase() !== 'complete' && currentPhase() !== 'failed' && currentPhase() !== 'gone') setPhase('closed');
   })();
 
   return {

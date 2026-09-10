@@ -70,14 +70,18 @@ export function Dashboard(props: DashboardProps) {
 function ServerDashboard({ initial, autoplay = true, run: _recording, ...rest }: DashboardProps) {
   const run = useServerRun(initial, { autoplay });
   useEffect(() => {
-    if (run.runId) {
+    // Checked ahead of the plain `run.runId` branch: a released run keeps its id, so without this
+    // order the badge would keep claiming "live" over a stream that already 410'd for good.
+    if (run.releasedFromMemory) {
+      setActiveMode('released', run.runId ?? undefined);
+    } else if (run.runId) {
       setActiveMode('server', run.runId);
     } else if (run.error) {
       setActiveMode('refused', undefined, run.error);
     } else {
       setActiveMode('connecting');
     }
-  }, [run.runId, run.error]);
+  }, [run.runId, run.error, run.releasedFromMemory]);
   return <DashboardBody run={run} banner={<ServerBanner run={run} />} {...rest} />;
 }
 
@@ -86,8 +90,14 @@ function ServerBanner({ run }: { run: ServerRunHandle }) {
   return (
     <>
       <div className="banner">
-        <span className="tagline">live</span>
-        <span className="note">{dataSourceGloss('server')}</span>
+        {/* U95b follow-up: a run this page held got released from memory (WIRE.md, "released")
+            while the tab was still open on it. The stream is over for good at that point --
+            `frames` is the checkpoint's now, not a subscription's -- so the tagline says replay,
+            not live, rather than keep promising a stream that will only 410 again. */}
+        <span className="tagline">{run.releasedFromMemory ? 'replay' : 'live'}</span>
+        <span className="note">
+          {run.releasedFromMemory ? 'this run was released from the server’s memory' : dataSourceGloss('server')}
+        </span>
         {/* U99: the connection-phase / refusal message replaces this line's own content rather
             than adding a second banner underneath, so the row's height never changes with it. */}
         <span

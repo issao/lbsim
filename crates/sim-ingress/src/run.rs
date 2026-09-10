@@ -140,6 +140,14 @@ pub struct RunState {
     pub released: bool,
     /// When the run went terminal, which is when the retention clock starts.
     pub finished_at_wall_ns: Option<u64>,
+    /// The last time a `GetRun`, `GetTraces`, `GetResult` or `OpenSubscription` landed on this
+    /// run, wall time. Set at construction so a run that finishes and is never read again still
+    /// anchors its retention at `finished_at_wall_ns` (the old behaviour); a read after that pushes
+    /// the anchor forward, so a viewer who is still looking is never the reason a run is released
+    /// out from under them. `ListRuns` and the idle guard's own polling do not touch this: a listing
+    /// is not a read of the run, and the retention clock exists to answer "is anyone still reading
+    /// this one", not "did the process do a map sweep".
+    pub last_read_wall_ns: u64,
     /// The terminal checkpoint is on disk: `GetResult` and replay can answer without this process.
     /// A run is never released before this is set.
     pub terminal_checkpoint: bool,
@@ -193,6 +201,7 @@ impl RunState {
             evicted: false,
             released: false,
             finished_at_wall_ns: None,
+            last_read_wall_ns: wall_now_ns(),
             terminal_checkpoint: false,
             started_at_wall_ns: wall_now_ns(),
             realtime_factor: max_realtime_factor,
@@ -380,6 +389,13 @@ impl Run {
         out
     }
 
+    /// A `GetRun`, `GetTraces`, `GetResult` or a successful `OpenSubscription` lookup landed on
+    /// this run: refresh the retention clock. The caller decides what counts as a read; this just
+    /// stamps the instant, under the same lock every other mutation of `RunState` takes.
+    pub fn touch_read(&self) {
+        self.lock().last_read_wall_ns = wall_now_ns();
+    }
+
     /// A subscription opened: an idle-stopped run starts advancing again (WIRE.md, "Reopening a
     /// subscription resumes it"). A pause the user asked for is left alone.
     pub fn resume_from_idle(&self) {
@@ -523,18 +539,27 @@ impl Registry {
         // so the new engine is not built beside eight finished runs' frames.
         if runs.len() >= MAX_LIVE_RUNS {
             let now = wall_now_ns();
-            let done: Vec<String> = {
+            // Every finished, checkpointed, unleased run is a candidate; a read within the last
+            // `MIN_RELEASE_READ_AGE_NS` takes it off the table regardless of memory pressure, and
+            // among what is left the least-recently-read goes first (the sort is why this is a
+            // `Vec` and not left as `filter`, even though every candidate past the floor is
+            // released here: the order is what a test, and a log line, can hold this to).
+            let mut candidates: Vec<(u64, String)> = {
                 let leases = self.leases();
                 runs.iter()
-                    .filter(|(id, r)| {
+                    .filter_map(|(id, r)| {
                         let st = r.lock();
-                        st.is_terminal() && st.terminal_checkpoint && leases.live_for_run(id, now) == 0
+                        if !(st.is_terminal() && st.terminal_checkpoint && leases.live_for_run(id, now) == 0) {
+                            return None;
+                        }
+                        let anchor = st.last_read_wall_ns.max(st.finished_at_wall_ns.unwrap_or(0));
+                        (now.saturating_sub(anchor) >= MIN_RELEASE_READ_AGE_NS).then(|| (anchor, id.clone()))
                     })
-                    .map(|(id, _)| id.clone())
                     .collect()
             };
+            candidates.sort();
             let mut released = self.released_map();
-            for id in &done {
+            for (_, id) in &candidates {
                 Self::release_held(&mut runs, &mut released, id, &format!("{MAX_LIVE_RUNS} runs held and a StartRun arrived"));
             }
         }
@@ -595,6 +620,12 @@ impl Registry {
 /// box. Eight is more than a handful of browser tabs and less than the reserved container CPU can
 /// keep paced; a 503 past it says "stop one" rather than slowing every run down.
 pub const MAX_LIVE_RUNS: usize = 8;
+
+/// At the cap, a terminal run read within this long is left alone even though it is otherwise
+/// eligible for release: a `StartRun` needing memory back must never be the reason a `GetTraces`
+/// or a `GetRun` that landed moments ago gets cut off from under it. Ten seconds is longer than
+/// any request this server answers.
+const MIN_RELEASE_READ_AGE_NS: u64 = 10 * 1_000_000_000;
 
 /// What the run thread decided to do next, under the lock, to be done outside it.
 enum Next {
@@ -708,7 +739,14 @@ fn drive(run: Arc<Run>, reg: Arc<Registry>, sc: Scenario, ready: mpsc::SyncSende
                     pending = Some(Checkpoint::from_state(&st));
                     st.terminal_checkpoint = true;
                 }
-                let due = st.finished_at_wall_ns.is_some_and(|at| now_wall.saturating_sub(at) >= reg.completed_retention_ns());
+                // The retention clock is anchored at whichever is later, when the run finished or
+                // the last time somebody read it: a `GetRun` every few hundred milliseconds must
+                // hold a finished run open for as long as it keeps landing, not just for the
+                // retention after the run ended.
+                let due = st.finished_at_wall_ns.is_some_and(|at| {
+                    let anchor = st.last_read_wall_ns.max(at);
+                    now_wall.saturating_sub(anchor) >= reg.completed_retention_ns()
+                });
                 if due && live == 0 && pending.is_none() { Next::Release } else { Next::Wait }
             } else if st.stop_requested {
                 Next::Finish
@@ -1925,5 +1963,93 @@ mod tests {
         assert!(st.evicted && st.idle_stopped);
         assert!(st.note.starts_with("reaped:"), "{}", st.note);
         assert!(reg.root.join("runs").join(&id).join("status.json").exists(), "the checkpoint outlives the run");
+    }
+
+    /// A finished run whose checkpoint is on disk, ready for the retention tests below: past
+    /// `terminal_checkpoint` without waiting on the retention itself.
+    fn finished_run(reg: &Arc<Registry>) -> (String, Arc<Run>) {
+        let id = reg.start(scenario("20"), 0.0).unwrap();
+        let run = reg.get(&id).unwrap();
+        wait_for("completion", 10, || run.lock().is_terminal());
+        wait_for("the checkpoint", 10, || run.lock().terminal_checkpoint);
+        (id, run)
+    }
+
+    #[test]
+    fn a_read_every_500ms_keeps_a_finished_run_held_and_it_is_released_once_reads_stop() {
+        // Follow-up to 38c36cf: a GetRun landing every few hundred milliseconds must hold the run
+        // open for as long as it keeps landing, not just for the retention after the run ended.
+        let scratch = temp_dir("retention-reads");
+        let reg = Arc::new(Registry::new(scratch.to_path_buf(), 3600 * 1_000_000_000));
+        reg.set_completed_retention_ns(1_000_000_000); // 1 s
+        let (id, run) = finished_run(&reg);
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            run.touch_read();
+            std::thread::sleep(Duration::from_millis(500));
+            assert!(reg.get(&id).is_some(), "a read landed under a second ago; a 1 s retention must still hold it");
+        }
+        // No more reads past this point: released a bit more than a second after the last one.
+        wait_for("the release once the reads stop", 5, || reg.get(&id).is_none());
+    }
+
+    #[test]
+    fn result_and_traces_json_do_not_touch_the_clock_on_their_own_only_touch_read_does() {
+        // `result_json` and `traces_json` stay pure reads of the state; it is the server's explicit
+        // `run.touch_read()` beside each RPC (GetRun, GetResult, GetTraces, OpenSubscription) that
+        // is the read signal. `tests/run_memory.rs` exercises that wiring through the real RPCs.
+        let scratch = temp_dir("retention-other-reads");
+        let reg = Arc::new(Registry::new(scratch.to_path_buf(), 3600 * 1_000_000_000));
+        reg.set_completed_retention_ns(1_000_000_000);
+        let (id, run) = finished_run(&reg);
+        let old = wall_now_ns().saturating_sub(900_000_000);
+        {
+            let mut st = run.lock();
+            st.last_read_wall_ns = old;
+            st.finished_at_wall_ns = Some(old); // as if it had finished 900 ms ago too
+        }
+        let _ = run.result_json();
+        let _ = run.traces_json(&crate::trace_wire::TraceQuery { outcome: Default::default(), min_e2e_ns: 0, tenant_id: None, limit: 10 });
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(reg.get(&id).is_none(), "neither call touched the clock; the 1 s retention from 900 ms ago ran out");
+
+        let (id2, run2) = finished_run(&reg);
+        {
+            let mut st = run2.lock();
+            st.last_read_wall_ns = wall_now_ns().saturating_sub(900_000_000);
+            st.finished_at_wall_ns = Some(wall_now_ns().saturating_sub(900_000_000));
+        }
+        run2.touch_read();
+        std::thread::sleep(Duration::from_millis(600));
+        assert!(reg.get(&id2).is_some(), "touch_read just now must hold the run past 600 ms later");
+    }
+
+    #[test]
+    fn the_cap_releases_terminal_runs_but_never_one_read_in_the_last_ten_seconds() {
+        let scratch = temp_dir("cap-read-floor");
+        let reg = Arc::new(Registry::new(scratch.to_path_buf(), 3600 * 1_000_000_000));
+        let old = wall_now_ns().saturating_sub(20 * 1_000_000_000);
+        // Seven long-idle terminal runs, well past the ten-second floor.
+        let mut old_ids = Vec::new();
+        for _ in 0..MAX_LIVE_RUNS - 1 {
+            let (id, run) = finished_run(&reg);
+            let mut st = run.lock();
+            st.last_read_wall_ns = old;
+            st.finished_at_wall_ns = Some(old);
+            drop(st);
+            old_ids.push(id);
+        }
+        // An eighth, terminal too, but read just now: it must survive the cap regardless.
+        let (fresh_id, fresh) = finished_run(&reg);
+        fresh.touch_read();
+
+        // The ninth `start` finds eight runs held and releases what it can, sparing the fresh one.
+        let ninth = reg.start(scenario("100"), 1.0).unwrap();
+        for id in &old_ids {
+            assert!(reg.get(id).is_none(), "run {id} was last read 20 s ago: eligible under cap pressure");
+        }
+        assert!(reg.get(&fresh_id).is_some(), "a run read moments ago must survive the cap");
+        reg.get(&ninth).unwrap().stop();
     }
 }

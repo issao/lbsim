@@ -599,6 +599,30 @@ await checkAsync('reconnect sends Last-Event-ID, and a 410 resubscribes from scr
   return '4 GETs, Last-Event-ID [-, 3, 5, -], 410 -> fresh open, 8 updates, complete';
 });
 
+await checkAsync('a 410 for the run itself ends the loop as "gone" instead of retrying forever', async () => {
+  // Follow-up to 38c36cf: a subscription-specific 410 ("the ring...", "subscription is gone...")
+  // means resubscribe; this one, `server.rs`'s `fn run`, means the run left memory and every retry
+  // would 410 again. `useServerRun.ts` reads the `gone` phase and falls back to the checkpoint.
+  const { client, calls } = stub(() => ({ status: 410, body: '{"error": "run r-9 was released; replay from runs/r-9/"}' }));
+  const phases: string[] = [];
+  const handle = api.subscribeToTarget(client, {
+    runId: 'r-9',
+    target: { scope: 'FLEET' },
+    metrics: ['METRIC_OFFERED_RPS'],
+    samplesPerSimSecond: 2,
+    rnd: () => 0.5,
+    now: () => 0,
+    sleep: async () => undefined,
+    onPhase: (p, d) => phases.push(d ? `${p}:${d}` : p),
+    onUpdate: () => undefined,
+  });
+  await handle.done;
+  eq(calls.length, 1, 'one attempt: a run-released 410 is never retried');
+  eq(phases, ['opening', 'gone:run r-9 was released; replay from runs/r-9/'], 'ends gone with the server\'s message, not reopening');
+  eq(handle.phase(), 'gone', 'handle agrees, and stays gone rather than settling on closed');
+  return '1 GET, phases [opening, gone:<message>], handle.phase() gone';
+});
+
 await checkAsync('a lapsed lease reopens rather than resumes, and close sends CloseSubscription', async () => {
   const { client, calls } = stub((c) => {
     if (c.path === '/v1/ingress/CloseSubscription') return { body: fx.CLOSE_SUBSCRIPTION_RESPONSE };

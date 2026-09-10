@@ -90,6 +90,15 @@ export type DataMode = 'server' | 'replay';
 
 export const REPLAY_BANNER = `replay — ${DATA_SOURCE_GLOSS.replay}`;
 
+/**
+ * A run the dashboard was watching left memory (`LBSIM_COMPLETED_RETENTION_S`, WIRE.md "released")
+ * while the page still held it: `OpenSubscription` answers 410 and `useServerRun.ts` falls back to
+ * the run's checkpoint under `runs/<id>/`, the same documents `sim-run export` writes. Distinct
+ * text from `REPLAY_BANNER` because the cause is worth saying -- this was a live run a moment ago,
+ * not a recording picked from the showcase's list.
+ */
+export const REPLAY_RELEASED_BANNER = 'replay — this run was released from memory';
+
 /** The word each `DataMode` is called in the UI. The internal name `server` stays; its word is `live`. */
 export const DATA_SOURCE_LABEL: Record<DataMode, keyof typeof DATA_SOURCE_GLOSS> = {
   server: 'live',
@@ -165,7 +174,7 @@ export async function probeServer(client: IngressClient, m: ServerMode, timeoutM
 // probe is asynchronous and lives in the dashboard; a store is smaller than threading it through
 // the router. `none` until a route says otherwise, so the badge never shows a stale claim left
 // over from the previous page.
-export type ActiveModeName = DataMode | 'none' | 'connecting' | 'refused';
+export type ActiveModeName = DataMode | 'none' | 'connecting' | 'refused' | 'released';
 
 export interface ActiveModeState {
   mode: ActiveModeName;
@@ -208,6 +217,8 @@ export function badgeText(state: ActiveModeState): string {
       return state.runId ? `${SERVER_BANNER} · run ${state.runId}` : SERVER_BANNER;
     case 'replay':
       return state.runId ? `${REPLAY_BANNER}: ${state.runId}` : REPLAY_BANNER;
+    case 'released':
+      return state.runId ? `${REPLAY_RELEASED_BANNER}: ${state.runId}` : REPLAY_RELEASED_BANNER;
     case 'none':
     default:
       return '';
@@ -225,6 +236,10 @@ export function badgeTitle(state: ActiveModeState): string {
       return `Every panel here is ${DATA_SOURCE_GLOSS.live}${state.runId ? `, run ${state.runId}` : ''}.`;
     case 'replay':
       return `Every panel here is ${DATA_SOURCE_GLOSS.replay}${state.runId ? `: ${state.runId}` : ''}.`;
+    case 'released':
+      return `This run finished and left the server's memory${
+        state.runId ? `, run ${state.runId}` : ''
+      }; the panels now replay its checkpoint from disk.`;
     case 'none':
     default:
       return '';
