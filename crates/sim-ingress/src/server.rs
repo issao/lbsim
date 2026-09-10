@@ -263,6 +263,35 @@ impl Server {
         }
     }
 
+    /// `GetTraces` for a released run: `traces.jsonl` from its checkpoint (written at release
+    /// since 38c36cf; WIRE.md's `manifest.json` sits beside it and is not needed here), filtered
+    /// exactly as `Run::traces_json` filters the in-memory ring, newest first. A run that recorded
+    /// no traces, or whose checkpoint predates the file, has none to read: an empty list, the same
+    /// "nothing sampled" answer a live run with no ring gives, never an error.
+    fn released_traces_json(&self, run_id: &str, q: &trace_wire::TraceQuery) -> Result<String, Refused> {
+        self.runs
+            .released_status(run_id)
+            .ok_or_else(|| Refused { code: 404, message: format!("unknown run {run_id:?}") })?;
+        let path = self.root.join("runs").join(run_id).join("traces.jsonl");
+        let body = std::fs::read_to_string(&path).unwrap_or_default();
+        let mut hits: Vec<(u64, &str)> = body
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty() && trace_wire::line_matches(l, q))
+            .map(|l| (trace_wire::extract_u64(l, "finished_at_unix_ns"), l))
+            .collect();
+        hits.sort_by_key(|(finished, _)| std::cmp::Reverse(*finished));
+        let mut out = String::from("{\"traces\":[");
+        for (i, (_, line)) in hits.iter().take(q.limit).enumerate() {
+            if i > 0 {
+                out.push(',');
+            }
+            out.push_str(line);
+        }
+        out.push_str("]}");
+        Ok(out)
+    }
+
     fn unary(&self, rpc: &str, body: &[u8]) -> Result<String, Refused> {
         let text = std::str::from_utf8(body).map_err(|_| bad("request body is not UTF-8"))?;
         let req = if text.trim().is_empty() { Json::Obj(Vec::new()) } else { parse_json(text).map_err(bad)? };
@@ -292,7 +321,10 @@ impl Server {
             "GetRun" => {
                 let id = run_id()?;
                 match self.runs.get(id) {
-                    Some(run) => Ok(wire::run_status_json(&run.status())),
+                    Some(run) => {
+                        run.touch_read();
+                        Ok(wire::run_status_json(&run.status()))
+                    }
                     None => self.released_status_json(id),
                 }
             }
@@ -326,7 +358,10 @@ impl Server {
             "GetResult" => {
                 let id = run_id()?;
                 match self.runs.get(id) {
-                    Some(run) => run.result_json(),
+                    Some(run) => {
+                        run.touch_read();
+                        run.result_json()
+                    }
                     None => self.released_result_json(id),
                 }
             }
@@ -389,7 +424,7 @@ impl Server {
                 Ok(j.finish())
             }
             "GetTraces" => {
-                let run = self.run(run_id()?)?;
+                let id = run_id()?;
                 // The enum may arrive as its name or its number; `outcome_from_name` reads both.
                 let outcome = match req.get("outcome").and_then(Json::scalar_string) {
                     Some(o) => trace_wire::outcome_from_name(&o).map_err(bad)?,
@@ -405,7 +440,16 @@ impl Server {
                     tenant_id: req.u64("tenant_id").filter(|id| *id != 0),
                     limit,
                 };
-                Ok(run.traces_json(&q))
+                // Released runs still answer: the ring is gone, but the checkpoint's
+                // `traces.jsonl` is on disk (WIRE.md, "released"), so the Traces tab keeps working
+                // after a finished run leaves memory.
+                match self.runs.get(id) {
+                    Some(run) => {
+                        run.touch_read();
+                        Ok(run.traces_json(&q))
+                    }
+                    None => self.released_traces_json(id, &q),
+                }
             }
             "Rewind" => Err(Refused {
                 code: 501,
@@ -428,6 +472,9 @@ impl Server {
             Ok(run) => run,
             Err(r) => return error(stream, r.code, &r.message),
         };
+        // A fresh open and a resume both count as a read: either way, somebody is looking at this
+        // run right now, and its retention clock must say so.
+        run.touch_read();
 
         // A reconnect names the subscription and where it got to; the ring answers from there.
         if let Some(sid) = get("subscription_id") {

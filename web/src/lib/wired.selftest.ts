@@ -107,6 +107,8 @@ check('with no server and no recordings the mode is none, and the badge says not
   eq(mode.badgeTitle({ mode: 'none' }), '', 'title empty');
   eq(mode.badgeText({ mode: 'server', runId: 'r-1' }), `${mode.SERVER_BANNER} · run r-1`, 'live badge');
   eq(mode.badgeText({ mode: 'replay', runId: '1-routing/p2c' }), `${mode.REPLAY_BANNER}: 1-routing/p2c`, 'replay badge');
+  eq(mode.badgeText({ mode: 'released', runId: 'r-5' }), `${mode.REPLAY_RELEASED_BANNER}: r-5`, 'released badge names the run');
+  eq(mode.badgeTitle({ mode: 'released', runId: 'r-5' }).includes('r-5'), true, 'released title names the run too');
   return 'server > replay > none';
 });
 

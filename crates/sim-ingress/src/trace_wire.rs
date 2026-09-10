@@ -94,6 +94,47 @@ impl TraceQuery {
     }
 }
 
+// ---------------------------------------------------------------------------
+// GetTraces on a released run
+// ---------------------------------------------------------------------------
+
+/// The value of a top-level `"key":"..."` pair in one `traces.jsonl` line, read directly off the
+/// text rather than through a JSON decoder this crate does not have (the encoder is the only
+/// writer of this file, so the shape is exactly `request_trace_json`'s). Every field this reads —
+/// `outcome`, `tenant_id`, `arrived_at_unix_ns`, `finished_at_unix_ns` — belongs to `record`, and
+/// no span field shares any of those names, so a substring search is exact.
+pub(crate) fn extract_u64(line: &str, key: &str) -> u64 {
+    extract_str(line, key).and_then(|s| s.parse().ok()).unwrap_or(0)
+}
+
+fn extract_str<'a>(line: &'a str, key: &str) -> Option<&'a str> {
+    let pat = format!("\"{key}\":\"");
+    let start = line.find(&pat)? + pat.len();
+    let end = line[start..].find('"')?;
+    Some(&line[start..start + end])
+}
+
+/// `TraceQuery::matches`, run over one raw `traces.jsonl` line instead of a decoded
+/// `RequestTrace`, for `GetTraces` on a run whose frames and trace ring are gone but whose
+/// checkpoint is on disk. `arrived_at_unix_ns` and `finished_at_unix_ns` are never omitted by
+/// `request_record`, so the latency computed here is exactly `RequestTrace::latency_ns`'s.
+pub fn line_matches(line: &str, q: &TraceQuery) -> bool {
+    let outcome_ok = match q.outcome {
+        OutcomeFilter::Any => true,
+        OutcomeFilter::Nothing => false,
+        OutcomeFilter::Only(want) => extract_str(line, "outcome") == Some(outcome_name(want)),
+    };
+    if !outcome_ok {
+        return false;
+    }
+    let finished = extract_u64(line, "finished_at_unix_ns");
+    let latency = if finished > 0 { finished.saturating_sub(extract_u64(line, "arrived_at_unix_ns")) } else { 0 };
+    if latency < q.min_e2e_ns {
+        return false;
+    }
+    q.tenant_id.map_or(true, |id| extract_u64(line, "tenant_id") == id)
+}
+
 /// The filter for a proto outcome name, or its number as a string, since a client may send either.
 pub fn outcome_from_name(name: &str) -> Result<OutcomeFilter, String> {
     Ok(OutcomeFilter::Only(match name {

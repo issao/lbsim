@@ -277,20 +277,32 @@ under `runs/<run_id>/` stays on disk. Finished and failed runs never count towar
 
 A finished run — `STATE_COMPLETE` by its own end or by `StopRun`, or `STATE_FAILED` — is **released**
 rather than reaped: it leaves memory once its checkpoint is on disk, it has no live lease, and
-`LBSIM_COMPLETED_RETENTION_S` (default 120) have passed since it ended; or at once, checkpoint written and
-lease-free, when a `StartRun` arrives with eight runs held in any state. Before this rule every finished
-run stayed until the instance died, ninety-odd MB each at 256 replicas, which reached the engine's memory
-budget in about ten dashboard runs. The checkpoint of a completed run is written the moment it ends, from
-the frames the viewer saw: `status.json`, `scenario.txt`, `result.json`, `fleet.jsonl`, `replicas.jsonl`
-thinned to the export's budget with the stride in `checkpoint.json`, and `traces.jsonl` with its
-`manifest.json` when the run sampled any. After the release the server keeps a hundred-byte status stub:
-`ListRuns` still lists the run and `GetRun` answers its final status; `GetResult` answers `result.json`
-from disk, byte for byte the in-memory answer (`409` for a failed run, as before); everything that needs
-the engine or the frames — `StopRun`, `SetSpeed`, `StepForward`, `UpdateWorkload`, `UpdatePolicies`,
-`GetTraces`, `OpenSubscription` — answers `410` with `released; replay from runs/<run_id>/`. The
-released run's checkpoint is merged into `runs/index.json` the moment it is written, the same entry
-an export of it would get, so the dashboard's replay picker lists it at once, under a "released live
-runs" group, rather than waiting on a showcase export (Issao, 2026-09-10).
+`LBSIM_COMPLETED_RETENTION_S` (default 120) have passed since it was last **read** — any `GetRun`,
+`GetTraces`, `GetResult` or `OpenSubscription` on it pushes the retention clock forward, so a viewer
+still reading a finished run, or a poll landing every few hundred milliseconds, is never the reason it
+disappears out from under them; a run nobody reads again is released at the retention after it ended,
+exactly as before this refinement. Or at once, checkpoint written and lease-free, when a `StartRun`
+arrives with eight runs held in any state — except a run read in the last ten seconds, which survives
+even under that pressure, and among the rest the **least-recently-read** goes first. Before the release
+rule itself every finished run stayed until the instance died, ninety-odd MB each at 256 replicas, which
+reached the engine's memory budget in about ten dashboard runs. The checkpoint of a completed run is
+written the moment it ends, from the frames the viewer saw: `status.json`, `scenario.txt`, `result.json`,
+`fleet.jsonl`, `replicas.jsonl` thinned to the export's budget with the stride in `checkpoint.json`, and
+`traces.jsonl` with its `manifest.json` when the run sampled any — and it is merged into `runs/index.json`
+at the same moment, the same entry an export of it would get, so the dashboard's replay picker lists it
+at once, under a "released live runs" group, rather than waiting on a showcase export (Issao, 2026-09-10).
+After the release the server keeps a hundred-byte status stub: `ListRuns` still lists the run and
+`GetRun` answers its final status; `GetResult` answers `result.json` from disk, byte for byte the
+in-memory answer (`409` for a failed run, as before); `GetTraces` answers `traces.jsonl` from disk too,
+filtered exactly as the in-memory ring was and in the same newest-first order, so the Traces tab keeps
+working after a run leaves memory — a person opening it on a run that just finished, or a harness that
+stops a run and reads its traces a moment later, must see the same rows either way. Only what still
+needs the live engine — `StopRun`, `SetSpeed`, `StepForward`, `UpdateWorkload`, `UpdatePolicies`,
+`OpenSubscription` — answers `410` with `released; replay from runs/<run_id>/`; a client holding a
+subscription on a run that got released this way falls back to reading the checkpoint's documents
+directly, the same ones `sim-run export` would have written, rather than retrying the stream —
+`runs/index.json` now has the entry to do that from, but the fallback reads `runs/<run_id>/status.json`
+(and the rest of the checkpoint) by id directly, so it does not have to wait on the index either.
 
 While a run is alive the server holds its frames, one per sample interval with a row per replica, and
 nothing per request: the engine folds each record into the whole-run tally and histograms as it lands

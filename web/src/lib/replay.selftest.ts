@@ -534,6 +534,38 @@ await checkAsync('loadRun takes replicas.jsonl when it is there, and a dev serve
   return 'present: 2 replicas; shell: none';
 });
 
+await checkAsync('loadRunFromCheckpoint reads runs/<id>/ directly, recovering the origin with no index entry to give it', async () => {
+  // Two closed frames 250 ms apart, the checkpoint's own cadence, then a third far out (reusing
+  // ROW_25S as-is, at origin + 25 s) so the origin is recovered from the first two alone.
+  const base = '/runs/';
+  const fleet = [ROW_EMPTY, rowAt(ROW_EMPTY, origin + 500_000_000n), ROW_25S].join('\n') + '\n';
+  const docs = {
+    [`${base}r-9/status.json`]: STATUS.replace('1-routing/p2c', 'r-9'),
+    [`${base}r-9/fleet.jsonl`]: fleet,
+    [`${base}r-9/result.json`]: RESULT.replace('1-routing/p2c', 'r-9'),
+    [`${base}r-9/scenario.txt`]: SCENARIO,
+    [`${base}r-9/checkpoint.json`]: '{"replica_sample_stride":1,"frames":3}\n',
+  };
+  const run = await replay.loadRunFromCheckpoint('r-9', stubFetch(docs).f, base);
+  eq(run.runId, 'r-9', 'run id');
+  eq(run.originUnixNs, origin, 'origin recovered from the first two frames, exactly the index\'s sim_start_unix_ns');
+  eq(run.frames.map((f) => f.simS), [0.25, 0.5, 25], 'simS relative to the recovered origin');
+  eq(run.status.state, 'STATE_COMPLETE', 'status from status.json, no GetRun involved');
+  eq(run.result?.seed, 20260906n, 'result from result.json');
+  eq(run.config.name, 'p2c', 'config from scenario.txt, same decoder as loadRun');
+
+  // A run with no result.json (a failed run's checkpoint has none, WIRE.md "released") gives null
+  // rather than throwing, and a checkpoint with no `checkpoint.json` at all (an idle one, or an
+  // older export) defaults its stride to 1 exactly as `decodeRunIndex` does for the field's absence.
+  const noResult = { ...docs };
+  delete (noResult as Record<string, string>)[`${base}r-9/result.json`];
+  delete (noResult as Record<string, string>)[`${base}r-9/checkpoint.json`];
+  const failed = await replay.loadRunFromCheckpoint('r-9', stubFetch(noResult).f, base);
+  eq(failed.result, null, 'no result.json: null, not thrown');
+  eq(failed.originUnixNs, origin, 'origin recovered the same way with no checkpoint.json either');
+  return `origin ${run.originUnixNs}, simS [${run.frames.map((f) => f.simS).join(', ')}], result null when absent`;
+});
+
 await checkAsync('probeRunIndex answers null for a 404, for a dev server HTML shell, and for an empty index', async () => {
   eq(await replay.probeRunIndex(stubFetch({}).f, '/runs/'), null, '404');
   eq(await replay.probeRunIndex(stubFetch({}, true).f, '/runs/'), null, 'HTML shell with HTTP 200');
