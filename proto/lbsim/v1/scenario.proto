@@ -248,6 +248,22 @@ message RoutingPolicy {
     bool probe_live = 2;
   }
   // Prefer the replica already holding this request's prefix, until imbalance exceeds the cap.
+  // Weighted random over the fleet's stale view: each replica's weight is the linear function
+  // c1 + c2·has_queued_decode + c3·has_queued_prefill + c4·queued_decode_beyond_open_buffer +
+  // c5·queued_prefill_beyond_open_buffer, clamped at zero, and the router samples proportionally.
+  // "Beyond the open buffer" is the work the replica's scheduler cannot fit into the batch it is
+  // currently collecting (see SchedulingPolicy.BufferedBatch), which is the part that will wait a
+  // whole buffer cycle. Negative c2..c5 steer away from queues; c1 alone is Random. Issao: "we should
+  // create a weighed random policy where the weight for any given node is a linear function of
+  // C_1 + C_2*has_queue_decode + C_3*has_queued_prefill + C_4*queued_decode_beyond_current_open_buffer
+  // + C_5*queued_prefill_beyond_current_open_buffer."
+  message WeightedRandom {
+    double c1 = 1;
+    double c2_has_queued_decode = 2;
+    double c3_has_queued_prefill = 3;
+    double c4_queued_decode_beyond_open_buffer = 4;
+    double c5_queued_prefill_beyond_open_buffer = 5;
+  }
   message PrefixAffinity {
     // Yield to load when the candidate's load exceeds the fleet mean by this ratio. 1.0 disables
     // affinity entirely; a large value ignores load and produces hotspots.
@@ -262,6 +278,7 @@ message RoutingPolicy {
     LeastKvTokens least_kv_tokens = 13;
     PowerOfTwoChoices power_of_two_choices = 14;
     PrefixAffinity prefix_affinity = 15;
+    WeightedRandom weighted_random = 16;
     GeneratedPolicy generated = 99;
   }
 }
@@ -312,12 +329,27 @@ message SchedulingPolicy {
   // Interactive classes before batch ones, and batch sequences are the first preemption victims;
   // the scheduling half of the SLO classes. The classes themselves are `Workload.slo_classes`.
   message ClassPriority {}
+  // A batch buffer at the GPU scheduler: the replica collects prefill and decode work into the next
+  // step's batch until the buffer is full or its oldest entry has waited max_hold_ms, then steps.
+  // Capacity is bounded three ways: sequences (max_batch, at most the replica's batch limit), prefill
+  // tokens per step (max_prefill_tokens) and decode sequences per step (max_decode_seqs), and always
+  // by the step's bandwidth line (the KV the step must read fits the cost model's HBM budget). Issao:
+  // "a buffer for collecting multiple prefill/decode requests in a single batch within available hbm
+  // bandwidth ... sized at up to the batch size (and max prefill and decode capacity per buffer
+  // tunable) as well as have a time parameter that keeps a buffer around for at most n milliseconds."
+  message BufferedBatch {
+    uint32 max_batch = 1;
+    uint32 max_prefill_tokens = 2;
+    uint32 max_decode_seqs = 3;
+    double max_hold_ms = 4;
+  }
   oneof kind {
     Fcfs fcfs = 10;
     PrefillPriority prefill_priority = 11;
     DecodePriority decode_priority = 12;
     EarliestDeadlineFirst earliest_deadline_first = 13;
     ClassPriority class_priority = 14;
+    BufferedBatch buffered_batch = 15;
     GeneratedPolicy generated = 99;
   }
 }
