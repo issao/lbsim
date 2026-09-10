@@ -553,9 +553,59 @@ would be a queue of thousands, which is the same saturation seen from the other 
 capacity column in the report reads 1,152 rps for the same reason. Multi-geo, dynamic 13, stays
 queued.
 
+## 18. A batch buffer at the GPU scheduler raises throughput and collapses goodput; a FIFO queue does not cope with overload, and a shedding router copes with it by accident
+
+Demo 21, `out/21-batch-buffer.html`, `scenarios/buffer_fifo.txt`, `buffer_batch.txt`, `buffer_weighted.txt`
+(the buffered-batch unit, 9b43f34 and f34604c, merged 263d62f). The GPU scheduler's own seam,
+`SchedulingPolicy::BufferedBatch`: a step admits only what its chunk (`buffer_max_prefill_tokens`), its
+seats (`buffer_max_batch`), its decode seats (`buffer_max_decode_seqs`) and its bandwidth line (the step
+priced without that chunk against the ITL target) can actually serve; an idle replica holds its queue
+open for `buffer_max_hold_ms` (5 ms here) in case more work arrives to fill it. Paired against it,
+`RoutingPolicy::WeightedRandom`: weight = max(0, c1 + c2·[queued decode] + c3·[queued prefill] +
+c4·(decode beyond the open buffer) + c5·(prefill beyond it)), at (1, −0.3, −0.5, −0.05, −0.1).
+`route_p2c`'s scenario at 1.2x the 256-replica fleet's rated capacity: 2,254 rps against 1,878 rated.
+
+| Scheduler + router | Goodput tok/s | Throughput tok/s | TTFT p99 | ITL p99 | Mean batch | Timeouts | Shed | Imbalance CV |
+|---|---|---|---|---|---|---|---|---|
+| fifo_chunked + p2c | **80,549** | 209,916 | 41.3 s | 68 ms | 218.5 | 38,466 | 0 | 0.19 |
+| buffered_batch (5 ms) + p2c | 253 | **260,922** | 30.6 s | **57 ms** | 87.4 | 6,562 | 11 | 0.20 |
+| buffered_batch + weighted_random | 31,965 | 251,973 | 47.2 s | 57 ms | 80.9 | 9,107 | **23,531** | **0.43** |
+
+**The buffer raises throughput 24% and cuts inter-token latency p99 68 → 57 ms for a mechanical reason:
+a step that carries only what it can serve is a shorter step.** fifo_chunked's batches fill to a mean
+of 218.5 seats with sequences sitting in them waiting on a prefill chunk whose resident KV is re-read
+every step regardless of whether that step advances them; KV utilization runs at 64% under fifo_chunked
+against 25% once the buffer stops admitting passengers it cannot serve.
+
+**But goodput collapses, because the buffer is a strict FIFO at an overload that never clears**: median
+wait climbs from 5.9 s at t = 10 s to 29 s at t = 70 s against a 2 s TTFT target, so everyone is served,
+just late. fifo_chunked's own 25% attainment is not coping either: retirement moves the newest sequence
+into the freed slot (`running.swap_remove`), so a newcomer inherits both the seat and the departed
+sequence's place in the prefill order — early arrivals get a first token under 2 s while roughly one
+in four wait out the full 60 s client timeout uncounted as anything but a timeout. Overload does not go
+away under either scheduler; the scheduler only decides who pays for it, first in line for the buffer,
+newest-first for fifo_chunked's queue splice.
+
+**The weighted router steers by "beyond the buffer" on a telemetry view up to a second stale, and that
+is enough to herd**: imbalance CV rises to 0.43 against 0.20 for p2c on the identical buffer, and 23,531
+requests, 15% of arrivals, are shed outright once a replica's queue is full. Nobody asked for that
+shedding; it acts as an unintended admission controller anyway. The 15% that never enter a queue that
+cannot drain are the reason the queue that remains does drain, by t = 60 s, and a late arrival still
+gets a first token inside the 2 s target — which is why weighted_random's goodput, 31,965 tok/s, lands
+between fifo_chunked's high-throughput-low-goodput pairing and the buffer's own numbers under p2c.
+
+**The 5 ms hold only matters at or below rated load**, where a lone arrival at an otherwise-idle replica
+waits at most the hold for company before the batch closes without it; above rated load the queue is
+never empty long enough for the hold to be the reason a step waits.
+
+Caveat: `preemption = never` in all three runs, the base scenario's default, so none of the three
+collapses recycles a KV context through eviction; useful-over-busy is ≈1 throughout because every step
+in every run is saturated end to end, which is why mean batch size, not GPU utilization, is the number
+that tells fifo_chunked and buffered_batch apart here.
+
 ---
 
-## What these seventeen have in common
+## What these eighteen have in common
 
 Every one is a case where **the obvious metric moves the wrong way, or not at all**:
 
@@ -576,6 +626,8 @@ Every one is a case where **the obvious metric moves the wrong way, or not at al
   frequency of its own, in result 15.
 - The faster tier is the one that loses, in result 16.
 - The fleet that scales spends less and serves less, and no gain setting fixes it, in result 17.
+- A scheduling change that raises throughput 24% cuts goodput by two orders of magnitude, in result 18,
+  and a router that sheds 15% of arrivals serves the rest better for it.
 
 - The same ordering with the device physics switched off, in result 7, so the effect is the queue's.
 

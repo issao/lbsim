@@ -1,6 +1,15 @@
 # TASKS — things that need Issao
 
-Last updated: 2026-09-08 00:35 PDT by Claude.
+Last updated: 2026-09-10 11:48 PDT by Claude.
+
+**2026-09-10 11:48 PDT, from `git log 3de8220..origin/master` (housekeeping is not running; this round is `claude/docs-round41`).**
+Nothing here needed you urgently: two days of engine and dashboard work landed clean, and every design decision in it was either
+Issao's own instruction verbatim in the commit (the arrival-rate ceiling, the smoothing window, the badput chart, the restart button,
+the GPU-utilization split, the batch buffer and the weighted router) or a default the unit already declared for itself ("stands as
+written" in the commit body). Five proto/engine additions since 2026-09-08 are recorded below in §6 as review items, each with the
+default it already stands on if you say nothing; one new item is queued for the next tech lead, also in §6. `git log` shows nothing
+landing on `master` between 2026-09-08 15:34 and 2026-09-10 10:27, about 43 hours; no file this round has access to explains the gap.
+Full detail, by hash, is in `STATUS.md`.
 
 **2026-09-08 00:35 PDT, from git and gcloud, by main's docs agent (housekeeping is not running tonight).** The tech lead ran two dynamics
 lanes and the dashboard units from 21:00 to 23:54 on 2026-09-07: 38 units landed, among them eight new demos (13–20) and the third, fourth and fifth
@@ -184,6 +193,11 @@ The design decisions below are the ones outside that graph.
 | `ejection_ratio` default: the `Scenario` default is 3.0 as briefed, demo 15 runs 8 because a healthy fleet's step time is bimodal (11 ms decode, 48 ms with a prefill chunk) and 3 ejected 146 healthy replicas by t = 20 s (U31b, with main) | 3.0 stays, demo at 8 | one constant |
 | Trace budget: an encoded trace is ~570 KB (one decode span per output token with the full resource state), so the 5 MiB ring holds 9–25 journeys and the demos export kept 9 of 943; coalescing decode spans or raising the budget is a proto/wire decision (U104, with main) | 5 MiB, 2,000 traces | wire and proto |
 | `SchedulingPolicy` lives in `sim-core`, below both `sim-model` and `sim-policy`, and has a fourth decision, `prefill_order` (U108; ratified by main 22:56, `docs/ARCHITECTURE.md` §10.8) | as landed | crate move |
+| `smoothing_window_ns` on `OpenSubscriptionRequest`: a live run is rebuilt server-side over the trailing window (never fewer than one sample, fewer at the start of a run), a replay smoothed identically client-side (1ed9b73/ab7817e, feb1ee0, c4a134f; main, 2026-09-08) | stands as written | wire and proto |
+| GPU utilization keeps its original busy/time-in-step meaning (metric 67); a new metric 71, `METRIC_GPU_USEFUL_FRACTION`, is useful work over the maximum possible, so a small mean batch shows up as a gap between the two (Issao reversed his own first cut of this the same morning; 65758e3/4a5d6c0, 8755f2e/5e92cac; main, 2026-09-10) | stands as written | proto, wire, engine, web |
+| `SchedulingPolicy.BufferedBatch` (a step admits only what its chunk, seats, decode seats and bandwidth line can serve, holding an idle queue up to `buffer_max_hold_ms`) and `RoutingPolicy.WeightedRandom` (weight linear in queued decode/prefill and each beyond the open buffer) (a5dfd38/e876d44; main, 2026-09-10); demo 21 measures both, finding 18 | stands as written | proto, `sim-policy`, `sim-core` |
+| Four replica-scope metrics the buffered-batch unit proposed and main landed on the wire: `METRIC_QUEUED_DECODE_SEQS`/`_PREFILL_SEQS` (72/73), `METRIC_DECODE_BEYOND_BUFFER`/`_PREFILL_BEYOND_BUFFER` (74/75), the terms `weighted_random` weighs, replica scope only, zero under a scheduler with no buffer (d934d1c/75d9a1a; main, 2026-09-10) | stands as written | proto, wire |
+| **Queued for the next tech lead**, not yet a decision: `fifo_chunked`'s prefill order is newest-first under churn, because retirement's `running.swap_remove` moves the newest sequence into the freed slot, so a newcomer inherits both the seat and the departed sequence's place in the prefill order (finding 18's mechanism for fifo's own 25% attainment at 1.2x rated load; baseline golden behaviour since U108, 96a6456) | stands (golden baseline) | re-baselines demos 3–5 and 16 |
 
 ## 7. Later, when this phase ends
 
