@@ -27,3 +27,4 @@
 18-bode sweep scenarios/bode.txt --over perturb_frequency_hz=0.01,0.02,0.05,0.1,0.2,0.5,1.0
 19-tiering compare scenarios/tier_dram.txt scenarios/tier_dram_ssd.txt scenarios/tier_contended.txt
 20-autoscaling compare scenarios/autoscale_none.txt scenarios/autoscale_cold30.txt scenarios/autoscale_cold5.txt
+21-batch-buffer compare scenarios/buffer_fifo.txt scenarios/buffer_batch.txt scenarios/buffer_weighted.txt

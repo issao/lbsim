@@ -60,9 +60,22 @@ pub struct Scenario {
     /// The replica's own scheduler: `fifo_chunked` (first come first served, chunked prefill at
     /// `step_token_budget`, victims by `preemption_victim`: what the engine always did),
     /// `class_priority` (interactive before agent before batch at admission, batch evicted first) or
-    /// `deadline_first` (least slack first, latest deadline evicted first). It orders the work a
-    /// replica already holds; it cannot create capacity.
+    /// `deadline_first` (least slack first, latest deadline evicted first), or `buffered_batch`
+    /// (collect arrivals into the next step's batch until it is full or the oldest has waited
+    /// `buffer_max_hold_ms`, see below). It orders the work a replica already holds; it cannot
+    /// create capacity.
     pub scheduling: String,
+    /// The `buffered_batch` scheduler's buffer, per Issao: *"sized at up to the batch size (and max
+    /// prefill and decode capacity per buffer tunable) as well as have a time parameter that keeps a
+    /// buffer around for at most n milliseconds."* Sequences in the step (zero means `max_batch`, and
+    /// never more than it), prefill tokens per step (zero means `step_token_budget`), decode
+    /// sequences per step (zero means the batch limit), and how long an idle replica keeps its queue
+    /// waiting for company before it steps. The step's bandwidth line is not a key: it is the ITL
+    /// target, priced through the cost model.
+    pub buffer_max_batch: usize,
+    pub buffer_max_prefill_tokens: u32,
+    pub buffer_max_decode_seqs: usize,
+    pub buffer_max_hold_ms: f64,
     /// Host-side room for swapped context per replica, in tokens. Zero means four times the cache.
     pub dram_capacity_tokens: f64,
     /// Host link bandwidth for swapping context, in GB/s.
@@ -139,6 +152,14 @@ pub struct Scenario {
     /// Pay a modelled probe for fresh state instead of reading the delayed snapshot, so the cost of
     /// freshness is visible rather than free.
     pub probe_live: bool,
+    /// The `weighted_random` router's weight, per replica over the stale view:
+    /// `c1 + c2·[queued decode] + c3·[queued prefill] + c4·decode beyond the open buffer +
+    /// c5·prefill beyond the open buffer`, clamped at zero. `c1` alone is `random`.
+    pub wr_c1: f64,
+    pub wr_c2: f64,
+    pub wr_c3: f64,
+    pub wr_c4: f64,
+    pub wr_c5: f64,
     pub admission: String,
     /// For deadline-aware admission: the fraction of a request's deadline reserved for serving it, so
     /// a request that would spend more than the rest waiting is shed before it costs anything.
@@ -377,6 +398,10 @@ impl Default for Scenario {
             preemption: "never".into(),
             preemption_victim: "newest".into(),
             scheduling: "fifo_chunked".into(),
+            buffer_max_batch: 0,
+            buffer_max_prefill_tokens: 0,
+            buffer_max_decode_seqs: 0,
+            buffer_max_hold_ms: 5.0,
             dram_capacity_tokens: 0.0,
             swap_gbps: 50.0,
             dram_pool_tokens: 0.0,
@@ -410,6 +435,11 @@ impl Default for Scenario {
             routing: "round_robin".into(),
             p2c_choices: 2,
             probe_live: false,
+            wr_c1: 1.0,
+            wr_c2: 0.0,
+            wr_c3: 0.0,
+            wr_c4: 0.0,
+            wr_c5: 0.0,
             admission: "accept_all".into(),
             admission_headroom: 0.5,
             fair_share_burst: 2.0,
@@ -506,6 +536,12 @@ impl Scenario {
                 "preemption" => s.preemption = v.clone(),
                 "preemption_victim" => s.preemption_victim = v.clone(),
                 "scheduling" => s.scheduling = v.clone(),
+                "buffer_max_batch" => s.buffer_max_batch = f("buffer_max_batch") as usize,
+                "buffer_max_prefill_tokens" => {
+                    s.buffer_max_prefill_tokens = f("buffer_max_prefill_tokens") as u32
+                }
+                "buffer_max_decode_seqs" => s.buffer_max_decode_seqs = f("buffer_max_decode_seqs") as usize,
+                "buffer_max_hold_ms" => s.buffer_max_hold_ms = f("buffer_max_hold_ms"),
                 "dram_capacity_tokens" => s.dram_capacity_tokens = f("dram_capacity_tokens"),
                 "swap_gbps" => s.swap_gbps = f("swap_gbps"),
                 "dram_pool_tokens" => s.dram_pool_tokens = f("dram_pool_tokens"),
@@ -542,6 +578,11 @@ impl Scenario {
                 "routing" => s.routing = v.clone(),
                 "p2c_choices" => s.p2c_choices = f("p2c_choices") as usize,
                 "probe_live" => s.probe_live = v == "true",
+                "wr_c1" => s.wr_c1 = f("wr_c1"),
+                "wr_c2" => s.wr_c2 = f("wr_c2"),
+                "wr_c3" => s.wr_c3 = f("wr_c3"),
+                "wr_c4" => s.wr_c4 = f("wr_c4"),
+                "wr_c5" => s.wr_c5 = f("wr_c5"),
                 "admission" => s.admission = v.clone(),
                 "admission_headroom" => s.admission_headroom = f("admission_headroom"),
                 "fair_share_burst" => s.fair_share_burst = f("fair_share_burst"),
@@ -746,8 +787,10 @@ impl Scenario {
             | "client_timeout_s" | "max_attempts" | "retry_budget_fraction" | "retry_backoff_s" => {
                 OverrideKind::Workload
             }
-            "routing" | "p2c_choices" | "probe_live" | "admission" | "admission_headroom"
+            "routing" | "p2c_choices" | "probe_live" | "wr_c1" | "wr_c2" | "wr_c3" | "wr_c4" | "wr_c5"
+            | "admission" | "admission_headroom"
             | "fair_share_burst" | "preemption" | "preemption_victim" | "scheduling"
+            | "buffer_max_batch" | "buffer_max_prefill_tokens" | "buffer_max_decode_seqs" | "buffer_max_hold_ms"
             | "ejection" | "ejection_ratio" | "ejection_views" | "ejection_cooldown_s"
             | "autoscaling" | "autoscale_target" | "autoscale_interval_s" | "autoscale_step"
             | "autoscale_cooldown_s" | "min_replicas" | "warmup_delay_s" | "drain_timeout_s"
@@ -783,7 +826,9 @@ impl Scenario {
              step_base_ms = {}\nstep_per_seq_ms = {}\nstep_per_kv_ktoken_ms = {}\n\
              kv_capacity_tokens = {}\nprefill_tokens_per_s = {}\n\
              step_token_budget = {}\nmax_queue = {}\ndisable_decode = {}\npreemption = {}\n\
-             preemption_victim = {}\nscheduling = {}\ndram_capacity_tokens = {}\nswap_gbps = {}\n\
+             preemption_victim = {}\nscheduling = {}\nbuffer_max_batch = {}\n\
+             buffer_max_prefill_tokens = {}\nbuffer_max_decode_seqs = {}\nbuffer_max_hold_ms = {}\n\
+             dram_capacity_tokens = {}\nswap_gbps = {}\n\
              dram_pool_tokens = {}\nssd_pool_tokens = {}\nssd_gbps = {}\nfabric_gbps = {}\n\
              arrival_rps = {}\n\
              arrival_rps_per_replica = {}\nprompt_mean = {}\n\
@@ -794,7 +839,8 @@ impl Scenario {
              affinity_fallback_choices = {}\nload_step_at_s = {}\n\
              load_step_factor = {}\nload_step_until_s = {}\nperturbation = {}\n\
              perturb_amplitude = {}\nperturb_frequency_hz = {}\nrouting = {}\np2c_choices = {}\n\
-             probe_live = {}\nadmission = {}\nadmission_headroom = {}\nfair_share_burst = {}\n\
+             probe_live = {}\nwr_c1 = {}\nwr_c2 = {}\nwr_c3 = {}\nwr_c4 = {}\nwr_c5 = {}\n\
+             admission = {}\nadmission_headroom = {}\nfair_share_burst = {}\n\
              ejection = {}\nejection_ratio = {}\nejection_views = {}\nejection_cooldown_s = {}\n\
              autoscaling = {}\nautoscale_target = {}\nautoscale_interval_s = {}\nautoscale_step = {}\n\
              autoscale_cooldown_s = {}\nmin_replicas = {}\nmax_replicas = {}\nwarmup_delay_s = {}\n\
@@ -810,7 +856,9 @@ impl Scenario {
             self.step_base_ms, self.step_per_seq_ms, self.step_per_kv_ktoken_ms,
             self.kv_capacity_tokens, self.prefill_tokens_per_s,
             self.step_token_budget, self.max_queue, self.disable_decode, self.preemption,
-            self.preemption_victim, self.scheduling, self.dram_capacity_tokens, self.swap_gbps,
+            self.preemption_victim, self.scheduling, self.buffer_max_batch,
+            self.buffer_max_prefill_tokens, self.buffer_max_decode_seqs, self.buffer_max_hold_ms,
+            self.dram_capacity_tokens, self.swap_gbps,
             self.dram_pool_tokens, self.ssd_pool_tokens, self.ssd_gbps, self.fabric_gbps,
             self.arrival_rps,
             self.arrival_rps_per_replica, self.prompt_mean,
@@ -821,7 +869,8 @@ impl Scenario {
             self.affinity_fallback_choices, self.load_step_at_s,
             self.load_step_factor, self.load_step_until_s, self.perturbation,
             self.perturb_amplitude, self.perturb_frequency_hz, self.routing, self.p2c_choices,
-            self.probe_live, self.admission, self.admission_headroom, self.fair_share_burst,
+            self.probe_live, self.wr_c1, self.wr_c2, self.wr_c3, self.wr_c4, self.wr_c5,
+            self.admission, self.admission_headroom, self.fair_share_burst,
             self.ejection, self.ejection_ratio, self.ejection_views, self.ejection_cooldown_s,
             self.autoscaling, self.autoscale_target, self.autoscale_interval_s, self.autoscale_step,
             self.autoscale_cooldown_s, self.min_replicas, self.max_replicas, self.warmup_delay_s,

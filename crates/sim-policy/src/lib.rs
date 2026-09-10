@@ -49,7 +49,7 @@ pub use admission::{Admission, AdmissionContext, AdmissionPolicy};
 pub use autoscaling::{AutoscalingPolicy, FleetView};
 pub use health::HealthPolicy;
 pub use routing::{NoPrefixIndex, PrefixIndex, ReplicaView, RequestView, RouteContext, RoutingPolicy};
-pub use scheduling::{SchedulingPolicy, SeqView, StepView};
+pub use scheduling::{BufferLimits, QueuedWork, SchedulingPolicy, SeqView, StepView};
 
 use sim_scenario::Scenario;
 

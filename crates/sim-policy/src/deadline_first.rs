@@ -87,6 +87,7 @@ mod tests {
             step_token_budget: 1024,
             // 1,000 tokens a second: a token of prefill is a millisecond of slack.
             prefill_tokens_per_s: 1_000.0,
+            step_ns: &|_, _, _| 0,
         }
     }
 

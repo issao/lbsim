@@ -157,11 +157,15 @@ const EXPORTED_RUN_IDS = new Set([
   '20-autoscaling/autoscale-none',
   '20-autoscaling/autoscale-cold30',
   '20-autoscaling/autoscale-cold5',
+  '21-batch-buffer/buffer-fifo-p2c',
+  '21-batch-buffer/buffer-batch-p2c',
+  '21-batch-buffer/buffer-batch-weighted',
 ]);
 
 /** U48's ten selected dynamics, plus spec-decode (U26b), prefix affinity (U27b), gray failure
  * (U31b), the affinity failover cascade (U27d), the scheduling seam's slo-classes (U108), the
- * staleness loop's Bode plot (U33), KV tiering (U30) and autoscaling with a cold start (U32):
+ * staleness loop's Bode plot (U33), KV tiering (U30), autoscaling with a cold start (U32) and the
+ * GPU scheduler's batch buffer (demo 21):
  * every one of these must have a script with a `run` field. */
 const SELECTED_IDS = [
   'rolling-hotspot',
@@ -183,6 +187,7 @@ const SELECTED_IDS = [
   'stale-oscillation',
   'kv-tiering',
   'diurnal-autoscale',
+  'batch-buffer',
 ];
 
 // ---------------------------------------------------------------------------

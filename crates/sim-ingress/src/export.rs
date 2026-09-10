@@ -839,6 +839,11 @@ pub const DEMOS: &[Demo] = &[
         files: &["autoscale_none.txt", "autoscale_cold30.txt", "autoscale_cold5.txt"],
         sweep: None,
     },
+    Demo {
+        group: "21-batch-buffer",
+        files: &["buffer_fifo.txt", "buffer_batch.txt", "buffer_weighted.txt"],
+        sweep: None,
+    },
 ];
 
 /// Set one key, through the text form so there is exactly one place that knows the key names. The

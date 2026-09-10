@@ -69,7 +69,7 @@ fn tokens_per_s(sc: &Scenario, batch: usize, output: u32) -> f64 {
     let cost = sc.cost_model();
     let mut r = Replica::default();
     for id in 0..batch as u64 {
-        r.enqueue(req(id, 8, output), sc.max_queue).ok().unwrap();
+        r.enqueue(req(id, 8, output), sc.max_queue, EPOCH_BASE).ok().unwrap();
     }
     r.wake(EPOCH_BASE);
     let mut now = EPOCH_BASE;
@@ -124,7 +124,7 @@ fn expected_tokens_per_step_matches_the_formula() {
     assert!((bench(false).cost_model().spec_tokens_per_step() - 1.0).abs() == 0.0);
 
     let mut r = Replica::default();
-    r.enqueue(req(1, 8, 1_000_000), sc.max_queue).ok().unwrap();
+    r.enqueue(req(1, 8, 1_000_000), sc.max_queue, EPOCH_BASE).ok().unwrap();
     r.wake(EPOCH_BASE);
     let mut now = EPOCH_BASE;
     // The first step is the prefill; tokens start on the second.

@@ -1429,6 +1429,10 @@ export const EXTRA_KEYS = [
   'retry_budget_fraction', 'retry_backoff_s',
   'disable_decode', 'spec_draft_tokens', 'spec_accept_rate',
   'preemption', 'preemption_victim', 'scheduling', 'dram_capacity_tokens', 'swap_gbps',
+  // The buffered_batch scheduler's buffer and the weighted_random router's coefficients: engine
+  // keys with no panel control, sent verbatim like the rest of this list.
+  'buffer_max_batch', 'buffer_max_prefill_tokens', 'buffer_max_decode_seqs', 'buffer_max_hold_ms',
+  'wr_c1', 'wr_c2', 'wr_c3', 'wr_c4', 'wr_c5',
   'arrival_rps_per_replica',
   'dram_pool_tokens', 'ssd_pool_tokens', 'ssd_gbps', 'fabric_gbps',
   'session_turns_mean', 'session_think_s',

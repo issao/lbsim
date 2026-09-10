@@ -49,6 +49,10 @@ fn forecast_latency_draws_the_same_candidates_as_p2c() {
             queued_tokens: i * 4_096,
             kv_tokens: 0,
             last_step_ns: 5_000_000 + i * 250_000,
+            queued_decode: 0,
+            queued_prefill: i as u32,
+            decode_beyond_buffer: 0,
+            prefill_beyond_buffer: 0,
             ejected: false,
         })
         .collect();

@@ -124,6 +124,10 @@ export function Home() {
           <a href="reports/20-autoscaling.html">20. Autoscaling with a cold start: the controller lags the view, the turn-up lags the controller</a>
           <p>A 200 s day at 224–896 rps on a fixed 256-replica fleet, against target-utilization scaling between 64 and 384 with a 30 s and a 5 s turn-up.</p>
         </li>
+        <li>
+          <a href="reports/21-batch-buffer.html">21. The GPU scheduler's batch buffer: admit what the step can serve, and route by what is beyond it</a>
+          <p>At 1.2× rated on 256 replicas: fifo_chunked against buffered_batch with a 5 ms hold under p2c, then the buffer under weighted_random steering away from work beyond the open buffer.</p>
+        </li>
       </ul>
       <p>
         Every number on every page is engine data. A quantity the engine does not simulate yet shows a dash and says

@@ -66,8 +66,8 @@ fn tiny(preemption: &str) -> Scenario {
 /// grows the pair by two tokens a step, so the sixth step is the one that would exceed the cap.
 fn two_sequences(sc: &Scenario) -> (Replica, CostModel) {
     let mut r = Replica::default();
-    r.enqueue(req(1, 100, 50), sc.max_queue).ok().unwrap();
-    r.enqueue(req(2, 100, 50), sc.max_queue).ok().unwrap();
+    r.enqueue(req(1, 100, 50), sc.max_queue, EPOCH_BASE).ok().unwrap();
+    r.enqueue(req(2, 100, 50), sc.max_queue, EPOCH_BASE).ok().unwrap();
     r.wake(EPOCH_BASE);
     (r, sc.cost_model())
 }
@@ -215,8 +215,8 @@ fn eviction_never_swaps_the_queue_heads_own_context() {
     let mut r = Replica::default();
     r.park(12, 100, deadline, EPOCH_BASE);
     r.park(11, 100, deadline, EPOCH_BASE + 1);
-    r.enqueue(req(1, 100, 11), sc.max_queue).ok().unwrap();
-    r.enqueue(req(11, 110, 5), sc.max_queue).ok().unwrap();
+    r.enqueue(req(1, 100, 11), sc.max_queue, EPOCH_BASE).ok().unwrap();
+    r.enqueue(req(11, 110, 5), sc.max_queue, EPOCH_BASE).ok().unwrap();
     r.wake(EPOCH_BASE);
     let mut now = EPOCH_BASE;
     let last = step_until(&mut r, &sc, &cost, &mut now, |o| !o.finished.is_empty());

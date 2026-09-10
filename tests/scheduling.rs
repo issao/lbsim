@@ -44,7 +44,7 @@ fn a_policy_never_receives_more_than_max_batch_queued_entries() {
         let mut sched = lbsim::policy::make_scheduling(&sc).unwrap();
         let mut r = Replica::default();
         for id in 0..10_000 {
-            r.enqueue(req(id, 16), sc.max_queue).expect("queue has room");
+            r.enqueue(req(id, 16), sc.max_queue, EPOCH_BASE).expect("queue has room");
         }
         assert_eq!(r.queued(), 10_000);
         let mut now = EPOCH_BASE;
