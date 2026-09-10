@@ -224,6 +224,40 @@ fn three_finished_runs_leave_the_heap_where_one_did() {
     assert_eq!(server.memory_report().lines().count(), 1, "{}", server.memory_report());
 }
 
+/// The one entry of `runs/index.json` whose `run_id` is `id`, or `None`. Read over HTTP, the way
+/// the dashboard's replay picker (`web/src/lib/replay.ts`) reads it: `GET /runs/index.json` is a
+/// plain static file under the served directory, the index is a bare JSON array, not an object.
+fn index_entry(addr: SocketAddr, id: &str) -> Option<Json> {
+    let (status, body) = request(addr, "GET", "/runs/index.json", "");
+    assert_eq!(status, 200, "{body}");
+    match parse_json(&body).unwrap() {
+        Json::Arr(items) => items.into_iter().find(|e| e.str("run_id") == Some(id)),
+        other => panic!("runs/index.json is not an array: {other:?}"),
+    }
+}
+
+/// A released live run answers the replay picker exactly as an export of the same run would.
+/// Issao, 2026-09-10: "checkpoint under runs/<id>/ ... is not in runs/index.json, so the
+/// dashboard's replay mode cannot open it."
+#[test]
+fn a_released_run_is_indexed_for_replay() {
+    let (addr, server, _dir) = start_server("indexed", S);
+    let (id, _) = run_to_release(addr, &server);
+
+    let entry = index_entry(addr, &id).unwrap_or_else(|| panic!("no runs/index.json entry for {id}"));
+    assert_eq!(entry.str("routing"), Some("p2c(d=2)"), "{entry:?}");
+    assert_eq!(entry.u64("replicas"), Some(32), "{entry:?}");
+    assert!(entry.f64("sample_interval_ms").is_some_and(|ms| ms > 0.0), "{entry:?}");
+    let (start, end) = (entry.u64("sim_start_unix_ns").unwrap(), entry.u64("sim_end_unix_ns").unwrap());
+    assert!(end > start, "the run's window should have positive length: {entry:?}");
+    assert!(entry.u64("replica_sample_stride").is_some_and(|s| s >= 1), "{entry:?}");
+
+    // A second run releases without disturbing the first's entry: `merge_index` keeps every run.
+    let (second, _) = run_to_release(addr, &server);
+    assert!(index_entry(addr, &id).is_some(), "the first run's entry survives a second release");
+    assert!(index_entry(addr, &second).is_some(), "the second run is indexed too");
+}
+
 #[test]
 fn a_finished_run_stays_for_the_retention_and_while_leased() {
     let (addr, server, _dir) = start_server("retention", 3600 * S);

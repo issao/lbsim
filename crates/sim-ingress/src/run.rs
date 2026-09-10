@@ -802,7 +802,23 @@ fn drive(run: Arc<Run>, reg: Arc<Registry>, sc: Scenario, ready: mpsc::SyncSende
                             st.result = Some(export::result(&r, &st.run_id));
                             st.state = State::Complete;
                             st.finished_at_wall_ns = Some(wall_now_ns());
-                            Some(Checkpoint::inputs(&st, std::mem::take(&mut r.frames)))
+                            // Everything `runs/index.json` needs but the stride, captured now while
+                            // `r` and `st` are still borrowed; the stride itself is not known until
+                            // the render below has thinned `replicas.jsonl`, which happens off this
+                            // lock. Issao, 2026-09-10: a released run this checkpoint answers for is
+                            // not in the replay picker's index, and cannot be opened as a recording.
+                            let index_fields = export::IndexFields {
+                                run_id: st.run_id.clone(),
+                                name: r.scenario.name.clone(),
+                                routing: r.routing_label.clone(),
+                                scenario_file: None,
+                                sim_start_unix_ns: export::sim_start(&r),
+                                sim_end_unix_ns: r.measured_to,
+                                sample_interval_ms: r.scenario.sample_interval_ms,
+                                replicas: r.scenario.replicas,
+                                replica_sample_stride: 0,
+                            };
+                            Some((Checkpoint::inputs(&st, std::mem::take(&mut r.frames)), index_fields))
                         }
                         Err(why) => {
                             st.state = State::Failed;
@@ -814,8 +830,16 @@ fn drive(run: Arc<Run>, reg: Arc<Registry>, sc: Scenario, ready: mpsc::SyncSende
                     run.changed.notify_all();
                     checkpoint
                 };
-                if let Some(inputs) = checkpoint {
-                    inputs.render().write(&reg.root);
+                if let Some((inputs, mut index_fields)) = checkpoint {
+                    let rendered = inputs.render();
+                    let stride = rendered.replica_sample_stride;
+                    rendered.write(&reg.root);
+                    if let Some(stride) = stride {
+                        index_fields.replica_sample_stride = stride;
+                        if let Err(e) = export::append_to_index(&reg.root, &index_fields) {
+                            println!("checkpoint {}: index.json: {e}", index_fields.run_id);
+                        }
+                    }
                     let mut st = run.lock();
                     st.terminal_checkpoint = true;
                     run.changed.notify_all();
@@ -867,6 +891,10 @@ struct Checkpoint {
     run_id: String,
     docs: Vec<(&'static str, String)>,
     traces: Vec<RequestTrace>,
+    /// The stride chosen for this checkpoint's `replicas.jsonl`, the same number `checkpoint.json`
+    /// carries — `None` when there were no frames to thin, in which case there is nothing worth
+    /// listing in `runs/index.json` either.
+    replica_sample_stride: Option<usize>,
 }
 
 /// What a checkpoint is rendered from, owned, so the rendering happens off the lock.
@@ -929,6 +957,7 @@ impl Checkpoint {
 impl CheckpointInputs {
     fn render(self) -> Checkpoint {
         let sc = &self.scenario;
+        let mut replica_sample_stride = None;
         let mut docs = vec![
             ("status.json", wire::run_status_json(&self.status) + "\n"),
             ("scenario.txt", sc.to_text()),
@@ -988,11 +1017,12 @@ impl CheckpointInputs {
             }
             docs.push(("replicas.jsonl", lines));
             docs.push(("checkpoint.json", format!("{{\"replica_sample_stride\":{stride},\"frames\":{n}}}\n")));
+            replica_sample_stride = Some(stride);
         }
         if let Some(r) = &self.result {
             docs.push(("result.json", wire::run_result_json(r) + "\n"));
         }
-        Checkpoint { run_id: self.run_id, docs, traces: self.traces }
+        Checkpoint { run_id: self.run_id, docs, traces: self.traces, replica_sample_stride }
     }
 }
 

@@ -34,6 +34,7 @@ use sim_metrics::trace::RequestTrace;
 use sim_metrics::Outcome;
 use sim_scenario::Scenario;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 /// The percentiles every exported distribution carries, whole-run and windowed alike.
 pub const PERCENTILES: &[f64] = &[50.0, 90.0, 99.0, 99.9];
@@ -51,7 +52,10 @@ const EXPORT_SUBSCRIPTION_ID: &str = "export";
 
 /// Where the simulated clock started. `RunResult` records the measured window, and the engine placed
 /// warmup immediately before it with the same cast, so this recovers the origin exactly.
-fn sim_start(r: &RunResult) -> Nanos {
+///
+/// `pub(crate)`: `run.rs`'s release path needs this too, to give a live run the same
+/// `sim_start_unix_ns` an export would have computed for it in `runs/index.json`.
+pub(crate) fn sim_start(r: &RunResult) -> Nanos {
     r.measured_from.saturating_sub((r.scenario.warmup_s * 1e9) as Nanos)
 }
 
@@ -638,31 +642,75 @@ fn stratify_traces(traces: &[RequestTrace], budget_bytes: u64) -> (String, Trace
 // The index
 // ---------------------------------------------------------------------------
 
+/// The fields one line of `index.json` records for a run. Built two ways: `index_entry` reads them
+/// off a `RunResult` for the offline exporter; `run.rs`'s release path has no `RunResult` (a live
+/// run's checkpoint is rendered from `RunState`), so it fills the same fields from there and calls
+/// `append_to_index` directly. One shape either way, so a released live run gets exactly the entry
+/// an export of the same run would have.
+pub(crate) struct IndexFields {
+    pub run_id: String,
+    pub name: String,
+    pub routing: String,
+    pub scenario_file: Option<String>,
+    pub sim_start_unix_ns: Nanos,
+    pub sim_end_unix_ns: Nanos,
+    pub sample_interval_ms: f64,
+    pub replicas: usize,
+    pub replica_sample_stride: usize,
+}
+
 /// One line of `index.json`. The file is an array written one entry per line, which is what lets
 /// several invocations merge without a JSON parser: each line is one run, found by its `run_id`.
-fn index_entry(r: &RunResult, run_id: &str, scenario_file: Option<&str>, replica_sample_stride: usize) -> String {
+fn index_entry_json(f: &IndexFields) -> String {
     let mut j = wire::Json::new();
-    j.begin_object()
-        .field_str("run_id", run_id)
-        .field_str("name", &r.scenario.name)
-        .field_str("routing", &r.routing_label);
-    if let Some(f) = scenario_file {
-        j.field_str("scenario_file", f);
+    j.begin_object().field_str("run_id", &f.run_id).field_str("name", &f.name).field_str("routing", &f.routing);
+    if let Some(sf) = &f.scenario_file {
+        j.field_str("scenario_file", sf);
     }
-    j.field_u64("sim_start_unix_ns", sim_start(r))
-        .field_u64("sim_end_unix_ns", r.measured_to)
-        .field_f64("sample_interval_ms", r.scenario.sample_interval_ms)
-        .field_int("replicas", r.scenario.replicas as i64)
+    j.field_u64("sim_start_unix_ns", f.sim_start_unix_ns)
+        .field_u64("sim_end_unix_ns", f.sim_end_unix_ns)
+        .field_f64("sample_interval_ms", f.sample_interval_ms)
+        .field_int("replicas", f.replicas as i64)
         // Always written, 1 included, so a reader has one rule and the index one shape; an index
         // older than this field is read as stride 1, which is what those exports were.
-        .field_int("replica_sample_stride", replica_sample_stride as i64)
+        .field_int("replica_sample_stride", f.replica_sample_stride as i64)
         .end_object();
     j.finish()
 }
 
+fn index_entry(r: &RunResult, run_id: &str, scenario_file: Option<&str>, replica_sample_stride: usize) -> String {
+    index_entry_json(&IndexFields {
+        run_id: run_id.to_string(),
+        name: r.scenario.name.clone(),
+        routing: r.routing_label.clone(),
+        scenario_file: scenario_file.map(str::to_string),
+        sim_start_unix_ns: sim_start(r),
+        sim_end_unix_ns: r.measured_to,
+        sample_interval_ms: r.scenario.sample_interval_ms,
+        replicas: r.scenario.replicas,
+        replica_sample_stride,
+    })
+}
+
+/// Add or replace `f`'s entry in `dir`'s `runs/index.json`. What `run.rs` calls when a live run's
+/// terminal checkpoint lands, so the same run picker that lists an export lists a released run too.
+pub(crate) fn append_to_index(dir: &Path, f: &IndexFields) -> Result<(), String> {
+    merge_index(&dir.join("runs").join("index.json"), &index_entry_json(f))
+}
+
+/// Every writer of one `index.json` — several demo exports in one process, or several live runs
+/// releasing at once — shares this, so a read-merge-write never loses a concurrent one's entry.
+/// One process-wide lock rather than a file lock: every writer here is a thread of this process,
+/// and a `merge_index` under it never blocks on anything but another `merge_index`.
+static INDEX_LOCK: Mutex<()> = Mutex::new(());
+
 /// Replace or add `entry` in the index at `path`, keeping every other run. Entries are sorted by
 /// run id so the file does not depend on export order, which is what makes a re-export byte-identical.
+/// The read, merge and write happen under `INDEX_LOCK`, and the write itself is a temp file renamed
+/// over `path`, so a reader (the dashboard's run picker) never observes a partial file and a second
+/// writer's rename never lands between this one's write and its own read.
 fn merge_index(path: &Path, entry: &str) -> Result<(), String> {
+    let _guard = INDEX_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let new_id = json_string_field(entry, "run_id").ok_or("index entry has no run_id")?;
     let mut entries: Vec<(String, String)> = Vec::new();
     if let Ok(existing) = std::fs::read_to_string(path) {
@@ -687,7 +735,11 @@ fn merge_index(path: &Path, entry: &str) -> Result<(), String> {
         text.push_str(if i + 1 < entries.len() { ",\n" } else { "\n" });
     }
     text.push_str("]\n");
-    std::fs::write(path, text).map_err(|e| format!("{}: {e}", path.display()))
+    // Same directory as `path`, so the rename below is same-filesystem and therefore atomic: a
+    // concurrent reader sees either the old index or the new one, never a half-written one.
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, text).map_err(|e| format!("{}: {e}", tmp.display()))?;
+    std::fs::rename(&tmp, path).map_err(|e| format!("{} -> {}: {e}", tmp.display(), path.display()))
 }
 
 /// The value of a top-level string field in a compact JSON object, unescaped. Enough parser for the
