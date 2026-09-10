@@ -128,6 +128,15 @@ enum Metric {
   // capacity that METRIC_GPU_UTILIZATION reports as 55% busy; the ratio of the two is the mean batch
   // fill, which is what Issao asked to see: "so we can get a sense of how small the batches are".
   METRIC_GPU_USEFUL_FRACTION = 71;
+  // The replica's queue as its scheduler sees it, replica scope, read at the sample: sequences
+  // waiting to decode and to prefill, and of those the part that does not fit the batch buffer the
+  // scheduler is currently collecting (SchedulingPolicy.BufferedBatch; zero under a scheduler with no
+  // buffer). These are the terms of RoutingPolicy.WeightedRandom, put on the wire so the dashboard can
+  // show what the router is weighing.
+  METRIC_QUEUED_DECODE_SEQS = 72;
+  METRIC_QUEUED_PREFILL_SEQS = 73;
+  METRIC_DECODE_BEYOND_BUFFER = 74;
+  METRIC_PREFILL_BEYOND_BUFFER = 75;
 }
 
 // Exactly one entity. Per Issao, selecting a single replica and opening one subscription per
