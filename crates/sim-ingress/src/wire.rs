@@ -56,6 +56,7 @@ pub const METRICS: &[(&str, i32)] = &[
     ("METRIC_GPU_COMPUTE_BOUND_FRACTION", 68),
     ("METRIC_REPLICA_STATE", 69),
     ("METRIC_TRUE_SPEED_MULTIPLIER", 70),
+    ("METRIC_GPU_USEFUL_FRACTION", 71),
 ];
 
 // The metrics the encoders and the exporter name directly. Same numbers as the table; the drift test
