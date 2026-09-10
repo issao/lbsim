@@ -24,6 +24,7 @@ use sim_metrics::{Frame, SparseHistogram};
 use sim_scenario::Scenario;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
@@ -43,6 +44,32 @@ const POLL: Duration = Duration::from_millis(50);
 
 /// The subscription id stamped on checkpoint rows, beside `export.rs`'s `"export"`.
 const CHECKPOINT_SUBSCRIPTION_ID: &str = "checkpoint";
+
+/// How long a finished run stays in memory after its checkpoint is on disk, with nobody leased to
+/// it. Long enough for the dashboard's end-of-run `GetResult` and a reload; short enough that a
+/// site whose default run is ten minutes never holds more than a couple of finished runs at once.
+/// Before this every finished run stayed until the instance died: ninety-odd MB each, and the
+/// engine's memory budget in about ten runs.
+pub const DEFAULT_COMPLETED_RETENTION_SECONDS: u64 = 120;
+
+/// Reads `LBSIM_COMPLETED_RETENTION_S`. Default 120; a value that does not parse falls back to the
+/// default rather than to zero, for the same reason `IDLE_SHUTDOWN_SECONDS` does. Zero is allowed
+/// and means "release as soon as the checkpoint is written".
+pub fn completed_retention_ns_from_env() -> u64 {
+    std::env::var("LBSIM_COMPLETED_RETENTION_S")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(DEFAULT_COMPLETED_RETENTION_SECONDS)
+        .saturating_mul(1_000_000_000)
+}
+
+/// Resident set size of this process, from `/proc/self/statm`, so a memory report is a number
+/// rather than a guess. `None` off Linux.
+pub fn process_rss_bytes() -> Option<u64> {
+    let statm = std::fs::read_to_string("/proc/self/statm").ok()?;
+    let pages: u64 = statm.split_whitespace().nth(1)?.parse().ok()?;
+    Some(pages * 4096)
+}
 
 /// The trace ring: the newest sampled journeys a run keeps for `GetTraces`, bounded by count and
 /// by encoded size, whichever trips first. Two thousand is twenty pages of the dashboard's table;
@@ -107,6 +134,15 @@ pub struct RunState {
     /// Unregistered, by `StartRun` at the cap or by the reap: the run thread exits on sight and
     /// nothing more is written. Whoever still holds the `Arc<Run>` reads why in `note`.
     pub evicted: bool,
+    /// Finished and let go: the frames and traces are gone from memory and the registry answers
+    /// for it from a status stub and the checkpoint on disk. Set with `evicted`'s effect on the run
+    /// thread, and kept distinct because a released run is still listed.
+    pub released: bool,
+    /// When the run went terminal, which is when the retention clock starts.
+    pub finished_at_wall_ns: Option<u64>,
+    /// The terminal checkpoint is on disk: `GetResult` and replay can answer without this process.
+    /// A run is never released before this is set.
+    pub terminal_checkpoint: bool,
     /// Registration order for the eviction: `r-10` sorts before `r-2`, so the map's order is no use.
     pub started_at_wall_ns: u64,
     /// Simulated seconds per wall second. Zero is as fast as possible.
@@ -155,6 +191,9 @@ impl RunState {
             idle_stopped: false,
             idle_stopped_at_wall_ns: None,
             evicted: false,
+            released: false,
+            finished_at_wall_ns: None,
+            terminal_checkpoint: false,
             started_at_wall_ns: wall_now_ns(),
             realtime_factor: max_realtime_factor,
             sim_time: EPOCH_BASE,
@@ -358,42 +397,117 @@ impl Run {
 #[derive(Debug)]
 pub struct Registry {
     runs: Mutex<BTreeMap<String, Arc<Run>>>,
+    /// Finished runs let go of: the status each had when released, so `ListRuns` and `GetRun`
+    /// keep answering for the process's lifetime at a hundred bytes a run; the result and the
+    /// frames are on disk under `runs/<run_id>/`.
+    released: Mutex<BTreeMap<String, RunStatus>>,
     next_id: Mutex<u64>,
     pub leases: Mutex<LeaseRegistry>,
     idle_threshold_ns: u64,
+    completed_retention_ns: AtomicU64,
     /// The served directory: checkpoints go to `runs/<run_id>/` under it, beside the exports.
     root: PathBuf,
+}
+
+/// A held run, for the memory report.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Held {
+    pub run_id: String,
+    pub state: State,
+    pub frames: usize,
+    pub traces: usize,
 }
 
 impl Registry {
     pub fn new(root: PathBuf, idle_threshold_ns: u64) -> Self {
         Registry {
             runs: Mutex::new(BTreeMap::new()),
+            released: Mutex::new(BTreeMap::new()),
             next_id: Mutex::new(1),
             leases: Mutex::new(LeaseRegistry::new()),
             idle_threshold_ns,
+            completed_retention_ns: AtomicU64::new(DEFAULT_COMPLETED_RETENTION_SECONDS * 1_000_000_000),
             root,
         }
     }
 
-    // Lock order: leases → subs → run.state, each optional, never reversed.
+    /// How long a finished run stays in memory once its checkpoint is written and nobody holds a
+    /// lease on it. Atomic so the server can set it after construction, and a test can shorten it.
+    pub fn set_completed_retention_ns(&self, ns: u64) {
+        self.completed_retention_ns.store(ns, Ordering::Relaxed);
+    }
+
+    pub fn completed_retention_ns(&self) -> u64 {
+        self.completed_retention_ns.load(Ordering::Relaxed)
+    }
+
+    // Lock order: runs → leases → released → run.state, each optional, never reversed. `leases`
+    // then `subs` then `run.state` is the server's order; nothing takes `leases` before `runs`.
     pub fn leases(&self) -> MutexGuard<'_, LeaseRegistry> {
         self.leases.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn released_map(&self) -> MutexGuard<'_, BTreeMap<String, RunStatus>> {
+        self.released.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     pub fn get(&self, run_id: &str) -> Option<Arc<Run>> {
         self.runs.lock().unwrap_or_else(|e| e.into_inner()).get(run_id).cloned()
     }
 
+    /// The status a released run had when it was let go, if `run_id` is one.
+    pub fn released_status(&self, run_id: &str) -> Option<RunStatus> {
+        self.released_map().get(run_id).cloned()
+    }
+
+    /// Every run in memory, then every released one, each in id order.
     pub fn list(&self) -> Vec<RunStatus> {
         let runs = self.runs.lock().unwrap_or_else(|e| e.into_inner());
-        runs.values().map(|r| r.status()).collect()
+        let mut out: Vec<RunStatus> = runs.values().map(|r| r.status()).collect();
+        out.extend(self.released_map().values().cloned());
+        out
+    }
+
+    /// The runs in memory, with what each holds: the memory report's per-run line.
+    pub fn held(&self) -> Vec<Held> {
+        let runs = self.runs.lock().unwrap_or_else(|e| e.into_inner());
+        runs.iter()
+            .map(|(id, r)| {
+                let st = r.lock();
+                Held { run_id: id.clone(), state: st.state, frames: st.frames.len(), traces: st.traces.len() }
+            })
+            .collect()
+    }
+
+    pub fn released_count(&self) -> usize {
+        self.released_map().len()
     }
 
     /// The reap's half of an eviction: takes `runs` alone, so the run thread calls it after it
     /// has let go of its own state.
     fn remove(&self, run_id: &str) {
         self.runs.lock().unwrap_or_else(|e| e.into_inner()).remove(run_id);
+    }
+
+    /// Let a finished run go: out of `runs`, its frames and traces dropped, a status stub kept.
+    /// The run thread exits on `released`. The caller holds `runs`; `released` and `run.state` are
+    /// taken here, in that order.
+    fn release_held(runs: &mut BTreeMap<String, Arc<Run>>, released: &mut BTreeMap<String, RunStatus>, run_id: &str, why: &str) {
+        let Some(run) = runs.remove(run_id) else { return };
+        let mut st = run.lock();
+        st.released = true;
+        st.frames = Vec::new();
+        st.traces = TraceRing::default();
+        st.note = format!("released: {why}; the checkpoint under runs/{run_id}/ answers from here");
+        released.insert(run_id.to_string(), st.status());
+        run.changed.notify_all();
+    }
+
+    /// The run thread's release, after the retention: `runs` then `released` then the run's state.
+    fn release(&self, run_id: &str, why: &str) {
+        let mut runs = self.runs.lock().unwrap_or_else(|e| e.into_inner());
+        let mut released = self.released_map();
+        Self::release_held(&mut runs, &mut released, run_id, why);
     }
 
     /// `StartRun`. Builds the engine on the run thread and waits for its verdict, so an invalid
@@ -404,6 +518,26 @@ impl Registry {
         }
         // Held until the run is registered, so the cap is exact under concurrent starts.
         let mut runs = self.runs.lock().unwrap_or_else(|e| e.into_inner());
+        // A StartRun at the cap is the moment memory matters: every finished run whose checkpoint
+        // is on disk and that nobody is leased to goes now rather than at the end of its retention,
+        // so the new engine is not built beside eight finished runs' frames.
+        if runs.len() >= MAX_LIVE_RUNS {
+            let now = wall_now_ns();
+            let done: Vec<String> = {
+                let leases = self.leases();
+                runs.iter()
+                    .filter(|(id, r)| {
+                        let st = r.lock();
+                        st.is_terminal() && st.terminal_checkpoint && leases.live_for_run(id, now) == 0
+                    })
+                    .map(|(id, _)| id.clone())
+                    .collect()
+            };
+            let mut released = self.released_map();
+            for id in &done {
+                Self::release_held(&mut runs, &mut released, id, &format!("{MAX_LIVE_RUNS} runs held and a StartRun arrived"));
+            }
+        }
         // The cap bounds CPU and memory for live work. A parked checkpoint is neither, so an
         // idle-stopped run gives up its slot, oldest first, and the 503 is for a box whose eight
         // are all busy or watched; a crashed tab must never be able to lock the public site.
@@ -474,12 +608,21 @@ enum Next {
     Exit,
     /// Idle-stopped for twice the threshold and nobody came back: unregister, then leave.
     Reap,
+    /// Finished, checkpointed, unleased, and the retention has run out: let go, then leave.
+    Release,
 }
 
 /// The run thread. `ready` carries `Sim::new`'s verdict back to `StartRun`.
 fn drive(run: Arc<Run>, reg: Arc<Registry>, sc: Scenario, ready: mpsc::SyncSender<Result<(), String>>) {
     let mut sim = match Sim::new(&sc) {
-        Ok(sim) => Some(sim),
+        Ok(mut sim) => {
+            // Nothing on this path reads the per-request records: the scorecard reads the
+            // engine's tally and histograms, the traces are cloned at settle, and the frames are
+            // what every subscription and the checkpoint read. Folding them saves ~100 bytes a
+            // request for the run's whole length.
+            sim.fold_records();
+            Some(sim)
+        }
         Err(why) => {
             let _ = ready.send(Err(why));
             return;
@@ -500,7 +643,7 @@ fn drive(run: Arc<Run>, reg: Arc<Registry>, sc: Scenario, ready: mpsc::SyncSende
     loop {
         // Built under the lock, written after it: every subscription's writer waits on this lock,
         // so a file write inside it stalls every viewer for the duration of the write.
-        let mut pending: Option<Checkpoint> = None;
+        let mut pending: Option<CheckpointInputs> = None;
         // Leases before the run state, never inside it: the writers take `subs` then `run.state`,
         // and `reap` takes `leases` then `subs`, so `leases` under `run.state` would be a cycle.
         let now_wall = wall_now_ns();
@@ -522,27 +665,27 @@ fn drive(run: Arc<Run>, reg: Arc<Registry>, sc: Scenario, ready: mpsc::SyncSende
             // paced for a viewer, or paused, or finished, is only as busy as its leases.
             let advancing = st.state == State::Running && !st.paused && !st.idle_stopped;
             let queued = usize::from(st.step_target.is_some() || (advancing && st.realtime_factor == 0.0));
-            let mut checkpointed_now = false;
-            if guard.observe(now_wall, live, queued) == IdleDecision::Shutdown {
-                pending = Some(Checkpoint::build(&st));
+            // A terminal run's checkpoint is the retention rule's, below, not the idle guard's.
+            if guard.observe(now_wall, live, queued) == IdleDecision::Shutdown && !st.is_terminal() {
+                pending = Some(Checkpoint::from_state(&st));
                 st.checkpoints += 1;
-                checkpointed_now = true;
-                if !st.is_terminal() {
-                    st.idle_stopped = true;
-                    st.idle_stopped_at_wall_ns = Some(now_wall);
-                    st.state = State::Paused;
-                    st.note = format!(
-                        "idle for {} s with no live lease and no queued work: checkpointed and stopped advancing",
-                        reg.idle_threshold_ns / 1_000_000_000
-                    );
-                }
+                st.idle_stopped = true;
+                st.idle_stopped_at_wall_ns = Some(now_wall);
+                st.state = State::Paused;
+                st.note = format!(
+                    "idle for {} s with no live lease and no queued work: checkpointed and stopped advancing",
+                    reg.idle_threshold_ns / 1_000_000_000
+                );
                 run.changed.notify_all();
+            }
+            if st.is_terminal() && st.finished_at_wall_ns.is_none() {
+                st.finished_at_wall_ns = Some(now_wall);
             }
 
             let reap_due = st
                 .idle_stopped_at_wall_ns
                 .is_some_and(|at| now_wall.saturating_sub(at) >= 2 * reg.idle_threshold_ns);
-            if st.evicted {
+            if st.evicted || st.released {
                 Next::Exit
             } else if reap_due && !st.is_terminal() {
                 // Bounds memory with no new arrivals to evict it: the checkpoint from the idle
@@ -556,8 +699,17 @@ fn drive(run: Arc<Run>, reg: Arc<Registry>, sc: Scenario, ready: mpsc::SyncSende
                 run.changed.notify_all();
                 Next::Reap
             } else if st.is_terminal() {
-                // The checkpoint is the last thing a finished run's thread does.
-                if checkpointed_now { Next::Exit } else { Next::Wait }
+                // A run that failed mid-chunk has no result and never passed through `Finish`,
+                // which is where a completed run's checkpoint is rendered; it gets the same
+                // documents minus the result here, once. Then the retention: the run stays while
+                // someone holds a lease on it (a viewer reading its final frames) and for the
+                // retention after the checkpoint landed, and is let go after that.
+                if !st.terminal_checkpoint {
+                    pending = Some(Checkpoint::from_state(&st));
+                    st.terminal_checkpoint = true;
+                }
+                let due = st.finished_at_wall_ns.is_some_and(|at| now_wall.saturating_sub(at) >= reg.completed_retention_ns());
+                if due && live == 0 && pending.is_none() { Next::Release } else { Next::Wait }
             } else if st.stop_requested {
                 Next::Finish
             } else if let Some(target) = st.step_target {
@@ -590,14 +742,21 @@ fn drive(run: Arc<Run>, reg: Arc<Registry>, sc: Scenario, ready: mpsc::SyncSende
             }
         };
 
-        if let Some(cp) = pending.take() {
-            cp.write(&reg.root);
+        if let Some(inputs) = pending.take() {
+            inputs.render().write(&reg.root);
         }
 
         match next {
             Next::Exit => return,
             Next::Reap => {
                 reg.remove(&run_id);
+                return;
+            }
+            Next::Release => {
+                reg.release(
+                    &run_id,
+                    &format!("finished {} s ago, unleased", reg.completed_retention_ns() / 1_000_000_000),
+                );
                 return;
             }
             Next::Wait => {
@@ -624,26 +783,43 @@ fn drive(run: Arc<Run>, reg: Arc<Registry>, sc: Scenario, ready: mpsc::SyncSende
             }
             Next::Finish => {
                 let Some(mut engine) = sim.take() else { return };
-                let mut st = run.lock();
-                st.frames.extend(engine.drain_frames());
-                drain_traces(&mut st, &mut engine);
-                st.sim_time = engine.now();
-                match engine.into_result() {
-                    Ok(mut r) => {
-                        // `into_result` only sees the frames since the last drain (the one just
-                        // above left `Sim`'s copy empty); `st.frames` is the accumulated record
-                        // of the whole run, so `GetResult` reattaches it here rather than off a
-                        // truncated `r.frames`. One clone, once, at the end of a run.
-                        r.frames = st.frames.clone();
-                        st.result = Some(export::result(&r, &st.run_id));
-                        st.state = State::Complete;
-                    }
-                    Err(why) => {
-                        st.state = State::Failed;
-                        st.error = why;
-                    }
+                // The terminal checkpoint's inputs, gathered under the lock and rendered after it:
+                // rendering every frame's fleet row and the replica rows of a 256-replica run is
+                // seconds of work, and every viewer's writer waits on this lock.
+                let checkpoint = {
+                    let mut st = run.lock();
+                    st.frames.extend(engine.drain_frames());
+                    drain_traces(&mut st, &mut engine);
+                    st.sim_time = engine.now();
+                    let checkpoint = match engine.into_result() {
+                        Ok(mut r) => {
+                            // `into_result` only sees the frames since the last drain (the one just
+                            // above left `Sim`'s copy empty); `st.frames` is the accumulated record
+                            // of the whole run, so `GetResult` reattaches it here rather than off a
+                            // truncated `r.frames`. One clone, once, at the end of a run, and the
+                            // checkpoint below takes it over rather than cloning again.
+                            r.frames = st.frames.clone();
+                            st.result = Some(export::result(&r, &st.run_id));
+                            st.state = State::Complete;
+                            st.finished_at_wall_ns = Some(wall_now_ns());
+                            Some(Checkpoint::inputs(&st, std::mem::take(&mut r.frames)))
+                        }
+                        Err(why) => {
+                            st.state = State::Failed;
+                            st.error = why;
+                            st.finished_at_wall_ns = Some(wall_now_ns());
+                            None
+                        }
+                    };
+                    run.changed.notify_all();
+                    checkpoint
+                };
+                if let Some(inputs) = checkpoint {
+                    inputs.render().write(&reg.root);
+                    let mut st = run.lock();
+                    st.terminal_checkpoint = true;
+                    run.changed.notify_all();
                 }
-                run.changed.notify_all();
             }
         }
     }
@@ -680,44 +856,59 @@ fn drain_traces(st: &mut RunState, engine: &mut Sim) {
     }
 }
 
-/// The idle checkpoint: the run as it stands, in the exact documents `export.rs` writes for a
-/// finished run, under `runs/<run_id>/` of the served directory. The engine cannot be snapshotted
-/// yet (`Leaf::snapshot` is unimplemented), so what is saved is what a viewer could have seen: the
-/// status, the scenario, every frame as a fleet-scope update, and the result once there is one.
-/// Built under the run lock and written outside it. A write failure is logged and not fatal: the
-/// run is still in memory.
+/// The checkpoint: the run as it stands, in the documents `export.rs` writes for a finished run,
+/// under `runs/<run_id>/` of the served directory. The engine cannot be snapshotted yet
+/// (`Leaf::snapshot` is unimplemented), so what is saved is what a viewer could have seen: the
+/// status, the scenario, every frame as a fleet-scope update, the per-replica rows of a finished
+/// run within `export::REPLICA_ROWS_BUDGET_BYTES`, the result once there is one, and the sampled
+/// traces if any. The inputs are gathered under the run lock and everything is rendered and written
+/// outside it. A write failure is logged and not fatal: the run is still in memory.
 struct Checkpoint {
     run_id: String,
     docs: Vec<(&'static str, String)>,
+    traces: Vec<RequestTrace>,
+}
+
+/// What a checkpoint is rendered from, owned, so the rendering happens off the lock.
+struct CheckpointInputs {
+    run_id: String,
+    status: RunStatus,
+    scenario: Scenario,
+    frames: Vec<Frame>,
+    result: Option<wire::RunResult>,
+    /// Measured traces only, like `sim-run export`'s `traces.jsonl`.
+    traces: Vec<RequestTrace>,
+    terminal: bool,
 }
 
 impl Checkpoint {
-    fn build(st: &RunState) -> Checkpoint {
-        let mut docs = vec![
-            ("status.json", wire::run_status_json(&st.status()) + "\n"),
-            ("scenario.txt", st.scenario.to_text()),
-        ];
-        let spec = RowSpec { target: Target::Fleet, metrics: Vec::new(), percentiles: export::PERCENTILES.to_vec() };
-        let n = st.frames.len();
-        let mut lines = String::new();
-        for (i, f) in st.frames.iter().enumerate() {
-            if let Some(row) = row(f, &st.scenario, &spec) {
-                let u = SubscriptionUpdate {
-                    subscription_id: CHECKPOINT_SUBSCRIPTION_ID.to_string(),
-                    sim_time_unix_ns: f.t,
-                    realtime_factor: st.realtime_factor,
-                    row,
-                    is_final: st.is_terminal() && i + 1 == n,
-                };
-                lines.push_str(&wire::subscription_update_json(&u));
-                lines.push('\n');
-            }
+    /// The inputs from the state, with the frames cloned: the idle checkpoint and a run that
+    /// failed mid-chunk take this route; a completed run hands over the clone it made anyway.
+    fn from_state(st: &RunState) -> CheckpointInputs {
+        Checkpoint::inputs(st, st.frames.clone())
+    }
+
+    fn inputs(st: &RunState, frames: Vec<Frame>) -> CheckpointInputs {
+        let measured_from = EPOCH_BASE + (st.scenario.warmup_s * 1e9) as Nanos;
+        CheckpointInputs {
+            run_id: st.run_id.clone(),
+            status: st.status(),
+            scenario: st.scenario.clone(),
+            frames,
+            result: st.result.clone(),
+            traces: {
+                // Oldest first, the order `sim-run export` writes them in.
+                let mut traces: Vec<RequestTrace> = st
+                    .traces
+                    .newest_first()
+                    .filter(|e| e.trace.record.arrived_at >= measured_from)
+                    .map(|e| e.trace.clone())
+                    .collect();
+                traces.reverse();
+                traces
+            },
+            terminal: st.is_terminal(),
         }
-        docs.push(("fleet.jsonl", lines));
-        if let Some(r) = &st.result {
-            docs.push(("result.json", wire::run_result_json(r) + "\n"));
-        }
-        Checkpoint { run_id: st.run_id.clone(), docs }
     }
 
     fn write(&self, root: &std::path::Path) {
@@ -727,6 +918,81 @@ impl Checkpoint {
                 println!("checkpoint {}: {}: {e}", self.run_id, dir.join(name).display());
             }
         }
+        if !self.traces.is_empty() {
+            if let Err(e) = export::export_traces(&self.traces, &dir, export::DEFAULT_TRACE_BUDGET_BYTES) {
+                println!("checkpoint {}: traces: {e}", self.run_id);
+            }
+        }
+    }
+}
+
+impl CheckpointInputs {
+    fn render(self) -> Checkpoint {
+        let sc = &self.scenario;
+        let mut docs = vec![
+            ("status.json", wire::run_status_json(&self.status) + "\n"),
+            ("scenario.txt", sc.to_text()),
+        ];
+        let spec = RowSpec { target: Target::Fleet, metrics: Vec::new(), percentiles: export::PERCENTILES.to_vec() };
+        let n = self.frames.len();
+        let mut lines = String::new();
+        for (i, f) in self.frames.iter().enumerate() {
+            if let Some(row) = row(f, sc, &spec) {
+                let u = SubscriptionUpdate {
+                    subscription_id: CHECKPOINT_SUBSCRIPTION_ID.to_string(),
+                    sim_time_unix_ns: f.t,
+                    realtime_factor: self.status.realtime_factor,
+                    row,
+                    is_final: self.terminal && i + 1 == n,
+                };
+                lines.push_str(&wire::subscription_update_json(&u));
+                lines.push('\n');
+            }
+        }
+        docs.push(("fleet.jsonl", lines));
+        if self.terminal && n > 0 {
+            // The per-replica rows, thinned to the export's budget. The stride is sized from the
+            // last sample's rows rather than by rendering every sample to measure it, which for a
+            // ten-thousand-replica run is the difference between seconds and minutes; a busy
+            // sample is a fair proxy for the rest, and the budget is a download size, not a
+            // contract. `checkpoint.json` carries the stride, as `index.json` does for an export.
+            let replica_lines = |s: usize| -> String {
+                let f = &self.frames[s];
+                let mut out = String::new();
+                for id in 0..f.replicas.len() {
+                    let rspec = RowSpec { target: Target::Replica(id as u64), metrics: Vec::new(), percentiles: Vec::new() };
+                    if let Some(row) = row(f, sc, &rspec) {
+                        let u = SubscriptionUpdate {
+                            subscription_id: CHECKPOINT_SUBSCRIPTION_ID.to_string(),
+                            sim_time_unix_ns: f.t,
+                            realtime_factor: self.status.realtime_factor,
+                            row,
+                            is_final: s + 1 == n && id + 1 == f.replicas.len(),
+                        };
+                        out.push_str(&wire::subscription_update_json(&u));
+                        out.push('\n');
+                    }
+                }
+                out
+            };
+            let last = replica_lines(n - 1);
+            let estimate = vec![last.len() as u64; n];
+            let stride = export::replica_sample_stride(&estimate, export::REPLICA_ROWS_BUDGET_BYTES);
+            let mut lines = String::new();
+            for s in (0..n).filter(|&s| export::is_replica_sample(s, n, stride)) {
+                if s + 1 == n {
+                    lines.push_str(&last);
+                } else {
+                    lines.push_str(&replica_lines(s));
+                }
+            }
+            docs.push(("replicas.jsonl", lines));
+            docs.push(("checkpoint.json", format!("{{\"replica_sample_stride\":{stride},\"frames\":{n}}}\n")));
+        }
+        if let Some(r) = &self.result {
+            docs.push(("result.json", wire::run_result_json(r) + "\n"));
+        }
+        Checkpoint { run_id: self.run_id, docs, traces: self.traces }
     }
 }
 
@@ -1508,22 +1774,27 @@ mod tests {
     }
 
     #[test]
-    fn a_checkpoint_is_built_under_the_lock_and_written_after_it() {
+    fn a_checkpoint_is_gathered_under_the_lock_and_rendered_after_it() {
         let (sc, mut sim) = advanced_sim();
         let mut st = RunState::new("r-7".into(), sc, 1.0);
         absorb(&mut st, &mut sim, Ok(()));
-        let cp = Checkpoint::build(&st);
+        let cp = Checkpoint::from_state(&st).render();
         let names: Vec<&str> = cp.docs.iter().map(|(n, _)| *n).collect();
-        assert_eq!(names, ["status.json", "scenario.txt", "fleet.jsonl"], "no result until the run has one");
+        assert_eq!(names, ["status.json", "scenario.txt", "fleet.jsonl"], "no result and no replica rows until the run ends");
         let fleet = &cp.docs[2].1;
         assert_eq!(fleet.lines().count(), st.frames.len());
         assert!(!fleet.contains("\"final\":true"), "a live run's checkpoint is not final");
 
         st.state = State::Failed;
-        let cp = Checkpoint::build(&st);
+        let cp = Checkpoint::from_state(&st).render();
+        let names: Vec<&str> = cp.docs.iter().map(|(n, _)| *n).collect();
+        assert_eq!(names, ["status.json", "scenario.txt", "fleet.jsonl", "replicas.jsonl", "checkpoint.json"]);
         let finals: Vec<usize> =
             cp.docs[2].1.lines().enumerate().filter(|(_, l)| l.contains("\"final\":true")).map(|(i, _)| i).collect();
         assert_eq!(finals, [st.frames.len() - 1], "a terminal run's last frame is final");
+        // Every sample of a run this small fits the budget: one row per replica per frame.
+        assert_eq!(cp.docs[3].1.lines().count(), st.frames.len() * st.scenario.replicas);
+        assert!(cp.docs[4].1.contains("\"replica_sample_stride\":1"), "{}", cp.docs[4].1);
 
         // Written where `export.rs` puts a finished run, from a value that owns no lock.
         let root = temp_dir("checkpoint");

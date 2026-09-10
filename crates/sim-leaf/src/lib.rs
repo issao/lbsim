@@ -57,7 +57,11 @@ enum Ev {
 pub struct RunResult {
     pub scenario: Scenario,
     pub routing_label: String,
+    /// The measured records in completion order. Empty for a run that folded them as it went
+    /// (`Sim::fold_records`); every rate and fraction below reads `tally`, never this.
     pub records: Vec<RequestRecord>,
+    /// The whole-run counters over the measured records.
+    pub tally: Tally,
     /// Span-by-span journeys of the requests the trace sample kept, measured window only.
     pub traces: Vec<RequestTrace>,
     pub ttft: Histogram,
@@ -89,27 +93,15 @@ impl RunResult {
         (self.measured_to.saturating_sub(self.measured_from)) as f64 / 1e9
     }
     pub fn completed(&self) -> u64 {
-        self.records.iter().filter(|r| r.outcome.is_success()).count() as u64
+        self.tally.completed
     }
     pub fn throughput_tokens_s(&self) -> f64 {
-        let toks: u64 = self
-            .records
-            .iter()
-            .filter(|r| r.outcome.is_success())
-            .map(|r| r.output_tokens as u64)
-            .sum();
-        toks as f64 / self.measured_s()
+        self.tally.output_tokens as f64 / self.measured_s()
     }
     /// Tokens per second delivered *within SLO*. The headline number, because a fleet can have
     /// excellent throughput and near-zero goodput by making everyone slightly too slow.
     pub fn goodput_tokens_s(&self) -> f64 {
-        let toks: u64 = self
-            .records
-            .iter()
-            .filter(|r| r.outcome == Outcome::Ok)
-            .map(|r| r.output_tokens as u64)
-            .sum();
-        toks as f64 / self.measured_s()
+        self.tally.goodput_tokens as f64 / self.measured_s()
     }
     /// Fraction of **all** measured requests that received acceptable service.
     ///
@@ -122,49 +114,35 @@ impl RunResult {
     /// call is a separate question, answered by comparing goodput, and `served_attainment` below keeps
     /// the old view for when the question really is "of what we served, how much was good".
     pub fn slo_attainment(&self) -> f64 {
-        if self.records.is_empty() {
+        if self.tally.total == 0 {
             return f64::NAN;
         }
-        let ok = self.records.iter().filter(|r| r.outcome == Outcome::Ok).count();
-        ok as f64 / self.records.len() as f64
+        self.tally.ok as f64 / self.tally.total as f64
     }
 
     /// Of the requests that completed, the fraction within SLO. Diagnostic rather than a score:
     /// it cannot distinguish good service from aggressive shedding, which is why it is not the
     /// headline.
     pub fn served_attainment(&self) -> f64 {
-        let n = self.records.iter().filter(|r| r.outcome.is_success()).count();
-        if n == 0 {
+        if self.tally.completed == 0 {
             return f64::NAN;
         }
-        let ok = self.records.iter().filter(|r| r.outcome == Outcome::Ok).count();
-        ok as f64 / n as f64
+        self.tally.ok as f64 / self.tally.completed as f64
     }
     /// The SLO classes present in the measured records, ascending. Empty-string scenarios give `[0]`.
     pub fn classes(&self) -> Vec<u8> {
-        let mut cs: Vec<u8> = self.records.iter().map(|r| r.class).collect();
-        cs.sort_unstable();
-        cs.dedup();
-        cs
+        self.tally.classes.keys().copied().collect()
     }
     /// `goodput_tokens_s` restricted to one class.
     pub fn class_goodput_tokens_s(&self, class: u8) -> f64 {
-        let toks: u64 = self
-            .records
-            .iter()
-            .filter(|r| r.class == class && r.outcome == Outcome::Ok)
-            .map(|r| r.output_tokens as u64)
-            .sum();
-        toks as f64 / self.measured_s()
+        self.tally.classes.get(&class).map_or(0, |c| c.goodput_tokens) as f64 / self.measured_s()
     }
     /// `slo_attainment` restricted to one class: Ok over every measured request of that class.
     pub fn class_attainment(&self, class: u8) -> f64 {
-        let n = self.records.iter().filter(|r| r.class == class).count();
-        if n == 0 {
-            return f64::NAN;
+        match self.tally.classes.get(&class) {
+            Some(c) if c.total > 0 => c.ok as f64 / c.total as f64,
+            _ => f64::NAN,
         }
-        let ok = self.records.iter().filter(|r| r.class == class && r.outcome == Outcome::Ok).count();
-        ok as f64 / n as f64
     }
     pub fn completed_rps(&self) -> f64 {
         self.completed() as f64 / self.measured_s()
@@ -255,6 +233,107 @@ impl RunResult {
 
     pub fn outcome(&self, label: &str) -> u64 {
         *self.outcomes.get(label).unwrap_or(&0)
+    }
+}
+
+/// Whole-run counters over the measured records: what the scorecard's rates and fractions read.
+/// Integers only, added as each record lands, so the numbers are the same whether the records
+/// themselves are kept (the CLI, whose telemetry dump needs them) or folded away as they finish
+/// (the server, where a ten-minute run at 560 rps would otherwise hold 336k of them to the end).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Tally {
+    /// Every measured request, whatever its outcome.
+    pub total: u64,
+    /// `Outcome::is_success`.
+    pub completed: u64,
+    /// `Outcome::Ok`.
+    pub ok: u64,
+    /// Output tokens of the successes, and of the `Ok` subset.
+    pub output_tokens: u64,
+    pub goodput_tokens: u64,
+    /// Per SLO class, ascending by class.
+    pub classes: BTreeMap<u8, ClassTally>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ClassTally {
+    pub total: u64,
+    pub ok: u64,
+    pub goodput_tokens: u64,
+}
+
+impl Tally {
+    pub fn record(&mut self, r: &RequestRecord) {
+        self.total += 1;
+        let class = self.classes.entry(r.class).or_default();
+        class.total += 1;
+        if r.outcome.is_success() {
+            self.completed += 1;
+            self.output_tokens += r.output_tokens as u64;
+        }
+        if r.outcome == Outcome::Ok {
+            self.ok += 1;
+            self.goodput_tokens += r.output_tokens as u64;
+            class.ok += 1;
+            class.goodput_tokens += r.output_tokens as u64;
+        }
+    }
+}
+
+/// The whole-run aggregates, fed by `finish` as each record lands: the tally, the outcome counts and
+/// the four latency histograms over the measured window, plus a count of every record so the state
+/// ceiling reads the same number with or without the vector. `into_result` used to compute all of
+/// this in a second pass over `records`; folding it in as records finish gives the same integers in
+/// a different order, which for counts, sums and bucketed histograms is the same result.
+struct Summary {
+    measured_from: Nanos,
+    /// Hold at most the newest record rather than all of them. `Tracing::settle` reads the newest
+    /// right after `finish`, which is the one use the vector has once the summary is incremental.
+    fold: bool,
+    /// Every record, warm-up included: what `records.len()` was.
+    finished: u64,
+    tally: Tally,
+    outcomes: HashMap<&'static str, u64>,
+    ttft: Histogram,
+    itl_max: Histogram,
+    e2e: Histogram,
+    queue_wait: Histogram,
+}
+
+impl Summary {
+    fn new(measured_from: Nanos) -> Summary {
+        Summary {
+            measured_from,
+            fold: false,
+            finished: 0,
+            tally: Tally::default(),
+            outcomes: HashMap::new(),
+            ttft: Histogram::new(),
+            itl_max: Histogram::new(),
+            e2e: Histogram::new(),
+            queue_wait: Histogram::new(),
+        }
+    }
+
+    /// Statistics come from the measured window only, so a run measures steady state rather than
+    /// the transient of an empty fleet filling up.
+    fn record(&mut self, rec: &RequestRecord) {
+        self.finished += 1;
+        if rec.arrived_at < self.measured_from {
+            return;
+        }
+        self.tally.record(rec);
+        *self.outcomes.entry(rec.outcome.label()).or_insert(0) += 1;
+        if let Some(t) = rec.ttft() {
+            self.ttft.record(t);
+        }
+        if rec.max_itl > 0 {
+            self.itl_max.record(rec.max_itl);
+        }
+        if let Some(t) = rec.e2e() {
+            self.e2e.record(t);
+        }
+        self.queue_wait.record(rec.queue_wait());
     }
 }
 
@@ -691,7 +770,7 @@ pub struct Sim {
     fleet_kv: Series,
     offered: Series,
 
-    outcomes: HashMap<&'static str, u64>,
+    summary: Summary,
     fingerprint: u64,
     retries: u64,
     first_attempts: u64,
@@ -960,7 +1039,7 @@ impl Sim {
             fleet_running: Series::new("fleet_running"),
             fleet_kv: Series::new("fleet_kv_utilization"),
             offered: Series::new("offered_rps"),
-            outcomes: HashMap::new(),
+            summary: Summary::new(measured_from),
             fingerprint: 0,
             retries: 0,
             first_attempts: 0,
@@ -1088,7 +1167,7 @@ impl Sim {
         let sc = &self.sc;
         let start = self.start;
         finish(
-            &mut self.records, &mut self.outcomes, &mut self.done, &mut self.window,
+            &mut self.records, &mut self.summary, &mut self.done, &mut self.window,
             outcome, req, now, i, 0, 0, 0, 0,
         );
         self.tracing.settle(req.id, &self.records, &mut self.replicas, i, &self.cost);
@@ -1127,7 +1206,7 @@ impl Sim {
                 self.tracing.draft(&again, at, &d, probed, &self.views, start, self.placed.len());
             }
             place(
-                &mut self.q, &mut self.records, &mut self.outcomes, &mut self.done,
+                &mut self.q, &mut self.records, &mut self.summary, &mut self.done,
                 &mut self.window, d, again, at,
             );
             if traced && !routed {
@@ -1154,6 +1233,15 @@ impl Sim {
     /// test: 1,000,000 dispatched events is too many for a short run to reach.
     pub fn set_memory_check_interval(&mut self, events: u64) {
         self.memory_check_interval = events;
+    }
+    /// Stop retaining per-request records: from here on the vector holds at most the newest one,
+    /// and `into_result` reports an empty `records` with the same tally, histograms and outcome
+    /// counts it would have computed from the full vector. For a driver that needs the scorecard and
+    /// the frames but never the records, which is the server: a ten-minute run at 560 rps is 336k
+    /// records, thirty-odd megabytes held until the run ends for nothing that reads them. Called
+    /// before the first `advance_to`, or the records so far stay until the next one lands.
+    pub fn fold_records(&mut self) {
+        self.summary.fold = true;
     }
     /// The frames closed so far. Available while the run is in progress, which is the point.
     pub fn frames(&self) -> &[Frame] {
@@ -1291,11 +1379,11 @@ impl Sim {
                 self.finished = true;
                 break;
             }
-            if self.records.len() > self.max_records || self.placed.len() > self.max_in_flight {
+            if self.summary.finished > self.max_records as u64 || self.placed.len() > self.max_in_flight {
                 self.tripped = Some(format!(
                     "state ceiling: {} records and {} tracked requests. Offered load is far above what \
                      this fleet retires, or requests are never completing",
-                    self.records.len(),
+                    self.summary.finished,
                     self.placed.len()
                 ));
                 self.finished = true;
@@ -1342,7 +1430,7 @@ impl Sim {
                         self.tracing.draft(&req, now, &d, probed, &self.views, start, self.placed.len());
                     }
                     place(
-                        &mut self.q, &mut self.records, &mut self.outcomes, &mut self.done,
+                        &mut self.q, &mut self.records, &mut self.summary, &mut self.done,
                         &mut self.window, d, req, now,
                     );
                     if traced && !routed {
@@ -1364,7 +1452,7 @@ impl Sim {
                         self.tiers.reclaim(&mut self.replicas[i]);
                     }
                     place(
-                        &mut self.q, &mut self.records, &mut self.outcomes, &mut self.done,
+                        &mut self.q, &mut self.records, &mut self.summary, &mut self.done,
                         &mut self.window, d, req, now,
                     );
                 }
@@ -1387,7 +1475,7 @@ impl Sim {
                         r.remove(id);
                         self.tiers.reclaim(r);
                         finish(
-                            &mut self.records, &mut self.outcomes, &mut self.done, &mut self.window,
+                            &mut self.records, &mut self.summary, &mut self.done, &mut self.window,
                             Outcome::Rejected, &req, now, target, 0, 0, 0, 0,
                         );
                         self.tracing.settle(id, &self.records, &mut self.replicas, target, &self.cost);
@@ -1436,7 +1524,7 @@ impl Sim {
                         let outcome = if within { Outcome::Ok } else { Outcome::OkSloViolated };
                         self.admission.on_complete(s.req.tenant, s.req.output, token_at);
                         finish(
-                            &mut self.records, &mut self.outcomes, &mut self.done, &mut self.window,
+                            &mut self.records, &mut self.summary, &mut self.done, &mut self.window,
                             outcome, &s.req, token_at, i, s.admitted_at, s.first_token_at, s.max_itl,
                             s.mean_itl,
                         );
@@ -1624,36 +1712,14 @@ impl Sim {
         if let Some(why) = self.tripped {
             return Err(format!("run {:?} aborted, {}", sc.name, why));
         }
-
-        let mut ttft = Histogram::new();
-        let mut itl_max = Histogram::new();
-        let mut e2e = Histogram::new();
-        let mut queue_wait = Histogram::new();
-
-        // Statistics come from the measured window only, so a run measures steady state rather than the
-        // transient of an empty fleet filling up.
-        for rec in self.records.iter().filter(|r| r.arrived_at >= measured_from) {
-            if let Some(t) = rec.ttft() {
-                ttft.record(t);
-            }
-            if rec.max_itl > 0 {
-                itl_max.record(rec.max_itl);
-            }
-            if let Some(t) = rec.e2e() {
-                e2e.record(t);
-            }
-            queue_wait.record(rec.queue_wait());
-        }
-        let measured: Vec<RequestRecord> = self
-            .records
-            .into_iter()
-            .filter(|r| r.arrived_at >= measured_from)
-            .collect();
-        let mut measured_outcomes: HashMap<&'static str, u64> = HashMap::new();
-        for r in &measured {
-            *measured_outcomes.entry(r.outcome.label()).or_insert(0) += 1;
-        }
-        let _ = self.outcomes;
+        let summary = self.summary;
+        // A folding run kept at most the newest record; the vector it reports is empty rather than
+        // that one stray, since a partial list of records is worse than none.
+        let measured: Vec<RequestRecord> = if summary.fold {
+            Vec::new()
+        } else {
+            self.records.into_iter().filter(|r| r.arrived_at >= measured_from).collect()
+        };
         let traces: Vec<RequestTrace> =
             self.tracing.traces.into_iter().filter(|t| t.record.arrived_at >= measured_from).collect();
 
@@ -1661,18 +1727,19 @@ impl Sim {
             scenario: sc.clone(),
             routing_label: self.router.label(),
             records: measured,
+            tally: summary.tally,
             traces,
-            ttft,
-            itl_max,
-            e2e,
-            queue_wait,
+            ttft: summary.ttft,
+            itl_max: summary.itl_max,
+            e2e: summary.e2e,
+            queue_wait: summary.queue_wait,
             replica_load: self.replica_load,
             fleet_queue: self.fleet_queue,
             fleet_running: self.fleet_running,
             fleet_kv_utilization: self.fleet_kv,
             offered_rps: self.offered,
             frames: self.frames,
-            outcomes: measured_outcomes,
+            outcomes: summary.outcomes,
             events: self.q.dispatched,
             fingerprint: self.fingerprint,
             measured_from,
@@ -1972,7 +2039,7 @@ fn shed(
 fn place(
     q: &mut EventQueue<Ev>,
     records: &mut Vec<RequestRecord>,
-    outcomes: &mut HashMap<&'static str, u64>,
+    summary: &mut Summary,
     done: &mut HashMap<u64, bool>,
     window: &mut Window,
     d: Dispatch,
@@ -1982,7 +2049,7 @@ fn place(
     match d {
         Dispatch::Route { target, delay } => q.schedule(now + delay, Ev::Admit(target, req)),
         Dispatch::Rejected => finish(
-            records, outcomes, done, window, Outcome::Rejected, &req, now, NO_REPLICA, 0, 0, 0, 0,
+            records, summary, done, window, Outcome::Rejected, &req, now, NO_REPLICA, 0, 0, 0, 0,
         ),
         Dispatch::Dropped => {}
     }
@@ -2219,7 +2286,7 @@ fn resource_of(snap: &ResourceSnapshot, cost: &sim_physics::CostModel, kv_capaci
 #[allow(clippy::too_many_arguments)]
 fn finish(
     records: &mut Vec<RequestRecord>,
-    outcomes: &mut HashMap<&'static str, u64>,
+    summary: &mut Summary,
     done: &mut HashMap<u64, bool>,
     window: &mut Window,
     outcome: Outcome,
@@ -2232,7 +2299,6 @@ fn finish(
     mean_itl: Nanos,
 ) {
     done.insert(req.id, true);
-    *outcomes.entry(outcome.label()).or_insert(0) += 1;
     let rec = RequestRecord {
         id: req.id,
         arrived_at: req.arrived_at,
@@ -2249,6 +2315,10 @@ fn finish(
         class: req.class,
     };
     window.record(&rec);
+    summary.record(&rec);
+    if summary.fold {
+        records.clear();
+    }
     records.push(rec);
 }
 

@@ -77,7 +77,9 @@ pub fn serve(dir: &str, port: u16) -> Result<(), String> {
     let listener = TcpListener::bind(("0.0.0.0", port))
         .map_err(|e| format!("bind 0.0.0.0:{port}: {e}"))?;
     println!("serving {} on 0.0.0.0:{port}", root.display());
-    serve_on(Arc::new(Server::new(root, idle::idle_threshold_ns_from_env())), listener)
+    let server = Server::new(root, idle::idle_threshold_ns_from_env())
+        .with_completed_retention(run::completed_retention_ns_from_env());
+    serve_on(Arc::new(server), listener)
 }
 
 /// The accept loop on a listener the caller bound, with the idle threshold injected through the
