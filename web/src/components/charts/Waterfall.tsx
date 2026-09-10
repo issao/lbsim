@@ -1,6 +1,6 @@
 import { useRef, useState, type ReactNode } from 'react';
 import type { WireRequestTrace, WireTraceSpan } from '../../lib/api';
-import { fmtMs, fmtTokens, fmtAbsNs } from '../../lib/format';
+import { fmtMs, fmtTokens, fmtAbsNs, fmtCount } from '../../lib/format';
 import { axisOf, layoutSpans, msBetween, type Axis } from '../../lib/spanLayout';
 
 /** A span the replica recorded, as opposed to the gateway's and router's, which hold no cache and no batch. */
@@ -9,8 +9,26 @@ function onReplica(s: WireTraceSpan): boolean {
 }
 
 const ROW = 18;
-const LABEL_W = 150;
+/** Wide enough for the longest row label, `WAIT_LABEL` below, at the SVG's 11px monospace. */
+const LABEL_W = 250;
 const PLOT_W = 420;
+
+/** The engine's `prefill_wait`: admitted to the batch, served nothing that step because the prefill
+ * budget ran out on the sequences ahead. Issao read the interval this span now covers as "a big gap
+ * ... with unaccounted time", so it is drawn as a bar like any other, hatched to say the sequence was
+ * in the batch and idle rather than computing. */
+const WAIT_OP = 'prefill_wait';
+const WAIT_LABEL = 'in batch, waiting for prefill budget';
+const HATCH_ID = 'wf-hatch-wait';
+
+function rowLabel(s: WireTraceSpan): string {
+  return s.operation === WAIT_OP ? WAIT_LABEL : `${s.operation} · ${s.component}`;
+}
+
+/** Why the sequence waited, in words, with the budget the step spent on the others. */
+function waitExplanation(s: WireTraceSpan): string {
+  return `admitted to the batch; the step's prefill budget (${fmtCount(s.tokensProcessed)} tokens) went to earlier sequences`;
+}
 
 /**
  * One request's journey, span by span: a row per span, x is time since the request arrived, width
@@ -50,6 +68,12 @@ export function Waterfall({ trace }: { trace: WireRequestTrace }) {
   return (
     <div className="waterfall" ref={wrapRef} style={{ position: 'relative', overflowX: 'auto' }} onMouseLeave={() => setHover(null)}>
       <svg width={LABEL_W + PLOT_W + 40} height={height} role="img" aria-label="request waterfall" style={{ display: 'block', font: '11px var(--mono, monospace)' }}>
+        <defs>
+          <pattern id={HATCH_ID} width={6} height={6} patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+            <rect width={6} height={6} fill="var(--surface-3, #eee)" />
+            <line x1={0} y1={0} x2={0} y2={6} stroke="var(--series-1, #4a7)" strokeWidth={2} />
+          </pattern>
+        </defs>
         {ticks.map((f) => (
           <g key={f}>
             <line x1={LABEL_W + f * PLOT_W} x2={LABEL_W + f * PLOT_W} y1={0} y2={spans.length * ROW} stroke="var(--line, #ddd)" strokeDasharray="2 3" />
@@ -64,6 +88,7 @@ export function Waterfall({ trace }: { trace: WireRequestTrace }) {
           const replica = onReplica(s) ? String(s.replicaId) : null;
           const startMs = msBetween(arrivedAt, s.startUnixNs);
           const endMs = msBetween(arrivedAt, s.endUnixNs);
+          const wait = s.operation === WAIT_OP;
           return (
             <g
               key={i}
@@ -73,17 +98,19 @@ export function Waterfall({ trace }: { trace: WireRequestTrace }) {
               style={{ cursor: 'pointer' }}
             >
               <rect x={0} y={y} width={LABEL_W + PLOT_W + 40} height={ROW} fill={i === pick ? 'var(--accent-bg, rgba(0,0,0,0.06))' : 'transparent'} />
-              <text x={4} y={y + 13} fill="var(--ink-1, #222)" data-replica={replica ?? undefined}>
-                {s.operation} · {s.component}
+              <text x={4} y={y + 13} fill={wait ? 'var(--ink-2, #555)' : 'var(--ink-1, #222)'} data-replica={replica ?? undefined}>
+                {rowLabel(s)}
               </text>
               <rect
-                className="wf-bar"
+                className={wait ? 'wf-bar wf-bar-wait' : 'wf-bar'}
                 x={x(g.startMs)}
                 y={y + 3}
                 width={g.width}
                 height={ROW - 6}
                 rx={1.5}
-                fill={onReplica(s) ? 'var(--series-1, #4a7)' : 'var(--series-2, #79a)'}
+                fill={wait ? `url(#${HATCH_ID})` : onReplica(s) ? 'var(--series-1, #4a7)' : 'var(--series-2, #79a)'}
+                stroke={wait ? 'var(--series-1, #4a7)' : undefined}
+                strokeWidth={wait ? 1 : undefined}
                 data-op={s.operation}
                 data-component={s.component}
                 data-replica={replica ?? undefined}
@@ -91,8 +118,8 @@ export function Waterfall({ trace }: { trace: WireRequestTrace }) {
                 data-width-px={g.width.toFixed(3)}
               >
                 <title>
-                  {s.operation} on {s.component}: {fmtMs(g.durationMs)}, from +{fmtMs(startMs)} to +{fmtMs(endMs)} ({fmtAbsNs(s.startUnixNs)}–
-                  {fmtAbsNs(s.endUnixNs)})
+                  {wait ? WAIT_LABEL : s.operation} on {s.component}: {fmtMs(g.durationMs)}, from +{fmtMs(startMs)} to +{fmtMs(endMs)} ({fmtAbsNs(s.startUnixNs)}–
+                  {fmtAbsNs(s.endUnixNs)}){wait ? `. ${waitExplanation(s)}` : ''}
                 </title>
               </rect>
             </g>
@@ -115,6 +142,7 @@ function Dash() {
  * own corner (not the page), so it tracks the cursor as it moves without re-measuring on scroll. */
 function SpanTooltip({ s, arrivedAt, x, y }: { s: WireTraceSpan; arrivedAt: bigint; x: number; y: number }) {
   const rep = onReplica(s);
+  const wait = s.operation === WAIT_OP;
   const startMs = msBetween(arrivedAt, s.startUnixNs);
   const endMs = msBetween(arrivedAt, s.endUnixNs);
   const kvPct = s.kvCapacity > 0n ? ` (${((Number(s.kvTokensResident) / Number(s.kvCapacity)) * 100).toFixed(0)}%)` : '';
@@ -131,8 +159,9 @@ function SpanTooltip({ s, arrivedAt, x, y }: { s: WireTraceSpan; arrivedAt: bigi
     ['bound', rep && s.bound !== 'STEP_BOUND_UNSPECIFIED' ? s.bound.replace('STEP_BOUND_', '').toLowerCase() : <Dash />],
   ];
   return (
-    <div className="tooltip" style={{ left: x + 12, top: y + 12, minWidth: 150 }}>
-      <div className="tt-time">{s.operation}</div>
+    <div className="tooltip" style={{ left: x + 12, top: y + 12, minWidth: 150, maxWidth: 260 }}>
+      <div className="tt-time">{wait ? WAIT_LABEL : s.operation}</div>
+      {wait ? <div className="tt-row" style={{ whiteSpace: 'normal', color: 'var(--ink-2)' }}>{waitExplanation(s)}</div> : null}
       {rows.map(([k, v]) => (
         <div className="tt-row" key={k}>
           <span style={{ color: 'var(--ink-2)' }}>{k}</span>
@@ -146,12 +175,14 @@ function SpanTooltip({ s, arrivedAt, x, y }: { s: WireTraceSpan; arrivedAt: bigi
 function SpanDetail({ span: s, arrivedAt }: { span: WireTraceSpan; arrivedAt: bigint }) {
   const rep = onReplica(s);
   const kvPct = s.kvCapacity > 0n ? `${((Number(s.kvTokensResident) / Number(s.kvCapacity)) * 100).toFixed(0)}%` : null;
+  const wait = s.operation === WAIT_OP;
   const cells: [string, ReactNode][] = [
-    ['span', `${s.operation} · ${s.component}`],
+    ['span', wait ? `${WAIT_LABEL} · ${s.component}` : `${s.operation} · ${s.component}`],
+    ...(wait ? ([['why', waitExplanation(s)]] as [string, ReactNode][]) : []),
     ['start', `+${fmtMs(msBetween(arrivedAt, s.startUnixNs))}`],
     ['duration', fmtMs(msBetween(s.startUnixNs, s.endUnixNs))],
     ['in flight', String(s.concurrentSeqs)],
-    ['tokens', s.tokensProcessed > 0 ? fmtTokens(s.tokensProcessed) : <Dash />],
+    [wait ? 'others\' prefill' : 'tokens', s.tokensProcessed > 0 ? fmtTokens(s.tokensProcessed) : <Dash />],
     ['batch', rep ? String(s.batchSize) : <Dash />],
     ['queued behind', rep ? String(s.queued) : <Dash />],
     ['kv resident', rep && s.kvCapacity > 0n ? `${fmtTokens(Number(s.kvTokensResident))} / ${fmtTokens(Number(s.kvCapacity))}${kvPct ? ` (${kvPct})` : ''}` : <Dash />],

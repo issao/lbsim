@@ -89,6 +89,10 @@ pub enum SpanKind {
     ReplicaQueue,
     /// One chunk of prefill, of `tokens` prompt tokens.
     PrefillChunk { tokens: u32 },
+    /// Admitted to the batch with prompt left, and served nothing this step: the step's prefill
+    /// budget, `others_prefill` tokens of it, went to the sequences ahead. One span per step waited,
+    /// the granularity of every other replica span, so a journey on a replica is contiguous.
+    PrefillWait { others_prefill: u32 },
     /// One decode step, producing one token.
     DecodeStep,
     /// Bringing the KV cache back from a lower tier.
@@ -104,17 +108,20 @@ impl SpanKind {
             SpanKind::IngressQueue | SpanKind::ReplicaQueue => "queue",
             SpanKind::RoutingDecision { .. } => "route",
             SpanKind::PrefillChunk { .. } => "prefill",
+            SpanKind::PrefillWait { .. } => "prefill_wait",
             SpanKind::DecodeStep => "decode",
             SpanKind::KvFetch => "kv_fetch",
             SpanKind::Preempted => "preempted",
         }
     }
 
-    /// The proto's `tokens_processed`: prompt tokens for a prefill chunk, one for a decode step,
-    /// nothing for a wait.
+    /// The proto's `tokens_processed`: prompt tokens for a prefill chunk, one for a decode step, and
+    /// for a wait in the batch the prefill tokens the step spent on the other sequences, which is
+    /// what the wait is made of; nothing for a queue.
     pub fn tokens_processed(&self) -> u32 {
         match self {
             SpanKind::PrefillChunk { tokens } => *tokens,
+            SpanKind::PrefillWait { others_prefill } => *others_prefill,
             SpanKind::DecodeStep => 1,
             _ => 0,
         }

@@ -298,6 +298,36 @@ const finalLine = extraFail => {
         }
       }
     }
+    // Issao: "looking at traces, I see out of SLO request where there is a very short queue (31ms)
+    // then a big gap (1.6s) until the first prefill. There shouldn't be a big gap in the trace view
+    // with unaccounted time." Read the engine's own spans over the wire for the first ten sampled
+    // journeys of this run and demand that consecutive spans leave no gap over 100 ms: a sequence
+    // admitted to a batch and waiting for the prefill budget is now a `prefill_wait` span, not
+    // silence. A journey that never reached a replica (rejected, timed out queued) has nothing to
+    // be contiguous with and is skipped.
+    {
+      const runId = ((dashboardBadge || '').match(/run (r-\d+)/) || [])[1];
+      const finished = new Set(['OUTCOME_OK', 'OUTCOME_OK_SLO_VIOLATED']);
+      let traces = [];
+      if (runId) {
+        const r = await ctx.request.post(BASE + '/v1/ingress/GetTraces', { data: { run_id: runId, limit: 10 } }).catch(() => null);
+        traces = r && r.ok() ? ((await r.json().catch(() => ({}))).traces || []) : [];
+      }
+      const gaps = [];
+      let waits = 0;
+      for (const t of traces) {
+        if (!finished.has(t.record && t.record.outcome)) continue;
+        const spans = (t.spans || []).map(s => ({ op: s.operation, start: BigInt(s.start_unix_ns), end: BigInt(s.end_unix_ns) }));
+        for (let i = 1; i < spans.length; i++) {
+          const gapMs = Number(spans[i].start - spans[i - 1].end) / 1e6;
+          if (gapMs > 100) gaps.push(`${t.record.id}: ${gapMs.toFixed(0)} ms between ${spans[i - 1].op} and ${spans[i].op}`);
+          if (spans[i].op === 'prefill_wait') waits++;
+        }
+      }
+      check('traces: no gap over 100 ms between consecutive spans of the first ten sampled journeys (Issao)',
+        Boolean(runId) && traces.length > 0 && gaps.length === 0,
+        !runId ? 'no run id on the badge' : traces.length === 0 ? 'GetTraces returned no traces' : gaps.length ? gaps.slice(0, 3).join(' · ') : `${traces.length} traces, ${waits} prefill_wait spans, contiguous`);
+    }
     await noInvented(page, 'dashboard: no invented numbers on live (U95b)');
 
     // Smoothing (Issao: "a global selector of a window average to be applied on them, live

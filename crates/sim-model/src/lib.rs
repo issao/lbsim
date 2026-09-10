@@ -905,6 +905,16 @@ impl Replica {
                 }
             }
         }
+        // A sequence with prompt left that the loop above gave nothing is in the batch and not
+        // served: the budget ran out on the sequences ahead of it. The trace records that wait so
+        // the journey has no unaccounted time; with nothing tracked this is one branch.
+        if r.tracer.tracking() > 0 {
+            for s in &r.running {
+                if s.prefill_left > 0 {
+                    r.tracer.prefill_wait(s.req.id);
+                }
+            }
+        }
         let mut decoding = r.running.iter().filter(|s| s.prefill_left == 0).count();
 
         // A decode step grows every decoding sequence by one token. When that would not fit, the

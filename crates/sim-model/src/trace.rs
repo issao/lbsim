@@ -1,10 +1,11 @@
 //! What a replica did to a traced sequence, step by step.
 //!
-//! `Replica::step` calls into the `Tracer` at five points: admission, each prefill chunk, once when
-//! the step's duration is known, each decode step, and retirement. The tracer ignores every id it was
-//! not told to track, so with tracing off each call is one branch on an empty list, and the loop in
-//! `sim-leaf` decides which ids to track and turns what it reads back into `sim_metrics` spans. The
-//! split keeps this crate typed on `sim-core` alone: the physics does not know what a trace is for.
+//! `Replica::step` calls into the `Tracer` at six points: admission, each prefill chunk, each step a
+//! sequence with prompt left got no chunk, once when the step's duration is known, each decode step,
+//! and retirement. The tracer ignores every id it was not told to track, so with tracing off each
+//! call is one branch on an empty list, and the loop in `sim-leaf` decides which ids to track and
+//! turns what it reads back into `sim_metrics` spans. The split keeps this crate typed on `sim-core`
+//! alone: the physics does not know what a trace is for.
 //!
 //! Timing is the step's, not the event's. Every event inside a step spans the whole step, because a
 //! step is the engine's unit of time: a prefill chunk or a decode token is not done until the step
@@ -39,6 +40,11 @@ pub enum StepEvent {
     Admitted { id: u64, at: Nanos },
     /// `tokens` of prompt processed in the step from `start` to `end`.
     PrefillChunk { id: u64, tokens: u32, start: Nanos, end: Nanos },
+    /// In the batch with prompt left, and none of the step's prefill budget reached it: the whole
+    /// step from `start` to `end` was spent on the sequences ahead of it. Issao saw this as a gap
+    /// between the replica-queue span and the first prefill chunk, and a gap in a trace reads as
+    /// unaccounted time, so the wait is recorded like everything else the step did to the sequence.
+    PrefillWait { id: u64, start: Nanos, end: Nanos },
     /// One token, emitted at `end`.
     DecodeStep { id: u64, start: Nanos, end: Nanos },
     /// Emitted its last token at `at`.
@@ -50,6 +56,7 @@ impl StepEvent {
         match *self {
             StepEvent::Admitted { id, .. }
             | StepEvent::PrefillChunk { id, .. }
+            | StepEvent::PrefillWait { id, .. }
             | StepEvent::DecodeStep { id, .. }
             | StepEvent::Retired { id, .. } => id,
         }
@@ -60,6 +67,7 @@ impl StepEvent {
 enum Raw {
     Admitted,
     Prefill(u32),
+    PrefillWait,
     Decode,
     Retired,
 }
@@ -99,6 +107,26 @@ impl Tracer {
     pub fn prefill_chunk(&mut self, id: u64, tokens: u32) {
         if self.tracks(id) {
             self.events.push((id, Raw::Prefill(tokens), self.steps.len()));
+        }
+    }
+
+    /// A sequence with prompt left after the step's prefill loop. It waited only if no chunk reached
+    /// it in this step; a partial chunk is service, whatever remains. Called before the snapshot, so
+    /// the wait belongs to the step about to be recorded, like a chunk. The scan for a chunk stops at
+    /// the previous step's events, which are the ones the last snapshot already owns.
+    #[inline]
+    pub fn prefill_wait(&mut self, id: u64) {
+        if self.tracks(id) {
+            let step = self.steps.len();
+            let served = self
+                .events
+                .iter()
+                .rev()
+                .take_while(|&&(_, _, at)| at == step)
+                .any(|&(eid, raw, _)| eid == id && matches!(raw, Raw::Prefill(_)));
+            if !served {
+                self.events.push((id, Raw::PrefillWait, step));
+            }
         }
     }
 
@@ -142,6 +170,7 @@ impl Tracer {
             let ev = match raw {
                 Raw::Admitted => StepEvent::Admitted { id, at: snap.start },
                 Raw::Prefill(tokens) => StepEvent::PrefillChunk { id, tokens, start: snap.start, end: snap.end },
+                Raw::PrefillWait => StepEvent::PrefillWait { id, start: snap.start, end: snap.end },
                 Raw::Decode => StepEvent::DecodeStep { id, start: snap.start, end: snap.end },
                 Raw::Retired => StepEvent::Retired { id, at: snap.end },
             };

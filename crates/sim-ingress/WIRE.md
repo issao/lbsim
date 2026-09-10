@@ -172,6 +172,11 @@ latency to whatever ended it, and by `tenant_id` (zero is "any"), and returns at
 100 when unset. `StartRun { record_traces: true }` sets a 5 % sample (`trace_sample_rate = 0.05`)
 when the scenario names none, and a scenario with its own rate keeps it; a run that recorded nothing
 answers an empty list, not an error.
+A span's `operation` is one of the engine's `SpanKind` names: `queue` (gateway or replica, told apart
+by `component`), `route`, `prefill`, `prefill_wait`, `decode`, `kv_fetch`, `preempted`. `prefill_wait` is
+a step a sequence spent admitted to the batch with prompt left and none of the step's prefill budget
+reaching it; its `tokens_processed` is the prefill the step spent on the sequences ahead of it. One
+per step waited, so a journey's replica spans are contiguous and a trace carries no unaccounted time.
 
 Scopes: `SCOPE_FLEET` and `SCOPE_REPLICA`. Everything else returns `rejected_reason`.
 
